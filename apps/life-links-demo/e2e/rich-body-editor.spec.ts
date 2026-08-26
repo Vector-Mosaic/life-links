@@ -17,6 +17,24 @@ const project: ProjectRecord = {
 };
 
 test.describe("local rich body editor", () => {
+  test("keeps QR selection synchronized with browser back and forward", async ({ baseURL, page }) => {
+    const state = await mockLifeLinksApi(page, baseURL ?? "http://127.0.0.1:4174");
+
+    await page.goto("/");
+    await expect(page.getByText("Recent Links")).toBeVisible();
+    await page.locator(".link-row").filter({ hasText: state.link.title }).click();
+    await expect(page).toHaveURL(new RegExp(`/qr/${state.link.id}$`));
+    await expect(page.getByRole("heading", { name: "Scan And Claim" })).toBeVisible();
+
+    await page.goBack();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
+
+    await page.goForward();
+    await expect(page).toHaveURL(new RegExp(`/qr/${state.link.id}$`));
+    await expect(page.getByRole("heading", { name: "Scan And Claim" })).toBeVisible();
+  });
+
   test("saves slash-command block content and renders it after save", async ({ baseURL, page }) => {
     const state = await mockLifeLinksApi(page, baseURL ?? "http://127.0.0.1:4174");
 

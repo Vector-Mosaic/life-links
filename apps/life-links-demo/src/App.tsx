@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import {
   Archive,
@@ -14,7 +14,6 @@ import {
   FolderOpen,
   Globe2,
   Home,
-  Image,
   Layers,
   Lock,
   LogIn,
@@ -26,151 +25,73 @@ import {
   RefreshCcw,
   Search,
   ShieldCheck,
-  Sun,
-  Trash2,
-  Upload,
-  Video,
-  X
+  Sun
 } from "lucide-react";
 import {
-  DEFAULT_QR_BASE_URL,
   MAX_PROJECT_NAME_LENGTH,
-  MAX_TITLE_LENGTH,
-  createLinkBodyDocFromPlainText,
   type LinkRecord,
-  type PrivacyStatus,
   type ProjectRecord,
-  type QrViewState,
   buildQrUrl,
-  linksToCsv,
-  normalizeBatchCount,
-  parseQrId,
   searchOwnedLinks
 } from "@life-links/core";
-import {
-  ApiError,
-  type ApiUser,
-  claimQr,
-  createProject,
-  createQrBatch,
-  deleteLinkMedia,
-  findScan,
-  getConfig,
-  getMe,
-  getQr,
-  listLinks,
-  listProjects,
-  login,
-  logout,
-  uploadLinkMedia,
-  updateLink
-} from "./api";
+import { LifeLinkEditor } from "./owner/LifeLinkEditor";
 import { RichBodyRenderer } from "./richBody";
-
-const RichBodyEditor = lazy(() => import("./richBodyEditor").then((module) => ({ default: module.RichBodyEditor })));
+import { Tooltip } from "./ui/Tooltip";
+import { LifeLinksWorkspaceProvider, useLifeLinksWorkspace } from "./workspace/LifeLinksWorkspaceProvider";
+import { classifyLifeLinksRoute } from "./workspace/routes";
+import type { ScanMessage, WorkspaceView } from "./workspace/types";
 
 type Html5QrcodeScanner = InstanceType<typeof import("html5-qrcode").Html5Qrcode>;
 
-type View = "home" | "factory" | "scan" | "projects" | "search";
+type View = WorkspaceView;
 type CameraMode = "open" | "find";
-type ScanTone = "neutral" | "success" | "warning";
-type ThemeMode = "light" | "dark";
-type InventoryFilter = "all" | "claimed" | "unclaimed";
-
-type ScanMessage = {
-  tone: ScanTone;
-  title: string;
-  detail: string;
-};
-
-const THEME_STORAGE_KEY = "life-links-theme";
-const LINK_EDITOR_DRAFT_STORAGE_PREFIX = "life-links-link-editor-draft-v1";
 const INVENTORY_PAGE_SIZE = 24;
 
-function initialQrIdFromPath(): string | null {
-  const match = window.location.pathname.match(/^\/qr\/([^/]+)/i);
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function initialTheme(): ThemeMode {
-  try {
-    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    return stored === "light" ? "light" : "dark";
-  } catch {
-    return "dark";
-  }
-}
-
 export default function App() {
-  const [currentUser, setCurrentUser] = useState<ApiUser | null>(null);
-  const [qrBaseUrl, setQrBaseUrl] = useState(DEFAULT_QR_BASE_URL);
-  const [links, setLinks] = useState<LinkRecord[]>([]);
-  const [projects, setProjects] = useState<ProjectRecord[]>([]);
-  const [activeView, setActiveView] = useState<View>(initialQrIdFromPath() ? "scan" : "home");
-  const [batchCount, setBatchCount] = useState(48);
-  const [lastBatchId, setLastBatchId] = useState<string | null>(null);
-  const [lastBatchIds, setLastBatchIds] = useState<string[]>([]);
-  const [inventoryOpen, setInventoryOpen] = useState(false);
-  const [inventoryFilter, setInventoryFilter] = useState<InventoryFilter>("all");
-  const [inventoryPage, setInventoryPage] = useState(0);
-  const [activeQrId, setActiveQrId] = useState<string | null>(initialQrIdFromPath());
-  const [publicQrState, setPublicQrState] = useState<QrViewState | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [findTargetId, setFindTargetId] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
-  const [guestView, setGuestView] = useState(false);
-  const [newProjectName, setNewProjectName] = useState("");
-  const [scanMessage, setScanMessage] = useState<ScanMessage>({
-    tone: "neutral",
-    title: "Ready",
-    detail: "No scan yet."
-  });
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [theme, setTheme] = useState<ThemeMode>(initialTheme);
-  const routeQrId = useMemo(() => initialQrIdFromPath(), []);
+  return (
+    <LifeLinksWorkspaceProvider>
+      <LifeLinksApp />
+    </LifeLinksWorkspaceProvider>
+  );
+}
+
+function LifeLinksApp() {
+  const { controller, snapshot } = useLifeLinksWorkspace();
+  const {
+    currentUser,
+    qrBaseUrl,
+    links,
+    projects,
+    activeView,
+    batchCount,
+    lastBatchId,
+    lastBatchIds,
+    inventoryOpen,
+    inventoryFilter,
+    inventoryPage,
+    activeQrId,
+    publicQrState,
+    editingId,
+    findTargetId,
+    query,
+    guestView,
+    newProjectName,
+    scanMessage,
+    loading,
+    busy,
+    error,
+    theme,
+    routeQrId
+  } = snapshot;
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+      window.localStorage.setItem("life-links-theme", theme);
     } catch {
       // Theme persistence is cosmetic; keep rendering even when storage is blocked.
     }
   }, [theme]);
-
-  useEffect(() => {
-    let alive = true;
-    async function boot() {
-      try {
-        const [config, me] = await Promise.all([getConfig(), getMe()]);
-        if (!alive) {
-          return;
-        }
-        setQrBaseUrl(me.qrBaseUrl || config.qrBaseUrl);
-        setCurrentUser(me.user);
-        if (me.user) {
-          await refreshOwnerData(me.user);
-        }
-        if (routeQrId) {
-          await openQr(routeQrId, false);
-        }
-      } catch (bootError) {
-        if (alive) {
-          setError(messageFromError(bootError));
-        }
-      } finally {
-        if (alive) {
-          setLoading(false);
-        }
-      }
-    }
-    void boot();
-    return () => {
-      alive = false;
-    };
-  }, [routeQrId]);
 
   const ownedLinks = useMemo(
     () => (currentUser ? links.filter((link) => link.ownerId === currentUser.id) : []),
@@ -228,299 +149,20 @@ export default function App() {
   );
   const previewSourceLabel = latestBatchLinks.length ? "latest batch" : "inventory";
   const nextTheme = theme === "light" ? "dark" : "light";
-
-  useEffect(() => {
-    setInventoryPage(0);
-  }, [inventoryFilter]);
-
-  useEffect(() => {
-    if (inventoryPage > inventoryPageCount - 1) {
-      setInventoryPage(Math.max(0, inventoryPageCount - 1));
-    }
-  }, [inventoryPage, inventoryPageCount]);
-
-  async function refreshOwnerData(user = currentUser) {
-    if (!user) {
-      return;
-    }
-    const [linkResult, projectResult] = await Promise.all([listLinks(), listProjects()]);
-    setLinks(linkResult.links);
-    setProjects(projectResult.projects);
-    setActiveQrId((current) => current ?? linkResult.links[0]?.id ?? null);
-  }
-
-  async function refreshActiveQr(qrId = activeQrId) {
-    if (!qrId) {
-      return;
-    }
-    try {
-      setPublicQrState(await getQr(qrId));
-    } catch (qrError) {
-      if (qrError instanceof ApiError && qrError.status === 404) {
-        setPublicQrState({ state: "not_found", qrId });
-        return;
-      }
-      throw qrError;
-    }
-  }
-
-  async function handleLogin(email: string, password: string) {
-    setBusy(true);
-    setError("");
-    try {
-      const result = await login(email, password);
-      setCurrentUser(result.user);
-      setQrBaseUrl(result.qrBaseUrl);
-      await refreshOwnerData(result.user);
-      if (activeQrId) {
-        await refreshActiveQr(activeQrId);
-      }
-    } catch (loginError) {
-      setError(messageFromError(loginError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleLogout() {
-    await logout().catch(() => undefined);
-    setCurrentUser(null);
-    setLinks([]);
-    setProjects([]);
-    setEditingId(null);
-  }
-
-  async function openQr(qrId: string, updateHistory = true) {
-    setActiveQrId(qrId);
-    setActiveView("scan");
-    setScanMessage({
-      tone: "neutral",
-      title: "QR opened",
-      detail: qrId
-    });
-    if (updateHistory && window.location.pathname !== `/qr/${encodeURIComponent(qrId)}`) {
-      window.history.pushState({}, "", `/qr/${encodeURIComponent(qrId)}`);
-    }
-    await refreshActiveQr(qrId);
-  }
-
-  async function handleOpenScan(scanText: string) {
-    const qrId = parseQrId(scanText);
-    if (!qrId) {
-      setScanMessage({
-        tone: "warning",
-        title: "Not a Life Links QR",
-        detail: scanText.slice(0, 90)
-      });
-      return;
-    }
-
-    await openQr(qrId);
-  }
-
-  async function handleFindScan(scanText: string) {
-    const qrId = parseQrId(scanText);
-    if (!qrId) {
-      setScanMessage({
-        tone: "warning",
-        title: "Not a Life Links QR",
-        detail: scanText.slice(0, 90)
-      });
-      return;
-    }
-
-    if (!findTargetId) {
-      setScanMessage({
-        tone: "warning",
-        title: "Select a search result",
-        detail: "Pick the item you want to find, then scan QR codes."
-      });
-      return;
-    }
-
-    const result = currentUser
-      ? await findScan(findTargetId, scanText)
-      : { targetQrId: findTargetId, scannedQrId: qrId, match: qrId === findTargetId };
-    if (result.match) {
-      if ("vibrate" in navigator) {
-        navigator.vibrate?.(90);
-      }
-      setScanMessage({
-        tone: "success",
-        title: "Match found",
-        detail: qrId
-      });
-      return;
-    }
-
-    setScanMessage({
-      tone: "neutral",
-      title: "Not the selected item",
-      detail: qrId
-    });
-  }
-
-  async function generateBatch() {
-    if (!currentUser) {
-      setError("Log in to generate QR batches.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      const result = await createQrBatch(normalizeBatchCount(batchCount));
-      setLastBatchId(result.batch.id);
-      setLastBatchIds(result.qrCodes.map((link) => link.id));
-      setInventoryPage(0);
-      await refreshOwnerData();
-      setActiveQrId(result.qrCodes[0]?.id ?? activeQrId);
-      setActiveView("factory");
-    } catch (batchError) {
-      setError(messageFromError(batchError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function claimActiveLink() {
-    if (!activeQrId) {
-      return;
-    }
-    if (!currentUser) {
-      setError("Log in with the demo account to claim this QR.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      await claimQr(activeQrId, `claim-${crypto.randomUUID()}`);
-      await Promise.all([refreshOwnerData(), refreshActiveQr(activeQrId)]);
-      setEditingId(activeQrId);
-      setGuestView(false);
-      setScanMessage({
-        tone: "success",
-        title: "Claimed",
-        detail: activeQrId
-      });
-    } catch (claimError) {
-      setError(messageFromError(claimError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function saveLink(qrId: string, patch: Pick<LinkRecord, "title" | "body" | "bodyDoc" | "bodyDocVersion" | "privacy" | "projectId">) {
-    setBusy(true);
-    setError("");
-    try {
-      const result = await updateLink(qrId, patch);
-      clearLinkEditorDraft(qrId);
-      setLinks((current) => current.map((link) => (link.id === qrId ? result.link : link)));
-      setEditingId(null);
-      await refreshActiveQr(qrId);
-    } catch (saveError) {
-      setError(messageFromError(saveError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function uploadMedia(qrId: string, fileList: FileList | File[]) {
-    const files = Array.from(fileList);
-    if (!files.length) {
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      for (const file of files) {
-        await uploadLinkMedia(qrId, file);
-      }
-      await Promise.all([refreshOwnerData(), refreshActiveQr(qrId)]);
-    } catch (uploadError) {
-      setError(messageFromError(uploadError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function removeMedia(qrId: string, mediaId: string) {
-    setBusy(true);
-    setError("");
-    try {
-      await deleteLinkMedia(qrId, mediaId);
-      await Promise.all([refreshOwnerData(), refreshActiveQr(qrId)]);
-    } catch (deleteError) {
-      setError(messageFromError(deleteError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function addProject() {
-    const name = newProjectName.trim();
-    if (!name) {
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      const result = await createProject(name);
-      setProjects((current) => [...current, result.project].sort((a, b) => a.name.localeCompare(b.name)));
-      setNewProjectName("");
-    } catch (projectError) {
-      setError(messageFromError(projectError));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function refreshDemo() {
-    setError("");
-    await Promise.all([refreshOwnerData(), refreshActiveQr()]);
-  }
-
-  async function downloadSelectedQr(format: "svg" | "png") {
-    if (!activeLink) {
-      return;
-    }
-    if (format === "svg") {
-      const svg = await QRCode.toString(activeLink.url, {
-        type: "svg",
-        errorCorrectionLevel: "M",
-        margin: 2,
-        scale: 8
-      });
-      downloadBlob(new Blob([svg], { type: "image/svg+xml" }), `${activeLink.id}.svg`);
-      return;
-    }
-    const dataUrl = await QRCode.toDataURL(activeLink.url, {
-      errorCorrectionLevel: "M",
-      margin: 2,
-      scale: 10
-    });
-    const blob = await (await fetch(dataUrl)).blob();
-    downloadBlob(blob, `${activeLink.id}.png`);
-  }
-
-  function downloadCsv(ids?: string[]) {
-    const scoped = ids?.length
-      ? ids.map((id) => links.find((link) => link.id === id)).filter(Boolean)
-      : links;
-    downloadBlob(new Blob([linksToCsv(scoped as LinkRecord[])], { type: "text/csv" }), "life-links-qr-map.csv");
-  }
-
-  function downloadZip() {
-    if (!lastBatchId) {
-      setScanMessage({
-        tone: "warning",
-        title: "No hosted batch yet",
-        detail: "Generate a batch first, then download the ZIP."
-      });
-      return;
-    }
-    window.location.href = `/api/qr-batches/${encodeURIComponent(lastBatchId)}.zip`;
-  }
+  const route = classifyLifeLinksRoute(routeQrId ? `/qr/${encodeURIComponent(routeQrId)}` : "/", Boolean(currentUser));
+  const setActiveView = (view: View) => controller.setActiveView(view);
+  const handleLogin = (email: string, password: string) => controller.login(email, password);
+  const handleLogout = () => controller.logout();
+  const openQr = (qrId: string) => controller.openQr(qrId);
+  const handleOpenScan = (scanText: string) => controller.scanQr(scanText);
+  const handleFindScan = (scanText: string) => controller.evaluateFindScan(scanText);
+  const generateBatch = () => controller.generateBatch();
+  const claimActiveLink = () => controller.claimActiveLink();
+  const addProject = () => controller.addProject();
+  const refreshDemo = () => controller.refresh();
+  const downloadSelectedQr = (format: "svg" | "png") => controller.downloadSelectedQr(format);
+  const downloadCsv = (ids?: string[]) => controller.downloadCsv(ids);
+  const downloadZip = () => controller.downloadZip();
 
   const navItems: Array<{ view: View; label: string; icon: typeof Archive }> = [
     { view: "home", label: "Home", icon: Home },
@@ -534,7 +176,7 @@ export default function App() {
     return <div className="loading-shell">Loading Life Links...</div>;
   }
 
-  if (!currentUser && routeQrId) {
+  if (route.surface === "public-qr") {
     return (
       <PublicQrShell
         link={activeLink}
@@ -618,7 +260,7 @@ export default function App() {
             </button>
             <button
               className="icon-button theme-toggle desktop-action"
-              onClick={() => setTheme(nextTheme)}
+              onClick={() => controller.setTheme(nextTheme)}
               data-tooltip={`Switch to ${nextTheme} mode.`}
               aria-label={`Switch to ${nextTheme} mode`}
               aria-pressed={theme === "dark"}
@@ -704,9 +346,9 @@ export default function App() {
                   projects={projects}
                   guestView={guestView}
                   canEdit={Boolean(currentUser)}
-                  onGuestToggle={() => setGuestView((value) => !value)}
+                  onGuestToggle={() => controller.toggleGuestView()}
                   onClaim={claimActiveLink}
-                  onEdit={(id) => setEditingId(id)}
+                  onEdit={(id) => controller.openEditor(id)}
                   onDownloadSvg={() => downloadSelectedQr("svg")}
                   onDownloadPng={() => downloadSelectedQr("png")}
                 />
@@ -733,7 +375,7 @@ export default function App() {
                     min={1}
                     max={10000}
                     value={batchCount}
-                    onChange={(event) => setBatchCount(normalizeBatchCount(event.target.value))}
+                    onChange={(event) => controller.setBatchCount(event.target.value)}
                   />
                 </label>
                 <label>
@@ -799,7 +441,7 @@ export default function App() {
                 </span>
                 <button
                   className="secondary-button"
-                  onClick={() => setInventoryOpen((value) => !value)}
+                  onClick={() => controller.toggleInventory()}
                   data-tooltip={inventoryOpen ? "Collapse the full QR inventory drawer." : "Open the full QR inventory drawer with filters and pages."}
                 >
                   {inventoryOpen ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
@@ -831,7 +473,7 @@ export default function App() {
                           key={filter}
                           className={inventoryFilter === filter ? "active" : ""}
                           aria-pressed={inventoryFilter === filter}
-                          onClick={() => setInventoryFilter(filter)}
+                          onClick={() => controller.setInventoryFilter(filter)}
                           data-tooltip={`Show ${label.toLowerCase()} QR codes in the inventory drawer.`}
                         >
                           {label}
@@ -843,7 +485,7 @@ export default function App() {
                       <button
                         className="icon-button"
                         aria-label="Previous inventory page"
-                        onClick={() => setInventoryPage((page) => Math.max(0, page - 1))}
+                        onClick={() => controller.setInventoryPage(Math.max(0, boundedInventoryPage - 1))}
                         disabled={boundedInventoryPage === 0}
                         data-tooltip="Go to the previous page of QR inventory."
                       >
@@ -856,7 +498,7 @@ export default function App() {
                       <button
                         className="icon-button"
                         aria-label="Next inventory page"
-                        onClick={() => setInventoryPage((page) => Math.min(inventoryPageCount - 1, page + 1))}
+                        onClick={() => controller.setInventoryPage(Math.min(inventoryPageCount - 1, boundedInventoryPage + 1))}
                         disabled={boundedInventoryPage >= inventoryPageCount - 1}
                         data-tooltip="Go to the next page of QR inventory."
                       >
@@ -907,9 +549,9 @@ export default function App() {
                 projects={projects}
                 guestView={guestView}
                 canEdit={Boolean(currentUser)}
-                onGuestToggle={() => setGuestView((value) => !value)}
+                onGuestToggle={() => controller.toggleGuestView()}
                 onClaim={claimActiveLink}
-                onEdit={(id) => setEditingId(id)}
+                onEdit={(id) => controller.openEditor(id)}
                 onDownloadSvg={() => downloadSelectedQr("svg")}
                 onDownloadPng={() => downloadSelectedQr("png")}
               />
@@ -924,7 +566,7 @@ export default function App() {
               <div className="new-project">
                 <input
                   value={newProjectName}
-                  onChange={(event) => setNewProjectName(event.target.value)}
+                  onChange={(event) => controller.setNewProjectName(event.target.value)}
                   placeholder="Enter project name and click +"
                   maxLength={MAX_PROJECT_NAME_LENGTH}
                 />
@@ -959,9 +601,9 @@ export default function App() {
                 projects={projects}
                 guestView={guestView}
                 canEdit={Boolean(currentUser)}
-                onGuestToggle={() => setGuestView((value) => !value)}
+                onGuestToggle={() => controller.toggleGuestView()}
                 onClaim={claimActiveLink}
-                onEdit={(id) => setEditingId(id)}
+                onEdit={(id) => controller.openEditor(id)}
                 onDownloadSvg={() => downloadSelectedQr("svg")}
                 onDownloadPng={() => downloadSelectedQr("png")}
               />
@@ -977,7 +619,7 @@ export default function App() {
                 <Search size={18} />
                 <input
                   value={query}
-                  onChange={(event) => setQuery(event.target.value)}
+                  onChange={(event) => controller.setQuery(event.target.value)}
                   placeholder="Title, body, project, or QR ID"
                 />
               </div>
@@ -986,10 +628,7 @@ export default function App() {
                   <button
                     key={link.id}
                     className={findTargetId === link.id ? "search-result active" : "search-result"}
-                    onClick={() => {
-                      setFindTargetId(link.id);
-                      setActiveQrId(link.id);
-                    }}
+                    onClick={() => controller.selectFindTarget(link.id)}
                     data-tooltip="Select this QR as the item to find with scanner mode."
                   >
                     <span>{link.title || link.id}</span>
@@ -1016,14 +655,14 @@ export default function App() {
       </main>
 
       {editingId && (
-        <LinkEditor
+        <LifeLinkEditor
           link={links.find((link) => link.id === editingId) ?? activeLink}
           projects={projects}
           busy={busy}
-          onClose={() => setEditingId(null)}
-          onSave={saveLink}
-          onUploadMedia={(qrId, files) => void uploadMedia(qrId, files)}
-          onDeleteMedia={(qrId, mediaId) => void removeMedia(qrId, mediaId)}
+          onClose={() => controller.closeEditor()}
+          onSave={(qrId, patch) => void controller.saveLink(qrId, patch)}
+          onUploadMedia={(qrId, files) => void controller.uploadMedia(qrId, files)}
+          onDeleteMedia={(qrId, mediaId) => void controller.removeMedia(qrId, mediaId)}
         />
       )}
     </div>
@@ -1046,14 +685,6 @@ function PanelTitle({ icon: Icon, title }: { icon: typeof Archive; title: string
       <Icon size={18} />
       <h3>{title}</h3>
     </div>
-  );
-}
-
-function Tooltip({ text }: { text: string }) {
-  return (
-    <span className="tooltip-bubble" aria-hidden="true">
-      {text}
-    </span>
   );
 }
 
@@ -1576,412 +1207,4 @@ function FindTarget({ link }: { link: LinkRecord | null }) {
       </div>
     </div>
   );
-}
-
-function LinkEditor({
-  link,
-  projects,
-  busy,
-  onClose,
-  onSave,
-  onUploadMedia,
-  onDeleteMedia
-}: {
-  link: LinkRecord | null;
-  projects: ProjectRecord[];
-  busy: boolean;
-  onClose: () => void;
-  onSave: (qrId: string, patch: Pick<LinkRecord, "title" | "body" | "bodyDoc" | "bodyDocVersion" | "privacy" | "projectId">) => void;
-  onUploadMedia: (qrId: string, files: FileList) => void;
-  onDeleteMedia: (qrId: string, mediaId: string) => void;
-}) {
-  const initialState = linkEditorStateFromLink(link);
-  const [title, setTitle] = useState(initialState.title);
-  const [body, setBody] = useState(initialState.body);
-  const [bodyDoc, setBodyDoc] = useState(initialState.bodyDoc);
-  const [bodyDocVersion, setBodyDocVersion] = useState(initialState.bodyDocVersion);
-  const [privacy, setPrivacy] = useState<PrivacyStatus>(initialState.privacy);
-  const [projectId, setProjectId] = useState(initialState.projectId);
-  const [draftMessage, setDraftMessage] = useState("");
-  const [pendingDraft, setPendingDraft] = useState<LinkEditorDraft | null>(null);
-  const [editorRevision, setEditorRevision] = useState(0);
-  const bodyDocJson = useMemo(() => JSON.stringify(bodyDoc), [bodyDoc]);
-
-  useEffect(() => {
-    if (!link) {
-      return;
-    }
-    const draft = readLinkEditorDraft(link.id);
-    const baseState = linkEditorStateFromLink(link);
-    if (draft?.linkUpdatedAt === link.updatedAt) {
-      applyLinkEditorState(draft.patch, {
-        setTitle,
-        setBody,
-        setBodyDoc,
-        setBodyDocVersion,
-        setPrivacy,
-        setProjectId
-      });
-      setPendingDraft(null);
-      setDraftMessage("Draft recovered from this browser.");
-      setEditorRevision((revision) => revision + 1);
-      return;
-    }
-    applyLinkEditorState(baseState, {
-      setTitle,
-      setBody,
-      setBodyDoc,
-      setBodyDocVersion,
-      setPrivacy,
-      setProjectId
-    });
-    setPendingDraft(draft);
-    setDraftMessage(draft ? "A saved draft exists from an older version of this link." : "");
-    setEditorRevision((revision) => revision + 1);
-  }, [link?.id]);
-
-  useEffect(() => {
-    if (!link) {
-      return;
-    }
-    const patch = linkEditorPatchFromState({ title, body, bodyDoc, bodyDocVersion, privacy, projectId });
-    if (!linkEditorPatchIsDirty(link, patch)) {
-      return;
-    }
-    const timer = window.setTimeout(() => {
-      writeLinkEditorDraft(link.id, link.updatedAt, patch);
-    }, 250);
-    return () => window.clearTimeout(timer);
-  }, [body, bodyDocJson, bodyDocVersion, link, privacy, projectId, title]);
-
-  function discardDraft() {
-    if (!link) {
-      return;
-    }
-    clearLinkEditorDraft(link.id);
-    applyLinkEditorState(linkEditorStateFromLink(link), {
-      setTitle,
-      setBody,
-      setBodyDoc,
-      setBodyDocVersion,
-      setPrivacy,
-      setProjectId
-    });
-    setPendingDraft(null);
-    setDraftMessage("");
-    setEditorRevision((revision) => revision + 1);
-  }
-
-  function restorePendingDraft() {
-    if (!pendingDraft) {
-      return;
-    }
-    applyLinkEditorState(pendingDraft.patch, {
-      setTitle,
-      setBody,
-      setBodyDoc,
-      setBodyDocVersion,
-      setPrivacy,
-      setProjectId
-    });
-    setPendingDraft(null);
-    setDraftMessage("Draft restored. Review before saving.");
-    setEditorRevision((revision) => revision + 1);
-  }
-
-  if (!link) {
-    return null;
-  }
-
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <form
-        className="editor"
-        onSubmit={(event) => {
-          event.preventDefault();
-          onSave(link.id, linkEditorPatchFromState({ title, body, bodyDoc, bodyDocVersion, privacy, projectId }));
-        }}
-      >
-        <div className="editor-header">
-          <div>
-            <span>Edit link</span>
-            <strong>{link.id}</strong>
-          </div>
-          <button type="button" className="icon-button" onClick={onClose} data-tooltip="Close the editor without saving." aria-label="Close editor">
-            <X size={18} />
-            <Tooltip text="Close the editor without saving." />
-          </button>
-        </div>
-        <label>
-          <span>Title</span>
-          <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={MAX_TITLE_LENGTH} />
-        </label>
-        {draftMessage ? (
-          <div className={pendingDraft ? "draft-notice conflict" : "draft-notice"} role="status">
-            <span>{draftMessage}</span>
-            <span className="draft-actions">
-              {pendingDraft ? (
-                <button type="button" className="text-button" onClick={restorePendingDraft}>
-                  Restore
-                </button>
-              ) : null}
-              <button type="button" className="text-button" onClick={discardDraft}>
-                Discard draft
-              </button>
-            </span>
-          </div>
-        ) : null}
-        <label>
-          <span>Body</span>
-          <Suspense fallback={<div className="rich-body-editor-loading">Loading body editor...</div>}>
-            <RichBodyEditor
-              contentKey={`${link.id}:${editorRevision}`}
-              value={bodyDoc}
-              fallbackBody={body}
-              disabled={busy}
-              onChange={(next) => {
-                setBody(next.body);
-                setBodyDoc(next.bodyDoc);
-                setBodyDocVersion(next.bodyDocVersion);
-              }}
-            />
-          </Suspense>
-        </label>
-        <div className="editor-grid">
-          <label>
-            <span>Project</span>
-            <select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
-              <option value="">None</option>
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>Privacy</span>
-            <select value={privacy} onChange={(event) => setPrivacy(event.target.value as PrivacyStatus)}>
-              <option value="public">Public</option>
-              <option value="private">Private</option>
-            </select>
-          </label>
-        </div>
-        <div className="media-editor">
-          <div className="media-editor-header">
-            <span>Media</span>
-            <label className="secondary-button upload-control" data-tooltip="Attach images or videos to this QR result.">
-              <Upload size={18} />
-              <span>Add</span>
-              <Tooltip text="Attach images or videos to this QR result." />
-              <input
-                type="file"
-                accept="image/*,video/*"
-                multiple
-                disabled={busy}
-                onChange={(event) => {
-                  const files = event.currentTarget.files;
-                  if (files?.length) {
-                    onUploadMedia(link.id, files);
-                  }
-                  event.currentTarget.value = "";
-                }}
-              />
-            </label>
-          </div>
-          {link.media.length ? (
-            <div className="media-list">
-              {link.media.map((item) => {
-                const Icon = item.kind === "image" ? Image : Video;
-                return (
-                  <div key={item.id} className="media-item">
-                    <Icon size={18} />
-                    <span>{item.fileName}</span>
-                    <small>{formatBytes(item.sizeBytes)}</small>
-                    <button
-                      type="button"
-                      className="icon-button"
-                      onClick={() => onDeleteMedia(link.id, item.id)}
-                      disabled={busy}
-                      data-tooltip="Remove this media attachment."
-                      aria-label={`Remove ${item.fileName}`}
-                    >
-                      <Trash2 size={18} />
-                      <Tooltip text="Remove this media attachment." />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <p className="inline-note">No media attached yet.</p>
-          )}
-        </div>
-        <button className="primary-button" type="submit" disabled={busy} data-tooltip="Save link content, project, privacy, and media changes.">
-          <Check size={18} />
-          <span>Save</span>
-          <Tooltip text="Save link content, project, privacy, and media changes." />
-        </button>
-      </form>
-    </div>
-  );
-}
-
-type LinkEditorPatch = Pick<LinkRecord, "title" | "body" | "bodyDoc" | "bodyDocVersion" | "privacy" | "projectId">;
-
-type LinkEditorDraft = {
-  version: 1;
-  qrId: string;
-  linkUpdatedAt: string;
-  savedAt: string;
-  patch: LinkEditorPatch;
-};
-
-type LinkEditorState = {
-  title: string;
-  body: string;
-  bodyDoc: NonNullable<LinkRecord["bodyDoc"]>;
-  bodyDocVersion: number;
-  privacy: PrivacyStatus;
-  projectId: string;
-};
-
-type LinkEditorStateSetters = {
-  setTitle: (value: string) => void;
-  setBody: (value: string) => void;
-  setBodyDoc: (value: NonNullable<LinkRecord["bodyDoc"]>) => void;
-  setBodyDocVersion: (value: number) => void;
-  setPrivacy: (value: PrivacyStatus) => void;
-  setProjectId: (value: string) => void;
-};
-
-function linkEditorStateFromLink(link: LinkRecord | null): LinkEditorState {
-  return {
-    title: link?.title ?? "",
-    body: link?.body ?? "",
-    bodyDoc: link?.bodyDoc ?? createLinkBodyDocFromPlainText(link?.body ?? ""),
-    bodyDocVersion: link?.bodyDocVersion ?? 1,
-    privacy: link?.privacy ?? "public",
-    projectId: link?.projectId ?? ""
-  };
-}
-
-function applyLinkEditorState(state: LinkEditorState | LinkEditorPatch, setters: LinkEditorStateSetters) {
-  setters.setTitle(state.title);
-  setters.setBody(state.body);
-  setters.setBodyDoc(state.bodyDoc ?? createLinkBodyDocFromPlainText(state.body));
-  setters.setBodyDocVersion(state.bodyDocVersion ?? 1);
-  setters.setPrivacy(state.privacy);
-  setters.setProjectId(state.projectId ?? "");
-}
-
-function linkEditorPatchFromState(state: LinkEditorState): LinkEditorPatch {
-  return {
-    title: state.title,
-    body: state.body,
-    bodyDoc: state.bodyDoc,
-    bodyDocVersion: state.bodyDocVersion,
-    privacy: state.privacy,
-    projectId: state.projectId || null
-  };
-}
-
-function linkEditorPatchIsDirty(link: LinkRecord, patch: LinkEditorPatch): boolean {
-  return (
-    patch.title !== link.title ||
-    patch.body !== link.body ||
-    patch.privacy !== link.privacy ||
-    (patch.projectId ?? null) !== (link.projectId ?? null) ||
-    patch.bodyDocVersion !== (link.bodyDocVersion ?? 1) ||
-    JSON.stringify(patch.bodyDoc ?? null) !== JSON.stringify(link.bodyDoc ?? createLinkBodyDocFromPlainText(link.body))
-  );
-}
-
-function linkEditorDraftKey(qrId: string): string {
-  return `${LINK_EDITOR_DRAFT_STORAGE_PREFIX}:${qrId}`;
-}
-
-function readLinkEditorDraft(qrId: string): LinkEditorDraft | null {
-  try {
-    const raw = window.localStorage.getItem(linkEditorDraftKey(qrId));
-    if (!raw) {
-      return null;
-    }
-    const parsed = JSON.parse(raw) as Partial<LinkEditorDraft>;
-    if (parsed.version !== 1 || parsed.qrId !== qrId || !parsed.patch) {
-      return null;
-    }
-    return parsed as LinkEditorDraft;
-  } catch {
-    return null;
-  }
-}
-
-function writeLinkEditorDraft(qrId: string, linkUpdatedAt: string, patch: LinkEditorPatch) {
-  try {
-    const draft: LinkEditorDraft = {
-      version: 1,
-      qrId,
-      linkUpdatedAt,
-      savedAt: new Date().toISOString(),
-      patch
-    };
-    window.localStorage.setItem(linkEditorDraftKey(qrId), JSON.stringify(draft));
-  } catch {
-    // Draft recovery is a convenience feature; storage failures should not block editing.
-  }
-}
-
-function clearLinkEditorDraft(qrId: string) {
-  try {
-    window.localStorage.removeItem(linkEditorDraftKey(qrId));
-  } catch {
-    // Draft recovery is a convenience feature; storage failures should not block saves.
-  }
-}
-
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  anchor.remove();
-  URL.revokeObjectURL(url);
-}
-
-function formatBytes(value: number): string {
-  if (value >= 1024 * 1024) {
-    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-  }
-  if (value >= 1024) {
-    return `${Math.ceil(value / 1024)} KB`;
-  }
-  return `${value} B`;
-}
-
-function messageFromError(error: unknown): string {
-  if (error instanceof ApiError) {
-    if (error.code === "invalid_credentials") {
-      return "Invalid demo login.";
-    }
-    if (error.code === "auth_required") {
-      return "Log in to continue.";
-    }
-    if (error.code === "owned_by_other") {
-      return "That QR code is already claimed by another account.";
-    }
-    if (error.code === "media_file_too_large") {
-      return "Media files must be 25 MB or smaller.";
-    }
-    if (error.code === "media_type_not_allowed") {
-      return "Use an image or video file type supported by the demo.";
-    }
-    if (error.code === "media_limit_reached") {
-      return "This link already has the maximum number of media attachments.";
-    }
-    return error.code;
-  }
-  return error instanceof Error ? error.message : "Something went wrong.";
 }
