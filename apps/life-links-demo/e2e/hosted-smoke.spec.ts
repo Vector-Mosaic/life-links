@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 const demoEmail = process.env.LIFE_LINKS_E2E_READONLY_EMAIL ?? "";
 const demoPassword = process.env.LIFE_LINKS_E2E_READONLY_PASSWORD ?? "";
 
-test("hosted MVP supports login plus public and private QR reads", async ({ baseURL, browser, page, request }) => {
+test("hosted Life Links supports login plus public and private QR reads", async ({ baseURL, browser, page, request }) => {
   test.skip(!demoEmail || !demoPassword, "Set LIFE_LINKS_E2E_READONLY_EMAIL and LIFE_LINKS_E2E_READONLY_PASSWORD.");
 
   const health = await request.get("/healthz");

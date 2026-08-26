@@ -55,7 +55,7 @@ export default defineConfig({
   webServer: hostedChallenge
     ? undefined
     : {
-        command: "pnpm --workspace-root --filter @life-links/api dev",
+        command: "pnpm --filter @life-links/api dev",
         url: LOCAL_CHALLENGE_BASE_URL,
         reuseExistingServer: false,
         timeout: 180_000,

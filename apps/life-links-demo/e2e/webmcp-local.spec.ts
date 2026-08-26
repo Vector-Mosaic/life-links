@@ -278,7 +278,7 @@ test.describe("local controlled WebMCP host", () => {
     await state.logoutStarted;
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
     state.releaseLogout();
-    await expect(page.getByRole("heading", { name: "Demo Login" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to Life Links" })).toBeVisible();
 
     expect(state.patchRequests).toEqual([]);
   });

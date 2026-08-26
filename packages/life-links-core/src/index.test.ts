@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_QR_BASE_URL,
   buildQrUrl,
   claimLink,
   createUnclaimedLinks,
@@ -39,6 +40,10 @@ describe("Life Links core", () => {
     const url = buildQrUrl("https://lifelinks-vmdemo.com/", "LL-DEMO-00001");
     expect(url).toBe("https://lifelinks-vmdemo.com/qr/LL-DEMO-00001");
     expect(parseQrId(url)).toBe("LL-DEMO-00001");
+  });
+
+  it("keeps the implicit QR origin local and requires hosted runtimes to configure their origin", () => {
+    expect(DEFAULT_QR_BASE_URL).toBe("http://127.0.0.1:3002");
   });
 
   it("claims an unclaimed QR idempotently for the same owner", () => {

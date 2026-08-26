@@ -36,7 +36,7 @@ test.describe("installed Chrome native WebMCP host", () => {
 
     const documentResponse = await page.goto("/");
     assertWebMcpDocumentHeaders(documentResponse);
-    await expect(page.getByRole("heading", { name: "Demo Login" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to Life Links" })).toBeVisible();
     await page.getByLabel("Email").fill(DEMO_EMAIL);
     await page.getByLabel("Password").fill(DEMO_PASSWORD);
     await page.getByRole("button", { name: /sign in/i }).click();
@@ -195,7 +195,7 @@ test.describe("installed Chrome native WebMCP host", () => {
     await accessToggle.check();
     await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
     await page.locator(".sidebar-actions").getByRole("button", { name: "Logout" }).click();
-    await expect(page.getByRole("heading", { name: "Demo Login" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Sign in to Life Links" })).toBeVisible();
     await expect.poll(() => nativeToolNames(page)).toEqual([]);
     expect(patchRequests).toEqual([]);
   });

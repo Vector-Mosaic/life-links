@@ -8,8 +8,8 @@
   },
   "servers": [
     {
-      "url": "https://lifelinks-vmdemo.com",
-      "description": "Hosted Life Links application"
+      "url": "/",
+      "description": "Same-origin Life Links application"
     }
   ],
   "security": [

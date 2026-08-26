@@ -1000,7 +1000,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       return;
     }
     if (!currentUser) {
-      this.update({ error: "Log in with the demo account to claim this QR." });
+      this.update({ error: "Sign in to Life Links to claim this QR." });
       return;
     }
     this.update({ busy: true, error: "" });
@@ -1552,7 +1552,7 @@ function downloadBlob(blob: Blob, filename: string) {
 export function messageFromError(error: unknown): string {
   if (error instanceof ApiError) {
     if (error.code === "invalid_credentials") {
-      return "Invalid demo login.";
+      return "Invalid email or password.";
     }
     if (error.code === "auth_required") {
       return "Log in to continue.";
@@ -1564,7 +1564,7 @@ export function messageFromError(error: unknown): string {
       return "Media files must be 25 MB or smaller.";
     }
     if (error.code === "media_type_not_allowed") {
-      return "Use an image or video file type supported by the demo.";
+      return "Use an image or video file type supported by Life Links.";
     }
     if (error.code === "media_limit_reached") {
       return "This link already has the maximum number of media attachments.";

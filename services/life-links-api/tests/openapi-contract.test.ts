@@ -369,6 +369,12 @@ describe("Life Links OpenAPI v1", () => {
     expect(() => parseStrictJson('{"duplicate": 1, "duplicate": 2}')).toThrow(/duplicate JSON object key/);
     expect(document.openapi).toBe("3.1.0");
     expect(objectValue(document.info, "info").version).toBe("1.0.0");
+    expect(document.servers).toEqual([
+      {
+        url: "/",
+        description: "Same-origin Life Links application"
+      }
+    ]);
     const references = collectReferences(document);
     expect(references.length).toBeGreaterThan(0);
     for (const reference of references) {

@@ -318,10 +318,10 @@ function LifeLinksApp() {
             <span>Refresh</span>
             <Tooltip text="Refresh links, projects, and the selected QR from the server." />
           </button>
-          <button className="ghost-button full-width" onClick={handleLogout} data-tooltip="Sign out of this demo account.">
+          <button className="ghost-button full-width" onClick={handleLogout} data-tooltip="Sign out of Life Links.">
             <LogOut size={16} />
             <span>Logout</span>
-            <Tooltip text="Sign out of this demo account." />
+            <Tooltip text="Sign out of Life Links." />
           </button>
         </div>
       </aside>
@@ -329,7 +329,7 @@ function LifeLinksApp() {
       <main className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">QR object notes</p>
+            <p className="eyebrow">Physical-world context</p>
             <h2>{viewTitle(activeView)}</h2>
           </div>
           <div className="topbar-actions">
@@ -451,10 +451,10 @@ function LifeLinksApp() {
               </div>
             </div>
 
-            <button className="ghost-button mobile-signout-action" onClick={handleLogout} data-tooltip="Sign out of this demo account.">
+            <button className="ghost-button mobile-signout-action" onClick={handleLogout} data-tooltip="Sign out of Life Links.">
               <LogOut size={18} />
               <span>Sign Out {currentUser.email}</span>
-              <Tooltip text="Sign out of this demo account." />
+              <Tooltip text="Sign out of Life Links." />
             </button>
           </section>
         )}
@@ -767,7 +767,7 @@ function LoginScreen({ error, busy, onLogin }: { error: string; busy: boolean; o
         <div className="brand-mark">LL</div>
         <div>
           <h1>Life Links</h1>
-          <p>Hosted MVP demo</p>
+          <p>Physical context for people and agents</p>
         </div>
       </div>
       <LoginForm error={error} busy={busy} onLogin={onLogin} />
@@ -803,7 +803,7 @@ function PublicQrShell({
           <div className="brand-mark">LL</div>
           <div>
             <h1>Life Links</h1>
-            <p>QR object notes</p>
+            <p>A permanent handle for the physical world</p>
           </div>
         </div>
         {error && <div className="error-banner">{error}</div>}
@@ -861,7 +861,7 @@ function LoginForm({
     >
       <div className="panel-title">
         <LogIn size={18} />
-        <h3>Demo Login</h3>
+        <h3>Sign in to Life Links</h3>
       </div>
       {error && <div className="error-banner">{error}</div>}
       <label>
@@ -878,10 +878,10 @@ function LoginForm({
           maxLength={1024}
         />
       </label>
-      <button className="primary-button" type="submit" disabled={busy} data-tooltip="Sign in with the demo email and password.">
+      <button className="primary-button" type="submit" disabled={busy} data-tooltip="Sign in with your Life Links email and password.">
         <LogIn size={18} />
         <span>{busy ? "Signing in" : "Sign in"}</span>
-        <Tooltip text="Sign in with the demo email and password." />
+        <Tooltip text="Sign in with your Life Links email and password." />
       </button>
     </form>
   );
@@ -1211,9 +1211,9 @@ function ScannerPanel({
         )}
       </div>
       {cameraError && <p className="inline-warning">{cameraError}</p>}
-      <div className="sample-scan-panel" aria-label="Demo scan shortcuts">
+      <div className="sample-scan-panel" aria-label="Sample scan shortcuts">
         <div className="sample-scan-heading">
-          <strong>Demo scan shortcuts</strong>
+          <strong>Sample scan shortcuts</strong>
           <span>Click one to simulate scanning a QR code without using the camera.</span>
         </div>
         <div className="sample-scans">

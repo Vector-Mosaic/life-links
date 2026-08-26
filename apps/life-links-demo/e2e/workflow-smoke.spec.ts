@@ -4,7 +4,7 @@ const workflowEnabled = process.env.LIFE_LINKS_E2E_MUTATION === "1";
 const ownerEmail = workflowEnabled ? requireEnv("LIFE_LINKS_E2E_EMAIL") : "";
 const ownerPassword = workflowEnabled ? requireEnv("LIFE_LINKS_E2E_PASSWORD") : "";
 
-test.describe("hosted MVP owner workflow", () => {
+test.describe("hosted Life Links owner workflow", () => {
   test.skip(!workflowEnabled, "Set LIFE_LINKS_E2E_MUTATION=1 to allow hosted workflow writes.");
 
   test("creates, organizes, finds, and privacy-checks a claimed QR", async ({ baseURL, browser, page }, testInfo) => {

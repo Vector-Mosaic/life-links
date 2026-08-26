@@ -26,7 +26,7 @@ export default defineConfig({
   webServer: explicitBaseURL
     ? undefined
     : {
-        command: "pnpm --workspace-root --filter @life-links/api dev",
+        command: "pnpm --filter @life-links/api dev",
         url: localBaseURL,
         reuseExistingServer: false,
         timeout: 180_000,
