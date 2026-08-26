@@ -34,8 +34,10 @@ import {
   pageLifeLinkChildren,
   projectLifeLinkAsLink,
   projectLifeLinkAsProject,
+  projectPrivateClaimedQrAsLink,
   projectQrInventoryRecord,
   projectUnclaimedQrAsLink,
+  redactNonOwnerLinkProjection,
   searchCanonicalLifeLinks,
   summarizeLifeLinkBody,
   validateLifeLinkParentPlacement,
@@ -339,12 +341,18 @@ describe("canonical recursive Life Link contract", () => {
     expect(deriveProjectCompatibilityId(hydrated, migrated.projectCompatibility, tagged.id)).toBe(
       "project-studio"
     );
-    expect(projectLifeLinkAsLink(tagged, qr, "project-studio")).toMatchObject({
+    const ownerProjection = projectLifeLinkAsLink(tagged, qr, "project-studio");
+    expect(ownerProjection).toMatchObject({
       id: "LL-MIG-00001",
       status: "claimed",
       ownerId: "owner-alpha",
       projectId: "project-studio",
       media: [{ qrId: "LL-MIG-00001" }]
+    });
+    expect(redactNonOwnerLinkProjection(ownerProjection)).toMatchObject({
+      ownerId: null,
+      projectId: null,
+      media: [{ ownerId: null }]
     });
     expect(projectQrInventoryRecord(qr, binding)).toMatchObject({ status: "claimed", claimedAt: binding.boundAt });
 
@@ -355,6 +363,16 @@ describe("canonical recursive Life Link contract", () => {
       ownerId: null,
       projectId: null,
       privacy: "public"
+    });
+    expect(projectPrivateClaimedQrAsLink(unclaimedQr)).toMatchObject({
+      id: "LL-MIG-00005",
+      status: "claimed",
+      ownerId: null,
+      projectId: null,
+      title: "",
+      body: "",
+      privacy: "private",
+      media: []
     });
   });
 

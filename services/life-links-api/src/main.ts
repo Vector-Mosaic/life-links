@@ -24,7 +24,21 @@ async function main() {
   }
 
   if (config.autoSeed) {
-    await store.seedDemo(config.seedPassword, config.qrBaseUrl);
+    if (config.seedProfile === "competition") {
+      const reset = await store.resetCompetitionFixture({
+        mode: "apply",
+        password: config.seedPassword,
+        qrBaseUrl: config.qrBaseUrl
+      });
+      logger.info("life_links.competition_fixture.seeded", {
+        msg: "Competition fixture seeded in disposable memory",
+        profile: reset.profile,
+        life_link_count: reset.after.lifeLinks,
+        qr_count: reset.after.qrCodes
+      });
+    } else {
+      await store.seedDemo(config.seedPassword, config.qrBaseUrl);
+    }
   }
 
   const server = startLifeLinksServer({ store, config, logger });

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   type ClaimQrCommand,
   type ClaimResult,
+  type CompetitionFixtureData,
   type CreateLifeLinkCommand,
   type ExportBatchRecord,
   type LifeLinkDetail,
@@ -36,6 +37,7 @@ import {
   buildQrUrl,
   coordinateLifeLinkBody,
   createCanonicalLifeLink,
+  createCompetitionFixtureData,
   createDemoSeedData,
   createLinkBodyDocFromPlainText,
   deriveLifeLinkPath,
@@ -46,8 +48,12 @@ import {
   pageLifeLinkChildren,
   projectLifeLinkAsLink,
   projectLifeLinkAsProject,
+  projectPrivateClaimedQrAsLink,
   projectUnclaimedQrAsLink,
-  searchCanonicalLifeLinks
+  redactNonOwnerLinkProjection,
+  searchCanonicalLifeLinks,
+  COMPETITION_FIXTURE_PROFILE,
+  COMPETITION_OWNER_ID
 } from "@life-links/core";
 
 import { hashPassword } from "./password.js";
@@ -116,6 +122,36 @@ export type FindScanResult = {
   match: boolean;
 };
 
+export type CompetitionFixtureResetMode = "dry-run" | "apply";
+
+export type CompetitionFixtureResetOptions = {
+  password: string;
+  qrBaseUrl: string;
+  mode?: CompetitionFixtureResetMode;
+};
+
+export type CompetitionFixtureCounts = {
+  users: number;
+  sessions: number;
+  lifeLinks: number;
+  qrBindings: number;
+  projectCompatibility: number;
+  media: number;
+  batches: number;
+  qrCodes: number;
+  claimEvents: number;
+};
+
+export type CompetitionFixtureResetReport = {
+  profile: string;
+  ownerId: string;
+  mode: CompetitionFixtureResetMode;
+  applied: boolean;
+  before: CompetitionFixtureCounts;
+  after: CompetitionFixtureCounts;
+  expected: CompetitionFixtureCounts;
+};
+
 /**
  * Canonical ownership lives in the recursive Life Link methods. The legacy
  * Project/Link/QR methods are compatibility projections used by the current
@@ -154,6 +190,7 @@ export type LifeLinksStore = {
   deleteLinkMedia(userId: string, qrId: string, mediaId: string): Promise<boolean>;
   getLinkMedia(qrId: string, mediaId: string, viewerUserId: string | null): Promise<LinkMediaFile | "private" | null>;
   seedDemo(password: string, qrBaseUrl: string): Promise<void>;
+  resetCompetitionFixture(options: CompetitionFixtureResetOptions): Promise<CompetitionFixtureResetReport>;
   checkReady(): Promise<void>;
   close(): Promise<void>;
 };
@@ -173,6 +210,20 @@ type ClaimEventRecord = {
 
 type StoredLifeLinkMedia = Omit<LifeLinkMediaRecord, "url"> & {
   data: Buffer;
+};
+
+type InMemoryStoreSnapshot = {
+  users: Map<string, StoredUser>;
+  userIdsByEmail: Map<string, string>;
+  sessions: Map<string, SessionRecord>;
+  lifeLinks: Map<string, StoredLifeLink>;
+  qrInventory: Map<string, QrInventoryRecord>;
+  qrBindings: Map<string, LifeLinkQrBindingRecord>;
+  projectCompatibility: Map<string, LifeLinkProjectCompatibilityRecord>;
+  media: Map<string, StoredLifeLinkMedia>;
+  batches: Map<string, ExportBatchRecord>;
+  batchQrIds: Map<string, string[]>;
+  claimEvents: Map<string, ClaimEventRecord>;
 };
 
 export class InMemoryLifeLinksStore implements LifeLinksStore {
@@ -463,12 +514,21 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     if (!batch || batch.createdBy !== userId) {
       return [];
     }
-    return (this.batchQrIds.get(batchId) ?? [])
-      .map((qrId) => {
-        const binding = this.qrBindings.get(qrId);
-        return binding ? this.projectTaggedLifeLink(this.lifeLinks.get(binding.lifeLinkId)!) : projectUnclaimedQrAsLink(this.qrInventory.get(qrId)!);
-      })
-      .filter(Boolean);
+    return (this.batchQrIds.get(batchId) ?? []).map((qrId) => {
+      const qr = this.qrInventory.get(qrId)!;
+      const binding = this.qrBindings.get(qrId);
+      if (!binding) {
+        return projectUnclaimedQrAsLink(qr);
+      }
+      const lifeLink = this.lifeLinks.get(binding.lifeLinkId)!;
+      const projected = this.projectTaggedLifeLink(lifeLink);
+      if (lifeLink.ownerId === userId) {
+        return projected;
+      }
+      return lifeLink.privacy === "public"
+        ? redactNonOwnerLinkProjection(projected)
+        : projectPrivateClaimedQrAsLink(qr);
+    });
   }
 
   async getQrState(qrId: string, viewerUserId: string | null): Promise<QrViewState> {
@@ -491,7 +551,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     const projected = this.projectTaggedLifeLink(lifeLink);
     return {
       state: "claimed",
-      link: viewerIsOwner ? projected : { ...projected, projectId: null },
+      link: viewerIsOwner ? projected : redactNonOwnerLinkProjection(projected),
       viewerIsOwner
     };
   }
@@ -723,6 +783,34 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     }
   }
 
+  async resetCompetitionFixture(options: CompetitionFixtureResetOptions): Promise<CompetitionFixtureResetReport> {
+    const fixture = createCompetitionFixtureData(options.password, options.qrBaseUrl);
+    const mode = options.mode ?? "dry-run";
+    assertCompetitionFixtureResetMode(mode);
+    const expected = expectedCompetitionFixtureCounts(fixture);
+    if (mode === "dry-run") {
+      this.assertCompetitionFixturePreflight(fixture);
+      const before = this.competitionFixtureCounts(fixture.owner.id);
+      return createCompetitionFixtureResetReport(mode, before, before, expected);
+    }
+
+    return this.withOwnerLock(fixture.owner.id, async () => {
+      this.assertCompetitionFixturePreflight(fixture);
+      const before = this.competitionFixtureCounts(fixture.owner.id);
+      const passwordHash = await hashPassword(options.password);
+      const snapshot = this.captureState();
+      try {
+        this.replaceCompetitionFixture(fixture, passwordHash);
+        const after = this.competitionFixtureCounts(fixture.owner.id);
+        this.assertCompetitionFixturePostcondition(fixture, passwordHash, after, expected);
+        return createCompetitionFixtureResetReport(mode, before, after, expected);
+      } catch (error) {
+        this.restoreState(snapshot);
+        throw error;
+      }
+    });
+  }
+
   async checkReady(): Promise<void> {
     return undefined;
   }
@@ -760,6 +848,246 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
 
   private bindingForLifeLink(lifeLinkId: string): LifeLinkQrBindingRecord | null {
     return Array.from(this.qrBindings.values()).find((binding) => binding.lifeLinkId === lifeLinkId) ?? null;
+  }
+
+  private captureState(): InMemoryStoreSnapshot {
+    return {
+      users: new Map(this.users),
+      userIdsByEmail: new Map(this.userIdsByEmail),
+      sessions: new Map(this.sessions),
+      lifeLinks: new Map(this.lifeLinks),
+      qrInventory: new Map(this.qrInventory),
+      qrBindings: new Map(this.qrBindings),
+      projectCompatibility: new Map(this.projectCompatibility),
+      media: new Map(this.media),
+      batches: new Map(this.batches),
+      batchQrIds: new Map(Array.from(this.batchQrIds, ([batchId, qrIds]) => [batchId, [...qrIds]])),
+      claimEvents: new Map(this.claimEvents)
+    };
+  }
+
+  private restoreState(snapshot: InMemoryStoreSnapshot): void {
+    this.users = snapshot.users;
+    this.userIdsByEmail = snapshot.userIdsByEmail;
+    this.sessions = snapshot.sessions;
+    this.lifeLinks = snapshot.lifeLinks;
+    this.qrInventory = snapshot.qrInventory;
+    this.qrBindings = snapshot.qrBindings;
+    this.projectCompatibility = snapshot.projectCompatibility;
+    this.media = snapshot.media;
+    this.batches = snapshot.batches;
+    this.batchQrIds = snapshot.batchQrIds;
+    this.claimEvents = snapshot.claimEvents;
+  }
+
+  private competitionFixtureCounts(ownerId: string): CompetitionFixtureCounts {
+    const lifeLinkIds = new Set(
+      Array.from(this.lifeLinks.values())
+        .filter((lifeLink) => lifeLink.ownerId === ownerId)
+        .map((lifeLink) => lifeLink.id)
+    );
+    const batchIds = new Set(
+      Array.from(this.batches.values())
+        .filter((batch) => batch.createdBy === ownerId)
+        .map((batch) => batch.id)
+    );
+    return {
+      users: this.users.has(ownerId) ? 1 : 0,
+      sessions: Array.from(this.sessions.values()).filter((session) => session.userId === ownerId).length,
+      lifeLinks: lifeLinkIds.size,
+      qrBindings: Array.from(this.qrBindings.values()).filter((binding) => lifeLinkIds.has(binding.lifeLinkId)).length,
+      projectCompatibility: Array.from(this.projectCompatibility.values()).filter((marker) => lifeLinkIds.has(marker.lifeLinkId)).length,
+      media: Array.from(this.media.values()).filter((item) => item.ownerId === ownerId).length,
+      batches: batchIds.size,
+      qrCodes: Array.from(this.qrInventory.values()).filter((qr) => Boolean(qr.batchId && batchIds.has(qr.batchId))).length,
+      claimEvents: Array.from(this.claimEvents.values()).filter((event) => event.ownerId === ownerId).length
+    };
+  }
+
+  private assertCompetitionFixturePreflight(fixture: CompetitionFixtureData): void {
+    const ownerId = fixture.owner.id;
+    const fixtureLifeLinkIds = new Set(fixture.lifeLinks.map((item) => item.id));
+    const fixtureQrIds = new Set(fixture.qrInventory.map((item) => item.id));
+    const ownerLifeLinkIds = new Set(
+      Array.from(this.lifeLinks.values())
+        .filter((item) => item.ownerId === ownerId)
+        .map((item) => item.id)
+    );
+    const ownerBatchIds = new Set(
+      Array.from(this.batches.values())
+        .filter((item) => item.createdBy === ownerId)
+        .map((item) => item.id)
+    );
+    const ownerQrIds = new Set(
+      Array.from(this.qrInventory.values())
+        .filter((item) => Boolean(item.batchId && ownerBatchIds.has(item.batchId)))
+        .map((item) => item.id)
+    );
+    const emailOwner = this.userIdsByEmail.get(fixture.owner.email.toLowerCase());
+    if (emailOwner && emailOwner !== ownerId) {
+      throw new Error("Competition fixture email is owned by another account.");
+    }
+    for (const id of fixtureLifeLinkIds) {
+      const existing = this.lifeLinks.get(id);
+      if (existing && existing.ownerId !== ownerId) {
+        throw new Error("Competition fixture Life Link identity collides with another owner.");
+      }
+    }
+    const existingBatch = this.batches.get(fixture.batch.id);
+    if (existingBatch && existingBatch.createdBy !== ownerId) {
+      throw new Error("Competition fixture batch identity collides with another owner.");
+    }
+    for (const batch of this.batches.values()) {
+      if (batch.batchKey === fixture.batch.batchKey && batch.id !== fixture.batch.id && batch.createdBy !== ownerId) {
+        throw new Error("Competition fixture batch key collides with another owner.");
+      }
+    }
+    for (const id of fixtureQrIds) {
+      const existing = this.qrInventory.get(id);
+      if (existing && (!existing.batchId || !ownerBatchIds.has(existing.batchId))) {
+        throw new Error("Competition fixture QR identity collides with another owner.");
+      }
+      const binding = this.qrBindings.get(id);
+      const boundLifeLink = binding ? this.lifeLinks.get(binding.lifeLinkId) : null;
+      if (binding && (!boundLifeLink || boundLifeLink.ownerId !== ownerId)) {
+        throw new Error("Competition fixture QR binding collides with another owner.");
+      }
+    }
+    for (const qrId of ownerQrIds) {
+      const binding = this.qrBindings.get(qrId);
+      const boundLifeLink = binding ? this.lifeLinks.get(binding.lifeLinkId) : null;
+      if (binding && (!boundLifeLink || boundLifeLink.ownerId !== ownerId)) {
+        throw new Error("Competition sandbox QR state is bound to another owner.");
+      }
+    }
+    for (const binding of this.qrBindings.values()) {
+      const boundLifeLink = this.lifeLinks.get(binding.lifeLinkId);
+      if (boundLifeLink?.ownerId !== ownerId) {
+        continue;
+      }
+      const qr = this.qrInventory.get(binding.qrId);
+      if (!qr?.batchId || !ownerBatchIds.has(qr.batchId)) {
+        throw new Error("Competition sandbox Life Link is bound to QR inventory outside its owner sandbox.");
+      }
+    }
+    for (const marker of fixture.projectCompatibility) {
+      const existing = this.projectCompatibility.get(marker.projectId);
+      const markedLifeLink = existing ? this.lifeLinks.get(existing.lifeLinkId) : null;
+      if (existing && (!markedLifeLink || markedLifeLink.ownerId !== ownerId)) {
+        throw new Error("Competition fixture project identity collides with another owner.");
+      }
+    }
+    for (const event of this.claimEvents.values()) {
+      if (
+        event.ownerId !== ownerId &&
+        (fixtureQrIds.has(event.qrId) ||
+          ownerQrIds.has(event.qrId) ||
+          fixtureLifeLinkIds.has(event.requestedLifeLinkId ?? "") ||
+          fixtureLifeLinkIds.has(event.resolvedLifeLinkId ?? "") ||
+          ownerLifeLinkIds.has(event.requestedLifeLinkId ?? "") ||
+          ownerLifeLinkIds.has(event.resolvedLifeLinkId ?? ""))
+      ) {
+        throw new Error("Competition fixture state is referenced by another owner.");
+      }
+    }
+  }
+
+  private replaceCompetitionFixture(fixture: CompetitionFixtureData, passwordHash: string): void {
+    const ownerId = fixture.owner.id;
+    const ownerLifeLinkIds = new Set(
+      Array.from(this.lifeLinks.values())
+        .filter((item) => item.ownerId === ownerId)
+        .map((item) => item.id)
+    );
+    const ownerBatchIds = new Set(
+      Array.from(this.batches.values())
+        .filter((item) => item.createdBy === ownerId)
+        .map((item) => item.id)
+    );
+    removeMapEntries(this.sessions, (session) => session.userId === ownerId);
+    removeMapEntries(this.claimEvents, (event) => event.ownerId === ownerId);
+    removeMapEntries(this.media, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.qrBindings, (binding) => ownerLifeLinkIds.has(binding.lifeLinkId));
+    removeMapEntries(this.projectCompatibility, (marker) => ownerLifeLinkIds.has(marker.lifeLinkId));
+    removeMapEntries(this.lifeLinks, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.qrInventory, (qr) => Boolean(qr.batchId && ownerBatchIds.has(qr.batchId)));
+    for (const batchId of ownerBatchIds) {
+      this.batchQrIds.delete(batchId);
+      this.batches.delete(batchId);
+    }
+
+    const existingOwner = this.users.get(ownerId);
+    if (existingOwner) {
+      this.userIdsByEmail.delete(existingOwner.email.toLowerCase());
+    }
+    this.users.set(ownerId, { ...fixture.owner, passwordHash });
+    this.userIdsByEmail.set(fixture.owner.email.toLowerCase(), ownerId);
+    this.batches.set(fixture.batch.id, { ...fixture.batch });
+    this.batchQrIds.set(fixture.batch.id, fixture.qrInventory.map((item) => item.id));
+    for (const qr of fixture.qrInventory) {
+      this.qrInventory.set(qr.id, { ...qr });
+    }
+    for (const lifeLink of fixture.lifeLinks) {
+      this.lifeLinks.set(lifeLink.id, withoutLifeLinkRelations(lifeLink));
+    }
+    for (const binding of fixture.qrBindings) {
+      this.qrBindings.set(binding.qrId, { ...binding });
+    }
+    for (const marker of fixture.projectCompatibility) {
+      this.projectCompatibility.set(marker.projectId, { ...marker });
+    }
+  }
+
+  private assertCompetitionFixturePostcondition(
+    fixture: CompetitionFixtureData,
+    passwordHash: string,
+    actual: CompetitionFixtureCounts,
+    expected: CompetitionFixtureCounts
+  ): void {
+    if (!sameCompetitionFixtureCounts(actual, expected)) {
+      throw new Error("Competition fixture reset produced unexpected account-local counts.");
+    }
+    const user = this.users.get(fixture.owner.id);
+    if (
+      !user ||
+      user.email !== fixture.owner.email ||
+      user.displayName !== fixture.owner.displayName ||
+      user.createdAt !== fixture.owner.createdAt ||
+      user.passwordHash !== passwordHash ||
+      this.userIdsByEmail.get(fixture.owner.email.toLowerCase()) !== fixture.owner.id
+    ) {
+      throw new Error("Competition fixture owner postcondition failed.");
+    }
+    if (
+      JSON.stringify(this.batches.get(fixture.batch.id)) !== JSON.stringify(fixture.batch) ||
+      JSON.stringify(this.batchQrIds.get(fixture.batch.id)) !==
+        JSON.stringify(fixture.qrInventory.map((item) => item.id))
+    ) {
+      throw new Error("Competition fixture batch postcondition failed.");
+    }
+    for (const expectedLifeLink of fixture.lifeLinks) {
+      const actualLifeLink = this.lifeLinks.get(expectedLifeLink.id);
+      if (!actualLifeLink || !sameStoredLifeLink(actualLifeLink, expectedLifeLink)) {
+        throw new Error("Competition fixture Life Link postcondition failed.");
+      }
+    }
+    for (const expectedQr of fixture.qrInventory) {
+      if (JSON.stringify(this.qrInventory.get(expectedQr.id)) !== JSON.stringify(expectedQr)) {
+        throw new Error("Competition fixture QR postcondition failed.");
+      }
+    }
+    for (const expectedBinding of fixture.qrBindings) {
+      if (JSON.stringify(this.qrBindings.get(expectedBinding.qrId)) !== JSON.stringify(expectedBinding)) {
+        throw new Error("Competition fixture binding postcondition failed.");
+      }
+    }
+    for (const expectedMarker of fixture.projectCompatibility) {
+      if (
+        JSON.stringify(this.projectCompatibility.get(expectedMarker.projectId)) !== JSON.stringify(expectedMarker)
+      ) {
+        throw new Error("Competition fixture project postcondition failed.");
+      }
+    }
   }
 
   private projectTaggedLifeLink(lifeLink: StoredLifeLink): LinkRecord {
@@ -827,6 +1155,55 @@ function withoutLifeLinkRelations(lifeLink: LifeLinkRecord): StoredLifeLink {
 
 function sameStoredLifeLink(existing: StoredLifeLink, candidate: LifeLinkRecord): boolean {
   return JSON.stringify(existing) === JSON.stringify(withoutLifeLinkRelations(candidate));
+}
+
+export function assertCompetitionFixtureResetMode(mode: string): asserts mode is CompetitionFixtureResetMode {
+  if (mode !== "dry-run" && mode !== "apply") {
+    throw new Error("Competition fixture reset mode must be dry-run or apply.");
+  }
+}
+
+export function expectedCompetitionFixtureCounts(fixture: CompetitionFixtureData): CompetitionFixtureCounts {
+  return {
+    users: 1,
+    sessions: 0,
+    lifeLinks: fixture.lifeLinks.length,
+    qrBindings: fixture.qrBindings.length,
+    projectCompatibility: fixture.projectCompatibility.length,
+    media: 0,
+    batches: 1,
+    qrCodes: fixture.qrInventory.length,
+    claimEvents: 0
+  };
+}
+
+export function createCompetitionFixtureResetReport(
+  mode: CompetitionFixtureResetMode,
+  before: CompetitionFixtureCounts,
+  after: CompetitionFixtureCounts,
+  expected: CompetitionFixtureCounts
+): CompetitionFixtureResetReport {
+  return {
+    profile: COMPETITION_FIXTURE_PROFILE,
+    ownerId: COMPETITION_OWNER_ID,
+    mode,
+    applied: mode === "apply",
+    before,
+    after,
+    expected
+  };
+}
+
+export function sameCompetitionFixtureCounts(left: CompetitionFixtureCounts, right: CompetitionFixtureCounts): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function removeMapEntries<K, V>(map: Map<K, V>, predicate: (value: V) => boolean): void {
+  for (const [key, value] of map) {
+    if (predicate(value)) {
+      map.delete(key);
+    }
+  }
 }
 
 function assertFresh(lifeLink: StoredLifeLink, expectedUpdatedAt: string): void {

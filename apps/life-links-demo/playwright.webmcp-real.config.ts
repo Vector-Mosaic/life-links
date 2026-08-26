@@ -5,6 +5,11 @@ const explicitBaseURL = process.env.LIFE_LINKS_WEBMCP_REAL_BASE_URL?.trim();
 const localPort = process.env.LIFE_LINKS_WEBMCP_REAL_PORT?.trim() || DEFAULT_LOCAL_PORT;
 const localBaseURL = `http://127.0.0.1:${localPort}`;
 const baseURL = explicitBaseURL || localBaseURL;
+const targetHostname = new URL(baseURL).hostname.toLowerCase().replace(/\.+$/, "");
+
+if (targetHostname === "lifelinks-vmdemo.com" || targetHostname.endsWith(".lifelinks-vmdemo.com")) {
+  throw new Error("The native WebMCP acceptance target must not use the frozen lifelinks-vmdemo lane.");
+}
 
 export default defineConfig({
   testDir: "./e2e",
@@ -26,7 +31,17 @@ export default defineConfig({
         reuseExistingServer: false,
         timeout: 180_000,
         env: {
-          PORT: localPort
+          HOST: "127.0.0.1",
+          PORT: localPort,
+          NODE_ENV: "test",
+          APP_ENV: "ci",
+          SESSION_SECRET: "life-links-native-webmcp-test-secret",
+          COOKIE_SECURE: "false",
+          AUTO_SEED: "true",
+          LIFE_LINKS_STORE: "memory",
+          LIFE_LINKS_SEED_PROFILE: "competition",
+          DEMO_SEED_PASSWORD: "competition-test-password",
+          QR_BASE_URL: localBaseURL
         }
       },
   projects: [

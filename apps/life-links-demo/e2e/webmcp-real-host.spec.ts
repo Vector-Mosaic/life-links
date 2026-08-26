@@ -1,4 +1,10 @@
 import { expect, test, type Page, type Response } from "@playwright/test";
+import {
+  COMPETITION_CAMERA_BATTERY_KIT_ID,
+  COMPETITION_POWER_POUCH_ID,
+  COMPETITION_OWNER_EMAIL,
+  COMPETITION_TARGET_QR_ID
+} from "@life-links/core";
 
 import { LIFE_LINKS_PAGE_TOOL_NAMES } from "../src/agent/browserWebMcpHost";
 
@@ -8,11 +14,12 @@ const LOCAL_PORT = process.env.LIFE_LINKS_WEBMCP_REAL_PORT?.trim() || DEFAULT_LO
 const EXPLICIT_BASE_URL = process.env.LIFE_LINKS_WEBMCP_REAL_BASE_URL?.trim();
 const TARGET_URL = new URL(EXPLICIT_BASE_URL || `http://127.0.0.1:${LOCAL_PORT}`);
 const LOCAL_TARGET = TARGET_URL.hostname === "127.0.0.1" || TARGET_URL.hostname === "localhost";
-if (TARGET_URL.hostname === "lifelinks-vmdemo.com") {
+const TARGET_HOSTNAME = TARGET_URL.hostname.toLowerCase().replace(/\.+$/, "");
+if (TARGET_HOSTNAME === "lifelinks-vmdemo.com" || TARGET_HOSTNAME.endsWith(".lifelinks-vmdemo.com")) {
   throw new Error("The native WebMCP acceptance target must not use the frozen life-links-vmdemo lane.");
 }
-const DEMO_EMAIL = process.env.LIFE_LINKS_WEBMCP_REAL_EMAIL ?? (LOCAL_TARGET ? "owner@life-links.test" : "");
-const DEMO_PASSWORD = process.env.LIFE_LINKS_WEBMCP_REAL_PASSWORD ?? (LOCAL_TARGET ? "local-demo-password-not-for-deployment" : "");
+const DEMO_EMAIL = process.env.LIFE_LINKS_WEBMCP_REAL_EMAIL ?? (LOCAL_TARGET ? COMPETITION_OWNER_EMAIL : "");
+const DEMO_PASSWORD = process.env.LIFE_LINKS_WEBMCP_REAL_PASSWORD ?? (LOCAL_TARGET ? "competition-test-password" : "");
 if (!DEMO_EMAIL || !DEMO_PASSWORD) {
   throw new Error("A non-local native WebMCP target requires explicit LIFE_LINKS_WEBMCP_REAL_EMAIL and LIFE_LINKS_WEBMCP_REAL_PASSWORD.");
 }
@@ -49,21 +56,25 @@ test.describe("installed Chrome native WebMCP host", () => {
     await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
 
     const search = await invokeNativeTool(page, "search_my_life_links", {
-      query: "camera",
+      query: "Camera Battery Kit",
       limit: 10
     });
     expect(search.value).toMatchObject({
       ok: true,
-      query: "camera",
+      query: "Camera Battery Kit",
       resultCount: 1,
       visibleEffect: "search_results_highlighted"
     });
     expect(search.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
     const searchResults = search.value.results as Array<{ id: string; title: string; qrId: string | null }>;
     expect(searchResults).toHaveLength(1);
-    expect(searchResults[0]).toMatchObject({ title: "Camera battery kit", qrId: "LL-DEMO-00002" });
-    await expect(page.getByLabel("Search My Life Links")).toHaveValue("camera");
-    await expect(page.locator(`[data-life-link-search-id="${searchResults[0].id}"]`)).toContainText("Camera battery kit");
+    expect(searchResults[0]).toMatchObject({
+      id: COMPETITION_CAMERA_BATTERY_KIT_ID,
+      title: "Camera Battery Kit",
+      qrId: COMPETITION_TARGET_QR_ID
+    });
+    await expect(page.getByLabel("Search My Life Links")).toHaveValue("Camera Battery Kit");
+    await expect(page.locator(`[data-life-link-search-id="${searchResults[0].id}"]`)).toContainText("Camera Battery Kit");
 
     const open = await invokeNativeTool(page, "open_life_link", {
       lifeLinkId: searchResults[0].id
@@ -71,19 +82,20 @@ test.describe("installed Chrome native WebMCP host", () => {
     expect(open.value).toMatchObject({
       ok: true,
       lifeLinkId: searchResults[0].id,
-      title: "Camera battery kit",
+      title: "Camera Battery Kit",
+      recordedPath: "Field Camera Bag > Main Compartment > Power Pouch > Camera Battery Kit",
       visibleEffect: "life_link_opened"
     });
     expect(open.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
     await expect(page.locator(`[data-selected-life-link-id="${searchResults[0].id}"]`)).toBeVisible();
-    await expect(page.locator(".life-link-owner-detail").getByRole("heading", { name: "Camera battery kit" })).toBeVisible();
+    await expect(page.locator(".life-link-owner-detail").getByRole("heading", { name: "Camera Battery Kit" })).toBeVisible();
 
     const inspect = await invokeNativeTool(page, "inspect_current_life_link", {});
     expect(inspect.value).toMatchObject({
       ok: true,
       lifeLink: {
         id: searchResults[0].id,
-        qrId: "LL-DEMO-00002"
+        qrId: COMPETITION_TARGET_QR_ID
       },
       visibleEffect: "current_life_link_focused"
     });
@@ -91,14 +103,14 @@ test.describe("installed Chrome native WebMCP host", () => {
     await expect(page.getByText("Inspected the selected Life Link")).toBeVisible();
 
     const selectedLifeLink = inspect.value.lifeLink as { id: string; updatedAt: string };
-    const proposedTitle = "Camera battery kit — native host review";
+    const proposedTitle = "Camera Battery Kit — native host review";
     const proposedBody = "Confirm both batteries are charged before leaving.";
     const draft = await invokeNativeTool(page, "draft_life_link_update", {
       lifeLinkId: selectedLifeLink.id,
       baseUpdatedAt: selectedLifeLink.updatedAt,
       title: proposedTitle,
       body: proposedBody,
-      sourceLifeLinkIds: ["project-studio"]
+      sourceLifeLinkIds: [COMPETITION_POWER_POUCH_ID]
     });
     expect(draft.value).toMatchObject({
       ok: true,
@@ -112,7 +124,7 @@ test.describe("installed Chrome native WebMCP host", () => {
     await expect(editor.getByText("Agent draft — not saved", { exact: true })).toBeVisible();
     await expect(editor.locator(".agent-draft-review")).toContainText(proposedTitle);
     await expect(editor.locator(".agent-draft-review")).toContainText(proposedBody);
-    await expect(editor.getByLabel("Title")).toHaveValue("Camera battery kit");
+    await expect(editor.getByLabel("Title")).toHaveValue("Camera Battery Kit");
     await expect(editor.locator(".rich-body-editor-surface")).not.toContainText(proposedBody);
     await page.waitForTimeout(250);
     expect(patchRequests).toEqual([]);
@@ -131,13 +143,13 @@ test.describe("installed Chrome native WebMCP host", () => {
     expect(find.value).toMatchObject({
       ok: true,
       lifeLinkId: selectedLifeLink.id,
-      qrId: "LL-DEMO-00002",
+      qrId: COMPETITION_TARGET_QR_ID,
       cameraStarted: false,
       visibleEffect: "find_mode_started"
     });
     expect(find.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
     await expect(page.getByRole("heading", { name: "Search And Find" })).toBeVisible();
-    await expect(page.locator(".find-target")).toContainText("Camera battery kit");
+    await expect(page.locator(".find-target")).toContainText("Camera Battery Kit");
 
     const activity = page.locator(".agent-activity-panel");
     await expect(activity.locator(".agent-activity-item")).toHaveCount(5);

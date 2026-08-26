@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_QR_BASE_URL } from "@life-links/core";
 
 export type StoreMode = "postgres" | "memory";
+export type SeedProfile = "legacy-demo" | "competition";
 
 export type LifeLinksConfig = {
   host: string;
@@ -23,6 +24,7 @@ export type LifeLinksConfig = {
   migrationDir: string;
   autoMigrate: boolean;
   autoSeed: boolean;
+  seedProfile: SeedProfile;
   seedPassword: string;
   trustProxy: boolean;
   securityHeadersEnabled: boolean;
@@ -46,17 +48,23 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
   const explicitStoreMode = env.LIFE_LINKS_STORE as StoreMode | undefined;
   const storeMode = explicitStoreMode ?? (databaseUrl ? "postgres" : "memory");
   const runtimeEnv = resolveRuntimeEnv(env);
-  const sessionSecret = env.SESSION_SECRET ?? (env.NODE_ENV === "production" ? "" : "life-links-local-session-secret");
+  const productionLike =
+    runtimeEnv === "prod" || runtimeEnv === "webmcp-challenge" || env.NODE_ENV === "production";
+  const sessionSecret = env.SESSION_SECRET ?? (productionLike ? "" : "life-links-local-session-secret");
   if (!sessionSecret) {
-    throw new Error("SESSION_SECRET is required in production");
+    throw new Error("SESSION_SECRET is required in production-like runtimes");
   }
   if (storeMode === "postgres" && !databaseUrl) {
     throw new Error("DATABASE_URL is required when LIFE_LINKS_STORE=postgres");
   }
   const autoSeed = env.AUTO_SEED ? env.AUTO_SEED === "true" : true;
-  const seedPassword = env.DEMO_SEED_PASSWORD ?? (runtimeEnv === "prod" ? "" : "local-demo-password-not-for-deployment");
+  const seedProfile = resolveSeedProfile(env.LIFE_LINKS_SEED_PROFILE);
+  const seedPassword = env.DEMO_SEED_PASSWORD ?? (productionLike ? "" : "local-demo-password-not-for-deployment");
   if (autoSeed && !seedPassword) {
     throw new Error("DEMO_SEED_PASSWORD is required when AUTO_SEED=true in production");
+  }
+  if (autoSeed && seedProfile === "competition" && storeMode !== "memory") {
+    throw new Error("LIFE_LINKS_SEED_PROFILE=competition is allowed only with the disposable in-memory store; use the guarded competition reset for Postgres");
   }
 
   return {
@@ -71,18 +79,19 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
     storeMode,
     sessionSecret,
     sessionTtlDays: Number(env.SESSION_TTL_DAYS ?? "14"),
-    secureCookies: env.COOKIE_SECURE ? env.COOKIE_SECURE === "true" : runtimeEnv === "prod" || env.NODE_ENV === "production",
+    secureCookies: env.COOKIE_SECURE ? env.COOKIE_SECURE === "true" : productionLike,
     qrBaseUrl: env.QR_BASE_URL ?? DEFAULT_QR_BASE_URL,
     staticDistPath:
       env.STATIC_DIST_PATH ?? path.resolve(serviceRoot, "../../apps/life-links-demo/dist"),
     migrationDir: env.MIGRATION_DIR ?? path.resolve(serviceRoot, "migrations"),
     autoMigrate: env.AUTO_MIGRATE ? env.AUTO_MIGRATE === "true" : true,
     autoSeed,
+    seedProfile,
     seedPassword,
-    trustProxy: env.TRUST_PROXY ? env.TRUST_PROXY !== "false" : runtimeEnv === "prod",
+    trustProxy: env.TRUST_PROXY ? env.TRUST_PROXY !== "false" : productionLike,
     securityHeadersEnabled: env.SECURITY_HEADERS_ENABLED ? env.SECURITY_HEADERS_ENABLED !== "false" : true,
-    hstsEnabled: env.HSTS_ENABLED ? env.HSTS_ENABLED === "true" : runtimeEnv === "prod" || env.NODE_ENV === "production",
-    originCheckEnabled: env.ORIGIN_CHECK_ENABLED ? env.ORIGIN_CHECK_ENABLED === "true" : runtimeEnv === "prod",
+    hstsEnabled: env.HSTS_ENABLED ? env.HSTS_ENABLED === "true" : productionLike,
+    originCheckEnabled: env.ORIGIN_CHECK_ENABLED ? env.ORIGIN_CHECK_ENABLED === "true" : productionLike,
     originCheckAllowMissing: env.ORIGIN_CHECK_ALLOW_MISSING === "true",
     allowedOrigins: resolveAllowedOrigins(env.ALLOWED_ORIGINS, env.QR_BASE_URL ?? DEFAULT_QR_BASE_URL),
     rateLimitEnabled: env.RATE_LIMIT_ENABLED ? env.RATE_LIMIT_ENABLED !== "false" : true,
@@ -93,6 +102,14 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
     rateLimitClaimMax: Number(env.RATE_LIMIT_CLAIM_MAX ?? "30"),
     rateLimitBatchMax: Number(env.RATE_LIMIT_BATCH_MAX ?? "12")
   };
+}
+
+function resolveSeedProfile(value: string | undefined): SeedProfile {
+  const normalized = (value ?? "legacy-demo").trim().toLowerCase();
+  if (normalized === "legacy-demo" || normalized === "competition") {
+    return normalized;
+  }
+  throw new Error("LIFE_LINKS_SEED_PROFILE must be legacy-demo or competition");
 }
 
 function resolveRuntimeEnv(env: NodeJS.ProcessEnv): string {

@@ -12,6 +12,7 @@
     "test:e2e:rich": "pnpm build && playwright test -c playwright.rich.config.ts e2e/rich-body-editor.spec.ts",
     "test:e2e:webmcp:local": "pnpm build && playwright test -c playwright.rich.config.ts e2e/webmcp-local.spec.ts --project=desktop-chromium",
     "test:e2e:webmcp:real": "playwright test -c playwright.webmcp-real.config.ts e2e/webmcp-real-host.spec.ts --project=chrome-webmcp-native",
+    "test:e2e:challenge": "playwright test -c playwright.challenge.config.ts e2e/challenge-loop.spec.ts --project=challenge-chromium",
     "test:e2e:workflow": "playwright test e2e/workflow-smoke.spec.ts"
   },
   "dependencies": {

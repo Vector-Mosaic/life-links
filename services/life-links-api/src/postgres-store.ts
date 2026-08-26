@@ -4,6 +4,7 @@ import { Pool, type PoolClient } from "pg";
 import {
   type ClaimQrCommand,
   type ClaimResult,
+  type CompetitionFixtureData,
   type CreateLifeLinkCommand,
   type ExportBatchRecord,
   type LifeLinkDetail,
@@ -33,6 +34,7 @@ import {
   buildQrUrl,
   coordinateLifeLinkBody,
   createCanonicalLifeLink,
+  createCompetitionFixtureData,
   createDemoSeedData,
   createLinkBodyDocFromPlainText,
   deriveLifeLinkPath,
@@ -44,22 +46,31 @@ import {
   pageLifeLinkChildren,
   projectLifeLinkAsLink,
   projectLifeLinkAsProject,
+  projectPrivateClaimedQrAsLink,
   projectUnclaimedQrAsLink,
+  redactNonOwnerLinkProjection,
   searchCanonicalLifeLinks
 } from "@life-links/core";
 
-import { hashPassword } from "./password.js";
+import { hashPassword, verifyPassword } from "./password.js";
 import {
   ClaimIdempotencyConflictError,
+  assertCompetitionFixtureResetMode,
+  createCompetitionFixtureResetReport,
   type BatchCreateResult,
   type ClaimOutcome,
+  type CompetitionFixtureCounts,
+  type CompetitionFixtureResetOptions,
+  type CompetitionFixtureResetReport,
   type LifeLinkMediaFile,
   type LifeLinksStore,
   type LinkMediaFile,
   type LinkMediaInput,
   type LinkPatch,
   type SessionRecord,
-  type StoredUser
+  type StoredUser,
+  expectedCompetitionFixtureCounts,
+  sameCompetitionFixtureCounts
 } from "./store.js";
 
 type Queryable = Pick<Pool, "query">;
@@ -502,7 +513,18 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       }
       const ownerLifeLinks = await this.loadOwnerLifeLinks(this.pool, lifeLink.ownerId);
       const markers = await this.loadProjectCompatibility(this.pool);
-      projected.push(projectLifeLinkAsLink(lifeLink, qr, deriveProjectCompatibilityId(ownerLifeLinks, markers, lifeLink.id)));
+      const ownerProjection = projectLifeLinkAsLink(
+        lifeLink,
+        qr,
+        deriveProjectCompatibilityId(ownerLifeLinks, markers, lifeLink.id)
+      );
+      if (lifeLink.ownerId === userId) {
+        projected.push(ownerProjection);
+      } else if (lifeLink.privacy === "public") {
+        projected.push(redactNonOwnerLinkProjection(ownerProjection));
+      } else {
+        projected.push(projectPrivateClaimedQrAsLink(qr));
+      }
     }
     return projected;
   }
@@ -540,7 +562,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     );
     return {
       state: "claimed",
-      link: viewerIsOwner ? projected : { ...projected, projectId: null },
+      link: viewerIsOwner ? projected : redactNonOwnerLinkProjection(projected),
       viewerIsOwner
     };
   }
@@ -856,6 +878,42 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     }
   }
 
+  async resetCompetitionFixture(options: CompetitionFixtureResetOptions): Promise<CompetitionFixtureResetReport> {
+    const fixture = createCompetitionFixtureData(options.password, options.qrBaseUrl);
+    const mode = options.mode ?? "dry-run";
+    assertCompetitionFixtureResetMode(mode);
+    const expected = expectedCompetitionFixtureCounts(fixture);
+    const client = await this.pool.connect();
+    try {
+      await client.query(
+        mode === "dry-run"
+          ? "BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE READ ONLY"
+          : "BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+      );
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        `life-links-competition-fixture:${fixture.profile}`
+      ]);
+      await assertPostgresCompetitionFixturePreflight(client, fixture);
+      const before = await postgresCompetitionFixtureCounts(client, fixture.owner.id);
+      if (mode === "dry-run") {
+        await client.query("ROLLBACK");
+        return createCompetitionFixtureResetReport(mode, before, before, expected);
+      }
+
+      const passwordHash = await hashPassword(options.password);
+      await replacePostgresCompetitionFixture(client, fixture, passwordHash);
+      const after = await postgresCompetitionFixtureCounts(client, fixture.owner.id);
+      await assertPostgresCompetitionFixturePostcondition(client, fixture, options.password, after, expected);
+      await client.query("COMMIT");
+      return createCompetitionFixtureResetReport(mode, before, after, expected);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async checkReady(): Promise<void> {
     await this.pool.query("SELECT 1");
   }
@@ -948,6 +1006,322 @@ export function createPostgresStore(databaseUrl: string, schemaName?: string): {
     options: schemaName ? `-c search_path=${schemaName}` : undefined
   });
   return { store: new PostgresLifeLinksStore(pool), pool };
+}
+
+async function postgresCompetitionFixtureCounts(
+  queryable: Queryable,
+  ownerId: string
+): Promise<CompetitionFixtureCounts> {
+  const result = await queryable.query(
+    `WITH owner_life_links AS (
+       SELECT id FROM life_links WHERE owner_id = $1
+     ), owner_batches AS (
+       SELECT id FROM export_batches WHERE created_by = $1
+     )
+     SELECT
+       (SELECT count(*)::int FROM users WHERE id = $1) AS users,
+       (SELECT count(*)::int FROM sessions WHERE user_id = $1) AS sessions,
+       (SELECT count(*)::int FROM owner_life_links) AS life_links,
+       (SELECT count(*)::int FROM life_link_qr_bindings WHERE life_link_id IN (SELECT id FROM owner_life_links)) AS qr_bindings,
+       (SELECT count(*)::int FROM life_link_project_compat WHERE life_link_id IN (SELECT id FROM owner_life_links)) AS project_compatibility,
+       (SELECT count(*)::int FROM link_media WHERE owner_id = $1) AS media,
+       (SELECT count(*)::int FROM owner_batches) AS batches,
+       (SELECT count(*)::int FROM qr_codes WHERE batch_id IN (SELECT id FROM owner_batches)) AS qr_codes,
+       (SELECT count(*)::int FROM claim_events WHERE owner_id = $1) AS claim_events`,
+    [ownerId]
+  );
+  const row = result.rows[0];
+  return {
+    users: Number(row.users),
+    sessions: Number(row.sessions),
+    lifeLinks: Number(row.life_links),
+    qrBindings: Number(row.qr_bindings),
+    projectCompatibility: Number(row.project_compatibility),
+    media: Number(row.media),
+    batches: Number(row.batches),
+    qrCodes: Number(row.qr_codes),
+    claimEvents: Number(row.claim_events)
+  };
+}
+
+async function assertPostgresCompetitionFixturePreflight(
+  client: PoolClient,
+  fixture: CompetitionFixtureData
+): Promise<void> {
+  const ownerId = fixture.owner.id;
+  const lifeLinkIds = fixture.lifeLinks.map((item) => item.id);
+  const qrIds = fixture.qrInventory.map((item) => item.id);
+  const projectIds = fixture.projectCompatibility.map((item) => item.projectId);
+  const emailConflict = await client.query(
+    "SELECT 1 FROM users WHERE lower(email) = lower($1) AND id <> $2 LIMIT 1",
+    [fixture.owner.email, ownerId]
+  );
+  if (emailConflict.rowCount) {
+    throw new Error("Competition fixture email is owned by another account.");
+  }
+  const lifeLinkCollision = await client.query(
+    "SELECT 1 FROM life_links WHERE id = ANY($1::text[]) AND owner_id <> $2 LIMIT 1",
+    [lifeLinkIds, ownerId]
+  );
+  if (lifeLinkCollision.rowCount) {
+    throw new Error("Competition fixture Life Link identity collides with another owner.");
+  }
+  const batchCollision = await client.query(
+    `SELECT 1 FROM export_batches
+     WHERE (id = $1 OR batch_key = $2) AND created_by <> $3
+     LIMIT 1`,
+    [fixture.batch.id, fixture.batch.batchKey, ownerId]
+  );
+  if (batchCollision.rowCount) {
+    throw new Error("Competition fixture batch identity collides with another owner.");
+  }
+  const qrCollision = await client.query(
+    `SELECT 1
+     FROM qr_codes q
+     LEFT JOIN export_batches eb ON eb.id = q.batch_id
+     WHERE q.id = ANY($1::text[]) AND eb.created_by IS DISTINCT FROM $2
+     LIMIT 1`,
+    [qrIds, ownerId]
+  );
+  if (qrCollision.rowCount) {
+    throw new Error("Competition fixture QR identity collides with another owner.");
+  }
+  const qrBindingCollision = await client.query(
+    `SELECT 1
+     FROM life_link_qr_bindings b
+     JOIN life_links ll ON ll.id = b.life_link_id
+     WHERE b.qr_id = ANY($1::text[]) AND ll.owner_id <> $2
+     LIMIT 1`,
+    [qrIds, ownerId]
+  );
+  if (qrBindingCollision.rowCount) {
+    throw new Error("Competition fixture QR binding collides with another owner.");
+  }
+  const projectCollision = await client.query(
+    `SELECT 1
+     FROM life_link_project_compat c
+     JOIN life_links ll ON ll.id = c.life_link_id
+     WHERE c.project_id = ANY($1::text[]) AND ll.owner_id <> $2
+     LIMIT 1`,
+    [projectIds, ownerId]
+  );
+  if (projectCollision.rowCount) {
+    throw new Error("Competition fixture project identity collides with another owner.");
+  }
+  const ownerBatchBindingToOther = await client.query(
+    `SELECT 1
+     FROM qr_codes q
+     JOIN export_batches eb ON eb.id = q.batch_id
+     JOIN life_link_qr_bindings b ON b.qr_id = q.id
+     JOIN life_links ll ON ll.id = b.life_link_id
+     WHERE eb.created_by = $1 AND ll.owner_id <> $1
+     LIMIT 1`,
+    [ownerId]
+  );
+  if (ownerBatchBindingToOther.rowCount) {
+    throw new Error("Competition sandbox QR state is bound to another owner.");
+  }
+  const otherBatchBindingToOwner = await client.query(
+    `SELECT 1
+     FROM life_link_qr_bindings b
+     JOIN life_links ll ON ll.id = b.life_link_id
+     JOIN qr_codes q ON q.id = b.qr_id
+     LEFT JOIN export_batches eb ON eb.id = q.batch_id
+     WHERE ll.owner_id = $1 AND eb.created_by IS DISTINCT FROM $1
+     LIMIT 1`,
+    [ownerId]
+  );
+  if (otherBatchBindingToOwner.rowCount) {
+    throw new Error("Competition sandbox Life Link is bound to QR inventory outside its owner sandbox.");
+  }
+  const crossOwnerReference = await client.query(
+    `WITH owner_life_links AS (
+       SELECT id FROM life_links WHERE owner_id = $1
+     ), owner_qrs AS (
+       SELECT q.id
+       FROM qr_codes q
+       JOIN export_batches eb ON eb.id = q.batch_id
+       WHERE eb.created_by = $1
+     )
+     SELECT 1
+     FROM claim_events ce
+     WHERE ce.owner_id <> $1
+       AND (
+         ce.qr_id = ANY($2::text[])
+         OR ce.qr_id IN (SELECT id FROM owner_qrs)
+         OR ce.requested_life_link_id IN (SELECT id FROM owner_life_links)
+         OR ce.resolved_life_link_id IN (SELECT id FROM owner_life_links)
+       )
+     LIMIT 1`,
+    [ownerId, qrIds]
+  );
+  if (crossOwnerReference.rowCount) {
+    throw new Error("Competition fixture state is referenced by another owner.");
+  }
+}
+
+async function replacePostgresCompetitionFixture(
+  client: PoolClient,
+  fixture: CompetitionFixtureData,
+  passwordHash: string
+): Promise<void> {
+  const ownerId = fixture.owner.id;
+  await client.query("DELETE FROM sessions WHERE user_id = $1", [ownerId]);
+  await client.query("DELETE FROM claim_events WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM link_media WHERE owner_id = $1", [ownerId]);
+  await client.query(
+    `DELETE FROM life_link_qr_bindings b
+     USING life_links ll
+     WHERE b.life_link_id = ll.id AND ll.owner_id = $1`,
+    [ownerId]
+  );
+  await client.query(
+    `DELETE FROM life_link_project_compat c
+     USING life_links ll
+     WHERE c.life_link_id = ll.id AND ll.owner_id = $1`,
+    [ownerId]
+  );
+  await client.query("UPDATE life_links SET parent_id = NULL WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM life_links WHERE owner_id = $1", [ownerId]);
+  await client.query(
+    `DELETE FROM qr_codes q
+     USING export_batches eb
+     WHERE q.batch_id = eb.id AND eb.created_by = $1`,
+    [ownerId]
+  );
+  await client.query("DELETE FROM export_batches WHERE created_by = $1", [ownerId]);
+  await client.query(
+    `INSERT INTO users (id, email, display_name, password_hash, created_at)
+     VALUES ($1, $2, $3, $4, $5)
+     ON CONFLICT (id) DO UPDATE
+       SET email = EXCLUDED.email,
+           display_name = EXCLUDED.display_name,
+           password_hash = EXCLUDED.password_hash,
+           created_at = EXCLUDED.created_at`,
+    [fixture.owner.id, fixture.owner.email, fixture.owner.displayName, passwordHash, fixture.owner.createdAt]
+  );
+  await client.query(
+    `INSERT INTO export_batches (id, batch_key, qr_base_url, count, created_by, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [
+      fixture.batch.id,
+      fixture.batch.batchKey,
+      fixture.batch.qrBaseUrl,
+      fixture.batch.count,
+      fixture.batch.createdBy,
+      fixture.batch.createdAt
+    ]
+  );
+  for (const qr of fixture.qrInventory) {
+    await client.query(
+      "INSERT INTO qr_codes (id, url, batch_id, created_at) VALUES ($1, $2, $3, $4)",
+      [qr.id, qr.url, qr.batchId, qr.createdAt]
+    );
+  }
+  for (const lifeLink of fixture.lifeLinks) {
+    await insertLifeLink(client, withoutRelations(lifeLink));
+  }
+  for (const binding of fixture.qrBindings) {
+    await client.query(
+      "INSERT INTO life_link_qr_bindings (qr_id, life_link_id, bound_at) VALUES ($1, $2, $3)",
+      [binding.qrId, binding.lifeLinkId, binding.boundAt]
+    );
+  }
+  for (const marker of fixture.projectCompatibility) {
+    await client.query(
+      "INSERT INTO life_link_project_compat (project_id, life_link_id) VALUES ($1, $2)",
+      [marker.projectId, marker.lifeLinkId]
+    );
+  }
+}
+
+async function assertPostgresCompetitionFixturePostcondition(
+  client: PoolClient,
+  fixture: CompetitionFixtureData,
+  password: string,
+  actual: CompetitionFixtureCounts,
+  expected: CompetitionFixtureCounts
+): Promise<void> {
+  if (!sameCompetitionFixtureCounts(actual, expected)) {
+    throw new Error("Competition fixture reset produced unexpected account-local counts.");
+  }
+  const userResult = await client.query("SELECT * FROM users WHERE id = $1", [fixture.owner.id]);
+  const user = userResult.rows[0];
+  if (
+    !user ||
+    String(user.email) !== fixture.owner.email ||
+    String(user.display_name) !== fixture.owner.displayName ||
+    toIso(user.created_at) !== fixture.owner.createdAt ||
+    !(await verifyPassword(password, String(user.password_hash)))
+  ) {
+    throw new Error("Competition fixture owner postcondition failed.");
+  }
+  const batch = await client.query(
+    `SELECT 1 FROM export_batches
+     WHERE id = $1 AND batch_key = $2 AND qr_base_url = $3 AND count = $4
+       AND created_by = $5 AND created_at = $6`,
+    [
+      fixture.batch.id,
+      fixture.batch.batchKey,
+      fixture.batch.qrBaseUrl,
+      fixture.batch.count,
+      fixture.batch.createdBy,
+      fixture.batch.createdAt
+    ]
+  );
+  if (batch.rowCount !== 1) {
+    throw new Error("Competition fixture batch postcondition failed.");
+  }
+  for (const qr of fixture.qrInventory) {
+    const qrResult = await client.query(
+      "SELECT 1 FROM qr_codes WHERE id = $1 AND url = $2 AND batch_id = $3 AND created_at = $4",
+      [qr.id, qr.url, qr.batchId, qr.createdAt]
+    );
+    if (qrResult.rowCount !== 1) {
+      throw new Error("Competition fixture QR postcondition failed.");
+    }
+  }
+  for (const lifeLink of fixture.lifeLinks) {
+    const lifeLinkResult = await client.query(
+      `SELECT 1 FROM life_links
+       WHERE id = $1 AND owner_id = $2 AND parent_id IS NOT DISTINCT FROM $3
+         AND title = $4 AND body = $5 AND body_doc = $6::jsonb AND body_doc_version = $7
+         AND privacy = $8 AND created_at = $9 AND updated_at = $10`,
+      [
+        lifeLink.id,
+        lifeLink.ownerId,
+        lifeLink.parentId,
+        lifeLink.title,
+        lifeLink.body,
+        JSON.stringify(lifeLink.bodyDoc),
+        lifeLink.bodyDocVersion,
+        lifeLink.privacy,
+        lifeLink.createdAt,
+        lifeLink.updatedAt
+      ]
+    );
+    if (lifeLinkResult.rowCount !== 1) {
+      throw new Error("Competition fixture Life Link postcondition failed.");
+    }
+  }
+  for (const binding of fixture.qrBindings) {
+    const bindingResult = await client.query(
+      "SELECT 1 FROM life_link_qr_bindings WHERE qr_id = $1 AND life_link_id = $2 AND bound_at = $3",
+      [binding.qrId, binding.lifeLinkId, binding.boundAt]
+    );
+    if (bindingResult.rowCount !== 1) {
+      throw new Error("Competition fixture binding postcondition failed.");
+    }
+  }
+  for (const marker of fixture.projectCompatibility) {
+    const markerResult = await client.query(
+      "SELECT 1 FROM life_link_project_compat WHERE project_id = $1 AND life_link_id = $2",
+      [marker.projectId, marker.lifeLinkId]
+    );
+    if (markerResult.rowCount !== 1) {
+      throw new Error("Competition fixture project postcondition failed.");
+    }
+  }
 }
 
 async function insertLifeLink(queryable: Queryable, lifeLink: StoredLifeLink): Promise<void> {

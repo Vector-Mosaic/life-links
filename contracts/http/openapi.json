@@ -1051,7 +1051,7 @@
       "get": {
         "operationId": "resolveLifeLinkQr",
         "summary": "Resolve the viewer-filtered state of a QR link",
-        "description": "Authentication is optional. Owners receive their private content; unauthenticated or non-owner viewers receive the public, private-placeholder, unclaimed, or not-found state allowed by the canonical store policy. Non-owner claimed responses force compatibility projectId to null and never expose canonical Life Link identity, parent, ancestry, children, path, root, descendant, or hierarchy fields.",
+        "description": "Authentication is optional. Owners receive their private content; unauthenticated or non-owner viewers receive the public, private-placeholder, unclaimed, or not-found state allowed by the canonical store policy. Non-owner claimed responses force ownerId and compatibility projectId to null, force any projected media ownerId to null, and never expose canonical Life Link identity, parent, ancestry, children, path, root, descendant, or hierarchy fields.",
         "tags": [
           "qr"
         ],
@@ -1604,7 +1604,11 @@
             "$ref": "#/components/schemas/QrId"
           },
           "ownerId": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Owner identity for owner-authorized responses; null in non-owner public QR projections."
           },
           "kind": {
             "type": "string",
@@ -1678,7 +1682,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Owner identity for an authorized owner projection; null in a non-owner public claimed projection."
           },
           "title": {
             "type": "string",
@@ -1708,7 +1713,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Compatibility Project placement for an authorized owner projection; null in a non-owner public claimed projection."
           },
           "privacy": {
             "type": "string",

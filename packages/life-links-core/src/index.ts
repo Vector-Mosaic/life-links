@@ -44,7 +44,7 @@ export type LinkRecord = {
 export type LinkMediaRecord = {
   id: string;
   qrId: string;
-  ownerId: string;
+  ownerId: string | null;
   kind: LinkMediaKind;
   mimeType: string;
   fileName: string;
@@ -770,8 +770,9 @@ export const MAX_LIFE_LINK_TOOL_OUTPUT_BYTES = 1536;
 
 export type QrInventoryRecord = Omit<QrRecord, "status" | "claimedAt">;
 
-export type LifeLinkMediaRecord = Omit<LinkMediaRecord, "qrId"> & {
+export type LifeLinkMediaRecord = Omit<LinkMediaRecord, "qrId" | "ownerId"> & {
   lifeLinkId: string;
+  ownerId: string;
 };
 
 export type LifeLinkRecord = {
@@ -949,7 +950,8 @@ export type LegacyLifeLinkMigrationRecord = {
   updatedAt: string;
 };
 
-export type LegacyLinkMediaMigrationRecord = Omit<LinkMediaRecord, "url"> & {
+export type LegacyLinkMediaMigrationRecord = Omit<LinkMediaRecord, "url" | "ownerId"> & {
+  ownerId: string;
   data: Uint8Array;
 };
 
@@ -1428,6 +1430,23 @@ export function projectUnclaimedQrAsLink(qr: QrInventoryRecord): LinkRecord {
   };
 }
 
+export function projectPrivateClaimedQrAsLink(qr: QrInventoryRecord): LinkRecord {
+  return {
+    ...projectUnclaimedQrAsLink(qr),
+    status: "claimed",
+    privacy: "private"
+  };
+}
+
+export function redactNonOwnerLinkProjection(link: LinkRecord): LinkRecord {
+  return {
+    ...link,
+    ownerId: null,
+    projectId: null,
+    media: link.media.map((item) => ({ ...item, ownerId: null }))
+  };
+}
+
 export function projectQrInventoryRecord(
   qr: QrInventoryRecord,
   binding: LifeLinkQrBindingRecord | null
@@ -1871,3 +1890,5 @@ export {
   EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT,
   REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT
 } from "./legacyMigration.fixture.js";
+
+export * from "./competitionFixture.js";

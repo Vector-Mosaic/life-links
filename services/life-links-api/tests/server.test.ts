@@ -1,4 +1,5 @@
 import request from "supertest";
+import JSZip from "jszip";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -13,6 +14,18 @@ import { readConfig } from "../src/config.js";
 import { createLogger, type LogEvent, type Logger } from "../src/logger.js";
 import { createLifeLinksApp } from "../src/server.js";
 import { InMemoryLifeLinksStore, type LifeLinksStore } from "../src/store.js";
+
+function parseBinaryResponse(
+  response: NodeJS.ReadableStream,
+  callback: (error: Error | null, body: unknown) => void
+): void {
+  const chunks: Buffer[] = [];
+  response.on("data", (chunk: Buffer | string) => {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  });
+  response.on("end", () => callback(null, Buffer.concat(chunks)));
+  response.on("error", (error) => callback(error as Error, Buffer.alloc(0)));
+}
 
 async function createSeededAgent(options: { logger?: Logger; store?: LifeLinksStore; env?: NodeJS.ProcessEnv } = {}) {
   const store = options.store ?? new InMemoryLifeLinksStore();
@@ -489,6 +502,74 @@ describe("Life Links API", () => {
     expect(unknown.body.state).toBe("not_found");
   });
 
+  it("keeps nested public QR resolution local to the scanned Life Link", async () => {
+    await login();
+    const ancestorTitle = "PRIVATE_ANCESTOR_TITLE_SENTINEL";
+    const ancestorBody = "PRIVATE_ANCESTOR_BODY_SENTINEL";
+    const descendantTitle = "PRIVATE_DESCENDANT_TITLE_SENTINEL";
+    const descendantBody = "PRIVATE_DESCENDANT_BODY_SENTINEL";
+    const publicQrId = "LL-DEMO-0000D";
+    const privateQrId = "LL-DEMO-0000E";
+
+    const ancestor = await ctx.agent.post("/api/life-links").send({
+      title: ancestorTitle,
+      body: ancestorBody,
+      privacy: "private"
+    });
+    expect(ancestor.status).toBe(201);
+    const publicTarget = await ctx.agent.post("/api/life-links").send({
+      parentId: ancestor.body.lifeLink.id,
+      title: "Public camera checklist",
+      body: "Safe public checklist content",
+      privacy: "public"
+    });
+    expect(publicTarget.status).toBe(201);
+    const privateDescendant = await ctx.agent.post("/api/life-links").send({
+      parentId: publicTarget.body.lifeLink.id,
+      title: descendantTitle,
+      body: descendantBody,
+      privacy: "private"
+    });
+    expect(privateDescendant.status).toBe(201);
+
+    const publicAttach = await ctx.agent.post(`/api/qr/${publicQrId}/claim`).send({
+      commandId: "nested-public-privacy-attach",
+      mode: "attach",
+      lifeLinkId: publicTarget.body.lifeLink.id
+    });
+    expect(publicAttach.status).toBe(200);
+    const privateAttach = await ctx.agent.post(`/api/qr/${privateQrId}/claim`).send({
+      commandId: "nested-private-privacy-attach",
+      mode: "attach",
+      lifeLinkId: privateDescendant.body.lifeLink.id
+    });
+    expect(privateAttach.status).toBe(200);
+
+    const publicResolution = await request(ctx.app).get(`/api/qr/${publicQrId}`);
+    expect(publicResolution.status).toBe(200);
+    expect(publicResolution.body).toMatchObject({
+      state: "claimed",
+      link: {
+        id: publicQrId,
+        ownerId: null,
+        projectId: null,
+        title: "Public camera checklist",
+        body: "Safe public checklist content"
+      },
+      viewerIsOwner: false
+    });
+    expectNoHierarchyDisclosure(publicResolution.body);
+    const serializedPublicResolution = JSON.stringify(publicResolution.body);
+    for (const sentinel of [ancestorTitle, ancestorBody, descendantTitle, descendantBody]) {
+      expect(serializedPublicResolution).not.toContain(sentinel);
+    }
+
+    const privateResolution = await request(ctx.app).get(`/api/qr/${privateQrId}`);
+    expect(privateResolution.status).toBe(200);
+    expect(privateResolution.body).toEqual({ state: "private", qrId: privateQrId });
+    expectNoHierarchyDisclosure(privateResolution.body);
+  });
+
   it("uploads, serves, hides, and deletes owner-managed media", async () => {
     await login();
     const upload = await ctx.agent
@@ -507,6 +588,8 @@ describe("Life Links API", () => {
     const publicQr = await request(ctx.app).get("/api/qr/LL-DEMO-00002");
     expect(publicQr.status).toBe(200);
     expect(publicQr.body.link.media).toHaveLength(1);
+    expect(publicQr.body.link.media[0]).toMatchObject({ ownerId: null });
+    expect(JSON.stringify(publicQr.body)).not.toContain("demo-owner");
 
     const publicFile = await request(ctx.app).get(upload.body.media.url);
     expect(publicFile.status).toBe(200);
@@ -807,9 +890,57 @@ describe("Life Links API", () => {
     expect(csv.text).toContain("qr_id,url,status,owner_id,title,project_id,privacy");
     expect(csv.text).toContain('"\'=HYPERLINK(""https://example.test"")"');
 
-    const zip = await ctx.agent.get(`/api/qr-batches/${batch.body.batch.id}.zip`);
+    const zip = await ctx.agent
+      .get(`/api/qr-batches/${batch.body.batch.id}.zip`)
+      .buffer(true)
+      .parse(parseBinaryResponse);
     expect(zip.status).toBe(200);
     expect(zip.headers["content-type"]).toContain("application/zip");
+  });
+
+  it("does not disclose a foreign owner's private Life Link through batch CSV or ZIP export", async () => {
+    await login();
+    const batch = await ctx.agent.post("/api/qr-batches").send({ count: 1 });
+    expect(batch.status).toBe(201);
+    const qrId = batch.body.qrCodes[0].id as string;
+
+    const guest = request.agent(ctx.app);
+    await login(guest, "guest@life-links.test");
+    const privateTitle = "FOREIGN_PRIVATE_BATCH_TITLE_SENTINEL";
+    const privateBody = "FOREIGN_PRIVATE_BATCH_BODY_SENTINEL";
+    const privateLifeLink = await guest.post("/api/life-links").send({
+      title: privateTitle,
+      body: privateBody,
+      privacy: "private"
+    });
+    expect(privateLifeLink.status).toBe(201);
+    const attach = await guest.post(`/api/qr/${qrId}/claim`).send({
+      commandId: "foreign-private-batch-export-attach",
+      mode: "attach",
+      lifeLinkId: privateLifeLink.body.lifeLink.id
+    });
+    expect(attach.status).toBe(200);
+
+    const csv = await ctx.agent.get(`/api/qr-batches/${batch.body.batch.id}.csv`);
+    expect(csv.status).toBe(200);
+    expect(csv.text).toContain(qrId);
+    expect(csv.text).toContain(",claimed,");
+    expect(csv.text).not.toContain(privateTitle);
+    expect(csv.text).not.toContain(privateBody);
+    expect(csv.text).not.toContain("demo-guest");
+
+    const zip = await ctx.agent
+      .get(`/api/qr-batches/${batch.body.batch.id}.zip`)
+      .buffer(true)
+      .parse(parseBinaryResponse);
+    expect(zip.status).toBe(200);
+    const archive = await JSZip.loadAsync(zip.body as Buffer);
+    const mapping = await archive.file("mapping.csv")!.async("string");
+    expect(mapping).toContain(qrId);
+    expect(mapping).toContain(",claimed,");
+    expect(mapping).not.toContain(privateTitle);
+    expect(mapping).not.toContain(privateBody);
+    expect(mapping).not.toContain("demo-guest");
   });
 
   it("sets browser security headers", async () => {
@@ -1103,6 +1234,94 @@ describe("Life Links API", () => {
         expect.objectContaining({ field: "body_doc", reason: "body_doc_too_large" })
       ])
     );
+  });
+
+  it("keeps canonical private hierarchy, search, and source content out of structured logs", async () => {
+    const events: LogEvent[] = [];
+    const logged = await createSeededAgent({
+      logger: createLogger("life_links_test", { env: "ci", sink: (event) => events.push(event) })
+    });
+    const agent = logged.agent;
+    await login(agent);
+
+    const ancestorTitle = "LOG_PRIVATE_ANCESTOR_TITLE_SENTINEL";
+    const ancestorBody = "LOG_PRIVATE_ANCESTOR_BODY_SENTINEL";
+    const sourceTitle = "LOG_PRIVATE_SOURCE_TITLE_SENTINEL";
+    const sourceBody = "LOG_PRIVATE_SOURCE_BODY_SENTINEL";
+    const targetTitle = "LOG_PRIVATE_TARGET_TITLE_SENTINEL";
+    const query = "LOG_PRIVATE_SEARCH_QUERY_SENTINEL";
+    const targetBody = `LOG_PRIVATE_TARGET_BODY_SENTINEL ${query}`;
+    const updatedTitle = "LOG_PRIVATE_UPDATED_TITLE_SENTINEL";
+    const updatedBody = "LOG_PRIVATE_UPDATED_BODY_SENTINEL";
+
+    const ancestor = await agent.post("/api/life-links").send({
+      title: ancestorTitle,
+      body: ancestorBody,
+      privacy: "private"
+    });
+    expect(ancestor.status).toBe(201);
+    const source = await agent.post("/api/life-links").send({
+      parentId: ancestor.body.lifeLink.id,
+      title: sourceTitle,
+      body: sourceBody,
+      privacy: "private"
+    });
+    expect(source.status).toBe(201);
+    const target = await agent.post("/api/life-links").send({
+      parentId: source.body.lifeLink.id,
+      title: targetTitle,
+      body: targetBody,
+      privacy: "private"
+    });
+    expect(target.status).toBe(201);
+
+    const search = await agent.get("/api/life-links/search").query({ q: query, limit: 10 });
+    expect(search.status).toBe(200);
+    expect(search.body.results).toHaveLength(1);
+    expect(search.body.results[0].lifeLink.id).toBe(target.body.lifeLink.id);
+
+    const sourceDetail = await agent.get(`/api/life-links/${source.body.lifeLink.id}`);
+    expect(sourceDetail.status).toBe(200);
+    const targetDetail = await agent.get(`/api/life-links/${target.body.lifeLink.id}`);
+    expect(targetDetail.status).toBe(200);
+    expect(targetDetail.body.detail.ancestry.items.map((item: { id: string }) => item.id)).toEqual([
+      ancestor.body.lifeLink.id,
+      source.body.lifeLink.id,
+      target.body.lifeLink.id
+    ]);
+
+    const update = await agent.patch(`/api/life-links/${target.body.lifeLink.id}`).send({
+      expectedUpdatedAt: target.body.lifeLink.updatedAt,
+      title: updatedTitle,
+      body: updatedBody,
+      privacy: "private"
+    });
+    expect(update.status).toBe(200);
+    expect(events.map((event) => event.event)).toEqual(
+      expect.arrayContaining([
+        "life_links.life_link.created",
+        "life_links.life_link.searched",
+        "life_links.life_link.resolved",
+        "life_links.life_link.updated"
+      ])
+    );
+
+    const serializedEvents = JSON.stringify(events);
+    const derivedTargetPath = `${ancestorTitle} > ${sourceTitle} > ${targetTitle}`;
+    for (const sentinel of [
+      ancestorTitle,
+      ancestorBody,
+      sourceTitle,
+      sourceBody,
+      targetTitle,
+      targetBody,
+      query,
+      updatedTitle,
+      updatedBody,
+      derivedTargetPath
+    ]) {
+      expect(serializedEvents).not.toContain(sentinel);
+    }
   });
 
   it("logs safe product events for auth, QR, claim, project, export, edit, and find flows", async () => {

@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  COMPETITION_CAMERA_BATTERY_KIT_ID,
+  COMPETITION_FIELD_CAMERA_BAG_ID,
+  COMPETITION_OWNER_ID,
+  COMPETITION_TARGET_QR_ID,
   DEFAULT_QR_BASE_URL,
   DEMO_OWNER_ID,
   DEMO_PASSWORD,
@@ -37,6 +41,167 @@ describe("canonical Life Links store contract", () => {
     const detail = await store.getLifeLinkDetail(DEMO_OWNER_ID, "child-c");
     expect(detail?.ancestry.items.map((item) => item.id)).toEqual([root.id, "child-c"]);
     expect(root).toMatchObject({ privacy: "private", qrId: null, parentId: null });
+  });
+
+  it("dry-runs and reapplies the deterministic competition owner sandbox without touching another owner", async () => {
+    const options = {
+      password: "competition-password",
+      qrBaseUrl: "https://challenge.life-links.test"
+    };
+    const legacyOwnerBefore = await store.getLifeLinkDetail(DEMO_OWNER_ID, "project-home");
+    const dryRun = await store.resetCompetitionFixture(options);
+    expect(dryRun).toMatchObject({
+      profile: "webmcp-camera-kit-v1",
+      ownerId: COMPETITION_OWNER_ID,
+      mode: "dry-run",
+      applied: false,
+      before: { users: 0, lifeLinks: 0, sessions: 0 },
+      after: { users: 0, lifeLinks: 0, sessions: 0 },
+      expected: { users: 1, lifeLinks: 6, qrBindings: 2, qrCodes: 2, batches: 1 }
+    });
+    expect(await store.getUserById(COMPETITION_OWNER_ID)).toBeNull();
+
+    const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
+    expect(firstApply.after).toEqual(firstApply.expected);
+    const target = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID);
+    expect(target?.ancestry.items.map((item) => item.title)).toEqual([
+      "Field Camera Bag",
+      "Main Compartment",
+      "Power Pouch",
+      "Camera Battery Kit"
+    ]);
+    expect(target?.lifeLink).toMatchObject({ qrId: COMPETITION_TARGET_QR_ID, privacy: "public" });
+
+    const publicState = await store.getQrState(COMPETITION_TARGET_QR_ID, null);
+    expect(publicState).toMatchObject({
+      state: "claimed",
+      viewerIsOwner: false,
+      link: { ownerId: null, projectId: null }
+    });
+    const ownerState = await store.getQrState(COMPETITION_TARGET_QR_ID, COMPETITION_OWNER_ID);
+    expect(ownerState).toMatchObject({
+      state: "claimed",
+      viewerIsOwner: true,
+      link: { ownerId: COMPETITION_OWNER_ID, projectId: COMPETITION_FIELD_CAMERA_BAG_ID }
+    });
+
+    await store.createSession(
+      COMPETITION_OWNER_ID,
+      "competition-session-hash",
+      "2099-01-01T00:00:00.000Z"
+    );
+    await store.updateLifeLink(COMPETITION_OWNER_ID, {
+      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
+      expectedUpdatedAt: target!.lifeLink.updatedAt,
+      patch: { title: "Drifted battery kit" }
+    });
+    await store.createLifeLink({
+      id: "competition-extra-life-link",
+      ownerId: COMPETITION_OWNER_ID,
+      parentId: COMPETITION_FIELD_CAMERA_BAG_ID,
+      title: "Judge-created extra",
+      createdAt: "2026-08-26T13:00:00.000Z"
+    });
+    await store.createQrBatch(COMPETITION_OWNER_ID, 1, options.qrBaseUrl);
+
+    const driftDryRun = await store.resetCompetitionFixture(options);
+    expect(driftDryRun.applied).toBe(false);
+    expect(driftDryRun.after).toEqual(driftDryRun.before);
+    expect((await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title).toBe(
+      "Drifted battery kit"
+    );
+    expect(await store.getSessionByTokenHash("competition-session-hash")).not.toBeNull();
+
+    const restored = await store.resetCompetitionFixture({ ...options, mode: "apply" });
+    expect(restored.after).toEqual(restored.expected);
+    expect(await store.getSessionByTokenHash("competition-session-hash")).toBeNull();
+    expect(await store.getLifeLinkDetail(COMPETITION_OWNER_ID, "competition-extra-life-link")).toBeNull();
+    expect((await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title).toBe(
+      "Camera Battery Kit"
+    );
+    expect(await store.getLifeLinkDetail(DEMO_OWNER_ID, "project-home")).toEqual(legacyOwnerBefore);
+
+    const replay = await store.resetCompetitionFixture({ ...options, mode: "apply" });
+    expect(replay.before).toEqual(replay.expected);
+    expect(replay.after).toEqual(replay.expected);
+
+    const foreignBatch = await store.createQrBatch(DEMO_OWNER_ID, 1, options.qrBaseUrl);
+    const foreignQrId = foreignBatch.qrCodes[0].id;
+    const foreignQrTarget = await store.createLifeLink({
+      id: "competition-foreign-qr-target",
+      ownerId: COMPETITION_OWNER_ID,
+      parentId: COMPETITION_FIELD_CAMERA_BAG_ID,
+      title: "Foreign QR reset sentinel",
+      createdAt: "2026-08-26T14:00:00.000Z"
+    });
+    await store.claimQr(foreignQrId, COMPETITION_OWNER_ID, {
+      commandId: "competition-foreign-qr-attach",
+      mode: "attach",
+      lifeLinkId: foreignQrTarget.id
+    });
+    const foreignBatchView = await store.listBatchLinks(DEMO_OWNER_ID, foreignBatch.batch.id);
+    expect(foreignBatchView).toHaveLength(1);
+    expect(foreignBatchView[0]).toMatchObject({
+      id: foreignQrId,
+      status: "claimed",
+      ownerId: null,
+      projectId: null,
+      title: "",
+      body: "",
+      privacy: "private",
+      media: []
+    });
+    expect(JSON.stringify(foreignBatchView)).not.toContain("Foreign QR reset sentinel");
+    expect(JSON.stringify(foreignBatchView)).not.toContain(COMPETITION_OWNER_ID);
+    await expect(store.resetCompetitionFixture({ ...options, mode: "apply" })).rejects.toThrow(
+      "outside its owner sandbox"
+    );
+    expect(await store.getQrState(foreignQrId, COMPETITION_OWNER_ID)).toMatchObject({
+      state: "claimed",
+      viewerIsOwner: true,
+      link: { ownerId: COMPETITION_OWNER_ID }
+    });
+  });
+
+  it("rolls back the in-memory competition reset if its exact postcondition fails", async () => {
+    const isolated = new InMemoryLifeLinksStore();
+    const options = {
+      password: "competition-password",
+      qrBaseUrl: "https://challenge.life-links.test",
+      mode: "apply" as const
+    };
+    await isolated.resetCompetitionFixture(options);
+    const target = await isolated.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID);
+    await isolated.updateLifeLink(COMPETITION_OWNER_ID, {
+      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
+      expectedUpdatedAt: target!.lifeLink.updatedAt,
+      patch: { title: "In-memory rollback sentinel" }
+    });
+    await isolated.createSession(
+      COMPETITION_OWNER_ID,
+      "competition-memory-rollback-session-hash",
+      "2099-01-01T00:00:00.000Z"
+    );
+
+    const failureInjectable = isolated as unknown as {
+      assertCompetitionFixturePostcondition: () => void;
+    };
+    const originalPostcondition = failureInjectable.assertCompetitionFixturePostcondition;
+    failureInjectable.assertCompetitionFixturePostcondition = () => {
+      throw new Error("forced competition fixture postcondition failure");
+    };
+    try {
+      await expect(isolated.resetCompetitionFixture(options)).rejects.toThrow(
+        "forced competition fixture postcondition failure"
+      );
+    } finally {
+      failureInjectable.assertCompetitionFixturePostcondition = originalPostcondition;
+    }
+
+    expect(
+      (await isolated.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title
+    ).toBe("In-memory rollback sentinel");
+    expect(await isolated.getSessionByTokenHash("competition-memory-rollback-session-hash")).not.toBeNull();
   });
 
   it("enforces optimistic revisions, owner boundaries, self-parenting, and cycles", async () => {

@@ -9,7 +9,12 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  COMPETITION_CAMERA_BATTERY_KIT_ID,
+  COMPETITION_FIELD_CAMERA_BAG_ID,
+  COMPETITION_OWNER_ID,
+  COMPETITION_TARGET_QR_ID,
   DEFAULT_QR_BASE_URL,
+  DEMO_OWNER_ID,
   DEMO_PASSWORD,
   EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT,
   REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT
@@ -107,6 +112,181 @@ describe("Life Links Postgres integration", () => {
     );
     expect(users.rows[0].count).toBe(2);
     expect(migrations.rows[0].count).toBe(4);
+  });
+
+  it("dry-runs and atomically restores the isolated competition fixture without touching another owner", async () => {
+    const options = {
+      password: "competition-postgres-password",
+      qrBaseUrl: "https://challenge.life-links.test"
+    };
+    const legacyOwnerBefore = await store.getLifeLinkDetail(DEMO_OWNER_ID, "project-home");
+    const absentDryRun = await store.resetCompetitionFixture(options);
+    expect(absentDryRun).toMatchObject({
+      profile: "webmcp-camera-kit-v1",
+      ownerId: COMPETITION_OWNER_ID,
+      mode: "dry-run",
+      applied: false,
+      before: { users: 0, sessions: 0, lifeLinks: 0 },
+      after: { users: 0, sessions: 0, lifeLinks: 0 },
+      expected: { users: 1, sessions: 0, lifeLinks: 6, qrBindings: 2, batches: 1, qrCodes: 2 }
+    });
+    expect(await store.getUserById(COMPETITION_OWNER_ID)).toBeNull();
+
+    const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
+    expect(firstApply.after).toEqual(firstApply.expected);
+    const target = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID);
+    expect(target?.ancestry.items.map((item) => item.title)).toEqual([
+      "Field Camera Bag",
+      "Main Compartment",
+      "Power Pouch",
+      "Camera Battery Kit"
+    ]);
+    expect(target?.lifeLink).toMatchObject({ qrId: COMPETITION_TARGET_QR_ID, privacy: "public" });
+
+    expect(await store.getQrState(COMPETITION_TARGET_QR_ID, null)).toMatchObject({
+      state: "claimed",
+      viewerIsOwner: false,
+      link: { ownerId: null, projectId: null }
+    });
+    expect(await store.getQrState(COMPETITION_TARGET_QR_ID, COMPETITION_OWNER_ID)).toMatchObject({
+      state: "claimed",
+      viewerIsOwner: true,
+      link: { ownerId: COMPETITION_OWNER_ID, projectId: COMPETITION_FIELD_CAMERA_BAG_ID }
+    });
+
+    await store.createSession(
+      COMPETITION_OWNER_ID,
+      "competition-postgres-session-hash",
+      "2099-01-01T00:00:00.000Z"
+    );
+    await store.updateLifeLink(COMPETITION_OWNER_ID, {
+      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
+      expectedUpdatedAt: target!.lifeLink.updatedAt,
+      patch: { title: "Drifted Postgres battery kit" }
+    });
+    await store.createLifeLink({
+      id: "competition-postgres-extra-life-link",
+      ownerId: COMPETITION_OWNER_ID,
+      parentId: COMPETITION_FIELD_CAMERA_BAG_ID,
+      title: "Judge-created Postgres extra",
+      createdAt: "2026-08-26T13:00:00.000Z"
+    });
+    await store.createQrBatch(COMPETITION_OWNER_ID, 1, options.qrBaseUrl);
+
+    const driftDryRun = await store.resetCompetitionFixture(options);
+    expect(driftDryRun.applied).toBe(false);
+    expect(driftDryRun.after).toEqual(driftDryRun.before);
+    expect(
+      (await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title
+    ).toBe("Drifted Postgres battery kit");
+    expect(await store.getSessionByTokenHash("competition-postgres-session-hash")).not.toBeNull();
+
+    const restored = await store.resetCompetitionFixture({ ...options, mode: "apply" });
+    expect(restored.after).toEqual(restored.expected);
+    expect(await store.getSessionByTokenHash("competition-postgres-session-hash")).toBeNull();
+    expect(await store.getLifeLinkDetail(COMPETITION_OWNER_ID, "competition-postgres-extra-life-link")).toBeNull();
+    expect(
+      (await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title
+    ).toBe("Camera Battery Kit");
+    expect(await store.getLifeLinkDetail(DEMO_OWNER_ID, "project-home")).toEqual(legacyOwnerBefore);
+
+    const replay = await store.resetCompetitionFixture({ ...options, mode: "apply" });
+    expect(replay.before).toEqual(replay.expected);
+    expect(replay.after).toEqual(replay.expected);
+
+    const foreignBatch = await store.createQrBatch(DEMO_OWNER_ID, 1, options.qrBaseUrl);
+    const foreignQrId = foreignBatch.qrCodes[0].id;
+    const foreignCommandId = "competition-postgres-foreign-qr-attach";
+    const foreignTarget = await store.createLifeLink({
+      id: "competition-postgres-foreign-qr-target",
+      ownerId: COMPETITION_OWNER_ID,
+      parentId: COMPETITION_FIELD_CAMERA_BAG_ID,
+      title: "Foreign Postgres QR reset sentinel",
+      createdAt: "2026-08-26T14:00:00.000Z"
+    });
+    try {
+      await store.claimQr(foreignQrId, COMPETITION_OWNER_ID, {
+        commandId: foreignCommandId,
+        mode: "attach",
+        lifeLinkId: foreignTarget.id
+      });
+      const foreignBatchView = await store.listBatchLinks(DEMO_OWNER_ID, foreignBatch.batch.id);
+      expect(foreignBatchView).toHaveLength(1);
+      expect(foreignBatchView[0]).toMatchObject({
+        id: foreignQrId,
+        status: "claimed",
+        ownerId: null,
+        projectId: null,
+        title: "",
+        body: "",
+        privacy: "private",
+        media: []
+      });
+      expect(JSON.stringify(foreignBatchView)).not.toContain("Foreign Postgres QR reset sentinel");
+      expect(JSON.stringify(foreignBatchView)).not.toContain(COMPETITION_OWNER_ID);
+      await expect(store.resetCompetitionFixture({ ...options, mode: "apply" })).rejects.toThrow(
+        "outside its owner sandbox"
+      );
+      expect(await store.getQrState(foreignQrId, COMPETITION_OWNER_ID)).toMatchObject({
+        state: "claimed",
+        viewerIsOwner: true,
+        link: { ownerId: COMPETITION_OWNER_ID }
+      });
+    } finally {
+      await postgresPool.query("DELETE FROM claim_events WHERE command_id = $1", [foreignCommandId]);
+      await postgresPool.query("DELETE FROM life_link_qr_bindings WHERE qr_id = $1", [foreignQrId]);
+      await postgresPool.query("DELETE FROM life_links WHERE id = $1", [foreignTarget.id]);
+      await postgresPool.query("DELETE FROM qr_codes WHERE id = $1", [foreignQrId]);
+      await postgresPool.query("DELETE FROM export_batches WHERE id = $1", [foreignBatch.batch.id]);
+    }
+  });
+
+  it("rolls back every competition-fixture mutation when an exact postcondition cannot be established", async () => {
+    const options = {
+      password: "competition-postgres-password",
+      qrBaseUrl: "https://challenge.life-links.test",
+      mode: "apply" as const
+    };
+    await store.resetCompetitionFixture(options);
+    const target = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID);
+    await store.updateLifeLink(COMPETITION_OWNER_ID, {
+      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
+      expectedUpdatedAt: target!.lifeLink.updatedAt,
+      patch: { title: "Rollback sentinel title" }
+    });
+    await store.createSession(
+      COMPETITION_OWNER_ID,
+      "competition-postgres-rollback-session-hash",
+      "2099-01-01T00:00:00.000Z"
+    );
+
+    await postgresPool.query(
+      `CREATE FUNCTION fail_competition_fixture_insert() RETURNS trigger
+       LANGUAGE plpgsql AS $$
+       BEGIN
+         IF NEW.id = '${COMPETITION_CAMERA_BATTERY_KIT_ID}' THEN
+           RAISE EXCEPTION 'forced competition fixture insert failure';
+         END IF;
+         RETURN NEW;
+       END $$`
+    );
+    await postgresPool.query(
+      "CREATE TRIGGER fail_competition_fixture_insert_trigger BEFORE INSERT ON life_links FOR EACH ROW EXECUTE FUNCTION fail_competition_fixture_insert()"
+    );
+    try {
+      await expect(store.resetCompetitionFixture(options)).rejects.toThrow("forced competition fixture insert failure");
+    } finally {
+      await postgresPool.query("DROP TRIGGER IF EXISTS fail_competition_fixture_insert_trigger ON life_links");
+      await postgresPool.query("DROP FUNCTION IF EXISTS fail_competition_fixture_insert()");
+    }
+
+    expect(
+      (await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title
+    ).toBe("Rollback sentinel title");
+    expect(await store.getSessionByTokenHash("competition-postgres-rollback-session-hash")).not.toBeNull();
+
+    const restored = await store.resetCompetitionFixture(options);
+    expect(restored.after).toEqual(restored.expected);
   });
 
   it("enforces QR uniqueness and claim ownership transactions", async () => {
@@ -319,6 +499,8 @@ describe("Life Links Postgres integration", () => {
     const qrWithMedia = await request(app).get("/api/qr/LL-DEMO-00002");
     expect(qrWithMedia.status).toBe(200);
     expect(qrWithMedia.body.link.media).toHaveLength(1);
+    expect(qrWithMedia.body.link.media[0]).toMatchObject({ ownerId: null });
+    expect(JSON.stringify(qrWithMedia.body)).not.toContain(DEMO_OWNER_ID);
 
     const mediaFile = await request(app).get(upload.body.media.url);
     expect(mediaFile.status).toBe(200);
