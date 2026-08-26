@@ -1,0 +1,2286 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Life Links Application HTTP API",
+    "version": "1.0.0",
+    "description": "Published v1 contract for the implemented Life Links application HTTP surface. It covers the web and native application workflows plus the stable QR browser entry point. Runtime health, readiness, version, and generic SPA fallback routes are operational or implementation details and are intentionally outside this contract."
+  },
+  "servers": [
+    {
+      "url": "https://lifelinks-vmdemo.com",
+      "description": "Hosted Life Links application"
+    }
+  ],
+  "security": [
+    {
+      "CookieSession": []
+    },
+    {
+      "BearerSession": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "configuration"
+    },
+    {
+      "name": "session"
+    },
+    {
+      "name": "links"
+    },
+    {
+      "name": "media"
+    },
+    {
+      "name": "projects"
+    },
+    {
+      "name": "qr-batches"
+    },
+    {
+      "name": "qr"
+    },
+    {
+      "name": "find"
+    },
+    {
+      "name": "browser"
+    }
+  ],
+  "paths": {
+    "/api/config": {
+      "get": {
+        "operationId": "getLifeLinksConfig",
+        "summary": "Read public application configuration",
+        "tags": [
+          "configuration"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ConfigOk"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "operationId": "loginLifeLinksOwner",
+        "summary": "Create a browser-cookie or native-bearer session",
+        "description": "Browser callers omit `client` and receive an HTTP-only session cookie. Native callers send `client: native` and receive `sessionToken`. Browser-origin enforcement applies to browser mutations; the native login envelope may omit browser Origin and Referer headers.",
+        "tags": [
+          "session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/LoginOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "operationId": "logoutLifeLinksOwner",
+        "summary": "Delete the active session when present",
+        "description": "The operation is idempotent and succeeds even when no valid session exists. It clears the browser session cookie and deletes the authenticated bearer or cookie session when present. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "tags": [
+          "session"
+        ],
+        "security": [
+          {},
+          {
+            "CookieSession": []
+          },
+          {
+            "BearerSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "responses": {
+          "204": {
+            "$ref": "#/components/responses/LogoutNoContent"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/me": {
+      "get": {
+        "operationId": "getLifeLinksSession",
+        "summary": "Read the current optional session",
+        "tags": [
+          "session"
+        ],
+        "security": [
+          {},
+          {
+            "CookieSession": []
+          },
+          {
+            "BearerSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/MeOk"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/links": {
+      "get": {
+        "operationId": "listOwnedLifeLinks",
+        "summary": "List links owned by the authenticated user",
+        "tags": [
+          "links"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/LinkListOk"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/links/{qrId}": {
+      "patch": {
+        "operationId": "updateOwnedLifeLink",
+        "summary": "Update an owned link",
+        "description": "Only the authenticated owner can update a link. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "tags": [
+          "links"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/QrId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkPatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/LinkOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/links/{qrId}/media": {
+      "post": {
+        "operationId": "uploadLifeLinkMedia",
+        "summary": "Upload one image or video to an owned link",
+        "description": "The multipart field name is `file`. One file of at most 25 MiB is accepted, with at most eight media records per link. Supported MIME types are image/jpeg, image/png, image/webp, image/gif, video/mp4, video/webm, and video/quicktime. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "tags": [
+          "media"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/QrId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaUploadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/MediaCreated"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "415": {
+            "$ref": "#/components/responses/UnsupportedMediaType"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/links/{qrId}/media/{mediaId}": {
+      "get": {
+        "operationId": "getLifeLinkMedia",
+        "summary": "Read public media or owner-authorized private media",
+        "tags": [
+          "media"
+        ],
+        "security": [
+          {},
+          {
+            "CookieSession": []
+          },
+          {
+            "BearerSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/QrId"
+          },
+          {
+            "$ref": "#/components/parameters/MediaId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/MediaContent"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteLifeLinkMedia",
+        "summary": "Delete media from an owned link",
+        "description": "Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "tags": [
+          "media"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/QrId"
+          },
+          {
+            "$ref": "#/components/parameters/MediaId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "responses": {
+          "204": {
+            "$ref": "#/components/responses/NoContent"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/projects": {
+      "get": {
+        "operationId": "listLifeLinkProjects",
+        "summary": "List projects owned by the authenticated user",
+        "tags": [
+          "projects"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ProjectListOk"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createLifeLinkProject",
+        "summary": "Create a project for the authenticated user",
+        "description": "Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "tags": [
+          "projects"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/ProjectCreated"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/qr-batches": {
+      "post": {
+        "operationId": "createLifeLinkQrBatch",
+        "summary": "Create and persist a batch of unclaimed QR links",
+        "description": "Supported callers send an integer count from 1 through 10000. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "tags": [
+          "qr-batches"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QrBatchCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/QrBatchCreated"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/qr-batches/{batchId}.csv": {
+      "get": {
+        "operationId": "downloadLifeLinkQrBatchCsv",
+        "summary": "Download a batch mapping as CSV",
+        "tags": [
+          "qr-batches"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BatchId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/QrBatchCsv"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/qr-batches/{batchId}.zip": {
+      "get": {
+        "operationId": "downloadLifeLinkQrBatchZip",
+        "summary": "Download a batch mapping and SVG QR images as ZIP",
+        "tags": [
+          "qr-batches"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BatchId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/QrBatchZip"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/qr/{qrId}": {
+      "get": {
+        "operationId": "resolveLifeLinkQr",
+        "summary": "Resolve the viewer-filtered state of a QR link",
+        "description": "Authentication is optional. Owners receive their private content; unauthenticated or non-owner viewers receive the public, private-placeholder, unclaimed, or not-found state allowed by the canonical store policy.",
+        "tags": [
+          "qr"
+        ],
+        "security": [
+          {},
+          {
+            "CookieSession": []
+          },
+          {
+            "BearerSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/QrId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/QrStateOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "404": {
+            "$ref": "#/components/responses/QrNotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/qr/{qrId}/claim": {
+      "post": {
+        "operationId": "claimLifeLinkQr",
+        "summary": "Idempotently claim an unowned QR link",
+        "description": "`commandId` in the JSON body and `Idempotency-Key` in the header are two bindings for the same command identity; when both are present, the non-empty body value takes precedence. Replaying the same command identity for the same effective owner and QR returns the recorded claim result with the current authorized QR state. Reusing it for a different owner or QR returns `idempotency_key_conflict`. If neither binding is supplied, the server generates an identity. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "tags": [
+          "qr"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/QrId"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ClaimOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/ClaimNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/ClaimConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/find/scan": {
+      "post": {
+        "operationId": "evaluateLifeLinkFindScan",
+        "summary": "Compare a scanned QR value with a target QR identifier",
+        "description": "The scan value may be a Life Links QR URL or a bare Life Links QR identifier. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "tags": [
+          "find"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FindScanRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/FindScanOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/qr/{qrId}": {
+      "get": {
+        "operationId": "openLifeLinkQrPage",
+        "summary": "Open the stable browser page for a QR link",
+        "description": "Returns the Life Links browser application shell. The browser application resolves viewer-filtered QR state through `GET /api/qr/{qrId}`.",
+        "tags": [
+          "browser"
+        ],
+        "security": [
+          {},
+          {
+            "CookieSession": []
+          },
+          {
+            "BearerSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/QrId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/BrowserPageOk"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "CookieSession": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "life_links_session",
+        "description": "HTTP-only, SameSite=Lax browser session cookie."
+      },
+      "BearerSession": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque-session-token",
+        "description": "Opaque native session token returned only by login with `client: native`."
+      }
+    },
+    "parameters": {
+      "XRequestId": {
+        "name": "X-Request-Id",
+        "in": "header",
+        "required": false,
+        "description": "Optional caller-supplied request correlation identifier. A valid value is echoed in the response. A missing value, a value outside the accepted grammar, or a value in the native session-token lexical space is ignored and replaced with a server-generated UUID.",
+        "schema": {
+          "$ref": "#/components/schemas/RequestId"
+        }
+      },
+      "QrId": {
+        "name": "qrId",
+        "in": "path",
+        "required": true,
+        "description": "Canonical Life Links QR identifier.",
+        "schema": {
+          "$ref": "#/components/schemas/QrId"
+        }
+      },
+      "MediaId": {
+        "name": "mediaId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9._:-]+$"
+        }
+      },
+      "BatchId": {
+        "name": "batchId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "description": "Optional claim command identity. The non-empty JSON `commandId` takes precedence when both bindings are supplied.",
+        "schema": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "BrowserOrigin": {
+        "name": "Origin",
+        "in": "header",
+        "required": false,
+        "description": "Required by deployment policy for browser mutations unless a same-origin Referer is available. Authenticated native bearer calls, and native login requests, may omit browser-origin headers.",
+        "schema": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
+    "headers": {
+      "RequestId": {
+        "description": "Request correlation identifier accepted from a valid X-Request-Id request header or generated by the server. Values in the service's native session-token lexical space are rejected and replaced with a generated identifier so credentials cannot enter logs through this header.",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/RequestId"
+        }
+      },
+      "RetryAfter": {
+        "description": "Whole seconds until the active rate-limit bucket resets.",
+        "required": true,
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "SessionCookie": {
+        "description": "Browser session cookie. Login sets it only when `client: native` is absent; logout clears it.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "ContentDisposition": {
+        "description": "Inline media filename or attachment download filename.",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "CacheControl": {
+        "description": "Owner media uses `private, no-store`; public media uses `public, max-age=300`.",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "RequestId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9._:-]+$",
+        "not": {
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      },
+      "QrId": {
+        "type": "string",
+        "minLength": 4,
+        "maxLength": 128,
+        "pattern": "^[Ll][Ll]-[A-Za-z0-9][A-Za-z0-9-]*$"
+      },
+      "User": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "email",
+          "displayName",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Project": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "ownerId",
+          "name",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "JsonValue": {
+        "oneOf": [
+          {
+            "type": "null"
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JsonValue"
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            }
+          }
+        ]
+      },
+      "LinkBodyDocMark": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+          },
+          "attrs": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            }
+          }
+        }
+      },
+      "LinkBodyDocNode": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]*$"
+          },
+          "attrs": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
+            }
+          },
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkBodyDocNode"
+            }
+          },
+          "marks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkBodyDocMark"
+            }
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "LinkBodyDoc": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type"
+        ],
+        "properties": {
+          "type": {
+            "const": "doc"
+          },
+          "content": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkBodyDocNode"
+            }
+          }
+        }
+      },
+      "LinkMedia": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "qrId",
+          "ownerId",
+          "kind",
+          "mimeType",
+          "fileName",
+          "sizeBytes",
+          "url",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "qrId": {
+            "$ref": "#/components/schemas/QrId"
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "image",
+              "video"
+            ]
+          },
+          "mimeType": {
+            "type": "string",
+            "enum": [
+              "image/jpeg",
+              "image/png",
+              "image/webp",
+              "image/gif",
+              "video/mp4",
+              "video/webm",
+              "video/quicktime"
+            ]
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 26214400
+          },
+          "url": {
+            "type": "string",
+            "format": "uri-reference"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "Link": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "url",
+          "status",
+          "ownerId",
+          "title",
+          "body",
+          "projectId",
+          "privacy",
+          "media",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/QrId"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "unclaimed",
+              "claimed"
+            ]
+          },
+          "ownerId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "bodyDoc": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LinkBodyDoc"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bodyDocVersion": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "projectId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "privacy": {
+            "type": "string",
+            "enum": [
+              "public",
+              "private"
+            ]
+          },
+          "media": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "$ref": "#/components/schemas/LinkMedia"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ExportBatch": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "batchKey",
+          "qrBaseUrl",
+          "count",
+          "createdBy",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "batchKey": {
+            "type": "string"
+          },
+          "qrBaseUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "QrNotFoundState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "qrId"
+        ],
+        "properties": {
+          "state": {
+            "const": "not_found"
+          },
+          "qrId": {
+            "$ref": "#/components/schemas/QrId"
+          }
+        }
+      },
+      "QrUnclaimedState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "qr"
+        ],
+        "properties": {
+          "state": {
+            "const": "unclaimed"
+          },
+          "qr": {
+            "$ref": "#/components/schemas/Link"
+          }
+        }
+      },
+      "QrPrivateState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "qrId"
+        ],
+        "properties": {
+          "state": {
+            "const": "private"
+          },
+          "qrId": {
+            "$ref": "#/components/schemas/QrId"
+          }
+        }
+      },
+      "QrClaimedState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "state",
+          "link",
+          "viewerIsOwner"
+        ],
+        "properties": {
+          "state": {
+            "const": "claimed"
+          },
+          "link": {
+            "$ref": "#/components/schemas/Link"
+          },
+          "viewerIsOwner": {
+            "type": "boolean"
+          }
+        }
+      },
+      "QrViewState": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/QrNotFoundState"
+          },
+          {
+            "$ref": "#/components/schemas/QrUnclaimedState"
+          },
+          {
+            "$ref": "#/components/schemas/QrPrivateState"
+          },
+          {
+            "$ref": "#/components/schemas/QrClaimedState"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "state",
+          "mapping": {
+            "not_found": "#/components/schemas/QrNotFoundState",
+            "unclaimed": "#/components/schemas/QrUnclaimedState",
+            "private": "#/components/schemas/QrPrivateState",
+            "claimed": "#/components/schemas/QrClaimedState"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "format": "password",
+            "writeOnly": true
+          },
+          "client": {
+            "const": "native",
+            "description": "When present, selects the native bearer-token response instead of the browser cookie response."
+          }
+        }
+      },
+      "LoginResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "user",
+          "qrBaseUrl"
+        ],
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "qrBaseUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "sessionToken": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256,
+            "readOnly": true,
+            "description": "Returned only for native login. Store as an opaque bearer credential."
+          }
+        }
+      },
+      "MeResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "user",
+          "qrBaseUrl"
+        ],
+        "properties": {
+          "user": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/User"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "qrBaseUrl": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      },
+      "ConfigResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "qrBaseUrl",
+          "maxBatchCount"
+        ],
+        "properties": {
+          "qrBaseUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "maxBatchCount": {
+            "const": 10000
+          }
+        }
+      },
+      "LinkListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "links"
+        ],
+        "properties": {
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Link"
+            }
+          }
+        }
+      },
+      "LinkResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "link"
+        ],
+        "properties": {
+          "link": {
+            "$ref": "#/components/schemas/Link"
+          }
+        }
+      },
+      "LinkPatchRequest": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "bodyDoc": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LinkBodyDoc"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The serialized JSON document is limited to 128 KiB and nesting is normalized to at most 16 levels."
+          },
+          "bodyDocVersion": {
+            "oneOf": [
+              {
+                "const": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "privacy": {
+            "type": "string",
+            "enum": [
+              "public",
+              "private"
+            ]
+          },
+          "projectId": {
+            "oneOf": [
+              {
+                "type": "string",
+                "maxLength": 160
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "MediaUploadRequest": {
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary"
+          }
+        }
+      },
+      "MediaResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "media"
+        ],
+        "properties": {
+          "media": {
+            "$ref": "#/components/schemas/LinkMedia"
+          }
+        }
+      },
+      "ProjectListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "projects"
+        ],
+        "properties": {
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Project"
+            }
+          }
+        }
+      },
+      "ProjectCreateRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          }
+        }
+      },
+      "ProjectResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "project"
+        ],
+        "properties": {
+          "project": {
+            "$ref": "#/components/schemas/Project"
+          }
+        }
+      },
+      "QrBatchCreateRequest": {
+        "type": "object",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000
+          }
+        }
+      },
+      "QrBatchCreateResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "batch",
+          "qrCodes"
+        ],
+        "properties": {
+          "batch": {
+            "$ref": "#/components/schemas/ExportBatch"
+          },
+          "qrCodes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10000,
+            "items": {
+              "$ref": "#/components/schemas/Link"
+            }
+          }
+        }
+      },
+      "ClaimRequest": {
+        "type": "object",
+        "properties": {
+          "commandId": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Optional claim command identity. After trimming, a non-empty body value takes precedence over Idempotency-Key; an empty value is treated as absent."
+          }
+        }
+      },
+      "ClaimSuccessResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "result",
+          "state"
+        ],
+        "properties": {
+          "result": {
+            "type": "string",
+            "enum": [
+              "claimed",
+              "already_owned"
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/QrClaimedState"
+          }
+        }
+      },
+      "ClaimNotFoundResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "result",
+          "state"
+        ],
+        "properties": {
+          "result": {
+            "const": "not_found"
+          },
+          "state": {
+            "$ref": "#/components/schemas/QrNotFoundState"
+          }
+        }
+      },
+      "ClaimOwnedByOtherResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "result",
+          "state"
+        ],
+        "properties": {
+          "result": {
+            "const": "owned_by_other"
+          },
+          "state": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/QrPrivateState"
+              },
+              {
+                "$ref": "#/components/schemas/QrClaimedState"
+              }
+            ]
+          }
+        }
+      },
+      "FindScanRequest": {
+        "type": "object",
+        "required": [
+          "targetQrId",
+          "scanText"
+        ],
+        "properties": {
+          "targetQrId": {
+            "$ref": "#/components/schemas/QrId"
+          },
+          "scanText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        }
+      },
+      "FindScanResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "targetQrId",
+          "scannedQrId",
+          "match"
+        ],
+        "properties": {
+          "targetQrId": {
+            "$ref": "#/components/schemas/QrId"
+          },
+          "scannedQrId": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048,
+                "description": "Decoded QR path segment or bare Life Links identifier parsed from scanText. URL path segments are reported even when they are not valid canonical Life Links identifiers."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "match": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "IdempotencyConflictError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "const": "idempotency_key_conflict"
+          }
+        }
+      },
+      "RateLimitResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error",
+          "retryAfterSeconds"
+        ],
+        "properties": {
+          "error": {
+            "const": "rate_limited"
+          },
+          "retryAfterSeconds": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "responses": {
+      "ConfigOk": {
+        "description": "Current public application configuration.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ConfigResponse"
+            }
+          }
+        }
+      },
+      "LoginOk": {
+        "description": "Authenticated user and QR base URL. Browser login also sets the session cookie; native login returns sessionToken in the JSON body.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Set-Cookie": {
+            "$ref": "#/components/headers/SessionCookie"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/LoginResponse"
+            }
+          }
+        }
+      },
+      "LogoutNoContent": {
+        "description": "Session deleted when present and browser cookie cleared.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Set-Cookie": {
+            "$ref": "#/components/headers/SessionCookie"
+          }
+        }
+      },
+      "MeOk": {
+        "description": "Current user when authenticated, otherwise null.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MeResponse"
+            }
+          }
+        }
+      },
+      "LinkListOk": {
+        "description": "Links owned by the current user.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/LinkListResponse"
+            }
+          }
+        }
+      },
+      "LinkOk": {
+        "description": "Updated link.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/LinkResponse"
+            }
+          }
+        }
+      },
+      "MediaCreated": {
+        "description": "Created media metadata.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/MediaResponse"
+            }
+          }
+        }
+      },
+      "MediaContent": {
+        "description": "Media bytes. Private media is disclosed only to its owner; denied private reads use the same 404 response as missing media.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Content-Disposition": {
+            "$ref": "#/components/headers/ContentDisposition"
+          },
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          }
+        },
+        "content": {
+          "image/jpeg": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "image/png": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "image/webp": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "image/gif": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "video/mp4": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "video/webm": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "video/quicktime": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          }
+        }
+      },
+      "ProjectListOk": {
+        "description": "Projects owned by the current user.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProjectListResponse"
+            }
+          }
+        }
+      },
+      "ProjectCreated": {
+        "description": "Created project.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ProjectResponse"
+            }
+          }
+        }
+      },
+      "QrBatchCreated": {
+        "description": "Persisted QR batch and its unclaimed QR links.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/QrBatchCreateResponse"
+            }
+          }
+        }
+      },
+      "QrBatchCsv": {
+        "description": "CSV batch mapping attachment.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Content-Disposition": {
+            "$ref": "#/components/headers/ContentDisposition"
+          }
+        },
+        "content": {
+          "text/csv": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "QrBatchZip": {
+        "description": "ZIP attachment containing mapping.csv and SVG QR images.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Content-Disposition": {
+            "$ref": "#/components/headers/ContentDisposition"
+          }
+        },
+        "content": {
+          "application/zip": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          }
+        }
+      },
+      "QrStateOk": {
+        "description": "Viewer-filtered unclaimed, private-placeholder, or claimed QR state.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/QrUnclaimedState"
+                },
+                {
+                  "$ref": "#/components/schemas/QrPrivateState"
+                },
+                {
+                  "$ref": "#/components/schemas/QrClaimedState"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "QrNotFound": {
+        "description": "The QR identifier does not exist. Unlike generic route errors, this is a typed QR state response.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/QrNotFoundState"
+            }
+          }
+        }
+      },
+      "ClaimOk": {
+        "description": "The QR was claimed or was already owned by this caller. Same-command replay returns the recorded result with the current authorized QR state.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ClaimSuccessResponse"
+            }
+          }
+        }
+      },
+      "ClaimNotFound": {
+        "description": "The QR identifier does not exist.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ClaimNotFoundResponse"
+            }
+          }
+        }
+      },
+      "ClaimConflict": {
+        "description": "The QR belongs to another owner, or the supplied command identity is already bound to a different effective owner or QR identifier.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/ClaimOwnedByOtherResponse"
+                },
+                {
+                  "$ref": "#/components/schemas/IdempotencyConflictError"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "FindScanOk": {
+        "description": "Parsed scan identifier and exact target match result.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/FindScanResponse"
+            }
+          }
+        }
+      },
+      "BrowserPageOk": {
+        "description": "Life Links browser application HTML shell.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "text/html": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "NoContent": {
+        "description": "The mutation completed and returns no body.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "The request failed input or multipart validation.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Authentication failed, or a valid Life Links session is required.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "Forbidden": {
+        "description": "The browser Origin or same-origin Referer did not satisfy the configured mutation-origin policy.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "The resource was missing or deliberately hidden because the caller is not its owner.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "PayloadTooLarge": {
+        "description": "The uploaded media file exceeded 25 MiB.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "UnsupportedMediaType": {
+        "description": "The uploaded media MIME type is outside the supported image and video set.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "The active request bucket is rate limited.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RateLimitResponse"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "An unexpected server error occurred.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorResponse"
+            }
+          }
+        }
+      }
+    }
+  }
+}

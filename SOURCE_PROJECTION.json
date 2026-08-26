@@ -1,0 +1,349 @@
+{
+  "canonical_source_byte_count": 413883,
+  "canonical_source_tree_sha256": "92d6ec4fff44de324b6a3f03f11fc4f5d0b6a9780d7c14de53593fccbba6b3b4",
+  "excluded_globs": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/test-results/**",
+    "**/playwright-report/**"
+  ],
+  "excluded_paths": [
+    "systems/life_links/apps/life-links-demo/README.md",
+    "systems/life_links/apps/life-links-demo/app.manifest.json",
+    "systems/life_links/packages/life-links-core/package.manifest.json",
+    "systems/life_links/services/life-links-api/README.md",
+    "systems/life_links/services/life-links-api/deploy.manifest.json",
+    "systems/life_links/services/life-links-api/service.manifest.json"
+  ],
+  "output_text_transforms": [
+    {
+      "canonical_byte_count": 334,
+      "canonical_sha256": "e18ee931ddcf8478131a3b98bc829c01a66a9e96da26d90a6c926bb05fe4a4ca",
+      "destination": "packages/life-links-core/tsconfig.json",
+      "id": "standalone-core-tsconfig-root",
+      "kind": "exact_text_replacements",
+      "projected_byte_count": 328,
+      "projected_sha256": "34414d1330520d4f707d4d05eb6efbfb90e91aeaa65f5bf09a36cc2fb20a4245",
+      "replacements": [
+        {
+          "after_byte_count": 32,
+          "after_sha256": "7b0f21c49adfc4f86fda97c9d863b8a4e9f9eff87a9913fe010ffa18013e27ba",
+          "before_byte_count": 38,
+          "before_sha256": "9e2de9efbaf345b3f80321e901d10ec5c4f9c10f6e4a1434c5e92d84328105f6",
+          "expected_occurrences": 1,
+          "index": 0
+        }
+      ],
+      "selected_variant_id": "canonical-monorepo-layout"
+    },
+    {
+      "canonical_byte_count": 353,
+      "canonical_sha256": "6930941bb8afe1dda9a1066d39476bfc8b90b2317218ca4cba39e0828c96cc3f",
+      "destination": "services/life-links-api/tsconfig.json",
+      "id": "standalone-api-tsconfig-root",
+      "kind": "exact_text_replacements",
+      "projected_byte_count": 347,
+      "projected_sha256": "a992f3fa193e117fbaddf75fc11d24ede6c4ad07826a7ebb958d650f2d982fc2",
+      "replacements": [
+        {
+          "after_byte_count": 32,
+          "after_sha256": "7b0f21c49adfc4f86fda97c9d863b8a4e9f9eff87a9913fe010ffa18013e27ba",
+          "before_byte_count": 38,
+          "before_sha256": "9e2de9efbaf345b3f80321e901d10ec5c4f9c10f6e4a1434c5e92d84328105f6",
+          "expected_occurrences": 1,
+          "index": 0
+        }
+      ],
+      "selected_variant_id": "canonical-monorepo-layout"
+    },
+    {
+      "canonical_byte_count": 1611,
+      "canonical_sha256": "8d9e69737876421d3e471212d2dc369d00fa02369025b35c4341ada1fc25cd99",
+      "destination": "apps/life-links-demo/package.json",
+      "id": "standalone-demo-package-scripts",
+      "kind": "exact_text_replacements",
+      "projected_byte_count": 1486,
+      "projected_sha256": "81f6bca192d205a49101f1fe2dac96cf27f851481a4d21214c221dab2455ba99",
+      "replacements": [
+        {
+          "after_byte_count": 13,
+          "after_sha256": "b38a221d05bb4fa037dae6c7b1b207c6dab15ed3fcef91a8c7313e128714e66e",
+          "before_byte_count": 30,
+          "before_sha256": "d0897a3abcdb5bb9b8b34eae1da5aff09375025f191fc48c647b90667e52374e",
+          "expected_occurrences": 3,
+          "index": 0
+        },
+        {
+          "after_byte_count": 6,
+          "after_sha256": "a9127f3d34365221cd20a3b712012600645aed15172d49c939fe39ebbb0474e5",
+          "before_byte_count": 33,
+          "before_sha256": "0872cc9ed589e826d17a3db69e01982e5c75fbfe5926306fe32740bf9990b2ef",
+          "expected_occurrences": 1,
+          "index": 1
+        },
+        {
+          "after_byte_count": 0,
+          "after_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "before_byte_count": 47,
+          "before_sha256": "202f991c226ea2b83d64434f0ba162d5c82d2b9c5769e7ab4b2daa21d04f8f7f",
+          "expected_occurrences": 1,
+          "index": 2
+        }
+      ],
+      "selected_variant_id": "canonical-workspace-scripts"
+    },
+    {
+      "canonical_byte_count": 1485,
+      "canonical_sha256": "78c3e2c308460d6d0eb3b608078133436daee6396eb59e7a6865e451c8f26075",
+      "destination": "services/life-links-api/package.json",
+      "id": "standalone-api-package-scripts",
+      "kind": "exact_text_replacements",
+      "projected_byte_count": 1383,
+      "projected_sha256": "3c85a32e99578732ed6f61e98f651fb2c6fc505c18502dba795186be7705cc04",
+      "replacements": [
+        {
+          "after_byte_count": 13,
+          "after_sha256": "b38a221d05bb4fa037dae6c7b1b207c6dab15ed3fcef91a8c7313e128714e66e",
+          "before_byte_count": 30,
+          "before_sha256": "d0897a3abcdb5bb9b8b34eae1da5aff09375025f191fc48c647b90667e52374e",
+          "expected_occurrences": 6,
+          "index": 0
+        }
+      ],
+      "selected_variant_id": "canonical-workspace-scripts"
+    },
+    {
+      "canonical_byte_count": 22735,
+      "canonical_sha256": "172a94d1e6a77c564fac05553fc33170f58a000d7a23d1a8cfb9f229eb558ad8",
+      "destination": "packages/life-links-core/src/index.ts",
+      "id": "public-core-demo-fixtures",
+      "kind": "exact_text_replacements",
+      "projected_byte_count": 22743,
+      "projected_sha256": "602664ce86863085cda544972a7540f5ecb8ce8ec6a126cab74ae01831ce9b83",
+      "replacements": [
+        {
+          "after_byte_count": 59,
+          "after_sha256": "55a078ef579ed0b9173ac0c04ee78d1136fb1179d0c46ddb0327713354bf0200",
+          "before_byte_count": 66,
+          "before_sha256": "2e2b4eb0d9571de5ff179ed3450810a425d8202c76a7d8f4b628af8d17ae9d1a",
+          "expected_occurrences": 1,
+          "index": 0
+        },
+        {
+          "after_byte_count": 70,
+          "after_sha256": "420dc1f8756c808dc4c256eff6c1031dc839d78df1bcb03b9250a4065293d45f",
+          "before_byte_count": 45,
+          "before_sha256": "0e43d6bb07d9fa8aadd41e14904ff0145b4cc7c29e0c11011e7ff616f2030f27",
+          "expected_occurrences": 1,
+          "index": 1
+        },
+        {
+          "after_byte_count": 21,
+          "after_sha256": "e83e73a73dfbeb77efab653b186d2ae2818e8fb6151a328a244c220d08421daf",
+          "before_byte_count": 26,
+          "before_sha256": "7b36980433a92d3ceec1b5842a8c8dc06d8d541359fd6996ea4b8d0ac8616c4c",
+          "expected_occurrences": 1,
+          "index": 2
+        },
+        {
+          "after_byte_count": 21,
+          "after_sha256": "67902770711ea8532867de36740e6d920bbf2aa11c53f96c19a088379498fe62",
+          "before_byte_count": 26,
+          "before_sha256": "5501ac5e77edf29eebce85bad090ee7b6ef39e929cd243937320a0eec2de523b",
+          "expected_occurrences": 1,
+          "index": 3
+        }
+      ],
+      "selected_variant_id": "legacy-frozen-default"
+    },
+    {
+      "canonical_byte_count": 5045,
+      "canonical_sha256": "ae84a3018dde047ef332248b796cad2a6f0c77fa574e1d739183fa844033a8de",
+      "destination": "services/life-links-api/src/config.ts",
+      "id": "public-local-seed-password",
+      "kind": "exact_text_replacements",
+      "projected_byte_count": 5070,
+      "projected_sha256": "f72a1d7e84dd31d65290c71cea8c9efe303d7c4d27bfbf550c7414cdda795270",
+      "replacements": [
+        {
+          "after_byte_count": 40,
+          "after_sha256": "c7b656aa5949cad0dbeca32848eb25ac4fd70a75bd502941917c3b23f556cdc3",
+          "before_byte_count": 15,
+          "before_sha256": "c7d9b2468496f2fe40a932e6f4207170c556efc33e83e59008d1175ed7b23bec",
+          "expected_occurrences": 1,
+          "index": 0
+        }
+      ],
+      "selected_variant_id": "legacy-local-default"
+    },
+    {
+      "canonical_byte_count": 10577,
+      "canonical_sha256": "1c82c266eab64133a0ef172fd3f7bdf60c12b25b17ddae148cfa2153a66888b4",
+      "destination": "apps/life-links-demo/e2e/rich-body-editor.spec.ts",
+      "id": "public-rich-editor-demo-identity",
+      "kind": "exact_text_replacements",
+      "projected_byte_count": 10572,
+      "projected_sha256": "9e2504774a38d5ff5bf5bd9eac9e88df498cf485bc928b6cd28821e28559c6e2",
+      "replacements": [
+        {
+          "after_byte_count": 21,
+          "after_sha256": "e83e73a73dfbeb77efab653b186d2ae2818e8fb6151a328a244c220d08421daf",
+          "before_byte_count": 26,
+          "before_sha256": "7b36980433a92d3ceec1b5842a8c8dc06d8d541359fd6996ea4b8d0ac8616c4c",
+          "expected_occurrences": 1,
+          "index": 0
+        }
+      ],
+      "selected_variant_id": "legacy-demo-owner"
+    },
+    {
+      "canonical_byte_count": 8440,
+      "canonical_sha256": "78378ea1b43c52bd134f2fa41032b3a969536cf302ca67c5e340ab132f5045f6",
+      "destination": "services/life-links-api/tests/postgres.integration.test.ts",
+      "id": "public-postgres-demo-identities",
+      "kind": "exact_text_replacements",
+      "projected_byte_count": 8425,
+      "projected_sha256": "a06a082082d5cf2a6aa46a02b5b9c9306e32b729dd4d99a49d99fd9c4c43d328",
+      "replacements": [
+        {
+          "after_byte_count": 21,
+          "after_sha256": "e83e73a73dfbeb77efab653b186d2ae2818e8fb6151a328a244c220d08421daf",
+          "before_byte_count": 26,
+          "before_sha256": "7b36980433a92d3ceec1b5842a8c8dc06d8d541359fd6996ea4b8d0ac8616c4c",
+          "expected_occurrences": 2,
+          "index": 0
+        },
+        {
+          "after_byte_count": 21,
+          "after_sha256": "67902770711ea8532867de36740e6d920bbf2aa11c53f96c19a088379498fe62",
+          "before_byte_count": 26,
+          "before_sha256": "5501ac5e77edf29eebce85bad090ee7b6ef39e929cd243937320a0eec2de523b",
+          "expected_occurrences": 1,
+          "index": 1
+        }
+      ],
+      "selected_variant_id": "legacy-demo-users"
+    },
+    {
+      "canonical_byte_count": 33013,
+      "canonical_sha256": "d0c3c08737c712dc3c2afae856e4bfdcb2659de6ce0f03b3922b637018a3850f",
+      "destination": "services/life-links-api/tests/server.test.ts",
+      "id": "public-api-demo-identities",
+      "kind": "exact_text_replacements",
+      "projected_byte_count": 32938,
+      "projected_sha256": "664995ad7d766b7491647e4d9939adca0ce30b01da61746d59ba72e2db580bac",
+      "replacements": [
+        {
+          "after_byte_count": 21,
+          "after_sha256": "e83e73a73dfbeb77efab653b186d2ae2818e8fb6151a328a244c220d08421daf",
+          "before_byte_count": 26,
+          "before_sha256": "7b36980433a92d3ceec1b5842a8c8dc06d8d541359fd6996ea4b8d0ac8616c4c",
+          "expected_occurrences": 13,
+          "index": 0
+        },
+        {
+          "after_byte_count": 21,
+          "after_sha256": "67902770711ea8532867de36740e6d920bbf2aa11c53f96c19a088379498fe62",
+          "before_byte_count": 26,
+          "before_sha256": "5501ac5e77edf29eebce85bad090ee7b6ef39e929cd243937320a0eec2de523b",
+          "expected_occurrences": 2,
+          "index": 1
+        }
+      ],
+      "selected_variant_id": "legacy-two-guest-references"
+    },
+    {
+      "canonical_byte_count": 61180,
+      "canonical_sha256": "d0742ce5ef2afd3bd4d7e5a574eba9acad774efbb79e163c45ccec2d0e4d9fe6",
+      "destination": "contracts/http/openapi.json",
+      "id": "public-openapi-metadata",
+      "kind": "exact_text_replacements",
+      "projected_byte_count": 60985,
+      "projected_sha256": "d2ad9cae6941a45bc51f7331dfedb4ae9a1d4dbe1a2e1ac380c1c9e764ec1311",
+      "replacements": [
+        {
+          "after_byte_count": 0,
+          "after_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "before_byte_count": 195,
+          "before_sha256": "715aeaf5f00efa7b11b1f1a3476a75261342d6f48ae83f5426cd73fad72994fe",
+          "expected_occurrences": 1,
+          "index": 0
+        }
+      ],
+      "selected_variant_id": "canonical-vector-mosaic-identities"
+    },
+    {
+      "canonical_byte_count": 25305,
+      "canonical_sha256": "124be0642505e44bf624c9794bc3fad116dec06ac88c102753ee613b32750507",
+      "destination": "services/life-links-api/tests/openapi-contract.test.ts",
+      "id": "standalone-openapi-included-clients",
+      "kind": "exact_text_replacements",
+      "projected_byte_count": 24639,
+      "projected_sha256": "aff1eeeb84c41aa13effadecaa33adaf404bb0dce8199a474a1cb2ba26fd303b",
+      "replacements": [
+        {
+          "after_byte_count": 0,
+          "after_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "before_byte_count": 104,
+          "before_sha256": "00537db53b168cdef6d8e3e1c5371756426f16e4756af9ebcb28eb28f8868ad6",
+          "expected_occurrences": 1,
+          "index": 0
+        },
+        {
+          "after_byte_count": 0,
+          "after_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "before_byte_count": 133,
+          "before_sha256": "1d30e05bb2da3388e3dc53d4b3c02206d6fe420ca44f677b4e4766e1b5c6f847",
+          "expected_occurrences": 1,
+          "index": 1
+        },
+        {
+          "after_byte_count": 881,
+          "after_sha256": "95609569bb96ed215b7ff6189234bd1ae8454d4995db6e735d5be35803c5d895",
+          "before_byte_count": 1040,
+          "before_sha256": "e5a25cc622d05dd6137e9818b09997575b76560c9a8ec297ebd35f3aab2371ca",
+          "expected_occurrences": 1,
+          "index": 2
+        },
+        {
+          "after_byte_count": 0,
+          "after_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "before_byte_count": 270,
+          "before_sha256": "143982b223614233fa3f36debfb4d1d38ab67bc874b6f88b3d8a80beee42a97d",
+          "expected_occurrences": 1,
+          "index": 3
+        }
+      ],
+      "selected_variant_id": "legacy-app-downloads-and-legacy-http"
+    }
+  ],
+  "profile_id": "life-links-webmcp-challenge-history",
+  "profile_path": "systems/life_links/config/publication/webmcp_challenge_history_public_release.profile.json",
+  "profile_sha256": "f05c3dc41f487e3348f684407d188903e37282e3374b032fce1ff2805fbe56cf",
+  "projection_commit": "1ae36731fd9bedbcebeb7fd3b9efe46a2daafb5e",
+  "scaffold_destinations": [],
+  "scaffolding": [],
+  "schema_version": "life_links.source_projection.v2",
+  "source_byte_count": 412721,
+  "source_commit": "a1f09d1bd6ceb1b8088ca7d632df69889442fed3",
+  "source_file_count": 42,
+  "source_mappings": [
+    {
+      "destination": "apps/life-links-demo",
+      "source": "systems/life_links/apps/life-links-demo"
+    },
+    {
+      "destination": "services/life-links-api",
+      "source": "systems/life_links/services/life-links-api"
+    },
+    {
+      "destination": "packages/life-links-core",
+      "source": "systems/life_links/packages/life-links-core"
+    },
+    {
+      "destination": "contracts/http",
+      "source": "systems/life_links/contracts/http"
+    }
+  ],
+  "source_tree_sha256": "b7888de34f1d1808f5e62a8d705333cea2a9f9971113177ff442b94b7039b625"
+}

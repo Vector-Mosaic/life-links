@@ -1,0 +1,16 @@
+{
+  "name": "life-links-webmcp-challenge",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.14.0",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @life-links/api build",
+    "dev": "pnpm --filter @life-links/api dev",
+    "test": "pnpm --filter @life-links/core test && pnpm --filter @life-links/demo test && pnpm --filter @life-links/api test",
+    "typecheck": "pnpm --filter @life-links/core typecheck && pnpm --filter @life-links/demo exec tsc --noEmit && pnpm --filter @life-links/api typecheck"
+  }
+}
