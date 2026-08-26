@@ -345,7 +345,7 @@
   "scaffolding": [],
   "schema_version": "life_links.source_projection.v2",
   "source_byte_count": 1053177,
-  "source_commit": "cc1a32d5d511b4e33a9201f827ae88dfee646e42",
+  "source_commit": "98d734a052c1ca71fb4ae33aebbf0267e0599d91",
   "source_file_count": 88,
   "source_mappings": [
     {
