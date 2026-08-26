@@ -132,6 +132,11 @@ test.describe("competition physical-to-digital loop", () => {
     const breadcrumbs = page.getByRole("navigation", { name: "Life Link path" });
     await expect(breadcrumbs.locator(":scope > .life-link-breadcrumb-item > button")).toHaveText(TARGET_PATH);
     await expect(breadcrumbs.locator(".life-link-breadcrumb-ellipsis")).toHaveCount(0);
+    const breadcrumbViewport = await breadcrumbs.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth
+    }));
+    expect(breadcrumbViewport.scrollWidth).toBeLessThanOrEqual(breadcrumbViewport.clientWidth + 1);
     const hierarchyViewport = await page.locator(".life-link-tree").evaluate((element) => ({
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth

@@ -1888,10 +1888,12 @@ textarea {
 
 .life-link-breadcrumbs {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   min-width: 0;
-  overflow-x: auto;
+  row-gap: 6px;
+  overflow-x: visible;
   color: var(--muted);
 }
 
