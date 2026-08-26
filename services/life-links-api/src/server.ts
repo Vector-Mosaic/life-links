@@ -1866,6 +1866,8 @@ function runtimeFields(config: LifeLinksConfig) {
     env: config.env,
     version: config.version,
     build_sha: config.buildSha,
+    canonical_source_sha: config.canonicalSourceSha,
+    source_tree_sha256: config.sourceTreeSha256,
     build_time: config.buildTime,
     store_mode: config.storeMode
   };

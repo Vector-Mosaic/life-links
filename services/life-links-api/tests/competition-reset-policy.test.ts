@@ -6,6 +6,9 @@ import { authorizeCompetitionReset, requireCompetitionResetPassword } from "../s
 import { readConfig } from "../src/config.js";
 
 const ENVIRONMENT_ID = "00000000-0000-4000-8000-000000000090";
+const BUILD_SHA = "a".repeat(40);
+const CANONICAL_SOURCE_SHA = "b".repeat(40);
+const SOURCE_TREE_SHA256 = "c".repeat(64);
 
 function config(overrides: NodeJS.ProcessEnv = {}) {
   return readConfig({
@@ -16,6 +19,9 @@ function config(overrides: NodeJS.ProcessEnv = {}) {
     QR_BASE_URL: "https://challenge-life-links.example",
     AUTO_SEED: "false",
     COOKIE_SECURE: "true",
+    BUILD_SHA,
+    CANONICAL_SOURCE_SHA,
+    SOURCE_TREE_SHA256,
     ...overrides
   });
 }
@@ -43,7 +49,10 @@ describe("competition fixture reset policy", () => {
       DATABASE_URL: "postgresql://test:test@localhost:5432/test",
       SESSION_SECRET: "competition-reset-test-secret",
       QR_BASE_URL: "https://challenge-life-links.example",
-      AUTO_SEED: "false"
+      AUTO_SEED: "false",
+      BUILD_SHA,
+      CANONICAL_SOURCE_SHA,
+      SOURCE_TREE_SHA256
     });
     expect(hosted).toMatchObject({
       seedPassword: "",
@@ -57,7 +66,10 @@ describe("competition fixture reset policy", () => {
         APP_ENV: "webmcp-challenge",
         LIFE_LINKS_STORE: "postgres",
         DATABASE_URL: "postgresql://test:test@localhost:5432/test",
-        AUTO_SEED: "false"
+        AUTO_SEED: "false",
+        BUILD_SHA,
+        CANONICAL_SOURCE_SHA,
+        SOURCE_TREE_SHA256
       })
     ).toThrow("SESSION_SECRET is required");
     expect(() => requireCompetitionResetPassword({})).toThrow("DEMO_SEED_PASSWORD is required");
@@ -120,9 +132,10 @@ describe("competition fixture reset policy", () => {
       "https://lifelinks-vmdemo.com.",
       "https://nested.lifelinks-vmdemo.com."
     ]) {
-      expect(() => authorizeCompetitionReset(config({ QR_BASE_URL: frozenUrl }), runtime(), selector)).toThrow(
-        "frozen"
-      );
+      expect(() => config({ QR_BASE_URL: frozenUrl })).toThrow("frozen");
+      expect(() =>
+        authorizeCompetitionReset({ ...config(), qrBaseUrl: frozenUrl }, runtime(), selector)
+      ).toThrow("frozen");
     }
   });
 });

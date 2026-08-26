@@ -137,6 +137,68 @@ describe("Life Links API", () => {
     ).toThrow("DEMO_SEED_PASSWORD is required");
   });
 
+  it("requires exact release identities and a canonical QR origin only in the hosted challenge runtime", () => {
+    const challengeEnv: NodeJS.ProcessEnv = {
+      APP_ENV: "webmcp-challenge",
+      LIFE_LINKS_STORE: "memory",
+      SESSION_SECRET: "challenge-source-identity-test-secret",
+      AUTO_SEED: "false",
+      QR_BASE_URL: "https://challenge.life-links.test",
+      BUILD_SHA: "a".repeat(40),
+      CANONICAL_SOURCE_SHA: "b".repeat(40),
+      SOURCE_TREE_SHA256: "c".repeat(64)
+    };
+    expect(readConfig(challengeEnv)).toMatchObject({
+      buildSha: "a".repeat(40),
+      canonicalSourceSha: "b".repeat(40),
+      sourceTreeSha256: "c".repeat(64),
+      qrBaseUrl: "https://challenge.life-links.test",
+      allowedOrigins: ["https://challenge.life-links.test"]
+    });
+
+    for (const [name, value] of [
+      ["BUILD_SHA", undefined],
+      ["BUILD_SHA", "a".repeat(39)],
+      ["BUILD_SHA", "A".repeat(40)],
+      ["BUILD_SHA", "0".repeat(40)],
+      ["CANONICAL_SOURCE_SHA", undefined],
+      ["CANONICAL_SOURCE_SHA", "b".repeat(41)],
+      ["CANONICAL_SOURCE_SHA", "0".repeat(40)],
+      ["SOURCE_TREE_SHA256", undefined],
+      ["SOURCE_TREE_SHA256", "C".repeat(64)],
+      ["SOURCE_TREE_SHA256", "0".repeat(64)]
+    ] as const) {
+      expect(() => readConfig({ ...challengeEnv, [name]: value })).toThrow(name);
+    }
+
+    for (const value of [
+      undefined,
+      "",
+      " https://challenge.life-links.test",
+      "https://challenge.life-links.test ",
+      "http://challenge.life-links.test",
+      "https://user@challenge.life-links.test",
+      "https://user:password@challenge.life-links.test",
+      "https://challenge.life-links.test/",
+      "https://challenge.life-links.test/path",
+      "https://challenge.life-links.test?mode=judge",
+      "https://challenge.life-links.test#judge",
+      "https://challenge.life-links.test.",
+      "https://lifelinks-vmdemo.com",
+      "https://nested.lifelinks-vmdemo.com"
+    ]) {
+      expect(() => readConfig({ ...challengeEnv, QR_BASE_URL: value })).toThrow("QR_BASE_URL");
+    }
+
+    expect(readConfig({ NODE_ENV: "test" })).toMatchObject({
+      buildSha: "local",
+      canonicalSourceSha: "local",
+      sourceTreeSha256: "unknown",
+      qrBaseUrl: DEFAULT_QR_BASE_URL
+    });
+    expect(readConfig({ NODE_ENV: "test" }).allowedOrigins).toContain("http://localhost:3002");
+  });
+
   it("stamps health, readiness, version, and request correlation fields", async () => {
     const events: LogEvent[] = [];
     const logged = await createSeededAgent({
@@ -144,6 +206,8 @@ describe("Life Links API", () => {
       env: {
         APP_VERSION: "observability-test",
         BUILD_SHA: "abc123",
+        CANONICAL_SOURCE_SHA: "canonical-abc123",
+        SOURCE_TREE_SHA256: "tree-abc123",
         BUILD_TIME: "2026-04-22T00:00:00.000Z"
       }
     });
@@ -160,6 +224,8 @@ describe("Life Links API", () => {
       env: "ci",
       version: "observability-test",
       build_sha: "abc123",
+      canonical_source_sha: "canonical-abc123",
+      source_tree_sha256: "tree-abc123",
       build_time: "2026-04-22T00:00:00.000Z",
       store_mode: "memory"
     });
@@ -167,7 +233,14 @@ describe("Life Links API", () => {
     const ready = await request(logged.app).get("/readyz");
     expect(ready.status).toBe(200);
     expect(ready.headers["x-request-id"]).toBeTruthy();
-    expect(ready.body).toMatchObject({ ok: true, status: "ready", system: "life_links" });
+    expect(ready.body).toMatchObject({
+      ok: true,
+      status: "ready",
+      system: "life_links",
+      build_sha: "abc123",
+      canonical_source_sha: "canonical-abc123",
+      source_tree_sha256: "tree-abc123"
+    });
 
     const version = await request(logged.app).get("/version");
     expect(version.status).toBe(200);
@@ -175,7 +248,9 @@ describe("Life Links API", () => {
       system: "life_links",
       component: "life-links-api",
       version: "observability-test",
-      build_sha: "abc123"
+      build_sha: "abc123",
+      canonical_source_sha: "canonical-abc123",
+      source_tree_sha256: "tree-abc123"
     });
 
     const requestLog = events.find((event) => event.event === "life_links.http.request_completed" && event.path === "/healthz");
@@ -204,7 +279,13 @@ describe("Life Links API", () => {
     const ready = await request(logged.app).get("/readyz");
     expect(ready.status).toBe(503);
     expect(JSON.stringify(ready.body)).not.toContain("postgresql://");
-    expect(ready.body).toMatchObject({ ok: false, status: "not_ready" });
+    expect(ready.body).toMatchObject({
+      ok: false,
+      status: "not_ready",
+      build_sha: "local",
+      canonical_source_sha: "local",
+      source_tree_sha256: "unknown"
+    });
 
     const readinessLog = events.find((event) => event.event === "life_links.readiness.failed");
     expect(readinessLog).toBeDefined();

@@ -17,8 +17,36 @@ import {
   installControlledWebMcpHost,
   invokeControlledTool
 } from "./support/controlledWebMcpHost";
+import { requireHostedChallengeExpectedIdentity } from "./support/challengeExpectedIdentity";
 
-const COMPETITION_PASSWORD = "competition-test-password";
+const LOCAL_COMPETITION_PASSWORD = "competition-test-password";
+const LOCAL_CHALLENGE_BASE_URL = "http://127.0.0.1:43183";
+const HOSTED_CHALLENGE_BASE_URL = process.env.LIFE_LINKS_CHALLENGE_BASE_URL?.trim();
+const CHALLENGE_EMAIL = HOSTED_CHALLENGE_BASE_URL
+  ? requireHostedCredential("LIFE_LINKS_CHALLENGE_EMAIL")
+  : COMPETITION_OWNER_EMAIL;
+const CHALLENGE_PASSWORD = HOSTED_CHALLENGE_BASE_URL
+  ? requireHostedCredential("LIFE_LINKS_CHALLENGE_PASSWORD")
+  : LOCAL_COMPETITION_PASSWORD;
+const HOSTED_EXPECTED_RUNTIME_IDENTITY = HOSTED_CHALLENGE_BASE_URL
+  ? {
+      build_sha: requireHostedChallengeExpectedIdentity(
+        "LIFE_LINKS_CHALLENGE_EXPECTED_BUILD_SHA",
+        process.env.LIFE_LINKS_CHALLENGE_EXPECTED_BUILD_SHA,
+        40
+      ),
+      canonical_source_sha: requireHostedChallengeExpectedIdentity(
+        "LIFE_LINKS_CHALLENGE_EXPECTED_CANONICAL_SOURCE_SHA",
+        process.env.LIFE_LINKS_CHALLENGE_EXPECTED_CANONICAL_SOURCE_SHA,
+        40
+      ),
+      source_tree_sha256: requireHostedChallengeExpectedIdentity(
+        "LIFE_LINKS_CHALLENGE_EXPECTED_SOURCE_TREE_SHA256",
+        process.env.LIFE_LINKS_CHALLENGE_EXPECTED_SOURCE_TREE_SHA256,
+        64
+      )
+    }
+  : null;
 const CANONICAL_TOOL_NAMES = [...LIFE_LINKS_PAGE_TOOL_NAMES].sort();
 const TARGET_PATH = ["Field Camera Bag", "Main Compartment", "Power Pouch", "Camera Battery Kit"];
 const DECOY_PATH = "Field Camera Bag > Front Organizer > Lens Cleaning Kit";
@@ -37,7 +65,30 @@ test.describe("competition physical-to-digital loop", () => {
     page
   }) => {
     const journeyStartedAt = Date.now();
-    const localBaseURL = requireLocalChallengeBaseURL(baseURL);
+    const challengeBaseURL = requireChallengeBaseURL(baseURL, HOSTED_CHALLENGE_BASE_URL);
+    const expectedQrBaseUrl = HOSTED_CHALLENGE_BASE_URL
+      ? new URL(HOSTED_CHALLENGE_BASE_URL).origin
+      : LOCAL_CHALLENGE_BASE_URL;
+    expect(challengeBaseURL).toBe(expectedQrBaseUrl);
+    const publicConfigResponse = await page.context().request.get("/api/config");
+    expect(publicConfigResponse.ok()).toBe(true);
+    expect(await publicConfigResponse.json()).toMatchObject({ qrBaseUrl: expectedQrBaseUrl });
+    if (HOSTED_EXPECTED_RUNTIME_IDENTITY) {
+      const versionResponse = await page.context().request.get("/version");
+      expect(versionResponse.ok()).toBe(true);
+      const version = (await versionResponse.json()) as Record<string, unknown>;
+      expect({
+        env: version.env,
+        store_mode: version.store_mode,
+        build_sha: version.build_sha,
+        canonical_source_sha: version.canonical_source_sha,
+        source_tree_sha256: version.source_tree_sha256
+      }).toEqual({
+        env: "webmcp-challenge",
+        store_mode: "postgres",
+        ...HOSTED_EXPECTED_RUNTIME_IDENTITY
+      });
+    }
     const patchRequests: Array<{ url: string; body: unknown }> = [];
     page.on("request", (request) => {
       if (request.method() === "PATCH") {
@@ -68,15 +119,15 @@ test.describe("competition physical-to-digital loop", () => {
     await assertPublicQrHasNoHierarchy(page, "Camera Battery Kit");
     await expect(page.locator(".public-content")).toContainText("Battery readiness");
 
-    await page.getByLabel("Email").fill(COMPETITION_OWNER_EMAIL);
-    await page.getByLabel("Password").fill(COMPETITION_PASSWORD);
+    await page.getByLabel("Email").fill(CHALLENGE_EMAIL);
+    await page.getByLabel("Password").fill(CHALLENGE_PASSWORD);
     await page.getByRole("button", { name: /sign in/i }).click();
     const openInWorkspace = page.getByRole("button", { name: "Open in My Life Links" });
     await expect(openInWorkspace).toBeVisible();
-    await expect(page).toHaveURL(`${localBaseURL}/qr/${COMPETITION_TARGET_QR_ID}`);
+    await expect(page).toHaveURL(`${challengeBaseURL}/qr/${COMPETITION_TARGET_QR_ID}`);
     await openInWorkspace.click();
 
-    await expect(page).toHaveURL(`${localBaseURL}/life-links/${COMPETITION_CAMERA_BATTERY_KIT_ID}`);
+    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_CAMERA_BATTERY_KIT_ID}`);
     await expect(page.locator(`[data-selected-life-link-id="${COMPETITION_CAMERA_BATTERY_KIT_ID}"]`)).toBeVisible();
     const breadcrumbs = page.getByRole("navigation", { name: "Life Link path" });
     await expect(breadcrumbs.locator(":scope > .life-link-breadcrumb-item > button")).toHaveText(TARGET_PATH);
@@ -132,7 +183,7 @@ test.describe("competition physical-to-digital loop", () => {
       recordedPath: TARGET_PATH.join(" > "),
       visibleEffect: "life_link_opened"
     });
-    await expect(page).toHaveURL(`${localBaseURL}/life-links/${COMPETITION_CAMERA_BATTERY_KIT_ID}`);
+    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_CAMERA_BATTERY_KIT_ID}`);
 
     expect(patchRequests).toEqual([]);
     const draftResult = await invokeControlledTool(page, "draft_life_link_update", {
@@ -216,7 +267,7 @@ test.describe("competition physical-to-digital loop", () => {
     await expect(page.locator(".scan-status")).toContainText("Match found");
     await expect(page.locator(".scan-status")).toContainText(COMPETITION_TARGET_QR_ID);
 
-    const freshContext = await browser.newContext({ baseURL: localBaseURL });
+    const freshContext = await browser.newContext({ baseURL: challengeBaseURL });
     try {
       const freshPublicResponse = await freshContext.request.get(`/api/qr/${COMPETITION_TARGET_QR_ID}`);
       expect(freshPublicResponse.ok()).toBe(true);
@@ -252,19 +303,39 @@ test.describe("competition physical-to-digital loop", () => {
   });
 });
 
-function requireLocalChallengeBaseURL(baseURL: string | undefined): string {
+function requireChallengeBaseURL(baseURL: string | undefined, hostedBaseURL: string | undefined): string {
   if (!baseURL) {
-    throw new Error("The challenge E2E requires its configured local base URL.");
+    throw new Error("The challenge E2E requires a configured base URL.");
   }
   const parsed = new URL(baseURL);
   const hostname = parsed.hostname.toLowerCase().replace(/\.+$/, "");
   if (hostname === "lifelinks-vmdemo.com" || hostname.endsWith(".lifelinks-vmdemo.com")) {
     throw new Error("The challenge E2E must not run against the frozen lifelinks-vmdemo host.");
   }
-  if (parsed.hostname !== "127.0.0.1" || parsed.port !== "43183") {
+  if (hostedBaseURL) {
+    const hostedOrigin = new URL(hostedBaseURL).origin;
+    if (parsed.protocol !== "https:" || parsed.origin !== hostedOrigin || baseURL !== hostedOrigin) {
+      throw new Error("The hosted challenge E2E requires the exact configured HTTPS origin.");
+    }
+    return hostedOrigin;
+  }
+  if (
+    parsed.hostname !== "127.0.0.1" ||
+    parsed.port !== "43183" ||
+    parsed.origin !== baseURL ||
+    parsed.origin !== LOCAL_CHALLENGE_BASE_URL
+  ) {
     throw new Error("The challenge E2E requires its dedicated fresh local server on 127.0.0.1:43183.");
   }
   return parsed.origin;
+}
+
+function requireHostedCredential(name: "LIFE_LINKS_CHALLENGE_EMAIL" | "LIFE_LINKS_CHALLENGE_PASSWORD"): string {
+  const value = process.env[name];
+  if (!value?.trim()) {
+    throw new Error(`${name} is required for hosted challenge E2E.`);
+  }
+  return name === "LIFE_LINKS_CHALLENGE_EMAIL" ? value.trim() : value;
 }
 
 function assertNoHierarchyDisclosure(value: unknown): void {

@@ -17,7 +17,6 @@ const storePath = path.resolve(testDirectory, "../src/store.ts");
 const webClientPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/api.ts");
 const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/workspace/controller.ts");
 
-const INCIDENTAL_RUNTIME_ROUTES = new Set(["GET /healthz", "GET /readyz", "GET /version"]);
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
   "DELETE /api/life-links/{lifeLinkId}/media/{mediaId}",
   "DELETE /api/links/{qrId}/media/{mediaId}",
@@ -227,7 +226,7 @@ function implementedApplicationOperations(serverSource: string): string[] {
   ).toBe(literalRegistrations.length + 1);
   expect(serverSource).toContain("app.get(/^\\/(?!api\\/).*/,");
   return [
-    ...literalRegistrations.filter((operation) => !INCIDENTAL_RUNTIME_ROUTES.has(operation)),
+    ...literalRegistrations,
     "GET /qr/{qrId}"
   ].sort();
 }
@@ -377,18 +376,55 @@ describe("Life Links OpenAPI v1", () => {
     }
   });
 
-  it("publishes exactly the implemented application routes and stable QR browser route", () => {
+  it("publishes exactly the implemented HTTP routes and stable QR browser route", () => {
     const document = parseStrictJson(readSource(contractPath));
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(27);
-    for (const incidental of INCIDENTAL_RUNTIME_ROUTES) {
-      expect(published).not.toContain(incidental);
-    }
+    expect(published).toHaveLength(30);
+    expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     const operationIds = [...contractOperations(document).values()].map((operation) => operation.operationId);
-    expect(new Set(operationIds).size).toBe(27);
+    expect(new Set(operationIds).size).toBe(30);
     expect(operationIds.every((operationId) => typeof operationId === "string" && operationId.length > 0)).toBe(true);
+  });
+
+  it("publishes the safe runtime release-identity fields on health, readiness, and version", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "component schemas");
+    const runtimeFields = objectValue(schemas.RuntimeFields, "RuntimeFields schema");
+    expect(runtimeFields.required).toEqual([
+      "system",
+      "component",
+      "env",
+      "version",
+      "build_sha",
+      "canonical_source_sha",
+      "source_tree_sha256",
+      "build_time",
+      "store_mode"
+    ]);
+    const properties = objectValue(runtimeFields.properties, "RuntimeFields properties");
+    expect(objectValue(properties.system, "runtime system").const).toBe("life_links");
+    expect(objectValue(properties.store_mode, "runtime store mode").enum).toEqual(["memory", "postgres"]);
+    for (const field of ["build_sha", "canonical_source_sha", "source_tree_sha256"]) {
+      expect(objectValue(properties[field], field)).toMatchObject({ type: "string", minLength: 1 });
+    }
+
+    for (const [key, operationId, successResponse] of [
+      ["GET /healthz", "getLifeLinksHealth", "#/components/responses/HealthOk"],
+      ["GET /readyz", "getLifeLinksReadiness", "#/components/responses/ReadinessOk"],
+      ["GET /version", "getLifeLinksVersion", "#/components/responses/VersionOk"]
+    ] as const) {
+      const operation = operations.get(key);
+      expect(operation, `missing ${key}`).toBeTruthy();
+      expect(operation?.operationId).toBe(operationId);
+      expect(operation?.security).toEqual([]);
+      expect(objectValue(operation?.responses, `${key} responses`)["200"]).toEqual({ $ref: successResponse });
+    }
+    expect(objectValue(operations.get("GET /readyz")?.responses, "readiness responses")["503"]).toEqual({
+      $ref: "#/components/responses/ReadinessUnavailable"
+    });
   });
 
   it("keeps the included web application client inside the published operation surface", () => {
@@ -481,7 +517,13 @@ describe("Life Links OpenAPI v1", () => {
       expect(objectValue(operation.responses, `${operationId} responses`)).toHaveProperty("401");
     }
 
-    for (const operationId of ["getLifeLinksConfig", "loginLifeLinksOwner"]) {
+    for (const operationId of [
+      "getLifeLinksHealth",
+      "getLifeLinksReadiness",
+      "getLifeLinksVersion",
+      "getLifeLinksConfig",
+      "loginLifeLinksOwner"
+    ]) {
       expect(operationById(operations, operationId).security, `${operationId} must remain public`).toEqual([]);
     }
     for (const operationId of [

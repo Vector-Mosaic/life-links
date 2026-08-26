@@ -4,7 +4,7 @@
   "info": {
     "title": "Life Links Application HTTP API",
     "version": "1.0.0",
-    "description": "Published v1 contract for the implemented Life Links application HTTP surface. It covers the web and native application workflows plus the stable QR browser entry point. Runtime health, readiness, version, and generic SPA fallback routes are operational or implementation details and are intentionally outside this contract."
+    "description": "Published v1 contract for the implemented Life Links HTTP surface. It covers operational release identity, web and native application workflows, and the stable QR browser entry point. Generic SPA fallback routes remain implementation details outside this contract."
   },
   "servers": [
     {
@@ -21,6 +21,9 @@
     }
   ],
   "tags": [
+    {
+      "name": "operations"
+    },
     {
       "name": "configuration"
     },
@@ -53,6 +56,69 @@
     }
   ],
   "paths": {
+    "/healthz": {
+      "get": {
+        "operationId": "getLifeLinksHealth",
+        "summary": "Read process liveness and release identity",
+        "tags": [
+          "operations"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/HealthOk"
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "getLifeLinksReadiness",
+        "summary": "Read dependency readiness and release identity",
+        "tags": [
+          "operations"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/ReadinessOk"
+          },
+          "503": {
+            "$ref": "#/components/responses/ReadinessUnavailable"
+          }
+        }
+      }
+    },
+    "/version": {
+      "get": {
+        "operationId": "getLifeLinksVersion",
+        "summary": "Read exact runtime and source release identity",
+        "tags": [
+          "operations"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/VersionOk"
+          }
+        }
+      }
+    },
     "/api/config": {
       "get": {
         "operationId": "getLifeLinksConfig",
@@ -1406,6 +1472,131 @@
         "not": {
           "pattern": "^[A-Za-z0-9_-]{43}$"
         }
+      },
+      "RuntimeFields": {
+        "type": "object",
+        "required": [
+          "system",
+          "component",
+          "env",
+          "version",
+          "build_sha",
+          "canonical_source_sha",
+          "source_tree_sha256",
+          "build_time",
+          "store_mode"
+        ],
+        "properties": {
+          "system": {
+            "const": "life_links"
+          },
+          "component": {
+            "type": "string",
+            "minLength": 1
+          },
+          "env": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "string",
+            "minLength": 1
+          },
+          "build_sha": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Deployed build identity. APP_ENV=webmcp-challenge requires the nonzero full lowercase 40-hex submitted public Git commit SHA."
+          },
+          "canonical_source_sha": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Canonical source identity. APP_ENV=webmcp-challenge requires the nonzero full lowercase 40-hex private canonical Git commit SHA mapped to the public release."
+          },
+          "source_tree_sha256": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Normalized tracked release-allowlist digest. APP_ENV=webmcp-challenge requires a nonzero lowercase 64-hex SHA-256 value."
+          },
+          "build_time": {
+            "type": "string",
+            "minLength": 1
+          },
+          "store_mode": {
+            "type": "string",
+            "enum": [
+              "memory",
+              "postgres"
+            ]
+          }
+        }
+      },
+      "VersionResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RuntimeFields"
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "HealthResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RuntimeFields"
+          },
+          {
+            "type": "object",
+            "required": [
+              "ok",
+              "service",
+              "status"
+            ],
+            "properties": {
+              "ok": {
+                "const": true
+              },
+              "service": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "const": "ok"
+              }
+            }
+          }
+        ],
+        "unevaluatedProperties": false
+      },
+      "ReadinessResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/RuntimeFields"
+          },
+          {
+            "type": "object",
+            "required": [
+              "ok",
+              "service",
+              "status"
+            ],
+            "properties": {
+              "ok": {
+                "type": "boolean"
+              },
+              "service": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ready",
+                  "not_ready"
+                ]
+              }
+            }
+          }
+        ],
+        "unevaluatedProperties": false
       },
       "QrId": {
         "type": "string",
@@ -2980,6 +3171,66 @@
       }
     },
     "responses": {
+      "HealthOk": {
+        "description": "Process is live and reports the exact runtime release identity.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/HealthResponse"
+            }
+          }
+        }
+      },
+      "ReadinessOk": {
+        "description": "Configured storage dependency is ready and the process reports the exact runtime release identity.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ReadinessResponse"
+            }
+          }
+        }
+      },
+      "ReadinessUnavailable": {
+        "description": "Configured storage dependency is not ready; no connection details are disclosed.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ReadinessResponse"
+            }
+          }
+        }
+      },
+      "VersionOk": {
+        "description": "Exact runtime, deployed build, canonical source, and normalized release-tree identities.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/VersionResponse"
+            }
+          }
+        }
+      },
       "ConfigOk": {
         "description": "Current public application configuration.",
         "headers": {
