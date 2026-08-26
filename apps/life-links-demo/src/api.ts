@@ -27,8 +27,9 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
 
   if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new ApiError(response.status, body.error ?? "api_error", body);
+    const body: unknown = await response.json().catch(() => ({}));
+    const normalized = normalizeApiError(body);
+    throw new ApiError(response.status, normalized.code, body, normalized);
   }
 
   if (response.status === 204) {
@@ -38,13 +39,77 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export class ApiError extends Error {
+  readonly retryable: boolean;
+  readonly reason?: string;
+
   constructor(
     public readonly status: number,
     public readonly code: string,
-    public readonly body: unknown
+    public readonly body: unknown,
+    options: { message?: string; retryable?: boolean; reason?: string } = {}
   ) {
-    super(code);
+    super(options.message ?? defaultApiErrorMessage(code));
+    this.name = "ApiError";
+    this.retryable = options.retryable ?? false;
+    this.reason = options.reason;
   }
+}
+
+type NormalizedApiError = {
+  code: string;
+  message: string;
+  retryable: boolean;
+  reason?: string;
+};
+
+function normalizeApiError(body: unknown): NormalizedApiError {
+  const responseBody = objectRecord(body);
+  const error = responseBody ? responseBody.error : undefined;
+
+  if (typeof error === "string" && error.trim()) {
+    const code = error.trim();
+    return { code, message: defaultApiErrorMessage(code), retryable: false };
+  }
+
+  const structuredError = objectRecord(error);
+  if (structuredError) {
+    const code = nonEmptyString(structuredError.code) ?? "api_error";
+    const reason = nonEmptyString(structuredError.reason);
+    return {
+      code,
+      message: nonEmptyString(structuredError.message) ?? defaultApiErrorMessage(code),
+      retryable: typeof structuredError.retryable === "boolean" ? structuredError.retryable : false,
+      ...(reason ? { reason } : {})
+    };
+  }
+
+  if (responseBody?.result === "owned_by_other") {
+    return {
+      code: "owned_by_other",
+      message: "That QR code is already claimed by another account.",
+      retryable: false
+    };
+  }
+
+  return { code: "api_error", message: defaultApiErrorMessage("api_error"), retryable: false };
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function defaultApiErrorMessage(code: string): string {
+  if (code === "api_error") {
+    return "The request failed.";
+  }
+  const words = code.replace(/_/g, " ").trim();
+  return words ? `${words[0].toUpperCase()}${words.slice(1)}.` : "The request failed.";
 }
 
 export async function getConfig() {

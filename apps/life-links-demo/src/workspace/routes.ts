@@ -1,7 +1,7 @@
 export type LifeLinksRoute =
-  | { surface: "public-qr"; qrId: string }
-  | { surface: "login"; qrId: null }
-  | { surface: "owner-workspace"; qrId: string | null };
+  | { surface: "public-qr"; qrId: string; lifeLinkId: null }
+  | { surface: "login"; qrId: null; lifeLinkId: string | null }
+  | { surface: "owner-workspace"; qrId: null; lifeLinkId: string | null };
 
 export function qrIdFromPath(pathname: string): string | null {
   const match = pathname.match(/^\/qr\/([^/]+)\/?$/i);
@@ -15,15 +15,32 @@ export function qrIdFromPath(pathname: string): string | null {
   }
 }
 
+export function lifeLinkIdFromPath(pathname: string): string | null {
+  const match = pathname.match(/^\/life-links\/([^/]+)\/?$/i);
+  if (!match) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+export function ownerLifeLinkPath(lifeLinkId: string): string {
+  return `/life-links/${encodeURIComponent(lifeLinkId)}`;
+}
+
 export function classifyLifeLinksRoute(pathname: string, authenticated: boolean): LifeLinksRoute {
   const qrId = qrIdFromPath(pathname);
-  if (authenticated) {
-    return { surface: "owner-workspace", qrId };
-  }
   if (qrId) {
-    return { surface: "public-qr", qrId };
+    return { surface: "public-qr", qrId, lifeLinkId: null };
   }
-  return { surface: "login", qrId: null };
+  const lifeLinkId = lifeLinkIdFromPath(pathname);
+  if (authenticated) {
+    return { surface: "owner-workspace", qrId: null, lifeLinkId };
+  }
+  return { surface: "login", qrId: null, lifeLinkId };
 }
 
 export interface WorkspaceBrowserRoute {

@@ -1643,6 +1643,358 @@ textarea {
   font-size: 0.85rem;
 }
 
+.hierarchy-workspace {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.hierarchy-toolbar,
+.hierarchy-action-heading,
+.hierarchy-search-summary,
+.life-link-detail-header,
+.life-link-detail-actions,
+.life-link-detail-badges {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.hierarchy-toolbar h3,
+.life-link-detail-header h3 {
+  margin: 0;
+}
+
+.hierarchy-toolbar .panel-help {
+  margin: 6px 0 0;
+}
+
+.hierarchy-search-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.hierarchy-search-form,
+.hierarchy-inline-form {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.hierarchy-search-form input,
+.hierarchy-inline-form input {
+  min-width: 0;
+}
+
+.hierarchy-search-results {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+}
+
+.hierarchy-search-summary {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.hierarchy-search-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.hierarchy-search-open {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 4px;
+  text-align: left;
+  border: 0;
+  background: transparent;
+}
+
+.hierarchy-search-open strong,
+.hierarchy-search-open span,
+.hierarchy-search-open small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hierarchy-search-open span,
+.hierarchy-search-open small {
+  color: var(--muted);
+}
+
+.hierarchy-search-more,
+.hierarchy-root-more {
+  justify-self: start;
+}
+
+.hierarchy-action-panel {
+  display: grid;
+  gap: 12px;
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+}
+
+.hierarchy-action-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.hierarchy-action-heading span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.hierarchy-main-grid {
+  display: grid;
+  grid-template-columns: minmax(290px, 0.72fr) minmax(0, 1.28fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.hierarchy-tree-panel,
+.hierarchy-detail-panel {
+  min-height: 420px;
+}
+
+.life-link-tree {
+  display: grid;
+  max-height: min(68vh, 760px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.life-link-tree-row {
+  display: grid;
+  grid-template-columns: 32px minmax(220px, 1fr);
+  min-width: calc(270px + var(--tree-depth, 0) * 18px);
+  padding-left: calc(var(--tree-depth, 0) * 18px);
+  border-bottom: 1px solid var(--line);
+  background: var(--row-bg);
+}
+
+.life-link-tree-row:last-child {
+  border-bottom: 0;
+}
+
+.life-link-tree-row.selected,
+.life-link-tree-row.highlighted {
+  background: var(--row-active-bg);
+}
+
+.life-link-tree-row.selected {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.life-link-tree-toggle {
+  display: grid;
+  place-items: center;
+  min-width: 32px;
+  min-height: 54px;
+  padding: 0;
+  color: var(--muted);
+  border: 0;
+  background: transparent;
+}
+
+.life-link-tree-toggle:disabled {
+  opacity: 0.35;
+}
+
+.life-link-tree-select {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px 10px 8px 2px;
+  text-align: left;
+  border: 0;
+  background: transparent;
+}
+
+.life-link-tree-title {
+  overflow: hidden;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.life-link-tree-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.life-link-tree-meta code {
+  display: inline;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.7rem;
+}
+
+.life-link-tree-meta small {
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 5px;
+  color: var(--on-accent);
+  border-radius: 999px;
+  background: var(--accent-dark);
+}
+
+.life-link-tree-more {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: calc(270px + var(--tree-depth, 0) * 18px);
+  min-height: 40px;
+  padding: 6px 10px 6px calc(34px + var(--tree-depth, 0) * 18px);
+  color: var(--accent);
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--soft);
+}
+
+.life-link-owner-detail {
+  display: grid;
+  gap: 18px;
+}
+
+.life-link-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+  color: var(--muted);
+}
+
+.life-link-breadcrumb-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.life-link-breadcrumb-item button {
+  max-width: 190px;
+  padding: 4px 6px;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.life-link-breadcrumb-item button[aria-current="page"] {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.life-link-breadcrumb-ellipsis {
+  color: var(--amber);
+  font-weight: 900;
+}
+
+.hierarchy-bound-note {
+  margin: -12px 0 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.life-link-detail-header {
+  align-items: flex-start;
+}
+
+.life-link-detail-header code {
+  margin-top: 7px;
+  padding: 5px 7px;
+  font-size: 0.72rem;
+}
+
+.life-link-detail-badges {
+  justify-content: flex-end;
+}
+
+.qr-binding-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 260px;
+  padding: 6px 8px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.76rem;
+}
+
+.qr-binding-badge.attached {
+  color: var(--accent);
+}
+
+.life-link-detail-body {
+  min-height: 130px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.life-link-detail-actions {
+  justify-content: flex-start;
+}
+
+.hierarchy-detail-empty {
+  min-height: 380px;
+  padding: 24px;
+  text-align: center;
+}
+
+.public-owner-entry p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.compact-button {
+  min-height: 34px;
+  padding: 0 9px;
+}
+
+.spin {
+  animation: life-links-spin 0.9s linear infinite;
+}
+
+@keyframes life-links-spin {
+  to { transform: rotate(360deg); }
+}
+
 @media (max-width: 1060px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -1687,6 +2039,10 @@ textarea {
   .project-grid,
   .search-grid {
     grid-template-columns: 1fr;
+  }
+
+  .hierarchy-main-grid {
+    grid-template-columns: minmax(260px, 0.82fr) minmax(0, 1.18fr);
   }
 }
 
@@ -1807,6 +2163,41 @@ textarea {
   .inventory-header,
   .batch-strip {
     grid-template-columns: 1fr;
+  }
+
+  .hierarchy-main-grid,
+  .hierarchy-search-result,
+  .hierarchy-search-form,
+  .hierarchy-inline-form {
+    grid-template-columns: 1fr;
+  }
+
+  .hierarchy-search-form > svg,
+  .hierarchy-inline-form > svg {
+    display: none;
+  }
+
+  .hierarchy-toolbar,
+  .life-link-detail-header,
+  .life-link-detail-actions,
+  .life-link-detail-badges {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .hierarchy-toolbar .primary-button,
+  .life-link-detail-actions .primary-button,
+  .life-link-detail-actions .secondary-button {
+    width: 100%;
+  }
+
+  .hierarchy-tree-panel,
+  .hierarchy-detail-panel {
+    min-height: 0;
+  }
+
+  .life-link-tree {
+    max-height: 52svh;
   }
 
   .home-stack {

@@ -1,8 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import { createLinkBodyDocFromPlainText, type LinkRecord, type ProjectRecord } from "@life-links/core";
+import {
+  createLinkBodyDocFromPlainText,
+  type LifeLinkDetail,
+  type LifeLinkRecord,
+  type LifeLinkSummary,
+  type LinkRecord,
+  type ProjectRecord
+} from "@life-links/core";
 
 import { LifeLinksWorkspaceController, type LifeLinksWorkspaceApi } from "./controller";
-import { classifyLifeLinksRoute, qrIdFromPath, type WorkspaceBrowserRoute } from "./routes";
+import { ApiError } from "../api";
+import { classifyLifeLinksRoute, lifeLinkIdFromPath, qrIdFromPath, type WorkspaceBrowserRoute } from "./routes";
 
 const owner = {
   id: "owner-1",
@@ -34,19 +42,66 @@ const link: LinkRecord = {
   updatedAt: "2026-08-25T00:00:00.000Z"
 };
 
+const rootLifeLink: LifeLinkRecord = {
+  id: project.id,
+  ownerId: owner.id,
+  parentId: null,
+  qrId: null,
+  title: "Pantry",
+  body: "",
+  bodyDoc: createLinkBodyDocFromPlainText(""),
+  bodyDocVersion: 1,
+  privacy: "private",
+  media: [],
+  createdAt: project.createdAt,
+  updatedAt: project.createdAt
+};
+
+const canonicalLink: LifeLinkRecord = {
+  id: "life-link-shelf-1",
+  ownerId: owner.id,
+  parentId: rootLifeLink.id,
+  qrId: link.id,
+  title: link.title,
+  body: link.body,
+  bodyDoc: link.bodyDoc ?? createLinkBodyDocFromPlainText(link.body),
+  bodyDocVersion: link.bodyDocVersion ?? 1,
+  privacy: link.privacy,
+  media: [],
+  createdAt: link.createdAt,
+  updatedAt: link.updatedAt
+};
+
+const rootSummary: LifeLinkSummary = summary(rootLifeLink, 1);
+const canonicalSummary: LifeLinkSummary = summary(canonicalLink, 0);
+const canonicalDetail: LifeLinkDetail = {
+  lifeLink: canonicalLink,
+  ancestry: { items: [rootSummary, canonicalSummary], truncated: false, omittedCount: 0 },
+  children: [],
+  childrenPage: { nextCursor: null, truncated: false }
+};
+
 describe("Life Links route classification", () => {
   it("keeps public QR, login, and owner surfaces explicit", () => {
     expect(qrIdFromPath("/qr/LL-DEMO-00001")).toBe("LL-DEMO-00001");
     expect(qrIdFromPath("/qr/Shelf%201/")).toBe("Shelf 1");
     expect(qrIdFromPath("/")).toBeNull();
+    expect(lifeLinkIdFromPath("/life-links/life-link-shelf-1")).toBe("life-link-shelf-1");
     expect(classifyLifeLinksRoute("/qr/LL-DEMO-00001", false)).toEqual({
       surface: "public-qr",
-      qrId: "LL-DEMO-00001"
+      qrId: "LL-DEMO-00001",
+      lifeLinkId: null
     });
-    expect(classifyLifeLinksRoute("/", false)).toEqual({ surface: "login", qrId: null });
+    expect(classifyLifeLinksRoute("/", false)).toEqual({ surface: "login", qrId: null, lifeLinkId: null });
     expect(classifyLifeLinksRoute("/qr/LL-DEMO-00001", true)).toEqual({
+      surface: "public-qr",
+      qrId: "LL-DEMO-00001",
+      lifeLinkId: null
+    });
+    expect(classifyLifeLinksRoute("/life-links/life-link-shelf-1", true)).toEqual({
       surface: "owner-workspace",
-      qrId: "LL-DEMO-00001"
+      qrId: null,
+      lifeLinkId: "life-link-shelf-1"
     });
   });
 });
@@ -67,6 +122,7 @@ describe("LifeLinksWorkspaceController", () => {
       projects: [project],
       activeQrId: link.id,
       activeView: "home",
+      rootLifeLinks: expect.objectContaining({ items: [rootSummary], loaded: true }),
       loading: false,
       error: ""
     });
@@ -74,7 +130,31 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.getMe).toHaveBeenCalledOnce();
     expect(api.listLinks).toHaveBeenCalledOnce();
     expect(api.listProjects).toHaveBeenCalledOnce();
+    expect(api.listLifeLinks).toHaveBeenCalledWith({ limit: 25 });
     expect(listener).toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("keeps an authenticated public QR route isolated from the private owner library", async () => {
+    const freshPublicLink = { ...link, title: "Fresh public response", projectId: null };
+    const route = new FakeRoute(`/qr/${link.id}`);
+    const api = fakeApi();
+    api.listLinks.mockResolvedValue({ links: [{ ...link, title: "Stale private inventory" }] });
+    api.getQr.mockResolvedValue({ state: "claimed", link: freshPublicLink, viewerIsOwner: true });
+    const controller = new LifeLinksWorkspaceController({ api, route });
+
+    await controller.start();
+
+    expect(api.getQr).toHaveBeenCalledWith(link.id);
+    expect(api.listLinks).not.toHaveBeenCalled();
+    expect(api.listProjects).not.toHaveBeenCalled();
+    expect(api.listLifeLinks).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      links: [],
+      projects: [],
+      rootLifeLinks: { items: [], loaded: false },
+      publicQrState: { state: "claimed", link: freshPublicLink }
+    });
     controller.dispose();
   });
 
@@ -136,6 +216,227 @@ describe("LifeLinksWorkspaceController", () => {
     expect(controller.getSnapshot().editingId).toBeNull();
     controller.dispose();
   });
+
+  it("uses the canonical editor's immutable base revision and keeps a stale draft open", async () => {
+    const api = fakeApi();
+    api.updateLifeLink.mockRejectedValue(new ApiError(
+      409,
+      "stale_life_link",
+      { error: { code: "stale_life_link" } },
+      { message: "Life Link changed after it was read.", retryable: true }
+    ));
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+    await controller.openCanonicalEditor(canonicalLink.id);
+
+    await controller.saveCanonicalLifeLink(canonicalLink.id, "2026-08-24T00:00:00.000Z", {
+      title: "Stale draft title",
+      body: canonicalLink.body,
+      bodyDoc: canonicalLink.bodyDoc,
+      bodyDocVersion: canonicalLink.bodyDocVersion,
+      privacy: canonicalLink.privacy
+    });
+
+    expect(api.updateLifeLink).toHaveBeenCalledWith(
+      canonicalLink.id,
+      "2026-08-24T00:00:00.000Z",
+      expect.objectContaining({ title: "Stale draft title" })
+    );
+    expect(controller.getSnapshot().canonicalEditingId).toBe(canonicalLink.id);
+    expect(controller.getSnapshot().error).toBe("Life Link changed after it was read.");
+    controller.dispose();
+  });
+
+  it("selects canonical identity, expands ancestry, and pushes the stable owner route", async () => {
+    const route = new FakeRoute("/");
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+
+    expect(api.getLifeLinkDetail).toHaveBeenCalledWith(canonicalLink.id, { limit: 25 });
+    expect(route.pushes).toEqual([`/life-links/${canonicalLink.id}`]);
+    expect(controller.getSnapshot()).toMatchObject({
+      activeView: "projects",
+      selectedLifeLinkId: canonicalLink.id,
+      highlightedLifeLinkId: canonicalLink.id,
+      routeLifeLinkId: canonicalLink.id,
+      expandedLifeLinkIds: [rootLifeLink.id]
+    });
+    expect(controller.getSnapshot().selectedLifeLinkDetail).toEqual(canonicalDetail);
+    controller.dispose();
+  });
+
+  it("never invents a local tree edge across omitted middle ancestry", async () => {
+    const route = new FakeRoute("/");
+    const api = fakeApi();
+    const tailParent = {
+      ...canonicalLink,
+      id: "life-link-tail-parent",
+      parentId: "life-link-omitted-parent",
+      qrId: null,
+      title: "Returned tail parent"
+    };
+    const deepLifeLink = {
+      ...canonicalLink,
+      id: "life-link-deep-selected",
+      parentId: tailParent.id,
+      qrId: null,
+      title: "Deep selected Life Link"
+    };
+    const tailParentSummary = summary(tailParent, 1);
+    const deepSummary = summary(deepLifeLink, 0);
+    api.getLifeLinkDetail.mockResolvedValue({
+      detail: {
+        lifeLink: deepLifeLink,
+        ancestry: {
+          items: [rootSummary, tailParentSummary, deepSummary],
+          truncated: true,
+          omittedCount: 4
+        },
+        children: [],
+        childrenPage: { nextCursor: null, truncated: false }
+      }
+    });
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+
+    await controller.selectLifeLink({ lifeLinkId: deepLifeLink.id, source: "search" });
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.lifeLinkChildren[rootLifeLink.id]).toBeUndefined();
+    expect(snapshot.lifeLinkChildren[tailParent.id].items).toEqual([deepSummary]);
+    expect(snapshot.selectedLifeLinkId).toBe(deepLifeLink.id);
+    controller.dispose();
+  });
+
+  it("loads children lazily and uses server-backed path search", async () => {
+    const api = fakeApi();
+    api.listLifeLinks.mockImplementation(async ({ parentId } = {}) =>
+      parentId === rootLifeLink.id
+        ? { lifeLinks: [canonicalSummary], nextCursor: null, truncated: false }
+        : { lifeLinks: [rootSummary], nextCursor: null, truncated: false }
+    );
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+
+    await controller.toggleLifeLinkExpanded(rootLifeLink.id);
+    controller.setLifeLinkSearchQuery("Pantry Shelf");
+    await controller.searchLifeLinks();
+
+    expect(api.listLifeLinks).toHaveBeenLastCalledWith({ parentId: rootLifeLink.id, cursor: null, limit: 25 });
+    expect(controller.getSnapshot().lifeLinkChildren[rootLifeLink.id].items).toEqual([canonicalSummary]);
+    expect(api.searchLifeLinks).toHaveBeenCalledWith("Pantry Shelf", { cursor: null, limit: 25 });
+    expect(controller.getSnapshot().lifeLinkSearchResults[0].lifeLink.id).toBe(canonicalLink.id);
+    controller.dispose();
+  });
+
+  it("preserves a selected deep-link path while completing a previously partial branch", async () => {
+    const sibling = summary({
+      ...canonicalLink,
+      id: "life-link-first-page-sibling",
+      qrId: null,
+      title: "First page sibling"
+    }, 0);
+    const api = fakeApi();
+    api.listLifeLinks.mockImplementation(async ({ parentId } = {}) => ({
+      lifeLinks: parentId === rootLifeLink.id ? [sibling] : [rootSummary],
+      nextCursor: null,
+      truncated: false
+    }));
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "route" });
+
+    expect(controller.getSnapshot().lifeLinkChildren[rootLifeLink.id]).toMatchObject({
+      items: [canonicalSummary],
+      loaded: false
+    });
+    await controller.loadMoreLifeLinks(rootLifeLink.id);
+
+    expect(controller.getSnapshot().lifeLinkChildren[rootLifeLink.id]).toMatchObject({
+      items: [sibling, canonicalSummary],
+      loaded: true
+    });
+    controller.dispose();
+  });
+
+  it("routes move, detach, and QR attach through canonical controller operations", async () => {
+    const api = fakeApi();
+    const moved = { ...canonicalLink, parentId: null, updatedAt: "2026-08-25T00:02:00.000Z" };
+    api.moveLifeLink.mockResolvedValue({ lifeLink: moved });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+
+    await controller.detachLifeLink(canonicalLink.id);
+    await controller.attachQrToLifeLink(canonicalLink.id, link.id);
+
+    expect(api.moveLifeLink).toHaveBeenCalledWith(canonicalLink.id, null, canonicalLink.updatedAt);
+    expect(api.attachQr).toHaveBeenCalledWith(link.id, canonicalLink.id, expect.stringMatching(/^attach-/));
+    controller.dispose();
+  });
+
+  it("preserves the committed move result and reports a failed hierarchy reconciliation", async () => {
+    const api = fakeApi();
+    const moved = { ...canonicalLink, parentId: null, updatedAt: "2026-08-25T00:02:00.000Z" };
+    api.moveLifeLink.mockResolvedValue({ lifeLink: moved });
+    api.listLifeLinks.mockImplementation(async (options: { parentId?: string | null } = {}) => {
+      if (options.parentId === rootLifeLink.id) {
+        throw new Error("Hierarchy refresh unavailable");
+      }
+      return { lifeLinks: [rootSummary], nextCursor: null, truncated: false };
+    });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+
+    await controller.detachLifeLink(canonicalLink.id);
+
+    expect(controller.getSnapshot().selectedLifeLinkDetail?.lifeLink).toEqual(moved);
+    expect(controller.getSnapshot().error).toBe("Hierarchy refresh unavailable");
+    expect(api.moveLifeLink).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+
+  it("keeps a claimed public QR public-facing until the owner explicitly opens the workspace", async () => {
+    const route = new FakeRoute(`/qr/${link.id}`);
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+
+    await controller.claimActiveLink();
+
+    expect(api.claimQr).toHaveBeenCalledWith(link.id, expect.stringMatching(/^claim-/));
+    expect(api.getQr).toHaveBeenCalledTimes(2);
+    expect(api.listLinks).not.toHaveBeenCalled();
+    expect(api.listProjects).not.toHaveBeenCalled();
+    expect(api.listLifeLinks).not.toHaveBeenCalled();
+    expect(route.pushes).toEqual([]);
+    expect(controller.getSnapshot()).toMatchObject({
+      routeQrId: link.id,
+      routeLifeLinkId: null,
+      selectedLifeLinkId: null,
+      canonicalEditingId: null,
+      editingId: null,
+      publicQrState: { state: "claimed", link, viewerIsOwner: true }
+    });
+
+    await controller.openPublicQrInWorkspace();
+
+    expect(api.listLinks).toHaveBeenCalledOnce();
+    expect(route.pushes).toEqual([`/life-links/${canonicalLink.id}`]);
+    expect(controller.getSnapshot()).toMatchObject({
+      routeLifeLinkId: canonicalLink.id,
+      selectedLifeLinkId: canonicalLink.id,
+      canonicalEditingId: null,
+      editingId: null,
+      publicQrState: null
+    });
+    controller.dispose();
+  });
 });
 
 class FakeRoute implements WorkspaceBrowserRoute {
@@ -195,6 +496,45 @@ function fakeApi() {
       targetQrId,
       scannedQrId: scanText,
       match: targetQrId === scanText
+    })),
+    listLifeLinks: vi.fn(async (options: { parentId?: string | null; cursor?: string | null; limit?: number } = {}) => ({
+      lifeLinks: options.parentId === rootLifeLink.id ? [canonicalSummary] : [rootSummary],
+      nextCursor: null,
+      truncated: false
+    })),
+    createLifeLink: vi.fn(async () => ({ lifeLink: canonicalLink })),
+    getLifeLinkDetail: vi.fn(async () => ({ detail: canonicalDetail })),
+    searchLifeLinks: vi.fn(async () => ({
+      results: [{
+        lifeLink: canonicalSummary,
+        path: canonicalDetail.ancestry,
+        bodySummary: canonicalLink.body,
+        matchClass: "recorded_path" as const
+      }],
+      totalCount: 1,
+      truncated: false,
+      hasMore: false,
+      nextCursor: null
+    })),
+    updateLifeLink: vi.fn(async () => ({ lifeLink: canonicalLink })),
+    moveLifeLink: vi.fn(async () => ({ lifeLink: canonicalLink })),
+    uploadLifeLinkMedia: vi.fn(async () => ({ media: canonicalLink.media[0] })),
+    deleteLifeLinkMedia: vi.fn(async () => undefined),
+    attachQr: vi.fn(async () => ({
+      result: "already_owned",
+      state: { state: "claimed" as const, link, viewerIsOwner: true }
     }))
   } satisfies LifeLinksWorkspaceApi;
+}
+
+function summary(lifeLink: LifeLinkRecord, childCount: number): LifeLinkSummary {
+  return {
+    id: lifeLink.id,
+    parentId: lifeLink.parentId,
+    qrId: lifeLink.qrId,
+    title: lifeLink.title,
+    privacy: lifeLink.privacy,
+    updatedAt: lifeLink.updatedAt,
+    childCount
+  };
 }

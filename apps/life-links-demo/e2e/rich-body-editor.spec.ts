@@ -1,6 +1,15 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { createLinkBodyDocFromPlainText, type LinkBodyDoc, type LinkRecord, type ProjectRecord, type UserRecord } from "@life-links/core";
+import {
+  createLinkBodyDocFromPlainText,
+  type LifeLinkDetail,
+  type LifeLinkRecord,
+  type LifeLinkSummary,
+  type LinkBodyDoc,
+  type LinkRecord,
+  type ProjectRecord,
+  type UserRecord
+} from "@life-links/core";
 
 const owner: Pick<UserRecord, "id" | "email" | "displayName" | "createdAt"> = {
   id: "demo-owner",
@@ -18,21 +27,33 @@ const project: ProjectRecord = {
 
 test.describe("local rich body editor", () => {
   test("keeps QR selection synchronized with browser back and forward", async ({ baseURL, page }) => {
-    const state = await mockLifeLinksApi(page, baseURL ?? "http://127.0.0.1:4174");
+    const publicTitle = "Fresh public QR response";
+    const state = await mockLifeLinksApi(
+      page,
+      baseURL ?? "http://127.0.0.1:4174",
+      { publicTitle }
+    );
 
     await page.goto("/");
     await expect(page.getByText("Recent Links")).toBeVisible();
     await page.locator(".link-row").filter({ hasText: state.link.title }).click();
     await expect(page).toHaveURL(new RegExp(`/qr/${state.link.id}$`));
-    await expect(page.getByRole("heading", { name: "Scan And Claim" })).toBeVisible();
+    await expect(page.locator(".public-content .project-label")).toHaveText("Life Link");
+    await expect(page.getByRole("heading", { name: publicTitle })).toBeVisible();
+    await expect(page.getByText(project.name)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Open in My Life Links" })).toBeVisible();
+
+    await page.getByRole("button", { name: "Open in My Life Links" }).click();
+    await expect(page).toHaveURL(new RegExp(`/life-links/${state.lifeLink.id}$`));
+    await expect(page.locator(`[data-selected-life-link-id="${state.lifeLink.id}"]`)).toBeVisible();
 
     await page.goBack();
-    await expect(page).toHaveURL(/\/$/);
-    await expect(page.getByRole("heading", { name: "Home" })).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`/qr/${state.link.id}$`));
+    await expect(page.getByRole("button", { name: "Open in My Life Links" })).toBeVisible();
 
     await page.goForward();
-    await expect(page).toHaveURL(new RegExp(`/qr/${state.link.id}$`));
-    await expect(page.getByRole("heading", { name: "Scan And Claim" })).toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`/life-links/${state.lifeLink.id}$`));
+    await expect(page.locator(`[data-selected-life-link-id="${state.lifeLink.id}"]`)).toBeVisible();
   });
 
   test("saves slash-command block content and renders it after save", async ({ baseURL, page }) => {
@@ -40,11 +61,9 @@ test.describe("local rich body editor", () => {
 
     await page.goto("/");
     await expect(page.getByText("Recent Links")).toBeVisible();
-
-    await page.locator(".link-row").filter({ hasText: state.link.title }).click();
-    await expect(page.locator(".public-content")).toContainText("Plain starting body");
-
-    await page.getByRole("button", { name: "Edit" }).click();
+    await openOwnerLifeLink(page, state);
+    await expect(page.locator(".life-link-detail-body")).toContainText("Plain starting body");
+    await page.locator(".life-link-owner-detail").getByRole("button", { name: "Edit" }).click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
 
@@ -67,20 +86,21 @@ test.describe("local rich body editor", () => {
     await page.keyboard.type("Second bullet");
 
     const updateResponse = page.waitForResponse((response) => {
-      return response.url().includes("/api/links/LL-RICH-00001") && response.request().method() === "PATCH";
+      return response.url().includes(`/api/life-links/${state.lifeLink.id}`) && response.request().method() === "PATCH";
     });
     await dialog.getByRole("button", { name: "Save" }).click();
     await updateResponse;
 
-    expect(state.lastPatch?.body).toContain("Install notes");
-    expect(state.lastPatch?.body).toContain("First bullet");
-    expect(state.lastPatch?.bodyDocVersion).toBe(1);
-    expect(hasNodeType(state.lastPatch?.bodyDoc, "heading")).toBe(true);
-    expect(hasNodeType(state.lastPatch?.bodyDoc, "bulletList")).toBe(true);
+    expect(state.lastCanonicalPatch?.body).toContain("Install notes");
+    expect(state.lastCanonicalPatch?.body).toContain("First bullet");
+    expect(state.lastCanonicalPatch?.bodyDocVersion).toBe(1);
+    expect(state.lastCanonicalExpectedUpdatedAt).toBe("2026-05-07T12:00:00.000Z");
+    expect(hasNodeType(state.lastCanonicalPatch?.bodyDoc, "heading")).toBe(true);
+    expect(hasNodeType(state.lastCanonicalPatch?.bodyDoc, "bulletList")).toBe(true);
 
     await expect(dialog).toBeHidden();
     await expect(page.getByRole("heading", { name: "Install notes" })).toBeVisible();
-    await expect(page.locator(".public-content .body-list")).toContainText("First bullet");
+    await expect(page.locator(".life-link-detail-body .body-list")).toContainText("First bullet");
     await page.getByRole("button", { name: "Home" }).click();
     await expect(page.locator(".link-row").filter({ hasText: "Install notes" })).toBeVisible();
   });
@@ -90,8 +110,8 @@ test.describe("local rich body editor", () => {
 
     await page.goto("/");
     await expect(page.getByText("Recent Links")).toBeVisible();
-    await page.locator(".link-row").filter({ hasText: state.link.title }).click();
-    await page.getByRole("button", { name: "Edit" }).click();
+    await openOwnerLifeLink(page, state);
+    await page.locator(".life-link-owner-detail").getByRole("button", { name: "Edit" }).click();
 
     const dialog = page.getByRole("dialog");
     const editor = dialog.locator(".rich-body-editor-surface");
@@ -122,19 +142,19 @@ test.describe("local rich body editor", () => {
     await bubble.getByRole("button", { name: "Apply link" }).click();
 
     const updateResponse = page.waitForResponse((response) => {
-      return response.url().includes("/api/links/LL-RICH-00001") && response.request().method() === "PATCH";
+      return response.url().includes(`/api/life-links/${state.lifeLink.id}`) && response.request().method() === "PATCH";
     });
     await dialog.getByRole("button", { name: "Save" }).click();
     await updateResponse;
 
-    expect(state.lastPatch?.body).toContain("Client portal");
-    expect(hasMarkType(state.lastPatch?.bodyDoc, "bold")).toBe(true);
-    expect(hasMarkType(state.lastPatch?.bodyDoc, "link")).toBe(true);
-    expect(JSON.stringify(state.lastPatch?.bodyDoc)).toContain("https://portal.example.com");
+    expect(state.lastCanonicalPatch?.body).toContain("Client portal");
+    expect(hasMarkType(state.lastCanonicalPatch?.bodyDoc, "bold")).toBe(true);
+    expect(hasMarkType(state.lastCanonicalPatch?.bodyDoc, "link")).toBe(true);
+    expect(JSON.stringify(state.lastCanonicalPatch?.bodyDoc)).toContain("https://portal.example.com");
 
     await expect(dialog).toBeHidden();
-    await expect(page.locator('.public-content .formatted-body a[href="https://portal.example.com"]')).toContainText("Client portal");
-    await expect(page.locator(".public-content .formatted-body strong")).toContainText("Client portal");
+    await expect(page.locator('.life-link-detail-body .formatted-body a[href="https://portal.example.com"]')).toContainText("Client portal");
+    await expect(page.locator(".life-link-detail-body .formatted-body strong")).toContainText("Client portal");
   });
 
   test("recovers unsaved drafts and cleans pasted rich links", async ({ baseURL, page }) => {
@@ -142,8 +162,8 @@ test.describe("local rich body editor", () => {
 
     await page.goto("/");
     await expect(page.getByText("Recent Links")).toBeVisible();
-    await page.locator(".link-row").filter({ hasText: state.link.title }).click();
-    await page.getByRole("button", { name: "Edit" }).click();
+    await openOwnerLifeLink(page, state);
+    await page.locator(".life-link-owner-detail").getByRole("button", { name: "Edit" }).click();
 
     const dialog = page.getByRole("dialog");
     let editor = dialog.locator(".rich-body-editor-surface");
@@ -157,35 +177,44 @@ test.describe("local rich body editor", () => {
     );
     await expect(editor).toContainText("Safe link");
     await expect
-      .poll(() => page.evaluate(() => window.localStorage.getItem("life-links-link-editor-draft-v1:LL-RICH-00001") ?? ""))
+      .poll(() => page.evaluate(() => window.localStorage.getItem("life-links-editor-draft-v2:life-link-rich") ?? ""))
       .toContain("Safe link");
 
     await dialog.getByRole("button", { name: "Close editor" }).click();
-    await page.getByRole("button", { name: "Edit" }).click();
+    await page.locator(".life-link-owner-detail").getByRole("button", { name: "Edit" }).click();
     await expect(page.getByText("Draft recovered from this browser.")).toBeVisible();
     editor = page.getByRole("dialog").locator(".rich-body-editor-surface");
     await expect(editor).toContainText("Safe link");
 
     const updateResponse = page.waitForResponse((response) => {
-      return response.url().includes("/api/links/LL-RICH-00001") && response.request().method() === "PATCH";
+      return response.url().includes(`/api/life-links/${state.lifeLink.id}`) && response.request().method() === "PATCH";
     });
     await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
     await updateResponse;
 
-    expect(JSON.stringify(state.lastPatch?.bodyDoc)).toContain("https://safe.example.test/path");
-    expect(JSON.stringify(state.lastPatch?.bodyDoc)).not.toContain("javascript:");
+    expect(JSON.stringify(state.lastCanonicalPatch?.bodyDoc)).toContain("https://safe.example.test/path");
+    expect(JSON.stringify(state.lastCanonicalPatch?.bodyDoc)).not.toContain("javascript:");
     await expect
-      .poll(() => page.evaluate(() => window.localStorage.getItem("life-links-link-editor-draft-v1:LL-RICH-00001")))
+      .poll(() => page.evaluate(() => window.localStorage.getItem("life-links-editor-draft-v2:life-link-rich")))
       .toBeNull();
   });
 });
 
-async function mockLifeLinksApi(page: Page, baseURL: string) {
+type MockLifeLinksState = {
+  link: LinkRecord;
+  lifeLink: LifeLinkRecord;
+  lastPatch: Partial<LinkRecord> | null;
+  lastCanonicalPatch: Partial<LifeLinkRecord> | null;
+  lastCanonicalExpectedUpdatedAt: string | null;
+};
+
+async function mockLifeLinksApi(
+  page: Page,
+  baseURL: string,
+  options: { publicTitle?: string } = {}
+): Promise<MockLifeLinksState> {
   const now = "2026-05-07T12:00:00.000Z";
-  const state: {
-    link: LinkRecord;
-    lastPatch: Partial<LinkRecord> | null;
-  } = {
+  const state: MockLifeLinksState = {
     link: {
       id: "LL-RICH-00001",
       url: new URL("/qr/LL-RICH-00001", baseURL).toString(),
@@ -201,7 +230,23 @@ async function mockLifeLinksApi(page: Page, baseURL: string) {
       createdAt: now,
       updatedAt: now
     },
-    lastPatch: null
+    lifeLink: {
+      id: "life-link-rich",
+      ownerId: owner.id,
+      parentId: project.id,
+      qrId: "LL-RICH-00001",
+      title: "Rich body field test",
+      body: "Plain starting body",
+      bodyDoc: createLinkBodyDocFromPlainText("Plain starting body"),
+      bodyDocVersion: 1,
+      privacy: "public",
+      media: [],
+      createdAt: now,
+      updatedAt: now
+    },
+    lastPatch: null,
+    lastCanonicalPatch: null,
+    lastCanonicalExpectedUpdatedAt: null
   };
 
   await page.route("**/api/config", async (route) => {
@@ -216,8 +261,78 @@ async function mockLifeLinksApi(page: Page, baseURL: string) {
   await page.route("**/api/projects", async (route) => {
     await route.fulfill({ json: { projects: [project] } });
   });
+  await page.route("**/api/life-links?*", async (route) => {
+    await route.fulfill({
+      json: {
+        lifeLinks: [{
+          id: project.id,
+          parentId: null,
+          qrId: null,
+          title: project.name,
+          privacy: "private",
+          updatedAt: project.createdAt,
+          childCount: 1
+        }],
+        nextCursor: null,
+        truncated: false
+      }
+    });
+  });
+  await page.route("**/api/life-links/search?*", async (route) => {
+    await route.fulfill({
+      json: {
+        results: [{
+          lifeLink: canonicalSummary(state.lifeLink, 0),
+          path: {
+            items: [projectRootSummary(), canonicalSummary(state.lifeLink, 0)],
+            truncated: false,
+            omittedCount: 0
+          },
+          bodySummary: state.lifeLink.body,
+          matchClass: "exact_qr"
+        }],
+        totalCount: 1,
+        truncated: false,
+        hasMore: false,
+        nextCursor: null
+      }
+    });
+  });
+  await page.route("**/api/life-links/life-link-rich*", async (route) => {
+    if (route.request().method() === "PATCH") {
+      const request = route.request().postDataJSON() as Partial<LifeLinkRecord> & { expectedUpdatedAt?: string };
+      const { expectedUpdatedAt, ...patch } = request;
+      state.lastCanonicalExpectedUpdatedAt = expectedUpdatedAt ?? null;
+      state.lastCanonicalPatch = patch;
+      state.lifeLink = {
+        ...state.lifeLink,
+        ...patch,
+        bodyDoc: patch.bodyDoc ?? state.lifeLink.bodyDoc,
+        bodyDocVersion: patch.bodyDocVersion ?? state.lifeLink.bodyDocVersion,
+        updatedAt: new Date(Date.parse(state.lifeLink.updatedAt) + 1000).toISOString()
+      };
+      state.link = {
+        ...state.link,
+        title: state.lifeLink.title,
+        body: state.lifeLink.body,
+        bodyDoc: state.lifeLink.bodyDoc,
+        bodyDocVersion: state.lifeLink.bodyDocVersion,
+        privacy: state.lifeLink.privacy,
+        updatedAt: state.lifeLink.updatedAt
+      };
+      await route.fulfill({ json: { lifeLink: state.lifeLink } });
+      return;
+    }
+    await route.fulfill({ json: { detail: canonicalDetail(state.lifeLink) } });
+  });
   await page.route("**/api/qr/LL-RICH-00001", async (route) => {
-    await route.fulfill({ json: { state: "claimed", link: state.link, viewerIsOwner: true } });
+    await route.fulfill({
+      json: {
+        state: "claimed",
+        link: options.publicTitle ? { ...state.link, title: options.publicTitle } : state.link,
+        viewerIsOwner: true
+      }
+    });
   });
   await page.route("**/api/links/LL-RICH-00001", async (route) => {
     const patch = route.request().postDataJSON() as Partial<LinkRecord>;
@@ -233,6 +348,51 @@ async function mockLifeLinksApi(page: Page, baseURL: string) {
   });
 
   return state;
+}
+
+async function openOwnerLifeLink(page: Page, state: MockLifeLinksState) {
+  await page.locator(".link-row").filter({ hasText: state.link.title }).click();
+  await expect(page).toHaveURL(new RegExp(`/qr/${state.link.id}$`));
+  await page.getByRole("button", { name: "Open in My Life Links" }).click();
+  await expect(page).toHaveURL(new RegExp(`/life-links/${state.lifeLink.id}$`));
+  await expect(page.locator(`[data-selected-life-link-id="${state.lifeLink.id}"]`)).toBeVisible();
+}
+
+function canonicalSummary(lifeLink: LifeLinkRecord, childCount: number): LifeLinkSummary {
+  return {
+    id: lifeLink.id,
+    parentId: lifeLink.parentId,
+    qrId: lifeLink.qrId,
+    title: lifeLink.title,
+    privacy: lifeLink.privacy,
+    updatedAt: lifeLink.updatedAt,
+    childCount
+  };
+}
+
+function projectRootSummary(): LifeLinkSummary {
+  return {
+    id: project.id,
+    parentId: null,
+    qrId: null,
+    title: project.name,
+    privacy: "private",
+    updatedAt: project.createdAt,
+    childCount: 1
+  };
+}
+
+function canonicalDetail(lifeLink: LifeLinkRecord): LifeLinkDetail {
+  return {
+    lifeLink,
+    ancestry: {
+      items: [projectRootSummary(), canonicalSummary(lifeLink, 0)],
+      truncated: false,
+      omittedCount: 0
+    },
+    children: [],
+    childrenPage: { nextCursor: null, truncated: false }
+  };
 }
 
 function hasNodeType(doc: LinkBodyDoc | null | undefined, type: string): boolean {

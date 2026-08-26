@@ -28,13 +28,13 @@ import {
   Sun
 } from "lucide-react";
 import {
-  MAX_PROJECT_NAME_LENGTH,
   type LinkRecord,
   type ProjectRecord,
   buildQrUrl,
   searchOwnedLinks
 } from "@life-links/core";
 import { LifeLinkEditor } from "./owner/LifeLinkEditor";
+import { OwnerWorkspace } from "./owner/OwnerWorkspace";
 import { RichBodyRenderer } from "./richBody";
 import { Tooltip } from "./ui/Tooltip";
 import { LifeLinksWorkspaceProvider, useLifeLinksWorkspace } from "./workspace/LifeLinksWorkspaceProvider";
@@ -75,13 +75,15 @@ function LifeLinksApp() {
     findTargetId,
     query,
     guestView,
-    newProjectName,
     scanMessage,
     loading,
     busy,
     error,
     theme,
-    routeQrId
+    routePathname,
+    canonicalEditingId,
+    selectedLifeLinkDetail,
+    rootLifeLinks
   } = snapshot;
 
   useEffect(() => {
@@ -98,7 +100,17 @@ function LifeLinksApp() {
     [currentUser, links]
   );
   const unclaimedLinks = useMemo(() => links.filter((link) => link.status === "unclaimed"), [links]);
+  const route = classifyLifeLinksRoute(routePathname, Boolean(currentUser));
   const activeLink = useMemo(() => {
+    if (route.surface === "public-qr") {
+      if (publicQrState?.state === "claimed") {
+        return publicQrState.link;
+      }
+      if (publicQrState?.state === "unclaimed") {
+        return publicQrState.qr;
+      }
+      return null;
+    }
     const ownedOrInventory = activeQrId ? links.find((link) => link.id === activeQrId) ?? null : null;
     if (ownedOrInventory) {
       return ownedOrInventory;
@@ -110,7 +122,7 @@ function LifeLinksApp() {
       return publicQrState.qr;
     }
     return null;
-  }, [activeQrId, links, publicQrState]);
+  }, [activeQrId, links, publicQrState, route.surface]);
   const privateQrId = publicQrState?.state === "private" ? publicQrState.qrId : null;
   const notFoundQrId = publicQrState?.state === "not_found" ? publicQrState.qrId : null;
   const recentLinks = useMemo(
@@ -149,7 +161,6 @@ function LifeLinksApp() {
   );
   const previewSourceLabel = latestBatchLinks.length ? "latest batch" : "inventory";
   const nextTheme = theme === "light" ? "dark" : "light";
-  const route = classifyLifeLinksRoute(routeQrId ? `/qr/${encodeURIComponent(routeQrId)}` : "/", Boolean(currentUser));
   const setActiveView = (view: View) => controller.setActiveView(view);
   const handleLogin = (email: string, password: string) => controller.login(email, password);
   const handleLogout = () => controller.logout();
@@ -158,7 +169,6 @@ function LifeLinksApp() {
   const handleFindScan = (scanText: string) => controller.evaluateFindScan(scanText);
   const generateBatch = () => controller.generateBatch();
   const claimActiveLink = () => controller.claimActiveLink();
-  const addProject = () => controller.addProject();
   const refreshDemo = () => controller.refresh();
   const downloadSelectedQr = (format: "svg" | "png") => controller.downloadSelectedQr(format);
   const downloadCsv = (ids?: string[]) => controller.downloadCsv(ids);
@@ -167,7 +177,7 @@ function LifeLinksApp() {
   const navItems: Array<{ view: View; label: string; icon: typeof Archive }> = [
     { view: "home", label: "Home", icon: Home },
     { view: "scan", label: "Scan", icon: Camera },
-    { view: "projects", label: "Projects", icon: FolderOpen },
+    { view: "projects", label: "My Life Links", icon: FolderOpen },
     { view: "search", label: "Search", icon: Search },
     { view: "factory", label: "Factory", icon: QrCode }
   ];
@@ -182,11 +192,12 @@ function LifeLinksApp() {
         link={activeLink}
         privateQrId={privateQrId}
         notFoundQrId={notFoundQrId}
-        projects={projects}
         error={error}
         busy={busy}
+        signedIn={Boolean(currentUser)}
         onClaim={claimActiveLink}
         onLogin={handleLogin}
+        onOpenWorkspace={() => void controller.openPublicQrInWorkspace()}
       />
     );
   }
@@ -225,7 +236,7 @@ function LifeLinksApp() {
         <div className="sidebar-stats">
           <Stat label="Owned" value={ownedLinks.length.toLocaleString()} />
           <Stat label="Unclaimed" value={unclaimedLinks.length.toLocaleString()} />
-          <Stat label="Projects" value={projects.length.toLocaleString()} />
+          <Stat label="Top level" value={rootLifeLinks.items.length.toLocaleString()} />
         </div>
         <div className="sidebar-actions">
           <button className="ghost-button full-width" onClick={refreshDemo} data-tooltip="Refresh links, projects, and the selected QR from the server.">
@@ -293,7 +304,7 @@ function LifeLinksApp() {
             <div className="home-stats" aria-label="Life Links summary">
               <Stat label="Owned" value={ownedLinks.length.toLocaleString()} />
               <Stat label="Unclaimed" value={unclaimedLinks.length.toLocaleString()} />
-              <Stat label="Projects" value={projects.length.toLocaleString()} />
+              <Stat label="Top level" value={rootLifeLinks.items.length.toLocaleString()} />
             </div>
 
             <div className="panel quick-actions-panel">
@@ -304,10 +315,10 @@ function LifeLinksApp() {
                   <span>Scan QR</span>
                   <Tooltip text="Open QR scanner and claim flow." />
                 </button>
-                <button className="secondary-button" onClick={() => setActiveView("projects")} data-tooltip="Open project groups.">
+                <button className="secondary-button" onClick={() => setActiveView("projects")} data-tooltip="Open your recursive Life Links hierarchy.">
                   <FolderOpen size={18} />
-                  <span>Projects</span>
-                  <Tooltip text="Open project groups." />
+                  <span>My Life Links</span>
+                  <Tooltip text="Open your recursive Life Links hierarchy." />
                 </button>
                 <button className="secondary-button" onClick={() => setActiveView("search")} data-tooltip="Open search and find mode.">
                   <Search size={18} />
@@ -560,55 +571,7 @@ function LifeLinksApp() {
         )}
 
         {activeView === "projects" && (
-          <section className="grid project-grid">
-            <div className="panel">
-              <PanelTitle icon={FolderOpen} title="Projects" />
-              <div className="new-project">
-                <input
-                  value={newProjectName}
-                  onChange={(event) => controller.setNewProjectName(event.target.value)}
-                  placeholder="Enter project name and click +"
-                  maxLength={MAX_PROJECT_NAME_LENGTH}
-                />
-                <button
-                  className="icon-button"
-                  onClick={addProject}
-                  disabled={busy}
-                  data-tooltip="Create a new project using the typed project name."
-                  aria-label="Add project"
-                >
-                  <Plus size={18} />
-                  <Tooltip text="Create a new project using the typed project name." />
-                </button>
-              </div>
-              <div className="project-list">
-                {projects.map((project) => (
-                  <ProjectBlock
-                    key={project.id}
-                    project={project}
-                    links={ownedLinks.filter((link) => link.projectId === project.id)}
-                    onOpen={(id) => void openQr(id)}
-                  />
-                ))}
-              </div>
-            </div>
-            <div className="panel">
-              <PanelTitle icon={Pencil} title="Selected Link" />
-              <QrDetail
-                link={activeLink}
-                privateQrId={privateQrId}
-                notFoundQrId={notFoundQrId}
-                projects={projects}
-                guestView={guestView}
-                canEdit={Boolean(currentUser)}
-                onGuestToggle={() => controller.toggleGuestView()}
-                onClaim={claimActiveLink}
-                onEdit={(id) => controller.openEditor(id)}
-                onDownloadSvg={() => downloadSelectedQr("svg")}
-                onDownloadPng={() => downloadSelectedQr("png")}
-              />
-            </div>
-          </section>
+          <OwnerWorkspace controller={controller} snapshot={snapshot} />
         )}
 
         {activeView === "search" && (
@@ -665,6 +628,19 @@ function LifeLinksApp() {
           onDeleteMedia={(qrId, mediaId) => void controller.removeMedia(qrId, mediaId)}
         />
       )}
+      {canonicalEditingId && (
+        <LifeLinkEditor
+          mode="canonical"
+          link={selectedLifeLinkDetail?.lifeLink.id === canonicalEditingId ? selectedLifeLinkDetail.lifeLink : null}
+          busy={busy}
+          onClose={() => controller.closeCanonicalEditor()}
+          onSave={(lifeLinkId, expectedUpdatedAt, patch) =>
+            void controller.saveCanonicalLifeLink(lifeLinkId, expectedUpdatedAt, patch)
+          }
+          onUploadMedia={(lifeLinkId, files) => void controller.uploadCanonicalMedia(lifeLinkId, files)}
+          onDeleteMedia={(lifeLinkId, mediaId) => void controller.removeCanonicalMedia(lifeLinkId, mediaId)}
+        />
+      )}
     </div>
   );
 }
@@ -674,7 +650,7 @@ function viewTitle(view: View): string {
     home: "Home",
     factory: "QR Factory",
     scan: "Scan And Claim",
-    projects: "Projects",
+    projects: "My Life Links",
     search: "Search And Find"
   }[view];
 }
@@ -716,20 +692,22 @@ function PublicQrShell({
   link,
   privateQrId,
   notFoundQrId,
-  projects,
   error,
   busy,
+  signedIn,
   onClaim,
-  onLogin
+  onLogin,
+  onOpenWorkspace
 }: {
   link: LinkRecord | null;
   privateQrId: string | null;
   notFoundQrId: string | null;
-  projects: ProjectRecord[];
   error: string;
   busy: boolean;
+  signedIn: boolean;
   onClaim: () => void;
   onLogin: (email: string, password: string) => void;
+  onOpenWorkspace: () => void;
 }) {
   return (
     <main className="public-shell">
@@ -746,7 +724,7 @@ function PublicQrShell({
           link={link}
           privateQrId={privateQrId}
           notFoundQrId={notFoundQrId}
-          projects={projects}
+          projects={[]}
           guestView={false}
           canEdit={false}
           onGuestToggle={() => undefined}
@@ -756,7 +734,18 @@ function PublicQrShell({
           onDownloadPng={() => undefined}
         />
       </section>
-      <LoginForm error="" busy={busy} onLogin={onLogin} compact />
+      {signedIn ? (
+        <section className="login-panel compact public-owner-entry">
+          <strong>Signed in as the owner</strong>
+          <p>Keep this permanent QR page public-facing, or enter the private hierarchy explicitly.</p>
+          <button className="primary-button" onClick={onOpenWorkspace} disabled={busy}>
+            <FolderOpen size={18} />
+            <span>Open in My Life Links</span>
+          </button>
+        </section>
+      ) : (
+        <LoginForm error="" busy={busy} onLogin={onLogin} compact />
+      )}
     </main>
   );
 }
@@ -1163,33 +1152,6 @@ function ScanStatus({ message }: { message: ScanMessage }) {
         <span>{message.detail}</span>
       </div>
     </div>
-  );
-}
-
-function ProjectBlock({
-  project,
-  links,
-  onOpen
-}: {
-  project: ProjectRecord;
-  links: LinkRecord[];
-  onOpen: (id: string) => void;
-}) {
-  return (
-    <section className="project-block">
-      <div>
-        <h4>{project.name}</h4>
-        <span>{links.length} links</span>
-      </div>
-      <div className="project-links">
-        {links.map((link) => (
-          <button key={link.id} onClick={() => onOpen(link.id)} data-tooltip={`Open QR result for ${link.title || link.id}.`}>
-            {link.title || link.id}
-            <Tooltip text={`Open QR result for ${link.title || link.id}.`} />
-          </button>
-        ))}
-      </div>
-    </section>
   );
 }
 

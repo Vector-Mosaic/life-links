@@ -1,4 +1,12 @@
-import type { LinkRecord, ProjectRecord, QrViewState } from "@life-links/core";
+import type {
+  LifeLinkDetail,
+  LifeLinkSearchItem,
+  LifeLinkSummary,
+  LinkRecord,
+  ProjectRecord,
+  QrViewState,
+  UpdateLifeLinkPatch
+} from "@life-links/core";
 
 import type { ApiUser } from "../api";
 
@@ -11,6 +19,14 @@ export type ScanMessage = {
   tone: ScanTone;
   title: string;
   detail: string;
+};
+
+export type LifeLinkBranchState = {
+  items: LifeLinkSummary[];
+  nextCursor: string | null;
+  truncated: boolean;
+  loaded: boolean;
+  loading: boolean;
 };
 
 export type LifeLinksWorkspaceSnapshot = {
@@ -37,10 +53,29 @@ export type LifeLinksWorkspaceSnapshot = {
   busy: boolean;
   error: string;
   theme: ThemeMode;
+  routePathname: string;
   routeQrId: string | null;
+  routeLifeLinkId: string | null;
+  rootLifeLinks: LifeLinkBranchState;
+  lifeLinkChildren: Record<string, LifeLinkBranchState>;
+  selectedLifeLinkId: string | null;
+  selectedLifeLinkDetail: LifeLinkDetail | null;
+  expandedLifeLinkIds: string[];
+  highlightedLifeLinkId: string | null;
+  canonicalEditingId: string | null;
+  lifeLinkSearchQuery: string;
+  lifeLinkSearchResults: LifeLinkSearchItem[];
+  lifeLinkSearchTotalCount: number;
+  lifeLinkSearchNextCursor: string | null;
+  lifeLinkSearchTruncated: boolean;
+  lifeLinkSearchLoading: boolean;
 };
 
 export type LinkEditorPatch = Pick<
   LinkRecord,
   "title" | "body" | "bodyDoc" | "bodyDocVersion" | "privacy" | "projectId"
+>;
+
+export type CanonicalLifeLinkEditorPatch = Required<
+  Pick<UpdateLifeLinkPatch, "title" | "body" | "bodyDoc" | "bodyDocVersion" | "privacy">
 >;
