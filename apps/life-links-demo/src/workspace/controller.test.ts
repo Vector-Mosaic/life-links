@@ -248,6 +248,59 @@ describe("LifeLinksWorkspaceController", () => {
     controller.dispose();
   });
 
+  it("does not let a completed Save refresh overwrite newer Find Mode navigation", async () => {
+    const route = new FakeRoute("/");
+    const api = fakeApi();
+    const updatedLifeLink = {
+      ...canonicalLink,
+      body: "Saved before Find Mode",
+      updatedAt: "2026-08-25T00:02:00.000Z"
+    };
+    api.updateLifeLink.mockResolvedValue({ lifeLink: updatedLifeLink });
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+    await controller.openCanonicalEditor(canonicalLink.id);
+
+    let releaseOwnerRefresh!: () => void;
+    const ownerRefresh = new Promise<void>((resolve) => {
+      releaseOwnerRefresh = resolve;
+    });
+    api.listLinks.mockImplementationOnce(async () => {
+      await ownerRefresh;
+      return { links: [{ ...link, body: updatedLifeLink.body, updatedAt: updatedLifeLink.updatedAt }] };
+    });
+
+    const pendingSave = controller.saveCanonicalLifeLink(canonicalLink.id, canonicalLink.updatedAt, {
+      title: updatedLifeLink.title,
+      body: updatedLifeLink.body,
+      bodyDoc: updatedLifeLink.bodyDoc,
+      bodyDocVersion: updatedLifeLink.bodyDocVersion,
+      privacy: updatedLifeLink.privacy
+    });
+    await vi.waitFor(() => expect(controller.getSnapshot().canonicalEditingId).toBeNull());
+
+    await expect(controller.agentStartFindMode({ lifeLinkId: canonicalLink.id })).resolves.toEqual({ ok: true });
+    expect(controller.getSnapshot()).toMatchObject({
+      activeView: "search",
+      routePathname: "/",
+      findTargetId: link.id,
+      activeQrId: link.id
+    });
+
+    releaseOwnerRefresh();
+    await pendingSave;
+
+    expect(controller.getSnapshot()).toMatchObject({
+      activeView: "search",
+      routePathname: "/",
+      findTargetId: link.id,
+      activeQrId: link.id
+    });
+    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(2);
+    controller.dispose();
+  });
+
   it("selects canonical identity, expands ancestry, and pushes the stable owner route", async () => {
     const route = new FakeRoute("/");
     const api = fakeApi();

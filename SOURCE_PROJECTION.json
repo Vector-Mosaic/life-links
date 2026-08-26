@@ -1,6 +1,6 @@
 {
-  "canonical_source_byte_count": 1052477,
-  "canonical_source_tree_sha256": "f556f8d7eb6a3a3f5e734e5b633bd143573cbb4659f49d2db2a7e1691ad9d4cb",
+  "canonical_source_byte_count": 1054379,
+  "canonical_source_tree_sha256": "3618b8344cf10475b7278180c68a51acbde9ae00674dd404da7bcae984a6d3df",
   "excluded_globs": [
     "**/node_modules/**",
     "**/dist/**",
@@ -344,8 +344,8 @@
   "scaffold_destinations": [],
   "scaffolding": [],
   "schema_version": "life_links.source_projection.v2",
-  "source_byte_count": 1051275,
-  "source_commit": "ef5dd310fcb6647155b80be2a075284055bfaec3",
+  "source_byte_count": 1053177,
+  "source_commit": "5b850e618c88c50b8079305b1314df1c38cb52e3",
   "source_file_count": 88,
   "source_mappings": [
     {
@@ -365,5 +365,5 @@
       "source": "systems/life_links/contracts/http"
     }
   ],
-  "source_tree_sha256": "c18a871f21ce13617a00804c0ce2f488d95c54505a5d30a01ef34b0d578ee8bc"
+  "source_tree_sha256": "b95746b7b6122dde7f2a51fc509f9a4e3dd48e1513e46390424de7fc0822e21a"
 }

@@ -1062,7 +1062,6 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       }));
       await this.refreshOwnerLibrary();
       await this.loadLifeLinkBranch(result.lifeLink.parentId, false);
-      await this.selectLifeLink({ lifeLinkId, source: "human" }, false);
     } catch (saveError) {
       this.update({ error: messageFromError(saveError) });
     } finally {
