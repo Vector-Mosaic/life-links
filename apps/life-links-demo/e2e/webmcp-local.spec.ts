@@ -124,101 +124,53 @@ test.describe("local controlled WebMCP host", () => {
     await expect(visibleSearchResult).toContainText(targetLifeLink.title);
     await expect(visibleSearchResult).toContainText(`${rootLifeLink.title} > ${targetLifeLink.title}`);
 
-    const proposedTitle = "Camera Battery Kit — preflight checklist";
-    const proposedBody = "Confirm both batteries are charged before departure.";
+    const proposedTitle = "Camera Battery Kit — revision-safe title";
     const recoveredHumanTitle = "Camera kit — recovered human draft";
-    const humanTitle = "Camera kit — human work in progress";
     const canonicalDraftKey = `life-links-editor-draft-v2:${targetLifeLink.id}`;
     await seedCanonicalDraft(page, canonicalDraftKey, recoveredHumanTitle);
-    const draftResult = await invokeControlledTool(page, "draft_life_link_update", {
+    const dirtyResult = await invokeControlledTool(page, "update_life_link_content", {
       lifeLinkId: targetLifeLink.id,
       baseUpdatedAt: targetLifeLink.updatedAt,
       title: proposedTitle,
-      body: proposedBody,
       sourceLifeLinkIds: [rootLifeLink.id]
     });
-    expect(draftResult).toMatchObject({
-      ok: true,
-      lifeLinkId: targetLifeLink.id,
-      saved: false,
-      privacyChanged: false,
-      visibleEffect: "agent_draft_opened"
-    });
-    const editor = page.getByRole("dialog");
-    await expect(editor.getByText("Agent draft — not saved", { exact: true })).toBeVisible();
-    await expect(editor.locator(".agent-draft-review")).toContainText(proposedTitle);
-    await expect(editor.locator(".agent-draft-review")).toContainText(proposedBody);
-    await expect(editor.locator(".agent-draft-review")).toContainText(`Privacy unchanged: ${targetLifeLink.privacy}`);
-    await expect(editor.getByLabel("Authorized source Life Links")).toContainText(rootLifeLink.id);
-    await expect(editor.getByLabel("Title")).toHaveValue(recoveredHumanTitle);
-    await expect(editor.getByText("Draft recovered from this browser.")).toBeVisible();
-    await expect(editor.locator(".rich-body-editor-surface").getByRole("heading", { name: "Battery readiness" })).toBeVisible();
-    await editor.getByLabel("Title").fill(humanTitle);
-    await expect.poll(() => readCanonicalDraftSummary(page, canonicalDraftKey)).toEqual({
-      title: humanTitle,
-      hasHeading: true
-    });
-    await page.waitForTimeout(350);
+    expect(dirtyResult).toMatchObject({ ok: false, error: { code: "editor_dirty", retryable: true } });
     expect(state.patchRequests).toEqual([]);
 
-    await editor.getByRole("button", { name: "Apply proposal" }).click();
-    await expect(editor.getByLabel("Title")).toHaveValue(proposedTitle);
-    await expect(editor.locator(".rich-body-editor-surface")).toContainText(proposedBody);
-    await expect(editor.getByText("Applied to the editor, but still not saved.")).toBeVisible();
-    await expect(editor.getByRole("button", { name: "Discard draft" })).toBeHidden();
-    await page.waitForTimeout(350);
-    expect(state.patchRequests).toEqual([]);
-    await expect.poll(() => readCanonicalDraftSummary(page, canonicalDraftKey)).toEqual({
-      title: humanTitle,
-      hasHeading: true
-    });
-
-    const blockedOpen = await invokeControlledTool(page, "open_life_link", {
-      lifeLinkId: targetLifeLink.id
-    });
-    expect(blockedOpen).toMatchObject({
-      ok: false,
-      error: { code: "editor_open", retryable: true }
-    });
-    await expect(editor.getByText("Applied to the editor, but still not saved.")).toBeVisible();
-    await expect(editor.getByLabel("Title")).toHaveValue(proposedTitle);
-    await expect.poll(() => readCanonicalDraftSummary(page, canonicalDraftKey)).toEqual({
-      title: humanTitle,
-      hasHeading: true
-    });
-
-    await editor.getByRole("button", { name: "Undo and dismiss" }).click();
-    await expect(editor.getByText("Agent draft — not saved", { exact: true })).toBeHidden();
-    await expect(editor.getByLabel("Title")).toHaveValue(humanTitle);
-    await expect(editor.locator(".rich-body-editor-surface").getByRole("heading", { name: "Battery readiness" })).toBeVisible();
-    await expect(editor.getByRole("button", { name: "Discard draft" })).toBeVisible();
-    expect(state.patchRequests).toEqual([]);
-
-    const titleOnlyProposal = "Camera Battery Kit — title-only review";
-    const titleOnlyDraft = await invokeControlledTool(page, "draft_life_link_update", {
+    await page.evaluate((key) => window.localStorage.removeItem(key), canonicalDraftKey);
+    const updateResult = await invokeControlledTool(page, "update_life_link_content", {
       lifeLinkId: targetLifeLink.id,
       baseUpdatedAt: targetLifeLink.updatedAt,
-      title: titleOnlyProposal
+      title: proposedTitle,
+      sourceLifeLinkIds: [rootLifeLink.id]
     });
-    expect(titleOnlyDraft).toMatchObject({
+    expect(updateResult).toMatchObject({
       ok: true,
-      proposedFields: ["title"],
-      saved: false
+      lifeLinkId: targetLifeLink.id,
+      updatedAt: "2026-08-26T12:03:00.000Z",
+      updatedFields: ["title"],
+      saved: true,
+      privacyChanged: false,
+      visibleEffect: "life_link_content_updated"
     });
-    await editor.getByRole("button", { name: "Apply proposal" }).click();
-    await expect(editor.getByLabel("Title")).toHaveValue(titleOnlyProposal);
-    await expect(editor.locator(".rich-body-editor-surface").getByRole("heading", { name: "Battery readiness" })).toBeVisible();
-    await expect.poll(() => readCanonicalDraftSummary(page, canonicalDraftKey)).toEqual({
-      title: humanTitle,
-      hasHeading: true
-    });
-    await editor.getByRole("button", { name: "Undo and dismiss" }).click();
-    await expect(editor.getByLabel("Title")).toHaveValue(humanTitle);
-    await expect(editor.locator(".rich-body-editor-surface").getByRole("heading", { name: "Battery readiness" })).toBeVisible();
-    expect(state.patchRequests).toEqual([]);
+    expect(state.patchRequests).toEqual([{
+      path: `/api/life-links/${targetLifeLink.id}`,
+      body: {
+        expectedUpdatedAt: targetLifeLink.updatedAt,
+        title: proposedTitle
+      }
+    }]);
+    await expect(page.locator(".life-link-owner-detail").getByRole("heading", { name: proposedTitle })).toBeVisible();
+    await expect(page.locator(".life-link-owner-detail")).toContainText("Battery readiness");
 
-    await editor.getByRole("button", { name: "Close editor" }).click();
-    await expect(editor).toBeHidden();
+    const staleResult = await invokeControlledTool(page, "update_life_link_content", {
+      lifeLinkId: targetLifeLink.id,
+      baseUpdatedAt: targetLifeLink.updatedAt,
+      body: "This stale update must not be written."
+    });
+    expect(staleResult).toMatchObject({ ok: false, error: { code: "stale_life_link", retryable: true } });
+    expect(state.patchRequests).toHaveLength(1);
+
     const findResult = await invokeControlledTool(page, "start_find_mode", {
       lifeLinkId: targetLifeLink.id
     });
@@ -239,15 +191,14 @@ test.describe("local controlled WebMCP host", () => {
       "Opened a Life Link in the workspace",
       "Inspected the selected Life Link",
       "Showed bounded Life Link search results",
-      "Staged an unsaved Life Link draft",
+      "Updated Life Link content",
       "Started Find Mode for a Life Link"
     ]) {
       await expect(activity.getByText(label).first()).toBeVisible();
     }
     await expect(activity).not.toContainText("battery");
-    await expect(activity).not.toContainText(proposedBody);
     await expect(activity).not.toContainText(targetLifeLink.id);
-    expect(state.patchRequests).toEqual([]);
+    expect(state.patchRequests).toHaveLength(1);
 
     await accessToggle.uncheck();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
@@ -259,7 +210,7 @@ test.describe("local controlled WebMCP host", () => {
       .getByRole("complementary", { name: "Life Links navigation" })
       .getByRole("button", { name: "My Life Links" })
       .click();
-    await expect(page.locator(".life-link-owner-detail")).toContainText(targetLifeLink.title);
+    await expect(page.locator(".life-link-owner-detail")).toContainText(proposedTitle);
     await page.locator(".life-link-owner-detail").getByRole("button", { name: "Open QR page" }).click();
     await expect(page).toHaveURL(new RegExp(`/qr/${targetLifeLink.qrId}$`));
     await expect(page.getByRole("button", { name: "Open in My Life Links" })).toBeVisible();
@@ -280,12 +231,12 @@ test.describe("local controlled WebMCP host", () => {
     state.releaseLogout();
     await expect(page.getByRole("heading", { name: "Sign in to Life Links" })).toBeVisible();
 
-    expect(state.patchRequests).toEqual([]);
+    expect(state.patchRequests).toHaveLength(1);
   });
 });
 
 type MockApiState = {
-  patchRequests: string[];
+  patchRequests: Array<{ path: string; body: unknown }>;
   holdLogout: boolean;
   logoutStarted: Promise<void>;
   releaseLogout(): void;
@@ -306,7 +257,7 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
     logoutStarted,
     releaseLogout
   };
-  const targetLink = compatibilityLink(targetLifeLink, baseURL);
+  let currentTarget = { ...targetLifeLink };
 
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -314,9 +265,30 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
     const method = request.method();
     const path = url.pathname;
 
-    if (method === "PATCH") {
-      state.patchRequests.push(path);
-      await route.fulfill({ status: 500, json: { error: { code: "unexpected_patch", message: "Draft tools may not write." } } });
+    if (method === "PATCH" && path === `/api/life-links/${targetLifeLink.id}`) {
+      const body = request.postDataJSON() as {
+        expectedUpdatedAt?: string;
+        title?: string;
+        body?: string;
+      };
+      state.patchRequests.push({ path, body });
+      if (body.expectedUpdatedAt !== currentTarget.updatedAt) {
+        await route.fulfill({
+          status: 409,
+          json: { error: { code: "stale_life_link", message: "Life Link changed.", retryable: true } }
+        });
+        return;
+      }
+      const nextBody = body.body ?? currentTarget.body;
+      currentTarget = {
+        ...currentTarget,
+        ...(body.title === undefined ? {} : { title: body.title }),
+        ...(body.body === undefined
+          ? {}
+          : { body: nextBody, bodyDoc: createLinkBodyDocFromPlainText(nextBody), bodyDocVersion: 1 }),
+        updatedAt: "2026-08-26T12:03:00.000Z"
+      };
+      await route.fulfill({ json: { lifeLink: currentTarget } });
       return;
     }
     if (path === "/api/config" && method === "GET") {
@@ -328,7 +300,7 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
       return;
     }
     if (path === "/api/links" && method === "GET") {
-      await route.fulfill({ json: { links: [targetLink] } });
+      await route.fulfill({ json: { links: [compatibilityLink(currentTarget, baseURL)] } });
       return;
     }
     if (path === "/api/projects" && method === "GET") {
@@ -339,7 +311,7 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
       const parentId = url.searchParams.get("parentId");
       await route.fulfill({
         json: {
-          lifeLinks: parentId === rootLifeLink.id ? [summary(targetLifeLink, 0)] : [summary(rootLifeLink, 1)],
+          lifeLinks: parentId === rootLifeLink.id ? [summary(currentTarget, 0)] : [summary(rootLifeLink, 1)],
           nextCursor: null,
           truncated: false
         }
@@ -349,7 +321,7 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
     if (path === "/api/life-links/search" && method === "GET") {
       await route.fulfill({
         json: {
-          results: [searchItem(targetLifeLink)],
+          results: [searchItem(currentTarget)],
           totalCount: 1,
           truncated: false,
           hasMore: false,
@@ -360,16 +332,18 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
     }
     if (path.startsWith("/api/life-links/") && method === "GET") {
       const lifeLinkId = decodeURIComponent(path.slice("/api/life-links/".length));
-      const lifeLink = lifeLinkId === rootLifeLink.id ? rootLifeLink : lifeLinkId === targetLifeLink.id ? targetLifeLink : null;
+      const lifeLink = lifeLinkId === rootLifeLink.id ? rootLifeLink : lifeLinkId === currentTarget.id ? currentTarget : null;
       if (!lifeLink) {
         await route.fulfill({ status: 404, json: { error: { code: "life_link_not_found", message: "Not found." } } });
         return;
       }
-      await route.fulfill({ json: { detail: canonicalDetail(lifeLink) } });
+      await route.fulfill({ json: { detail: canonicalDetail(lifeLink, currentTarget) } });
       return;
     }
     if (path === `/api/qr/${targetLifeLink.qrId}` && method === "GET") {
-      await route.fulfill({ json: { state: "claimed", link: targetLink, viewerIsOwner: true } });
+      await route.fulfill({
+        json: { state: "claimed", link: compatibilityLink(currentTarget, baseURL), viewerIsOwner: true }
+      });
       return;
     }
     if (path === "/api/auth/logout" && method === "POST") {
@@ -388,20 +362,6 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
   });
 
   return state;
-}
-
-async function readCanonicalDraftSummary(page: Page, storageKey: string) {
-  return page.evaluate((key) => {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) {
-      return null;
-    }
-    const draft = JSON.parse(raw) as { patch?: { title?: string; bodyDoc?: unknown } };
-    return {
-      title: draft.patch?.title ?? null,
-      hasHeading: JSON.stringify(draft.patch?.bodyDoc ?? null).includes('"heading"')
-    };
-  }, storageKey);
 }
 
 async function seedCanonicalDraft(page: Page, storageKey: string, title: string) {
@@ -452,16 +412,16 @@ function summary(lifeLink: LifeLinkRecord, childCount: number): LifeLinkSummary 
   };
 }
 
-function canonicalDetail(lifeLink: LifeLinkRecord): LifeLinkDetail {
+function canonicalDetail(lifeLink: LifeLinkRecord, currentTarget = targetLifeLink): LifeLinkDetail {
   const isRoot = lifeLink.id === rootLifeLink.id;
   return {
     lifeLink,
     ancestry: {
-      items: isRoot ? [summary(rootLifeLink, 1)] : [summary(rootLifeLink, 1), summary(targetLifeLink, 0)],
+      items: isRoot ? [summary(rootLifeLink, 1)] : [summary(rootLifeLink, 1), summary(currentTarget, 0)],
       truncated: false,
       omittedCount: 0
     },
-    children: isRoot ? [summary(targetLifeLink, 0)] : [],
+    children: isRoot ? [summary(currentTarget, 0)] : [],
     childrenPage: { nextCursor: null, truncated: false }
   };
 }

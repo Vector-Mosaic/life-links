@@ -4,7 +4,7 @@
   "info": {
     "title": "Life Links Application HTTP API",
     "version": "1.0.0",
-    "description": "Published v1 contract for the implemented Life Links HTTP surface. It covers operational release identity, web and native application workflows, and the stable QR browser entry point. Generic SPA fallback routes remain implementation details outside this contract."
+    "description": "Published v1 contract for the implemented Life Links HTTP surface. It covers operational release identity, web and native application workflows, the canonical owner reads and revision-safe writes reused by page-bound WebMCP tools, and the stable QR browser entry point. Generic SPA fallback routes remain implementation details outside this contract."
   },
   "servers": [
     {
@@ -670,7 +670,7 @@
       "patch": {
         "operationId": "updateCanonicalLifeLink",
         "summary": "Update one owned Life Link's content or privacy",
-        "description": "Requires the exact `expectedUpdatedAt` revision returned by a prior owner read. Stale writes fail with `409 stale_life_link`; the server never silently overwrites a newer human or agent draft. Parent placement and QR binding are not accepted here. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "description": "Requires the exact `expectedUpdatedAt` revision returned by a prior owner read. Stale writes fail with `409 stale_life_link`; the server never silently overwrites newer canonical owner state. The page-bound `update_life_link_content` tool reuses this operation for title/body-only writes after its additional live-page, editor, saved-human-draft, owner-source, and access checks. Parent placement and QR binding are not accepted here. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
         "tags": [
           "life-links"
         ],

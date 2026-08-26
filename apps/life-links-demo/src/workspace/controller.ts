@@ -43,7 +43,11 @@ import {
   uploadLifeLinkMedia,
   uploadLinkMedia
 } from "../api";
-import { clearCanonicalLifeLinkDraft, clearLinkEditorDraft } from "./editorSession";
+import {
+  clearCanonicalLifeLinkDraft,
+  clearLinkEditorDraft,
+  readCanonicalLifeLinkDraft
+} from "./editorSession";
 import {
   classifyLifeLinksRoute,
   createWindowWorkspaceRoute,
@@ -54,6 +58,7 @@ import {
 import type {
   AgentSearchLifeLinksControllerResult,
   AgentToolControllerActionResult,
+  AgentUpdateLifeLinkContentInput,
   CanonicalLifeLinkEditorPatch,
   InventoryFilter,
   LifeLinkBranchState,
@@ -157,14 +162,8 @@ export interface LifeLinksWorkspaceActions {
     input: { lifeLinkId: string },
     signal?: AbortSignal
   ): Promise<AgentToolControllerActionResult>;
-  agentStageLifeLinkDraft(
-    input: {
-      lifeLinkId: string;
-      baseUpdatedAt: string;
-      title?: string;
-      body?: string;
-      sourceLifeLinkIds: readonly string[];
-    },
+  agentUpdateLifeLinkContent(
+    input: AgentUpdateLifeLinkContentInput,
     signal?: AbortSignal
   ): Promise<AgentToolControllerActionResult>;
   agentStartFindMode(
@@ -172,7 +171,6 @@ export interface LifeLinksWorkspaceActions {
     signal?: AbortSignal
   ): Promise<AgentToolControllerActionResult>;
   openPublicQrInWorkspace(): Promise<void>;
-  discardAgentDraftProposal(): void;
   saveCanonicalLifeLink(
     lifeLinkId: string,
     expectedUpdatedAt: string,
@@ -234,7 +232,6 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       expandedLifeLinkIds: [],
       highlightedLifeLinkId: null,
       canonicalEditingId: null,
-      agentDraftProposal: null,
       lifeLinkSearchQuery: "",
       lifeLinkSearchResults: [],
       lifeLinkSearchTotalCount: 0,
@@ -314,7 +311,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   toggleGuestView() {
     this.update((current) => ({
       guestView: !current.guestView,
-      ...(!current.guestView ? { canonicalEditingId: null, agentDraftProposal: null } : {})
+      ...(!current.guestView ? { canonicalEditingId: null } : {})
     }));
   }
 
@@ -334,15 +331,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     if (this.snapshot.selectedLifeLinkId !== lifeLinkId || !this.snapshot.selectedLifeLinkDetail) {
       await this.selectLifeLink({ lifeLinkId, source: "human" });
     }
-    this.update({ canonicalEditingId: lifeLinkId, agentDraftProposal: null });
+    this.update({ canonicalEditingId: lifeLinkId });
   }
 
   closeCanonicalEditor() {
-    this.update({ canonicalEditingId: null, agentDraftProposal: null });
-  }
-
-  discardAgentDraftProposal() {
-    this.update({ agentDraftProposal: null });
+    this.update({ canonicalEditingId: null });
   }
 
   async refreshOwnerLibrary(user = this.snapshot.currentUser) {
@@ -558,7 +551,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
           code: this.snapshot.canonicalEditingId !== null ? "editor_open" : "life_link_unavailable"
         };
       }
-      this.applySelectedLifeLinkDetail(detail, false, false);
+      this.applySelectedLifeLinkDetail(detail, false);
       return { ok: true };
     } catch (error) {
       return agentReadFailure(error, "life_link_unavailable");
@@ -652,26 +645,21 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
   }
 
-  async agentStageLifeLinkDraft(
-    input: {
-      lifeLinkId: string;
-      baseUpdatedAt: string;
-      title?: string;
-      body?: string;
-      sourceLifeLinkIds: readonly string[];
-    },
+  async agentUpdateLifeLinkContent(
+    input: AgentUpdateLifeLinkContentInput,
     signal?: AbortSignal
   ): Promise<AgentToolControllerActionResult> {
     const agentOwnerId = this.currentAgentOwnerId();
-    if (!agentOwnerId || this.snapshot.selectedLifeLinkId !== input.lifeLinkId) {
+    if (!agentOwnerId) {
       return { ok: false, code: "life_link_unavailable" };
     }
-    if (this.snapshot.agentDraftProposal !== null) {
+    if (this.snapshot.canonicalEditingId !== null) {
       return { ok: false, code: "editor_open" };
     }
     if (signal?.aborted) {
       return { ok: false, code: "cancelled" };
     }
+
     let detail: LifeLinkDetail;
     try {
       detail = (await this.api.getLifeLinkDetail(input.lifeLinkId, {
@@ -686,13 +674,18 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
     if (
       this.currentAgentOwnerId() !== agentOwnerId ||
-      this.snapshot.selectedLifeLinkId !== input.lifeLinkId ||
-      detail.lifeLink.updatedAt !== input.baseUpdatedAt
+      this.snapshot.canonicalEditingId !== null
     ) {
       return {
         ok: false,
-        code: detail.lifeLink.updatedAt === input.baseUpdatedAt ? "life_link_unavailable" : "stale_life_link"
+        code: this.snapshot.canonicalEditingId !== null ? "editor_open" : "life_link_unavailable"
       };
+    }
+    if (detail.lifeLink.updatedAt !== input.baseUpdatedAt) {
+      return { ok: false, code: "stale_life_link" };
+    }
+    if (readCanonicalLifeLinkDraft(detail.lifeLink.id, detail.lifeLink.qrId, detail.lifeLink.updatedAt)) {
+      return { ok: false, code: "editor_dirty" };
     }
 
     const sourceLifeLinkIds = Array.from(new Set(input.sourceLifeLinkIds));
@@ -717,14 +710,16 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
     if (
       this.currentAgentOwnerId() !== agentOwnerId ||
-      this.snapshot.selectedLifeLinkId !== input.lifeLinkId
+      this.snapshot.canonicalEditingId !== null
     ) {
-      return { ok: false, code: "life_link_unavailable" };
+      return {
+        ok: false,
+        code: this.snapshot.canonicalEditingId !== null ? "editor_open" : "life_link_unavailable"
+      };
     }
 
-    let refreshedDetail: LifeLinkDetail;
     try {
-      refreshedDetail = (await this.api.getLifeLinkDetail(input.lifeLinkId, {
+      detail = (await this.api.getLifeLinkDetail(input.lifeLinkId, {
         limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
         signal
       })).detail;
@@ -736,42 +731,54 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
     if (
       this.currentAgentOwnerId() !== agentOwnerId ||
-      this.snapshot.selectedLifeLinkId !== input.lifeLinkId ||
-      refreshedDetail.lifeLink.updatedAt !== input.baseUpdatedAt
+      this.snapshot.canonicalEditingId !== null
     ) {
       return {
         ok: false,
-        code: refreshedDetail.lifeLink.updatedAt === input.baseUpdatedAt
-          ? "life_link_unavailable"
-          : "stale_life_link"
+        code: this.snapshot.canonicalEditingId !== null ? "editor_open" : "life_link_unavailable"
       };
     }
-    if (this.snapshot.agentDraftProposal !== null) {
-      return { ok: false, code: "editor_open" };
+    if (detail.lifeLink.updatedAt !== input.baseUpdatedAt) {
+      return { ok: false, code: "stale_life_link" };
+    }
+    if (readCanonicalLifeLinkDraft(detail.lifeLink.id, detail.lifeLink.qrId, detail.lifeLink.updatedAt)) {
+      return { ok: false, code: "editor_dirty" };
     }
 
-    this.applySelectedLifeLinkDetail(refreshedDetail, false);
-    this.update({
-      canonicalEditingId: input.lifeLinkId,
-      agentDraftProposal: {
-        lifeLinkId: input.lifeLinkId,
-        baseUpdatedAt: input.baseUpdatedAt,
-        proposedFields: [
-          ...(input.title === undefined ? [] : ["title" as const]),
-          ...(input.body === undefined ? [] : ["body" as const])
-        ],
-        before: {
-          title: refreshedDetail.lifeLink.title,
-          body: refreshedDetail.lifeLink.body
-        },
-        after: {
-          title: input.title ?? refreshedDetail.lifeLink.title,
-          body: input.body ?? refreshedDetail.lifeLink.body
-        },
-        sourceLifeLinkIds,
-        createdAt: new Date().toISOString()
+    let updatedLifeLink: LifeLinkRecord;
+    try {
+      updatedLifeLink = (await this.api.updateLifeLink(input.lifeLinkId, input.baseUpdatedAt, {
+        ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.body === undefined ? {} : { body: input.body })
+      }, { signal })).lifeLink;
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "stale_life_link") {
+        return { ok: false, code: "stale_life_link" };
       }
-    });
+      return agentReadFailure(error, "life_link_unavailable");
+    }
+
+    clearCanonicalLifeLinkDraft(updatedLifeLink.id, updatedLifeLink.qrId);
+    const updatedDetail: LifeLinkDetail = {
+      ...detail,
+      lifeLink: updatedLifeLink,
+      ancestry: {
+        ...detail.ancestry,
+        items: detail.ancestry.items.map((item) => item.id === updatedLifeLink.id
+          ? {
+              ...item,
+              parentId: updatedLifeLink.parentId,
+              qrId: updatedLifeLink.qrId,
+              title: updatedLifeLink.title,
+              privacy: updatedLifeLink.privacy,
+              updatedAt: updatedLifeLink.updatedAt
+            }
+          : item)
+      }
+    };
+    if (this.currentAgentOwnerId() === agentOwnerId) {
+      this.applySelectedLifeLinkDetail(updatedDetail, true);
+    }
     return { ok: true };
   }
 
@@ -850,7 +857,6 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       this.update({
         currentUser: result.user,
         qrBaseUrl: result.qrBaseUrl,
-        agentDraftProposal: null,
         routePathname: this.route.pathname(),
         routeQrId: nextRoute.qrId,
         routeLifeLinkId: nextRoute.lifeLinkId
@@ -881,7 +887,6 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       projects: [],
       editingId: null,
       canonicalEditingId: null,
-      agentDraftProposal: null,
       rootLifeLinks: emptyLifeLinkBranch(),
       lifeLinkChildren: {},
       selectedLifeLinkId: null,
@@ -902,7 +907,6 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       routePathname: `/qr/${encodeURIComponent(qrId)}`,
       routeQrId: qrId,
       routeLifeLinkId: null,
-      agentDraftProposal: null,
       scanMessage: {
         tone: "neutral",
         title: "QR opened",
@@ -1057,8 +1061,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
           current.selectedLifeLinkDetail?.lifeLink.id === lifeLinkId
             ? { ...current.selectedLifeLinkDetail, lifeLink: result.lifeLink }
             : current.selectedLifeLinkDetail,
-        canonicalEditingId: null,
-        agentDraftProposal: null
+        canonicalEditingId: null
       }));
       await this.refreshOwnerLibrary();
       await this.loadLifeLinkBranch(result.lifeLink.parentId, false);
@@ -1208,11 +1211,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       : null;
   }
 
-  private applySelectedLifeLinkDetail(
-    detail: LifeLinkDetail,
-    updateHistory: boolean,
-    clearAgentDraft = true
-  ) {
+  private applySelectedLifeLinkDetail(detail: LifeLinkDetail, updateHistory: boolean) {
     const pathname = ownerLifeLinkPath(detail.lifeLink.id);
     this.update((current) => ({
       activeView: "projects",
@@ -1228,7 +1227,6 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         current.expandedLifeLinkIds,
         detail.ancestry.items.slice(0, -1).map((item) => item.id)
       ),
-      agentDraftProposal: clearAgentDraft ? null : current.agentDraftProposal,
       ...mergeDetailIntoHierarchy(current, detail)
     }));
     if (updateHistory && this.route.pathname() !== pathname) {

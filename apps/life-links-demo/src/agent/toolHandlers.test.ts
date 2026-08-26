@@ -19,6 +19,7 @@ import {
   type AgentSearchLifeLinksInput,
   type AgentToolControllerActionResult,
   type AgentToolWorkspaceSnapshot,
+  type AgentUpdateLifeLinkContentInput,
   type LifeLinksAgentToolController
 } from "./toolHandlers";
 
@@ -71,7 +72,6 @@ function snapshot(overrides: Partial<AgentToolWorkspaceSnapshot> = {}): AgentToo
     routeQrId: null,
     guestView: false,
     canonicalEditingId: null,
-    agentDraftProposal: null,
     selectedLifeLinkId: selected.lifeLink.id,
     selectedLifeLinkDetail: selected,
     lifeLinkSearchResults: [],
@@ -100,7 +100,23 @@ class FakeController implements LifeLinksAgentToolController {
     }
   }));
   readonly agentOpenLifeLink = vi.fn(async (): Promise<AgentToolControllerActionResult> => ({ ok: true }));
-  readonly agentStageLifeLinkDraft = vi.fn(async (): Promise<AgentToolControllerActionResult> => ({ ok: true }));
+  readonly agentUpdateLifeLinkContent = vi.fn(async (
+    input: AgentUpdateLifeLinkContentInput
+  ): Promise<AgentToolControllerActionResult> => {
+    const currentDetail = this.current.selectedLifeLinkDetail ?? detail();
+    const updated = lifeLink({
+      ...currentDetail.lifeLink,
+      id: input.lifeLinkId,
+      title: input.title ?? currentDetail.lifeLink.title,
+      body: input.body ?? currentDetail.lifeLink.body,
+      updatedAt: "2026-08-26T12:00:00.001Z"
+    });
+    this.current = snapshot({
+      selectedLifeLinkId: updated.id,
+      selectedLifeLinkDetail: detail(updated)
+    });
+    return { ok: true };
+  });
   readonly agentStartFindMode = vi.fn(async (): Promise<AgentToolControllerActionResult> => ({ ok: true }));
 
   getSnapshot() {
@@ -170,13 +186,14 @@ describe("Life Links five-tool catalog", () => {
     expect(controller.agentInspectCurrentLifeLink).not.toHaveBeenCalled();
   });
 
-  it("returns a bounded editor error before visible effects or a second draft proposal", async () => {
+  it("returns a bounded editor error before reads, navigation, updates, or Find Mode", async () => {
     const selected = lifeLink();
     controller.current = snapshot({ canonicalEditingId: selected.id });
     const visibleEffectInvocations: Array<[string, unknown]> = [
       ["inspect_current_life_link", {}],
       ["search_my_life_links", { query: "battery", limit: 10 }],
       ["open_life_link", { lifeLinkId: selected.id }],
+      ["update_life_link_content", { lifeLinkId: selected.id, baseUpdatedAt: selected.updatedAt, title: "Blocked" }],
       ["start_find_mode", { lifeLinkId: selected.id }]
     ];
 
@@ -193,15 +210,8 @@ describe("Life Links five-tool catalog", () => {
     expect(controller.agentInspectCurrentLifeLink).not.toHaveBeenCalled();
     expect(controller.agentSearchLifeLinks).not.toHaveBeenCalled();
     expect(controller.agentOpenLifeLink).not.toHaveBeenCalled();
+    expect(controller.agentUpdateLifeLinkContent).not.toHaveBeenCalled();
     expect(controller.agentStartFindMode).not.toHaveBeenCalled();
-
-    controller.current = snapshot({ agentDraftProposal: { lifeLinkId: selected.id } });
-    await expect(requiredTool("draft_life_link_update").execute({
-      lifeLinkId: selected.id,
-      baseUpdatedAt: selected.updatedAt,
-      title: "Another proposal"
-    }, {})).resolves.toMatchObject({ ok: false, error: { code: "editor_open", retryable: true } });
-    expect(controller.agentStageLifeLinkDraft).not.toHaveBeenCalled();
   });
 
   it("does not serialize an earlier owner's result after the live owner changes", async () => {
@@ -223,8 +233,8 @@ describe("Life Links five-tool catalog", () => {
       ["search_my_life_links", { query: "battery", limit: 11 }],
       ["search_my_life_links", { query: " ", limit: 1 }],
       ["open_life_link", { lifeLinkId: "bad id" }],
-      ["draft_life_link_update", { lifeLinkId: lifeLink().id, baseUpdatedAt: baseTime, privacy: "public" }],
-      ["draft_life_link_update", { lifeLinkId: lifeLink().id, baseUpdatedAt: baseTime }],
+      ["update_life_link_content", { lifeLinkId: lifeLink().id, baseUpdatedAt: baseTime, privacy: "public" }],
+      ["update_life_link_content", { lifeLinkId: lifeLink().id, baseUpdatedAt: baseTime }],
       ["start_find_mode", { lifeLinkId: lifeLink().id, camera: true }]
     ];
     for (const [name, input] of cases) {
@@ -235,7 +245,7 @@ describe("Life Links five-tool catalog", () => {
     }
     expect(controller.agentSearchLifeLinks).not.toHaveBeenCalled();
     expect(controller.agentOpenLifeLink).not.toHaveBeenCalled();
-    expect(controller.agentStageLifeLinkDraft).not.toHaveBeenCalled();
+    expect(controller.agentUpdateLifeLinkContent).not.toHaveBeenCalled();
     expect(controller.agentStartFindMode).not.toHaveBeenCalled();
   });
 
@@ -339,7 +349,7 @@ describe("Life Links five-tool catalog", () => {
     expect(wrong).toMatchObject({ ok: false, error: { code: "effect_not_applied" } });
   });
 
-  it("stages only a selected revision-bound title/body proposal and never Save authority", async () => {
+  it("saves one revision-bound title/body update through the controller", async () => {
     const record = lifeLink();
     controller.current = snapshot({ selectedLifeLinkId: record.id, selectedLifeLinkDetail: detail(record) });
     const input = {
@@ -349,37 +359,37 @@ describe("Life Links five-tool catalog", () => {
       body: "Charge both batteries.",
       sourceLifeLinkIds: ["life-link-camera-bag"]
     };
-    const result = await requiredTool("draft_life_link_update").execute(input, {});
+    const result = await requiredTool("update_life_link_content").execute(input, {});
 
-    expect(controller.agentStageLifeLinkDraft).toHaveBeenCalledWith(input, undefined);
+    expect(controller.agentUpdateLifeLinkContent).toHaveBeenCalledWith(input, undefined);
     expect(result).toMatchObject({
       ok: true,
       lifeLinkId: record.id,
-      baseUpdatedAt: record.updatedAt,
-      proposedFields: ["title", "body"],
-      saved: false,
+      updatedAt: "2026-08-26T12:00:00.001Z",
+      updatedFields: ["title", "body"],
+      saved: true,
       privacyChanged: false,
-      visibleEffect: "agent_draft_opened"
+      visibleEffect: "life_link_content_updated"
     });
-    expect(Object.keys(controller)).not.toContain("saveCanonicalLifeLink");
   });
 
-  it("rejects stale revisions, oversized proposals, duplicate sources, and forbidden draft fields", async () => {
+  it("rejects stale revisions, oversized updates, duplicate sources, and forbidden fields", async () => {
     const record = lifeLink();
     controller.current = snapshot({ selectedLifeLinkId: record.id, selectedLifeLinkDetail: detail(record) });
-    const draft = requiredTool("draft_life_link_update");
+    const update = requiredTool("update_life_link_content");
+    controller.agentUpdateLifeLinkContent.mockResolvedValueOnce({ ok: false, code: "stale_life_link" });
 
     await expect(
-      draft.execute({ lifeLinkId: record.id, baseUpdatedAt: "2026-08-25T00:00:00.000Z", title: "New" }, {})
+      update.execute({ lifeLinkId: record.id, baseUpdatedAt: "2026-08-25T00:00:00.000Z", title: "New" }, {})
     ).resolves.toMatchObject({ ok: false, error: { code: "stale_life_link", retryable: true } });
     await expect(
-      draft.execute({ lifeLinkId: record.id, baseUpdatedAt: baseTime, title: "x".repeat(MAX_TITLE_LENGTH + 1) }, {})
+      update.execute({ lifeLinkId: record.id, baseUpdatedAt: baseTime, title: "x".repeat(MAX_TITLE_LENGTH + 1) }, {})
     ).resolves.toMatchObject({ ok: false, error: { code: "invalid_input" } });
     await expect(
-      draft.execute({ lifeLinkId: record.id, baseUpdatedAt: baseTime, body: "x".repeat(MAX_BODY_LENGTH + 1) }, {})
+      update.execute({ lifeLinkId: record.id, baseUpdatedAt: baseTime, body: "x".repeat(MAX_BODY_LENGTH + 1) }, {})
     ).resolves.toMatchObject({ ok: false, error: { code: "invalid_input" } });
     await expect(
-      draft.execute({
+      update.execute({
         lifeLinkId: record.id,
         baseUpdatedAt: baseTime,
         body: "New",
@@ -387,7 +397,7 @@ describe("Life Links five-tool catalog", () => {
       }, {})
     ).resolves.toMatchObject({ ok: false, error: { code: "invalid_input" } });
     await expect(
-      draft.execute({
+      update.execute({
         lifeLinkId: record.id,
         baseUpdatedAt: baseTime,
         body: "New",
@@ -395,9 +405,9 @@ describe("Life Links five-tool catalog", () => {
       }, {})
     ).resolves.toMatchObject({ ok: false, error: { code: "invalid_input" } });
     await expect(
-      draft.execute({ lifeLinkId: record.id, baseUpdatedAt: baseTime, body: "New", save: true }, {})
+      update.execute({ lifeLinkId: record.id, baseUpdatedAt: baseTime, body: "New", privacy: "public" }, {})
     ).resolves.toMatchObject({ ok: false, error: { code: "invalid_input" } });
-    expect(controller.agentStageLifeLinkDraft).not.toHaveBeenCalled();
+    expect(controller.agentUpdateLifeLinkContent).toHaveBeenCalledTimes(1);
   });
 
   it("requires a QR-bound authorized result before reporting Find Mode", async () => {
@@ -425,10 +435,10 @@ describe("Life Links five-tool catalog", () => {
   });
 
   it("maps bounded controller failures without exposing controller or content error text", async () => {
-    controller.agentStageLifeLinkDraft.mockResolvedValueOnce({ ok: false, code: "source_life_link_unavailable" });
+    controller.agentUpdateLifeLinkContent.mockResolvedValueOnce({ ok: false, code: "source_life_link_unavailable" });
     const record = lifeLink();
     controller.current = snapshot({ selectedLifeLinkId: record.id, selectedLifeLinkDetail: detail(record) });
-    const result = await requiredTool("draft_life_link_update").execute(
+    const result = await requiredTool("update_life_link_content").execute(
       {
         lifeLinkId: record.id,
         baseUpdatedAt: record.updatedAt,
@@ -441,7 +451,7 @@ describe("Life Links five-tool catalog", () => {
       ok: false,
       error: {
         code: "source_life_link_unavailable",
-        message: "One or more draft source Life Links are not available to the current owner.",
+        message: "One or more update source Life Links are not available to the current owner.",
         retryable: true
       }
     });

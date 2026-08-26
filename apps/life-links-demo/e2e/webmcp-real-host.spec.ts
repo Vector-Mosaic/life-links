@@ -1,14 +1,23 @@
 import { expect, test, type Page, type Response } from "@playwright/test";
 import {
-  COMPETITION_CAMERA_BATTERY_KIT_ID,
-  COMPETITION_POWER_POUCH_ID,
+  COMPETITION_DECOY_QR_ID,
+  COMPETITION_INITIAL_UPGRADE_PLAN_BODY,
   COMPETITION_OWNER_EMAIL,
-  COMPETITION_TARGET_QR_ID
+  COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
+  COMPETITION_SLEEPING_BAG_ID,
+  COMPETITION_SLEEPING_PAD_ID,
+  COMPETITION_TARGET_QR_ID,
+  COMPETITION_UPGRADE_PLAN_ID,
+  COMPETITION_UPGRADE_PREFERENCES_ID
 } from "@life-links/core";
 
-import { LIFE_LINKS_PAGE_TOOL_NAMES } from "../src/agent/browserWebMcpHost";
-
-const CANONICAL_TOOL_NAMES = [...LIFE_LINKS_PAGE_TOOL_NAMES].sort();
+const CANONICAL_TOOL_NAMES = [
+  "inspect_current_life_link",
+  "search_my_life_links",
+  "open_life_link",
+  "update_life_link_content",
+  "start_find_mode"
+].sort();
 const DEFAULT_LOCAL_PORT = "43182";
 const LOCAL_PORT = process.env.LIFE_LINKS_WEBMCP_REAL_PORT?.trim() || DEFAULT_LOCAL_PORT;
 const EXPLICIT_BASE_URL = process.env.LIFE_LINKS_WEBMCP_REAL_BASE_URL?.trim();
@@ -26,11 +35,14 @@ if (!DEMO_EMAIL || !DEMO_PASSWORD) {
 const MAX_TOOL_OUTPUT_BYTES = 1536;
 
 test.describe("installed Chrome native WebMCP host", () => {
-  test("discovers and invokes the five production tools without a host shim", async ({ page }) => {
-    const patchRequests: string[] = [];
+  test("discovers and invokes the five physical-context tools without a host shim", async ({ page }) => {
+    const patchRequests: Array<{ url: string; body: Record<string, unknown> }> = [];
     page.on("request", (request) => {
       if (request.method() === "PATCH") {
-        patchRequests.push(request.url());
+        patchRequests.push({
+          url: request.url(),
+          body: request.postDataJSON() as Record<string, unknown>
+        });
       }
     });
 
@@ -56,46 +68,54 @@ test.describe("installed Chrome native WebMCP host", () => {
     await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
 
     const search = await invokeNativeTool(page, "search_my_life_links", {
-      query: "Camera Battery Kit",
+      query: "Camping Sleeping Pad",
       limit: 10
     });
     expect(search.value).toMatchObject({
       ok: true,
-      query: "Camera Battery Kit",
+      query: "Camping Sleeping Pad",
       resultCount: 1,
       visibleEffect: "search_results_highlighted"
     });
     expect(search.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
-    const searchResults = search.value.results as Array<{ id: string; title: string; qrId: string | null }>;
+    const searchResults = search.value.results as Array<{
+      id: string;
+      title: string;
+      qrId: string | null;
+      bodySummary: string;
+    }>;
     expect(searchResults).toHaveLength(1);
     expect(searchResults[0]).toMatchObject({
-      id: COMPETITION_CAMERA_BATTERY_KIT_ID,
-      title: "Camera Battery Kit",
-      qrId: COMPETITION_TARGET_QR_ID
+      id: COMPETITION_SLEEPING_PAD_ID,
+      title: "Camping Sleeping Pad",
+      qrId: COMPETITION_DECOY_QR_ID
     });
-    await expect(page.getByLabel("Search My Life Links")).toHaveValue("Camera Battery Kit");
-    await expect(page.locator(`[data-life-link-search-id="${searchResults[0].id}"]`)).toContainText("Camera Battery Kit");
+    expect(searchResults[0].bodySummary).toContain("Cold came through the ground");
+    await expect(page.getByLabel("Search My Life Links")).toHaveValue("Camping Sleeping Pad");
+    await expect(page.locator(`[data-life-link-search-id="${searchResults[0].id}"]`)).toContainText("Camping Sleeping Pad");
 
     const open = await invokeNativeTool(page, "open_life_link", {
-      lifeLinkId: searchResults[0].id
+      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID
     });
     expect(open.value).toMatchObject({
       ok: true,
-      lifeLinkId: searchResults[0].id,
-      title: "Camera Battery Kit",
-      recordedPath: "Field Camera Bag > Main Compartment > Power Pouch > Camera Battery Kit",
+      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID,
+      title: "Camping Upgrade Plan",
+      recordedPath: "Camping Kit > Camping Upgrade Plan",
       visibleEffect: "life_link_opened"
     });
     expect(open.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
-    await expect(page.locator(`[data-selected-life-link-id="${searchResults[0].id}"]`)).toBeVisible();
-    await expect(page.locator(".life-link-owner-detail").getByRole("heading", { name: "Camera Battery Kit" })).toBeVisible();
+    await expect(page.locator(`[data-selected-life-link-id="${COMPETITION_UPGRADE_PLAN_ID}"]`)).toBeVisible();
+    await expect(page.locator(".life-link-owner-detail").getByRole("heading", { name: "Camping Upgrade Plan" })).toBeVisible();
 
     const inspect = await invokeNativeTool(page, "inspect_current_life_link", {});
     expect(inspect.value).toMatchObject({
       ok: true,
       lifeLink: {
-        id: searchResults[0].id,
-        qrId: COMPETITION_TARGET_QR_ID
+        id: COMPETITION_UPGRADE_PLAN_ID,
+        qrId: null,
+        body: COMPETITION_INITIAL_UPGRADE_PLAN_BODY,
+        bodyTruncated: false
       },
       visibleEffect: "current_life_link_focused"
     });
@@ -103,59 +123,103 @@ test.describe("installed Chrome native WebMCP host", () => {
     await expect(page.getByText("Inspected the selected Life Link")).toBeVisible();
 
     const selectedLifeLink = inspect.value.lifeLink as { id: string; updatedAt: string };
-    const proposedTitle = "Camera Battery Kit — native host review";
-    const proposedBody = "Confirm both batteries are charged before leaving.";
-    const draft = await invokeNativeTool(page, "draft_life_link_update", {
+    const update = await invokeNativeTool(page, "update_life_link_content", {
       lifeLinkId: selectedLifeLink.id,
       baseUpdatedAt: selectedLifeLink.updatedAt,
-      title: proposedTitle,
-      body: proposedBody,
-      sourceLifeLinkIds: [COMPETITION_POWER_POUCH_ID]
+      body: COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
+      sourceLifeLinkIds: [
+        COMPETITION_SLEEPING_BAG_ID,
+        COMPETITION_SLEEPING_PAD_ID,
+        COMPETITION_UPGRADE_PREFERENCES_ID
+      ]
     });
-    expect(draft.value).toMatchObject({
+    expect(update.value).toMatchObject({
       ok: true,
       lifeLinkId: selectedLifeLink.id,
-      saved: false,
+      updatedFields: ["body"],
+      sourceLifeLinkIds: [
+        COMPETITION_SLEEPING_BAG_ID,
+        COMPETITION_SLEEPING_PAD_ID,
+        COMPETITION_UPGRADE_PREFERENCES_ID
+      ],
+      saved: true,
       privacyChanged: false,
-      visibleEffect: "agent_draft_opened"
+      visibleEffect: "life_link_content_updated"
     });
-    expect(draft.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
-    const editor = page.getByRole("dialog");
-    await expect(editor.getByText("Agent draft — not saved", { exact: true })).toBeVisible();
-    await expect(editor.locator(".agent-draft-review")).toContainText(proposedTitle);
-    await expect(editor.locator(".agent-draft-review")).toContainText(proposedBody);
-    await expect(editor.getByLabel("Title")).toHaveValue("Camera Battery Kit");
-    await expect(editor.locator(".rich-body-editor-surface")).not.toContainText(proposedBody);
-    await page.waitForTimeout(250);
-    expect(patchRequests).toEqual([]);
+    expect(update.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
+    const updatedAt = update.value.updatedAt as string;
+    expect(Date.parse(updatedAt)).not.toBeNaN();
+    expect(updatedAt).not.toBe(selectedLifeLink.updatedAt);
+    await expect(page.locator(".life-link-owner-detail")).toContainText("Planned upgrade priority: sleeping pad.");
+    await expect(page.locator(".life-link-owner-detail")).toContainText("stay within the $250 budget");
+    expect(patchRequests).toHaveLength(1);
+    expect(patchRequests[0].url).toContain(`/api/life-links/${COMPETITION_UPGRADE_PLAN_ID}`);
+    expect(patchRequests[0].body).toEqual({
+      body: COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
+      expectedUpdatedAt: selectedLifeLink.updatedAt
+    });
 
-    await editor.getByRole("button", { name: "Apply proposal" }).click();
-    await expect(editor.getByLabel("Title")).toHaveValue(proposedTitle);
-    await expect(editor.locator(".rich-body-editor-surface")).toContainText(proposedBody);
-    await expect(editor.getByText("Applied to the editor, but still not saved.")).toBeVisible();
-    await page.waitForTimeout(250);
-    expect(patchRequests).toEqual([]);
+    const staleReplay = await invokeNativeTool(page, "update_life_link_content", {
+      lifeLinkId: selectedLifeLink.id,
+      baseUpdatedAt: selectedLifeLink.updatedAt,
+      body: COMPETITION_INITIAL_UPGRADE_PLAN_BODY
+    });
+    expect(staleReplay.value).toMatchObject({
+      ok: false,
+      error: {
+        code: "stale_life_link",
+        retryable: true
+      }
+    });
+    expect(staleReplay.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
+    expect(patchRequests).toHaveLength(1);
 
-    await editor.getByRole("button", { name: "Close editor" }).click();
+    const activity = page.locator(".agent-activity-panel");
+    await expect(activity).toContainText("Updated Life Link content");
+    await expect(activity).not.toContainText("Planned upgrade priority");
+    await expect(activity).not.toContainText(selectedLifeLink.id);
+
+    const reloadResponse = await page.reload();
+    assertWebMcpDocumentHeaders(reloadResponse);
+    await expect(page.getByRole("heading", { name: "Agent Access" })).toBeVisible();
+    await expect.poll(() => nativeToolNames(page)).toEqual([]);
+    await accessToggle.check();
+    await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
+
+    const persistedOpen = await invokeNativeTool(page, "open_life_link", {
+      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID
+    });
+    expect(persistedOpen.value).toMatchObject({
+      ok: true,
+      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID,
+      updatedAt
+    });
+    const persistedInspect = await invokeNativeTool(page, "inspect_current_life_link", {});
+    expect(persistedInspect.value).toMatchObject({
+      ok: true,
+      lifeLink: {
+        id: COMPETITION_UPGRADE_PLAN_ID,
+        updatedAt,
+        bodyTruncated: false
+      }
+    });
+    expect((persistedInspect.value.lifeLink as { body: string }).body).toContain("Planned upgrade priority: sleeping pad.");
+    expect((persistedInspect.value.lifeLink as { body: string }).body).toContain("stay within the $250 budget");
+
     const find = await invokeNativeTool(page, "start_find_mode", {
-      lifeLinkId: selectedLifeLink.id
+      lifeLinkId: COMPETITION_SLEEPING_BAG_ID
     });
     expect(find.value).toMatchObject({
       ok: true,
-      lifeLinkId: selectedLifeLink.id,
+      lifeLinkId: COMPETITION_SLEEPING_BAG_ID,
       qrId: COMPETITION_TARGET_QR_ID,
       cameraStarted: false,
       visibleEffect: "find_mode_started"
     });
     expect(find.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
     await expect(page.getByRole("heading", { name: "Search And Find" })).toBeVisible();
-    await expect(page.locator(".find-target")).toContainText("Camera Battery Kit");
-
-    const activity = page.locator(".agent-activity-panel");
-    await expect(activity.locator(".agent-activity-item")).toHaveCount(5);
-    await expect(activity).not.toContainText(proposedBody);
-    await expect(activity).not.toContainText(selectedLifeLink.id);
-    expect(patchRequests).toEqual([]);
+    await expect(page.locator(".find-target")).toContainText("Camping Sleeping Bag");
+    expect(patchRequests).toHaveLength(1);
 
     let releaseDelayedSearch: (() => void) | undefined;
     let markDelayedSearchStarted: (() => void) | undefined;
@@ -172,7 +236,7 @@ test.describe("installed Chrome native WebMCP host", () => {
       await route.continue().catch(() => undefined);
     });
     const revokedInvocation = invokeNativeTool(page, "search_my_life_links", {
-      query: "router",
+      query: "camping",
       limit: 10
     }).then(
       (value) => ({ status: "fulfilled" as const, value }),
@@ -197,7 +261,7 @@ test.describe("installed Chrome native WebMCP host", () => {
     await page.locator(".sidebar-actions").getByRole("button", { name: "Logout" }).click();
     await expect(page.getByRole("heading", { name: "Sign in to Life Links" })).toBeVisible();
     await expect.poll(() => nativeToolNames(page)).toEqual([]);
-    expect(patchRequests).toEqual([]);
+    expect(patchRequests).toHaveLength(1);
   });
 });
 

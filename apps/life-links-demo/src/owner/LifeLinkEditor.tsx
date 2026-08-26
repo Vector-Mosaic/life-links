@@ -25,15 +25,7 @@ import {
   type CanonicalLifeLinkDraft,
   type LinkEditorDraft
 } from "../workspace/editorSession";
-import {
-  applyAgentDraftToEditorContent,
-  type AgentDraftEditorContent
-} from "./agentDraft";
-import type {
-  AgentLifeLinkDraftProposal,
-  CanonicalLifeLinkEditorPatch,
-  LinkEditorPatch
-} from "../workspace/types";
+import type { CanonicalLifeLinkEditorPatch, LinkEditorPatch } from "../workspace/types";
 
 const RichBodyEditor = lazy(() =>
   import("../richBodyEditor").then((module) => ({ default: module.RichBodyEditor }))
@@ -53,25 +45,14 @@ type LegacyLifeLinkEditorProps = {
 type CanonicalLifeLinkEditorProps = {
   mode: "canonical";
   link: LifeLinkRecord | null;
-  agentDraftProposal?: AgentLifeLinkDraftProposal | null;
   busy: boolean;
   onClose: () => void;
-  onDiscardAgentDraft?: () => void;
   onSave: (lifeLinkId: string, expectedUpdatedAt: string, patch: CanonicalLifeLinkEditorPatch) => void;
   onUploadMedia: (lifeLinkId: string, files: FileList) => void;
   onDeleteMedia: (lifeLinkId: string, mediaId: string) => void;
 };
 
 type LifeLinkEditorProps = LegacyLifeLinkEditorProps | CanonicalLifeLinkEditorProps;
-
-type AgentDraftEditorCheckpoint = {
-  lifeLinkId: string;
-  content: AgentDraftEditorContent;
-  projectId: string;
-  pendingDraft: LinkEditorDraft | CanonicalLifeLinkDraft | null;
-  draftMessage: string;
-  canonicalBaseUpdatedAt: string;
-};
 
 export function LifeLinkEditor(props: LifeLinkEditorProps) {
   const { link, busy, onClose } = props;
@@ -91,17 +72,7 @@ export function LifeLinkEditor(props: LifeLinkEditorProps) {
     canonical && link ? link.updatedAt : ""
   );
   const [editorRevision, setEditorRevision] = useState(0);
-  const [appliedAgentDraftCreatedAt, setAppliedAgentDraftCreatedAt] = useState<string | null>(null);
-  const [agentDraftCheckpoint, setAgentDraftCheckpoint] = useState<AgentDraftEditorCheckpoint | null>(null);
   const bodyDocJson = useMemo(() => JSON.stringify(bodyDoc), [bodyDoc]);
-  const agentDraftProposal = canonical ? props.agentDraftProposal ?? null : null;
-  const currentAgentDraftProposal =
-    canonical &&
-    link &&
-    agentDraftProposal?.lifeLinkId === link.id &&
-    agentDraftProposal.baseUpdatedAt === link.updatedAt
-      ? agentDraftProposal
-      : null;
 
   useEffect(() => {
     if (!link) {
@@ -152,35 +123,7 @@ export function LifeLinkEditor(props: LifeLinkEditorProps) {
   }, [canonical, link?.id, link?.updatedAt]);
 
   useEffect(() => {
-    if (
-      appliedAgentDraftCreatedAt &&
-      agentDraftCheckpoint &&
-      agentDraftCheckpoint.lifeLinkId === link?.id &&
-      agentDraftProposal?.createdAt !== appliedAgentDraftCreatedAt
-    ) {
-      applyLinkEditorState(agentDraftCheckpoint.content, {
-        setTitle,
-        setBody,
-        setBodyDoc,
-        setBodyDocVersion,
-        setPrivacy,
-        setProjectId
-      });
-      setProjectId(agentDraftCheckpoint.projectId);
-      setPendingDraft(agentDraftCheckpoint.pendingDraft);
-      setDraftMessage(agentDraftCheckpoint.draftMessage);
-      setCanonicalBaseUpdatedAt(agentDraftCheckpoint.canonicalBaseUpdatedAt);
-      setEditorRevision((revision) => revision + 1);
-    }
-    setAppliedAgentDraftCreatedAt(null);
-    setAgentDraftCheckpoint(null);
-  }, [agentDraftProposal?.createdAt, link?.id, link?.updatedAt]);
-
-  useEffect(() => {
     if (!link) {
-      return;
-    }
-    if (appliedAgentDraftCreatedAt) {
       return;
     }
     const patch = linkEditorPatchFromState({ title, body, bodyDoc, bodyDocVersion, privacy, projectId });
@@ -197,7 +140,7 @@ export function LifeLinkEditor(props: LifeLinkEditorProps) {
       }
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [appliedAgentDraftCreatedAt, body, bodyDocJson, bodyDocVersion, canonical, canonicalBaseUpdatedAt, link, privacy, projectId, title]);
+  }, [body, bodyDocJson, bodyDocVersion, canonical, canonicalBaseUpdatedAt, link, privacy, projectId, title]);
 
   function discardDraft() {
     if (!link) {
@@ -225,54 +168,6 @@ export function LifeLinkEditor(props: LifeLinkEditorProps) {
     }
     setDraftMessage("");
     setEditorRevision((revision) => revision + 1);
-  }
-
-  function applyAgentDraft() {
-    if (!currentAgentDraftProposal || appliedAgentDraftCreatedAt) {
-      return;
-    }
-    setAgentDraftCheckpoint({
-      lifeLinkId: currentAgentDraftProposal.lifeLinkId,
-      content: { title, body, bodyDoc, bodyDocVersion, privacy },
-      projectId,
-      pendingDraft,
-      draftMessage,
-      canonicalBaseUpdatedAt
-    });
-    const next = applyAgentDraftToEditorContent(
-      { title, body, bodyDoc, bodyDocVersion, privacy },
-      currentAgentDraftProposal
-    );
-    setTitle(next.title);
-    setBody(next.body);
-    setBodyDoc(next.bodyDoc);
-    setBodyDocVersion(next.bodyDocVersion);
-    setPrivacy(next.privacy);
-    setAppliedAgentDraftCreatedAt(currentAgentDraftProposal.createdAt);
-    setEditorRevision((revision) => revision + 1);
-  }
-
-  function dismissAgentDraft() {
-    if (agentDraftCheckpoint && appliedAgentDraftCreatedAt) {
-      applyLinkEditorState(agentDraftCheckpoint.content, {
-        setTitle,
-        setBody,
-        setBodyDoc,
-        setBodyDocVersion,
-        setPrivacy,
-        setProjectId
-      });
-      setProjectId(agentDraftCheckpoint.projectId);
-      setPendingDraft(agentDraftCheckpoint.pendingDraft);
-      setDraftMessage(agentDraftCheckpoint.draftMessage);
-      setCanonicalBaseUpdatedAt(agentDraftCheckpoint.canonicalBaseUpdatedAt);
-      setEditorRevision((revision) => revision + 1);
-    }
-    setAppliedAgentDraftCreatedAt(null);
-    setAgentDraftCheckpoint(null);
-    if (props.mode === "canonical") {
-      props.onDiscardAgentDraft?.();
-    }
   }
 
   function restorePendingDraft() {
@@ -326,60 +221,11 @@ export function LifeLinkEditor(props: LifeLinkEditorProps) {
             <Tooltip text="Close the editor without saving." />
           </button>
         </div>
-        {canonical && currentAgentDraftProposal ? (
-          <section className="agent-draft-review" aria-labelledby="agent-draft-review-title">
-            <div className="agent-draft-review-heading">
-              <div>
-                <strong id="agent-draft-review-title">Agent draft — not saved</strong>
-                <span>
-                  Proposed fields: {currentAgentDraftProposal.proposedFields.join(" and ")}. Privacy, hierarchy, QR, and media remain unchanged.
-                </span>
-              </div>
-              <span className="agent-draft-privacy">Privacy unchanged: {link.privacy}</span>
-            </div>
-            <div className="agent-draft-comparison">
-              <div>
-                <span>Before</span>
-                <strong>{currentAgentDraftProposal.before.title || "Untitled Life Link"}</strong>
-                <pre>{currentAgentDraftProposal.before.body || "No body text"}</pre>
-              </div>
-              <div>
-                <span>Proposed</span>
-                <strong>{currentAgentDraftProposal.after.title || "Untitled Life Link"}</strong>
-                <pre>{currentAgentDraftProposal.after.body || "No body text"}</pre>
-              </div>
-            </div>
-            {currentAgentDraftProposal.sourceLifeLinkIds.length ? (
-              <div className="agent-draft-sources" aria-label="Authorized source Life Links">
-                <span>Sources</span>
-                {currentAgentDraftProposal.sourceLifeLinkIds.map((lifeLinkId) => (
-                  <code key={lifeLinkId}>{lifeLinkId}</code>
-                ))}
-              </div>
-            ) : (
-              <p className="inline-note">No source Life Links were supplied.</p>
-            )}
-            <div className="agent-draft-actions">
-              {appliedAgentDraftCreatedAt === currentAgentDraftProposal.createdAt ? (
-                <span role="status">Applied to the editor, but still not saved.</span>
-              ) : (
-                <button type="button" className="secondary-button" onClick={applyAgentDraft} disabled={busy}>
-                  Apply proposal
-                </button>
-              )}
-              <button type="button" className="text-button" onClick={dismissAgentDraft} disabled={busy}>
-                {appliedAgentDraftCreatedAt === currentAgentDraftProposal.createdAt
-                  ? "Undo and dismiss"
-                  : "Dismiss proposal"}
-              </button>
-            </div>
-          </section>
-        ) : null}
         <label>
           <span>Title</span>
           <input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={MAX_TITLE_LENGTH} />
         </label>
-        {draftMessage && !appliedAgentDraftCreatedAt ? (
+        {draftMessage ? (
           <div className={pendingDraft ? "draft-notice conflict" : "draft-notice"} role="status">
             <span>{draftMessage}</span>
             <span className="draft-actions">

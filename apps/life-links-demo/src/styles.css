@@ -2012,16 +2012,13 @@ textarea {
 .agent-access-toggle,
 .agent-access-status,
 .agent-activity-item,
-.agent-activity-item > div > span,
-.agent-draft-review-heading,
-.agent-draft-sources {
+.agent-activity-item > div > span {
   display: flex;
   align-items: center;
   gap: 9px;
 }
 
-.agent-access-heading,
-.agent-draft-review-heading {
+.agent-access-heading {
   justify-content: space-between;
   flex-wrap: wrap;
 }
@@ -2125,93 +2122,6 @@ textarea {
 .agent-activity-empty {
   color: var(--muted);
   font-size: 0.78rem;
-}
-
-.agent-draft-review {
-  display: grid;
-  gap: 12px;
-  padding: 13px;
-  border: 1px solid color-mix(in srgb, var(--accent) 52%, var(--line));
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
-}
-
-.agent-draft-review-heading > div {
-  display: grid;
-  gap: 3px;
-}
-
-.agent-draft-review-heading span,
-.agent-draft-comparison > div > span,
-.agent-draft-sources > span {
-  color: var(--muted);
-  font-size: 0.78rem;
-}
-
-.agent-draft-privacy {
-  padding: 5px 8px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--surface);
-}
-
-.agent-draft-comparison {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.agent-draft-comparison > div {
-  display: grid;
-  align-content: start;
-  gap: 6px;
-  min-width: 0;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-}
-
-.agent-draft-comparison strong,
-.agent-draft-comparison pre {
-  overflow-wrap: anywhere;
-}
-
-.agent-draft-comparison pre {
-  max-height: 150px;
-  margin: 0;
-  overflow: auto;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.82rem;
-  white-space: pre-wrap;
-}
-
-.agent-draft-sources {
-  flex-wrap: wrap;
-}
-
-.agent-draft-sources code {
-  padding: 4px 6px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
-  overflow-wrap: anywhere;
-  font-size: 0.72rem;
-}
-
-.agent-draft-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.agent-draft-actions > span {
-  margin-right: auto;
-  color: var(--muted);
-  font-size: 0.82rem;
 }
 
 .spin {
@@ -2397,7 +2307,6 @@ textarea {
   }
 
   .hierarchy-main-grid,
-  .agent-draft-comparison,
   .hierarchy-search-result,
   .hierarchy-search-form,
   .hierarchy-inline-form {

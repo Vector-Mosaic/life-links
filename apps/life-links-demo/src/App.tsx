@@ -94,7 +94,6 @@ function LifeLinksApp() {
     theme,
     routePathname,
     canonicalEditingId,
-    agentDraftProposal,
     selectedLifeLinkDetail,
     rootLifeLinks
   } = snapshot;
@@ -717,10 +716,8 @@ function LifeLinksApp() {
         <LifeLinkEditor
           mode="canonical"
           link={selectedLifeLinkDetail?.lifeLink.id === canonicalEditingId ? selectedLifeLinkDetail.lifeLink : null}
-          agentDraftProposal={agentDraftProposal}
           busy={busy}
           onClose={() => controller.closeCanonicalEditor()}
-          onDiscardAgentDraft={() => controller.discardAgentDraftProposal()}
           onSave={(lifeLinkId, expectedUpdatedAt, patch) =>
             void controller.saveCanonicalLifeLink(lifeLinkId, expectedUpdatedAt, patch)
           }

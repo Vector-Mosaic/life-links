@@ -8,7 +8,7 @@ import type {
   UserRecord
 } from "./index.js";
 
-export const COMPETITION_FIXTURE_PROFILE = "webmcp-camera-kit-v1";
+export const COMPETITION_FIXTURE_PROFILE = "webmcp-camping-context-v1";
 export const COMPETITION_FIXTURE_TIMESTAMP = "2026-08-26T12:00:00.000Z";
 
 export const COMPETITION_OWNER_ID = "competition-owner";
@@ -19,12 +19,25 @@ export const COMPETITION_BATCH_ID = "batch-webmcp-challenge";
 export const COMPETITION_TARGET_QR_ID = "LL-WEBMCP-00001";
 export const COMPETITION_DECOY_QR_ID = "LL-WEBMCP-00002";
 
-export const COMPETITION_FIELD_CAMERA_BAG_ID = "competition-field-camera-bag";
-export const COMPETITION_MAIN_COMPARTMENT_ID = "competition-main-compartment";
-export const COMPETITION_POWER_POUCH_ID = "competition-power-pouch";
-export const COMPETITION_CAMERA_BATTERY_KIT_ID = "competition-camera-battery-kit";
-export const COMPETITION_FRONT_ORGANIZER_ID = "competition-front-organizer";
-export const COMPETITION_LENS_CLEANING_KIT_ID = "competition-lens-cleaning-kit";
+export const COMPETITION_CAMPING_KIT_ID = "competition-camping-kit";
+export const COMPETITION_SLEEP_SYSTEM_ID = "competition-sleep-system";
+export const COMPETITION_SLEEPING_BAG_ID = "competition-sleeping-bag";
+export const COMPETITION_SLEEPING_PAD_ID = "competition-sleeping-pad";
+export const COMPETITION_UPGRADE_PREFERENCES_ID = "competition-upgrade-preferences";
+export const COMPETITION_UPGRADE_PLAN_ID = "competition-upgrade-plan";
+
+export const COMPETITION_INITIAL_UPGRADE_PLAN_BODY =
+  "Planned: No camping upgrade priority has been selected. Nothing has been purchased, owned, or installed.";
+
+export const COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY = [
+  "Planned upgrade priority: sleeping pad.",
+  "",
+  "Reason: The current low-R pad caused cold through the ground, while the existing sleeping bag kept me warm around 35°F and still works.",
+  "",
+  "Requirements: prioritize warmth over minimum weight; stay within the $250 budget; keep the working sleeping bag.",
+  "",
+  "Status: planned only — not purchased, owned, or installed."
+].join("\n");
 
 export type CompetitionFixtureData = {
   profile: typeof COMPETITION_FIXTURE_PROFILE;
@@ -34,37 +47,6 @@ export type CompetitionFixtureData = {
   lifeLinks: LifeLinkRecord[];
   qrBindings: LifeLinkQrBindingRecord[];
   projectCompatibility: LifeLinkProjectCompatibilityRecord[];
-};
-
-const TARGET_BODY = [
-  "Battery readiness",
-  "Power kit for the field camera.",
-  "- [x] Pack two charged batteries",
-  "- [ ] Confirm the USB-C charger is in the pouch",
-  "- [ ] Add one labeled spare"
-].join("\n");
-
-const TARGET_BODY_DOC: LinkBodyDoc = {
-  type: "doc",
-  content: [
-    {
-      type: "heading",
-      attrs: { level: 2 },
-      content: [{ type: "text", text: "Battery readiness" }]
-    },
-    {
-      type: "paragraph",
-      content: [{ type: "text", text: "Power kit for the field camera." }]
-    },
-    {
-      type: "taskList",
-      content: [
-        taskItem(true, "Pack two charged batteries"),
-        taskItem(false, "Confirm the USB-C charger is in the pouch"),
-        taskItem(false, "Add one labeled spare")
-      ]
-    }
-  ]
 };
 
 export function createCompetitionFixtureData(password: string, qrBaseUrl: string): CompetitionFixtureData {
@@ -95,49 +77,48 @@ export function createCompetitionFixtureData(password: string, qrBaseUrl: string
   }));
   const lifeLinks: LifeLinkRecord[] = [
     lifeLink({
-      id: COMPETITION_FIELD_CAMERA_BAG_ID,
+      id: COMPETITION_CAMPING_KIT_ID,
       parentId: null,
-      title: "Field Camera Bag",
-      body: "The complete synthetic field camera kit.",
+      title: "Camping Kit",
+      body: "Synthetic camping context selected for the WebMCP challenge demonstration.",
       privacy: "private"
     }),
     lifeLink({
-      id: COMPETITION_MAIN_COMPARTMENT_ID,
-      parentId: COMPETITION_FIELD_CAMERA_BAG_ID,
-      title: "Main Compartment",
-      body: "Primary camera storage inside the field bag.",
+      id: COMPETITION_SLEEP_SYSTEM_ID,
+      parentId: COMPETITION_CAMPING_KIT_ID,
+      title: "Camping Sleep System",
+      body: "Recorded context for the current sleeping bag, sleeping pad, and prior trip results.",
       privacy: "private"
     }),
     lifeLink({
-      id: COMPETITION_POWER_POUCH_ID,
-      parentId: COMPETITION_MAIN_COMPARTMENT_ID,
-      title: "Power Pouch",
-      body: "Power accessories grouped inside the main compartment.",
-      privacy: "private"
-    }),
-    lifeLink({
-      id: COMPETITION_CAMERA_BATTERY_KIT_ID,
-      parentId: COMPETITION_POWER_POUCH_ID,
+      id: COMPETITION_SLEEPING_BAG_ID,
+      parentId: COMPETITION_SLEEP_SYSTEM_ID,
       qrId: COMPETITION_TARGET_QR_ID,
-      title: "Camera Battery Kit",
-      body: TARGET_BODY,
-      bodyDoc: TARGET_BODY_DOC,
+      title: "Camping Sleeping Bag",
+      body: "Recorded current: This working sleeping bag kept me warm around 35°F. Owner does not want to replace gear that works.",
       privacy: "public"
     }),
     lifeLink({
-      id: COMPETITION_FRONT_ORGANIZER_ID,
-      parentId: COMPETITION_FIELD_CAMERA_BAG_ID,
-      title: "Front Organizer",
-      body: "Quick-access maintenance supplies.",
+      id: COMPETITION_SLEEPING_PAD_ID,
+      parentId: COMPETITION_SLEEP_SYSTEM_ID,
+      qrId: COMPETITION_DECOY_QR_ID,
+      title: "Camping Sleeping Pad",
+      body: "Owner report: Cold came through the ground on the last trip. Recorded current: low-R sleeping pad.",
       privacy: "private"
     }),
     lifeLink({
-      id: COMPETITION_LENS_CLEANING_KIT_ID,
-      parentId: COMPETITION_FRONT_ORGANIZER_ID,
-      qrId: COMPETITION_DECOY_QR_ID,
-      title: "Lens Cleaning Kit",
-      body: "Synthetic microfiber cloth, air blower, and lens brush.",
-      privacy: "public"
+      id: COMPETITION_UPGRADE_PREFERENCES_ID,
+      parentId: COMPETITION_CAMPING_KIT_ID,
+      title: "Camping Upgrade Preferences",
+      body: "Owner preference: warmth matters more than minimum weight. Budget for the next camping upgrade: $250.",
+      privacy: "private"
+    }),
+    lifeLink({
+      id: COMPETITION_UPGRADE_PLAN_ID,
+      parentId: COMPETITION_CAMPING_KIT_ID,
+      title: "Camping Upgrade Plan",
+      body: COMPETITION_INITIAL_UPGRADE_PLAN_BODY,
+      privacy: "private"
     })
   ];
   return {
@@ -149,19 +130,19 @@ export function createCompetitionFixtureData(password: string, qrBaseUrl: string
     qrBindings: [
       {
         qrId: COMPETITION_TARGET_QR_ID,
-        lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
+        lifeLinkId: COMPETITION_SLEEPING_BAG_ID,
         boundAt: timestamp
       },
       {
         qrId: COMPETITION_DECOY_QR_ID,
-        lifeLinkId: COMPETITION_LENS_CLEANING_KIT_ID,
+        lifeLinkId: COMPETITION_SLEEPING_PAD_ID,
         boundAt: timestamp
       }
     ],
     projectCompatibility: [
       {
-        projectId: COMPETITION_FIELD_CAMERA_BAG_ID,
-        lifeLinkId: COMPETITION_FIELD_CAMERA_BAG_ID
+        projectId: COMPETITION_CAMPING_KIT_ID,
+        lifeLinkId: COMPETITION_CAMPING_KIT_ID
       }
     ]
   };
@@ -196,14 +177,6 @@ function plainBodyDoc(body: string): LinkBodyDoc {
   return body
     ? { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: body }] }] }
     : { type: "doc" };
-}
-
-function taskItem(checked: boolean, text: string) {
-  return {
-    type: "taskItem",
-    attrs: { checked },
-    content: [{ type: "paragraph", content: [{ type: "text", text }] }]
-  };
 }
 
 function normalizeQrBaseUrl(value: string): string {

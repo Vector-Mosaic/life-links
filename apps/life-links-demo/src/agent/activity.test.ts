@@ -9,10 +9,10 @@ import {
 describe("redacted agent activity", () => {
   it("retains only bounded stable IDs and enumerated visible effects", () => {
     const entry = createAgentActivityEntry({
-      tool: "draft_life_link_update",
+      tool: "update_life_link_content",
       outcome: "succeeded",
       affectedLifeLinkIds: ["life-link-1", "life-link-1", "x".repeat(200)],
-      visibleEffect: "unsaved_draft_staged",
+      visibleEffect: "life_link_content_updated",
       errorCode: null
     }, {
       id: "activity-1",
@@ -20,7 +20,7 @@ describe("redacted agent activity", () => {
     });
 
     expect(entry.affectedLifeLinkIds).toEqual(["life-link-1", "x".repeat(96)]);
-    expect(agentActivityLabel(entry)).toBe("Staged an unsaved Life Link draft");
+    expect(agentActivityLabel(entry)).toBe("Updated Life Link content");
     expect(JSON.stringify(entry)).not.toMatch(/title|body|path|arguments|payload/i);
   });
 

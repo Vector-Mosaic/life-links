@@ -47,8 +47,8 @@ export function AgentAccessPanel({
       )}
 
       <div className="agent-access-scope">
-        <p><strong>Allowed:</strong> inspect, bounded search, visible navigation, unsaved drafting, and Find Mode.</p>
-        <p><strong>Never granted:</strong> Save, claim, attach, move, publish, delete, upload, or batch generation.</p>
+        <p><strong>Allowed:</strong> inspect, bounded search, visible navigation, revision-safe title/body updates, and Find Mode.</p>
+        <p><strong>Never granted:</strong> privacy, hierarchy, QR, media, claim, delete, purchase, or batch changes.</p>
       </div>
     </section>
   );

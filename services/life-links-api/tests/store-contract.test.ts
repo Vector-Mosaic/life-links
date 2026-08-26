@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
-  COMPETITION_CAMERA_BATTERY_KIT_ID,
-  COMPETITION_FIELD_CAMERA_BAG_ID,
+  COMPETITION_CAMPING_KIT_ID,
+  COMPETITION_SLEEPING_BAG_ID,
   COMPETITION_OWNER_ID,
   COMPETITION_TARGET_QR_ID,
   DEFAULT_QR_BASE_URL,
@@ -51,7 +51,7 @@ describe("canonical Life Links store contract", () => {
     const legacyOwnerBefore = await store.getLifeLinkDetail(DEMO_OWNER_ID, "project-home");
     const dryRun = await store.resetCompetitionFixture(options);
     expect(dryRun).toMatchObject({
-      profile: "webmcp-camera-kit-v1",
+      profile: "webmcp-camping-context-v1",
       ownerId: COMPETITION_OWNER_ID,
       mode: "dry-run",
       applied: false,
@@ -63,12 +63,11 @@ describe("canonical Life Links store contract", () => {
 
     const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(firstApply.after).toEqual(firstApply.expected);
-    const target = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID);
+    const target = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID);
     expect(target?.ancestry.items.map((item) => item.title)).toEqual([
-      "Field Camera Bag",
-      "Main Compartment",
-      "Power Pouch",
-      "Camera Battery Kit"
+      "Camping Kit",
+      "Camping Sleep System",
+      "Camping Sleeping Bag"
     ]);
     expect(target?.lifeLink).toMatchObject({ qrId: COMPETITION_TARGET_QR_ID, privacy: "public" });
 
@@ -82,7 +81,7 @@ describe("canonical Life Links store contract", () => {
     expect(ownerState).toMatchObject({
       state: "claimed",
       viewerIsOwner: true,
-      link: { ownerId: COMPETITION_OWNER_ID, projectId: COMPETITION_FIELD_CAMERA_BAG_ID }
+      link: { ownerId: COMPETITION_OWNER_ID, projectId: COMPETITION_CAMPING_KIT_ID }
     });
 
     await store.createSession(
@@ -91,14 +90,14 @@ describe("canonical Life Links store contract", () => {
       "2099-01-01T00:00:00.000Z"
     );
     await store.updateLifeLink(COMPETITION_OWNER_ID, {
-      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
+      lifeLinkId: COMPETITION_SLEEPING_BAG_ID,
       expectedUpdatedAt: target!.lifeLink.updatedAt,
       patch: { title: "Drifted battery kit" }
     });
     await store.createLifeLink({
       id: "competition-extra-life-link",
       ownerId: COMPETITION_OWNER_ID,
-      parentId: COMPETITION_FIELD_CAMERA_BAG_ID,
+      parentId: COMPETITION_CAMPING_KIT_ID,
       title: "Judge-created extra",
       createdAt: "2026-08-26T13:00:00.000Z"
     });
@@ -107,7 +106,7 @@ describe("canonical Life Links store contract", () => {
     const driftDryRun = await store.resetCompetitionFixture(options);
     expect(driftDryRun.applied).toBe(false);
     expect(driftDryRun.after).toEqual(driftDryRun.before);
-    expect((await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title).toBe(
+    expect((await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID))?.lifeLink.title).toBe(
       "Drifted battery kit"
     );
     expect(await store.getSessionByTokenHash("competition-session-hash")).not.toBeNull();
@@ -116,8 +115,8 @@ describe("canonical Life Links store contract", () => {
     expect(restored.after).toEqual(restored.expected);
     expect(await store.getSessionByTokenHash("competition-session-hash")).toBeNull();
     expect(await store.getLifeLinkDetail(COMPETITION_OWNER_ID, "competition-extra-life-link")).toBeNull();
-    expect((await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title).toBe(
-      "Camera Battery Kit"
+    expect((await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID))?.lifeLink.title).toBe(
+      "Camping Sleeping Bag"
     );
     expect(await store.getLifeLinkDetail(DEMO_OWNER_ID, "project-home")).toEqual(legacyOwnerBefore);
 
@@ -130,7 +129,7 @@ describe("canonical Life Links store contract", () => {
     const foreignQrTarget = await store.createLifeLink({
       id: "competition-foreign-qr-target",
       ownerId: COMPETITION_OWNER_ID,
-      parentId: COMPETITION_FIELD_CAMERA_BAG_ID,
+      parentId: COMPETITION_CAMPING_KIT_ID,
       title: "Foreign QR reset sentinel",
       createdAt: "2026-08-26T14:00:00.000Z"
     });
@@ -171,9 +170,9 @@ describe("canonical Life Links store contract", () => {
       mode: "apply" as const
     };
     await isolated.resetCompetitionFixture(options);
-    const target = await isolated.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID);
+    const target = await isolated.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID);
     await isolated.updateLifeLink(COMPETITION_OWNER_ID, {
-      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
+      lifeLinkId: COMPETITION_SLEEPING_BAG_ID,
       expectedUpdatedAt: target!.lifeLink.updatedAt,
       patch: { title: "In-memory rollback sentinel" }
     });
@@ -199,7 +198,7 @@ describe("canonical Life Links store contract", () => {
     }
 
     expect(
-      (await isolated.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title
+      (await isolated.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID))?.lifeLink.title
     ).toBe("In-memory rollback sentinel");
     expect(await isolated.getSessionByTokenHash("competition-memory-rollback-session-hash")).not.toBeNull();
   });

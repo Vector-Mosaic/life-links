@@ -22,7 +22,8 @@ const MAX_SEARCH_QUERY_LENGTH = 160;
 const MAX_REVISION_LENGTH = 64;
 const MAX_RESULT_TITLE_LENGTH = 96;
 const MAX_RESULT_PATH_LENGTH = 240;
-const MAX_RESULT_BODY_SUMMARY_LENGTH = 120;
+const MAX_RESULT_BODY_SUMMARY_LENGTH = 160;
+const MAX_INSPECT_BODY_LENGTH = 640;
 
 export const LIFE_LINKS_AGENT_TOOL_NAMES = LIFE_LINKS_PAGE_TOOL_NAMES;
 
@@ -31,6 +32,7 @@ export type LifeLinksAgentToolName = (typeof LIFE_LINKS_AGENT_TOOL_NAMES)[number
 export type AgentToolControllerFailureCode =
   | "cancelled"
   | "editor_open"
+  | "editor_dirty"
   | "life_link_unavailable"
   | "stale_life_link"
   | "source_life_link_unavailable"
@@ -49,7 +51,6 @@ export type AgentToolWorkspaceSnapshot = {
   readonly routeQrId: string | null;
   readonly guestView: boolean;
   readonly canonicalEditingId: string | null;
-  readonly agentDraftProposal: { readonly lifeLinkId: string } | null;
   readonly selectedLifeLinkId: string | null;
   readonly selectedLifeLinkDetail: LifeLinkDetail | null;
   readonly lifeLinkSearchResults: readonly LifeLinkSearchItem[];
@@ -72,7 +73,7 @@ export type AgentOpenLifeLinkInput = {
   readonly lifeLinkId: string;
 };
 
-export type AgentStageLifeLinkDraftInput = {
+export type AgentUpdateLifeLinkContentInput = {
   readonly lifeLinkId: string;
   readonly baseUpdatedAt: string;
   readonly title?: string;
@@ -98,8 +99,8 @@ export interface LifeLinksAgentToolController {
     input: AgentOpenLifeLinkInput,
     signal?: AbortSignal
   ): Promise<AgentToolControllerActionResult>;
-  agentStageLifeLinkDraft(
-    input: AgentStageLifeLinkDraftInput,
+  agentUpdateLifeLinkContent(
+    input: AgentUpdateLifeLinkContentInput,
     signal?: AbortSignal
   ): Promise<AgentToolControllerActionResult>;
   agentStartFindMode(
@@ -112,6 +113,7 @@ type AgentToolErrorCode =
   | "invalid_input"
   | "owner_workspace_unavailable"
   | "editor_open"
+  | "editor_dirty"
   | "no_life_link_selected"
   | "life_link_unavailable"
   | "stale_life_link"
@@ -138,7 +140,8 @@ export type AgentInspectCurrentLifeLinkSuccess = {
     readonly qrId: string | null;
     readonly privacy: "public" | "private";
     readonly updatedAt: string;
-    readonly bodySummary: string;
+    readonly body: string;
+    readonly bodyTruncated: boolean;
     readonly childCount: number;
     readonly path: readonly { readonly id: string; readonly title: string }[];
     readonly pathTruncated: boolean;
@@ -187,17 +190,17 @@ export type AgentOpenLifeLinkSuccess = {
   readonly truncated: boolean;
 };
 
-export type AgentDraftLifeLinkUpdateSuccess = {
+export type AgentUpdateLifeLinkContentSuccess = {
   readonly ok: true;
   readonly lifeLinkId: string;
-  readonly baseUpdatedAt: string;
-  readonly proposedFields: readonly ("title" | "body")[];
+  readonly updatedAt: string;
+  readonly updatedFields: readonly ("title" | "body")[];
   readonly sourceLifeLinkIds: readonly string[];
   readonly sourceIdsTruncated: boolean;
   readonly sourceIdsOmittedCount: number;
-  readonly saved: false;
+  readonly saved: true;
   readonly privacyChanged: false;
-  readonly visibleEffect: "agent_draft_opened";
+  readonly visibleEffect: "life_link_content_updated";
   readonly truncated: boolean;
 };
 
@@ -213,7 +216,7 @@ export type AgentStartFindModeSuccess = {
 export type AgentInspectCurrentLifeLinkResult = AgentInspectCurrentLifeLinkSuccess | AgentToolErrorResult;
 export type AgentSearchLifeLinksResult = AgentSearchLifeLinksSuccess | AgentToolErrorResult;
 export type AgentOpenLifeLinkResult = AgentOpenLifeLinkSuccess | AgentToolErrorResult;
-export type AgentDraftLifeLinkUpdateResult = AgentDraftLifeLinkUpdateSuccess | AgentToolErrorResult;
+export type AgentUpdateLifeLinkContentResult = AgentUpdateLifeLinkContentSuccess | AgentToolErrorResult;
 export type AgentStartFindModeResult = AgentStartFindModeSuccess | AgentToolErrorResult;
 
 const ERROR_DETAILS: Readonly<Record<AgentToolErrorCode, { readonly message: string; readonly retryable: boolean }>> = {
@@ -229,6 +232,10 @@ const ERROR_DETAILS: Readonly<Record<AgentToolErrorCode, { readonly message: str
     message: "Finish or close the active Life Link editor before running this tool.",
     retryable: true
   },
+  editor_dirty: {
+    message: "A human draft exists for that Life Link. Review or discard it before allowing an agent update.",
+    retryable: true
+  },
   no_life_link_selected: {
     message: "Select a Life Link in the owner workspace before using this tool.",
     retryable: true
@@ -238,11 +245,11 @@ const ERROR_DETAILS: Readonly<Record<AgentToolErrorCode, { readonly message: str
     retryable: false
   },
   stale_life_link: {
-    message: "The selected Life Link changed. Re-open it before drafting.",
+    message: "The Life Link changed. Read its current revision before updating it.",
     retryable: true
   },
   source_life_link_unavailable: {
-    message: "One or more draft source Life Links are not available to the current owner.",
+    message: "One or more update source Life Links are not available to the current owner.",
     retryable: true
   },
   qr_not_attached: {
@@ -303,7 +310,7 @@ const LIFE_LINK_ID_INPUT_SCHEMA = {
   required: ["lifeLinkId"]
 } as const;
 
-const DRAFT_INPUT_SCHEMA = {
+const UPDATE_INPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   properties: {
@@ -317,19 +324,19 @@ const DRAFT_INPUT_SCHEMA = {
     title: {
       type: "string",
       maxLength: MAX_TITLE_LENGTH,
-      description: "Optional unsaved replacement title."
+      description: "Optional replacement title to save immediately at the exact base revision."
     },
     body: {
       type: "string",
       maxLength: MAX_BODY_LENGTH,
-      description: "Optional unsaved replacement plain-text body."
+      description: "Optional replacement plain-text body to save immediately at the exact base revision."
     },
     sourceLifeLinkIds: {
       type: "array",
       maxItems: MAX_LIFE_LINK_SOURCE_REFERENCE_COUNT,
       uniqueItems: true,
       items: LIFE_LINK_ID_PROPERTY,
-      description: "Optional authorized Life Link IDs supporting the proposal."
+      description: "Optional owner-scoped Life Link IDs whose recorded context supports this update."
     }
   },
   required: ["lifeLinkId", "baseUpdatedAt"],
@@ -366,11 +373,11 @@ export function createLifeLinksAgentToolCatalog(
     },
     {
       name: LIFE_LINKS_AGENT_TOOL_NAMES[3],
-      title: "Draft Life Link update",
-      description: "Stage a revision-bound title or body proposal for human review without saving it.",
-      inputSchema: DRAFT_INPUT_SCHEMA,
+      title: "Update Life Link content",
+      description: "Save a revision-safe title or body update to one owner Life Link and visibly open the persisted result.",
+      inputSchema: UPDATE_INPUT_SCHEMA,
       annotations: { readOnlyHint: false, untrustedContentHint: true },
-      execute: (input, context = {}) => draftLifeLinkUpdate(controller, input, context)
+      execute: (input, context = {}) => updateLifeLinkContent(controller, input, context)
     },
     {
       name: LIFE_LINKS_AGENT_TOOL_NAMES[4],
@@ -484,12 +491,12 @@ async function openLifeLink(
   return serializeOpen(detail);
 }
 
-async function draftLifeLinkUpdate(
+async function updateLifeLinkContent(
   controller: LifeLinksAgentToolController,
   input: unknown,
   context: WebMcpExecutionContext
-): Promise<AgentDraftLifeLinkUpdateResult> {
-  const parsed = parseDraftInput(input);
+): Promise<AgentUpdateLifeLinkContentResult> {
+  const parsed = parseUpdateInput(input);
   if (!parsed) {
     return failure("invalid_input");
   }
@@ -498,18 +505,11 @@ async function draftLifeLinkUpdate(
   if (accessFailure) {
     return accessFailure;
   }
-  if (before.agentDraftProposal !== null) {
+  if (before.canonicalEditingId !== null) {
     return failure("editor_open");
   }
   const expectedOwnerId = before.currentUser!.id;
-  const selected = exactSelectedDetail(before);
-  if (!selected || selected.lifeLink.id !== parsed.lifeLinkId) {
-    return failure("no_life_link_selected");
-  }
-  if (selected.lifeLink.updatedAt !== parsed.baseUpdatedAt) {
-    return failure("stale_life_link");
-  }
-  const action = await controller.agentStageLifeLinkDraft(parsed, context.signal);
+  const action = await controller.agentUpdateLifeLinkContent(parsed, context.signal);
   if (!action.ok) {
     return controllerFailure(action.code);
   }
@@ -522,11 +522,13 @@ async function draftLifeLinkUpdate(
   if (
     !current ||
     current.lifeLink.id !== parsed.lifeLinkId ||
-    current.lifeLink.updatedAt !== parsed.baseUpdatedAt
+    current.lifeLink.updatedAt === parsed.baseUpdatedAt ||
+    (parsed.title !== undefined && current.lifeLink.title !== parsed.title) ||
+    (parsed.body !== undefined && current.lifeLink.body !== parsed.body)
   ) {
-    return failure("stale_life_link");
+    return failure("effect_not_applied");
   }
-  return serializeDraft(parsed);
+  return serializeUpdate(parsed, current.lifeLink.updatedAt);
 }
 
 async function startFindMode(
@@ -603,7 +605,7 @@ function parseLifeLinkIdInput(input: unknown): { readonly lifeLinkId: string } |
   return { lifeLinkId: input.lifeLinkId };
 }
 
-function parseDraftInput(input: unknown): AgentStageLifeLinkDraftInput | null {
+function parseUpdateInput(input: unknown): AgentUpdateLifeLinkContentInput | null {
   if (!isExactRecord(input, ["lifeLinkId", "baseUpdatedAt", "title", "body", "sourceLifeLinkIds"])) {
     return null;
   }
@@ -707,7 +709,10 @@ function serializeInspection(detail: LifeLinkDetail): AgentInspectCurrentLifeLin
   }));
   let path = [...sourcePath];
   let children = [...sourceChildren];
+  const fullBody = detail.lifeLink.body.replace(/\s+/g, " ").trim();
+  let bodyLimit = Math.min(fullBody.length, MAX_INSPECT_BODY_LENGTH);
   for (;;) {
+    const body = clip(fullBody, bodyLimit);
     const result = {
       ok: true,
       lifeLink: {
@@ -717,7 +722,8 @@ function serializeInspection(detail: LifeLinkDetail): AgentInspectCurrentLifeLin
         qrId: detail.lifeLink.qrId,
         privacy: detail.lifeLink.privacy,
         updatedAt: detail.lifeLink.updatedAt,
-        bodySummary: clip(detail.lifeLink.body.replace(/\s+/g, " ").trim(), MAX_RESULT_BODY_SUMMARY_LENGTH),
+        body,
+        bodyTruncated: body.length < fullBody.length,
         childCount: selectedSummary?.childCount ?? detail.children.length,
         path,
         pathTruncated: detail.ancestry.truncated || path.length < sourcePath.length,
@@ -731,7 +737,8 @@ function serializeInspection(detail: LifeLinkDetail): AgentInspectCurrentLifeLin
         detail.ancestry.truncated ||
         detail.childrenPage.truncated ||
         path.length < sourcePath.length ||
-        children.length < sourceChildren.length
+        children.length < sourceChildren.length ||
+        body.length < fullBody.length
     } as const;
     if (withinBudget(result)) {
       return result;
@@ -746,6 +753,10 @@ function serializeInspection(detail: LifeLinkDetail): AgentInspectCurrentLifeLin
     }
     if (path.length > 0) {
       path = path.slice(0, -1);
+      continue;
+    }
+    if (bodyLimit > 80) {
+      bodyLimit = Math.max(80, bodyLimit - 80);
       continue;
     }
     throw new Error("Unable to serialize inspect_current_life_link within the Life Links output budget.");
@@ -811,9 +822,12 @@ function serializeOpen(detail: LifeLinkDetail): AgentOpenLifeLinkSuccess {
   return bounded(result);
 }
 
-function serializeDraft(input: AgentStageLifeLinkDraftInput): AgentDraftLifeLinkUpdateSuccess {
+function serializeUpdate(
+  input: AgentUpdateLifeLinkContentInput,
+  updatedAt: string
+): AgentUpdateLifeLinkContentSuccess {
   const sourceIds = [...input.sourceLifeLinkIds];
-  const proposedFields: Array<"title" | "body"> = [
+  const updatedFields: Array<"title" | "body"> = [
     ...(input.title !== undefined ? (["title"] as const) : []),
     ...(input.body !== undefined ? (["body"] as const) : [])
   ];
@@ -821,14 +835,14 @@ function serializeDraft(input: AgentStageLifeLinkDraftInput): AgentDraftLifeLink
     const result = {
       ok: true,
       lifeLinkId: input.lifeLinkId,
-      baseUpdatedAt: input.baseUpdatedAt,
-      proposedFields,
+      updatedAt,
+      updatedFields,
       sourceLifeLinkIds: sourceIds,
       sourceIdsTruncated: sourceIds.length < input.sourceLifeLinkIds.length,
       sourceIdsOmittedCount: input.sourceLifeLinkIds.length - sourceIds.length,
-      saved: false,
+      saved: true,
       privacyChanged: false,
-      visibleEffect: "agent_draft_opened",
+      visibleEffect: "life_link_content_updated",
       truncated: sourceIds.length < input.sourceLifeLinkIds.length
     } as const;
     if (withinBudget(result)) {
@@ -838,7 +852,7 @@ function serializeDraft(input: AgentStageLifeLinkDraftInput): AgentDraftLifeLink
       sourceIds.pop();
       continue;
     }
-    throw new Error("Unable to serialize draft_life_link_update within the Life Links output budget.");
+    throw new Error("Unable to serialize update_life_link_content within the Life Links output budget.");
   }
 }
 

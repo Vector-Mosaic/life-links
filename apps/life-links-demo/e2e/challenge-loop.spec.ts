@@ -1,14 +1,16 @@
 import { expect, test } from "@playwright/test";
 import {
-  COMPETITION_CAMERA_BATTERY_KIT_ID,
+  COMPETITION_CAMPING_KIT_ID,
   COMPETITION_DECOY_QR_ID,
-  COMPETITION_FIELD_CAMERA_BAG_ID,
-  COMPETITION_FRONT_ORGANIZER_ID,
-  COMPETITION_LENS_CLEANING_KIT_ID,
-  COMPETITION_MAIN_COMPARTMENT_ID,
+  COMPETITION_INITIAL_UPGRADE_PLAN_BODY,
   COMPETITION_OWNER_EMAIL,
-  COMPETITION_POWER_POUCH_ID,
-  COMPETITION_TARGET_QR_ID
+  COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
+  COMPETITION_SLEEPING_BAG_ID,
+  COMPETITION_SLEEPING_PAD_ID,
+  COMPETITION_SLEEP_SYSTEM_ID,
+  COMPETITION_TARGET_QR_ID,
+  COMPETITION_UPGRADE_PLAN_ID,
+  COMPETITION_UPGRADE_PREFERENCES_ID
 } from "@life-links/core";
 
 import { LIFE_LINKS_PAGE_TOOL_NAMES } from "../src/agent/browserWebMcpHost";
@@ -48,18 +50,15 @@ const HOSTED_EXPECTED_RUNTIME_IDENTITY = HOSTED_CHALLENGE_BASE_URL
     }
   : null;
 const CANONICAL_TOOL_NAMES = [...LIFE_LINKS_PAGE_TOOL_NAMES].sort();
-const TARGET_PATH = ["Field Camera Bag", "Main Compartment", "Power Pouch", "Camera Battery Kit"];
-const DECOY_PATH = "Field Camera Bag > Front Organizer > Lens Cleaning Kit";
-const SYNTHETIC_CHECKLIST = [
-  "Challenge field checklist",
-  "- [x] Pack two charged batteries",
-  "- [x] Confirm the USB-C charger is in the pouch",
-  "- [ ] Add one labeled spare",
-  "- [ ] Run the synthetic preflight check"
-].join("\n");
+const TARGET_PATH = ["Camping Kit", "Camping Sleep System", "Camping Sleeping Bag"];
+const SOURCE_LIFE_LINK_IDS = [
+  COMPETITION_SLEEPING_BAG_ID,
+  COMPETITION_SLEEPING_PAD_ID,
+  COMPETITION_UPGRADE_PREFERENCES_ID
+];
 
-test.describe("competition physical-to-digital loop", () => {
-  test("persists an agent-assisted update through one human Save and finds the physical target", async ({
+test.describe("competition physical-context loop", () => {
+  test("uses bounded physical context to persist one grounded camping upgrade and find the right item", async ({
     baseURL,
     browser,
     page
@@ -70,6 +69,7 @@ test.describe("competition physical-to-digital loop", () => {
       ? new URL(HOSTED_CHALLENGE_BASE_URL).origin
       : LOCAL_CHALLENGE_BASE_URL;
     expect(challengeBaseURL).toBe(expectedQrBaseUrl);
+
     const publicConfigResponse = await page.context().request.get("/api/config");
     expect(publicConfigResponse.ok()).toBe(true);
     expect(await publicConfigResponse.json()).toMatchObject({ qrBaseUrl: expectedQrBaseUrl });
@@ -89,6 +89,7 @@ test.describe("competition physical-to-digital loop", () => {
         ...HOSTED_EXPECTED_RUNTIME_IDENTITY
       });
     }
+
     const patchRequests: Array<{ url: string; body: unknown }> = [];
     page.on("request", (request) => {
       if (request.method() === "PATCH") {
@@ -111,13 +112,13 @@ test.describe("competition physical-to-digital loop", () => {
         id: COMPETITION_TARGET_QR_ID,
         ownerId: null,
         projectId: null,
-        title: "Camera Battery Kit"
+        title: "Camping Sleeping Bag"
       },
       viewerIsOwner: false
     });
     assertNoHierarchyDisclosure(initialPublicState);
-    await assertPublicQrHasNoHierarchy(page, "Camera Battery Kit");
-    await expect(page.locator(".public-content")).toContainText("Battery readiness");
+    await assertPublicQrHasNoHierarchy(page, "Camping Sleeping Bag");
+    await expect(page.locator(".public-content")).toContainText("kept me warm around 35°F");
 
     await page.getByLabel("Email").fill(CHALLENGE_EMAIL);
     await page.getByLabel("Password").fill(CHALLENGE_PASSWORD);
@@ -127,8 +128,8 @@ test.describe("competition physical-to-digital loop", () => {
     await expect(page).toHaveURL(`${challengeBaseURL}/qr/${COMPETITION_TARGET_QR_ID}`);
     await openInWorkspace.click();
 
-    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_CAMERA_BATTERY_KIT_ID}`);
-    await expect(page.locator(`[data-selected-life-link-id="${COMPETITION_CAMERA_BATTERY_KIT_ID}"]`)).toBeVisible();
+    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_SLEEPING_BAG_ID}`);
+    await expect(page.locator(`[data-selected-life-link-id="${COMPETITION_SLEEPING_BAG_ID}"]`)).toBeVisible();
     const breadcrumbs = page.getByRole("navigation", { name: "Life Link path" });
     await expect(breadcrumbs.locator(":scope > .life-link-breadcrumb-item > button")).toHaveText(TARGET_PATH);
     await expect(breadcrumbs.locator(".life-link-breadcrumb-ellipsis")).toHaveCount(0);
@@ -145,137 +146,200 @@ test.describe("competition physical-to-digital loop", () => {
 
     const accessToggle = page.getByRole("checkbox", { name: /Off|On for this page session/ });
     await expect(accessToggle).not.toBeChecked();
+    await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
     await accessToggle.check();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
     const registeredCatalog = await controlledHostSnapshot(page);
     expect(registeredCatalog.registrationNames).toHaveLength(5);
     expect([...registeredCatalog.registrationNames].sort()).toEqual(CANONICAL_TOOL_NAMES);
 
-    const inspectResult = await invokeControlledTool(page, "inspect_current_life_link", {});
-    expect(inspectResult).toMatchObject({
+    const bagInspection = await invokeControlledTool(page, "inspect_current_life_link", {});
+    expect(bagInspection).toMatchObject({
       ok: true,
       lifeLink: {
-        id: COMPETITION_CAMERA_BATTERY_KIT_ID,
+        id: COMPETITION_SLEEPING_BAG_ID,
         qrId: COMPETITION_TARGET_QR_ID,
-        path: TARGET_PATH.map((title) => ({ title }))
+        path: TARGET_PATH.map((title) => ({ title })),
+        bodyTruncated: false
+      },
+      visibleEffect: "current_life_link_focused",
+      truncated: false
+    });
+    expect(readInspectedBody(bagInspection)).toContain("kept me warm around 35°F");
+    expect(readInspectedBody(bagInspection)).toContain("does not want to replace gear that works");
+
+    const padSearch = await invokeControlledTool(page, "search_my_life_links", {
+      query: "Camping Sleeping Pad",
+      limit: 10
+    });
+    expect(padSearch).toMatchObject({
+      ok: true,
+      query: "Camping Sleeping Pad",
+      resultCount: 1,
+      totalCount: 1,
+      results: [
+        {
+          id: COMPETITION_SLEEPING_PAD_ID,
+          title: "Camping Sleeping Pad",
+          qrId: COMPETITION_DECOY_QR_ID,
+          recordedPath: "Camping Kit > Camping Sleep System > Camping Sleeping Pad",
+          matchClass: "exact_title"
+        }
+      ],
+      visibleEffect: "search_results_highlighted",
+      truncated: false
+    });
+    const padSummary = readOnlySearchBodySummary(padSearch);
+    expect(padSummary).toContain("Cold came through the ground");
+    expect(padSummary).toContain("low-R sleeping pad");
+
+    const preferenceSearch = await invokeControlledTool(page, "search_my_life_links", {
+      query: "warmth",
+      limit: 10
+    });
+    expect(preferenceSearch).toMatchObject({
+      ok: true,
+      query: "warmth",
+      resultCount: 1,
+      totalCount: 1,
+      results: [
+        {
+          id: COMPETITION_UPGRADE_PREFERENCES_ID,
+          title: "Camping Upgrade Preferences",
+          recordedPath: "Camping Kit > Camping Upgrade Preferences",
+          matchClass: "body"
+        }
+      ],
+      visibleEffect: "search_results_highlighted",
+      truncated: false
+    });
+    const preferenceSummary = readOnlySearchBodySummary(preferenceSearch);
+    expect(preferenceSummary).toContain("warmth matters more than minimum weight");
+    expect(preferenceSummary).toContain("$250");
+
+    const openPlanResult = await invokeControlledTool(page, "open_life_link", {
+      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID
+    });
+    expect(openPlanResult).toMatchObject({
+      ok: true,
+      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID,
+      title: "Camping Upgrade Plan",
+      recordedPath: "Camping Kit > Camping Upgrade Plan",
+      visibleEffect: "life_link_opened"
+    });
+    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_UPGRADE_PLAN_ID}`);
+
+    const planInspection = await invokeControlledTool(page, "inspect_current_life_link", {});
+    expect(planInspection).toMatchObject({
+      ok: true,
+      lifeLink: {
+        id: COMPETITION_UPGRADE_PLAN_ID,
+        body: COMPETITION_INITIAL_UPGRADE_PLAN_BODY,
+        bodyTruncated: false
       },
       visibleEffect: "current_life_link_focused"
     });
-    const inspectedLifeLink = inspectResult.lifeLink as { id: string; updatedAt: string };
-
-    const searchResult = await invokeControlledTool(page, "search_my_life_links", {
-      query: "Lens Cleaning Kit",
-      limit: 10
-    });
-    expect(searchResult).toMatchObject({
-      ok: true,
-      query: "Lens Cleaning Kit",
-      resultCount: 1,
-      results: [
-        {
-          id: COMPETITION_LENS_CLEANING_KIT_ID,
-          qrId: COMPETITION_DECOY_QR_ID,
-          recordedPath: DECOY_PATH
-        }
-      ],
-      visibleEffect: "search_results_highlighted"
-    });
-    await expect(page.getByLabel("Search My Life Links")).toHaveValue("Lens Cleaning Kit");
-    await expect(page.locator(`[data-life-link-search-id="${COMPETITION_LENS_CLEANING_KIT_ID}"]`)).toContainText(DECOY_PATH);
-
-    const openResult = await invokeControlledTool(page, "open_life_link", {
-      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID
-    });
-    expect(openResult).toMatchObject({
-      ok: true,
-      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
-      title: "Camera Battery Kit",
-      recordedPath: TARGET_PATH.join(" > "),
-      visibleEffect: "life_link_opened"
-    });
-    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_CAMERA_BATTERY_KIT_ID}`);
+    const baseUpdatedAt = readInspectedUpdatedAt(planInspection);
+    expect(baseUpdatedAt).toBe((openPlanResult as { updatedAt: string }).updatedAt);
 
     expect(patchRequests).toEqual([]);
-    const draftResult = await invokeControlledTool(page, "draft_life_link_update", {
-      lifeLinkId: inspectedLifeLink.id,
-      baseUpdatedAt: inspectedLifeLink.updatedAt,
-      body: SYNTHETIC_CHECKLIST,
-      sourceLifeLinkIds: [COMPETITION_LENS_CLEANING_KIT_ID]
+    const updateResult = await invokeControlledTool(page, "update_life_link_content", {
+      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID,
+      baseUpdatedAt,
+      body: COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
+      sourceLifeLinkIds: SOURCE_LIFE_LINK_IDS
     });
-    expect(draftResult).toMatchObject({
+    expect(updateResult).toMatchObject({
       ok: true,
-      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
-      proposedFields: ["body"],
-      sourceLifeLinkIds: [COMPETITION_LENS_CLEANING_KIT_ID],
-      saved: false,
+      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID,
+      updatedFields: ["body"],
+      sourceLifeLinkIds: SOURCE_LIFE_LINK_IDS,
+      sourceIdsTruncated: false,
+      sourceIdsOmittedCount: 0,
+      saved: true,
       privacyChanged: false,
-      visibleEffect: "agent_draft_opened"
+      visibleEffect: "life_link_content_updated",
+      truncated: false
     });
-    const editor = page.getByRole("dialog");
-    await expect(editor.getByText("Agent draft — not saved", { exact: true })).toBeVisible();
-    await expect(editor.locator(".agent-draft-review")).toContainText(SYNTHETIC_CHECKLIST);
-    await expect(editor.getByLabel("Authorized source Life Links")).toContainText(COMPETITION_LENS_CLEANING_KIT_ID);
-    expect(patchRequests).toEqual([]);
-
-    await editor.getByRole("button", { name: "Apply proposal" }).click();
-    await expect(editor.getByText("Applied to the editor, but still not saved.")).toBeVisible();
-    await expect(editor.locator(".rich-body-editor-surface")).toContainText("Run the synthetic preflight check");
-    await page.waitForTimeout(300);
-    expect(patchRequests).toEqual([]);
-
-    const canonicalPatchPath = `/api/life-links/${COMPETITION_CAMERA_BATTERY_KIT_ID}`;
-    const saveResponsePromise = page.waitForResponse((response) => {
-      const request = response.request();
-      return request.method() === "PATCH" && new URL(response.url()).pathname === canonicalPatchPath;
-    });
-    await editor.getByRole("button", { name: "Save" }).click();
-    const saveResponse = await saveResponsePromise;
-    expect(saveResponse.ok()).toBe(true);
-    await expect(editor).toBeHidden();
+    expect((updateResult as { updatedAt: string }).updatedAt).not.toBe(baseUpdatedAt);
+    const canonicalPatchPath = `/api/life-links/${COMPETITION_UPGRADE_PLAN_ID}`;
     expect(patchRequests).toHaveLength(1);
     expect(new URL(patchRequests[0].url).pathname).toBe(canonicalPatchPath);
-    expect(patchRequests[0].body).toMatchObject({
-      expectedUpdatedAt: inspectedLifeLink.updatedAt,
-      title: "Camera Battery Kit",
-      body: SYNTHETIC_CHECKLIST,
-      privacy: "public"
+    expect(patchRequests[0].body).toEqual({
+      body: COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
+      expectedUpdatedAt: baseUpdatedAt
     });
-    await expect(page.locator(".life-link-owner-detail .life-link-detail-body")).toContainText("Run the synthetic preflight check");
+    const ownerDetail = page.locator(".life-link-owner-detail");
+    await expect(ownerDetail).toContainText("Planned upgrade priority: sleeping pad.");
+    await expect(ownerDetail).toContainText("stay within the $250 budget");
+    await expect(ownerDetail).toContainText("not purchased, owned, or installed");
 
     const persistedOwnerDetail = await browserFetchJson(page, canonicalPatchPath);
     expect(persistedOwnerDetail.status).toBe(200);
     expect(persistedOwnerDetail.body).toMatchObject({
       detail: {
         lifeLink: {
-          id: COMPETITION_CAMERA_BATTERY_KIT_ID,
-          body: SYNTHETIC_CHECKLIST
+          id: COMPETITION_UPGRADE_PLAN_ID,
+          parentId: COMPETITION_CAMPING_KIT_ID,
+          title: "Camping Upgrade Plan",
+          body: COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
+          privacy: "private"
         }
       }
     });
-    const persistedLifeLink = (persistedOwnerDetail.body as {
-      detail: { lifeLink: { updatedAt: string } };
-    }).detail.lifeLink;
-    expect(persistedLifeLink.updatedAt).not.toBe(inspectedLifeLink.updatedAt);
+
+    await page.reload();
+    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_UPGRADE_PLAN_ID}`);
+    await expect(page.locator(".life-link-owner-detail")).toContainText("Planned upgrade priority: sleeping pad.");
+    const restoredAccessToggle = page.getByRole("checkbox", { name: /Off|On for this page session/ });
+    await expect(restoredAccessToggle).not.toBeChecked();
+    await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
+    expect((await controlledHostSnapshot(page)).registrationNames).toEqual([]);
+
+    await restoredAccessToggle.check();
+    await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
+    const persistedInspection = await invokeControlledTool(page, "inspect_current_life_link", {});
+    expect(persistedInspection).toMatchObject({
+      ok: true,
+      lifeLink: {
+        id: COMPETITION_UPGRADE_PLAN_ID,
+        bodyTruncated: false
+      }
+    });
+    const persistedInspectedBody = readInspectedBody(persistedInspection);
+    expect(persistedInspectedBody).toContain("Planned upgrade priority: sleeping pad.");
+    expect(persistedInspectedBody).toContain("warm around 35°F and still works");
+    expect(persistedInspectedBody).toContain("stay within the $250 budget");
+    expect(patchRequests).toHaveLength(1);
 
     const findResult = await invokeControlledTool(page, "start_find_mode", {
-      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID
+      lifeLinkId: COMPETITION_SLEEPING_PAD_ID
     });
     expect(findResult).toMatchObject({
       ok: true,
-      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
-      qrId: COMPETITION_TARGET_QR_ID,
+      lifeLinkId: COMPETITION_SLEEPING_PAD_ID,
+      qrId: COMPETITION_DECOY_QR_ID,
       cameraStarted: false,
       visibleEffect: "find_mode_started"
     });
-    await expect(page.locator(".find-target")).toContainText("Camera Battery Kit");
-    await expect(page.locator(".find-target")).toContainText(COMPETITION_TARGET_QR_ID);
+    await expect(page.locator(".find-target")).toContainText("Camping Sleeping Pad");
+    await expect(page.locator(".find-target")).toContainText(COMPETITION_DECOY_QR_ID);
 
-    await page.locator(".sample-scans").getByRole("button", { name: "Lens Cleaning Kit" }).click();
+    const sampleScans = page.locator(".sample-scans");
+    await sampleScans.getByRole("button", { name: "Camping Sleeping Bag" }).click();
     await expect(page.locator(".scan-status")).toContainText("Not the selected item");
-    await expect(page.locator(".scan-status")).toContainText(COMPETITION_DECOY_QR_ID);
-    await page.getByRole("button", { name: "Target" }).click();
-    await expect(page.locator(".scan-status")).toContainText("Match found");
     await expect(page.locator(".scan-status")).toContainText(COMPETITION_TARGET_QR_ID);
+    await sampleScans.getByRole("button", { name: "Camping Sleeping Pad" }).click();
+    await expect(page.locator(".scan-status")).toContainText("Match found");
+    await expect(page.locator(".scan-status")).toContainText(COMPETITION_DECOY_QR_ID);
+
+    await restoredAccessToggle.uncheck();
+    await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
+    const revokedHost = await controlledHostSnapshot(page);
+    expect([...revokedHost.abortedNames].sort()).toEqual(CANONICAL_TOOL_NAMES);
+    await expect(invokeControlledTool(page, "inspect_current_life_link", {})).rejects.toThrow(
+      "Tool inspect_current_life_link is not active."
+    );
 
     const freshContext = await browser.newContext({ baseURL: challengeBaseURL });
     try {
@@ -288,22 +352,36 @@ test.describe("competition physical-to-digital loop", () => {
           id: COMPETITION_TARGET_QR_ID,
           ownerId: null,
           projectId: null,
-          title: "Camera Battery Kit",
-          body: SYNTHETIC_CHECKLIST
+          title: "Camping Sleeping Bag"
         },
         viewerIsOwner: false
       });
       assertNoHierarchyDisclosure(freshPublicState);
-      expect(JSON.stringify(freshPublicState)).not.toContain(COMPETITION_FIELD_CAMERA_BAG_ID);
-      expect(JSON.stringify(freshPublicState)).not.toContain(COMPETITION_MAIN_COMPARTMENT_ID);
-      expect(JSON.stringify(freshPublicState)).not.toContain(COMPETITION_POWER_POUCH_ID);
-      expect(JSON.stringify(freshPublicState)).not.toContain(COMPETITION_FRONT_ORGANIZER_ID);
+      const freshPublicJson = JSON.stringify(freshPublicState);
+      for (const privateValue of [
+        COMPETITION_CAMPING_KIT_ID,
+        COMPETITION_SLEEP_SYSTEM_ID,
+        COMPETITION_SLEEPING_BAG_ID,
+        COMPETITION_SLEEPING_PAD_ID,
+        COMPETITION_UPGRADE_PREFERENCES_ID,
+        COMPETITION_UPGRADE_PLAN_ID,
+        "Camping Kit",
+        "Camping Sleep System",
+        "Camping Upgrade Preferences",
+        "Camping Upgrade Plan",
+        "cold through the ground",
+        "$250",
+        COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY
+      ]) {
+        expect(freshPublicJson).not.toContain(privateValue);
+      }
 
       const freshPage = await freshContext.newPage();
       await freshPage.goto(`/qr/${COMPETITION_TARGET_QR_ID}`);
-      await assertPublicQrHasNoHierarchy(freshPage, "Camera Battery Kit");
-      await expect(freshPage.locator(".public-content")).toContainText("Challenge field checklist");
-      await expect(freshPage.locator(".public-content")).toContainText("Run the synthetic preflight check");
+      await assertPublicQrHasNoHierarchy(freshPage, "Camping Sleeping Bag");
+      await expect(freshPage.locator(".public-content")).toContainText("kept me warm around 35°F");
+      await expect(freshPage.locator(".public-content")).not.toContainText("Planned upgrade priority");
+      await expect(freshPage.getByText("Camping Upgrade Plan", { exact: true })).toHaveCount(0);
     } finally {
       await freshContext.close();
     }
@@ -382,6 +460,19 @@ async function assertPublicQrHasNoHierarchy(page: import("@playwright/test").Pag
   for (const ancestorTitle of TARGET_PATH.slice(0, -1)) {
     await expect(page.getByText(ancestorTitle, { exact: true })).toHaveCount(0);
   }
+}
+
+function readInspectedBody(result: Record<string, unknown>): string {
+  return ((result.lifeLink as { body?: unknown } | undefined)?.body ?? "") as string;
+}
+
+function readInspectedUpdatedAt(result: Record<string, unknown>): string {
+  return ((result.lifeLink as { updatedAt?: unknown } | undefined)?.updatedAt ?? "") as string;
+}
+
+function readOnlySearchBodySummary(result: Record<string, unknown>): string {
+  const results = result.results as Array<{ bodySummary?: unknown }> | undefined;
+  return (results?.[0]?.bodySummary ?? "") as string;
 }
 
 async function browserFetchJson(

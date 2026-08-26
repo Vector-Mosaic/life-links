@@ -8,7 +8,7 @@ export const LIFE_LINKS_PAGE_TOOL_NAMES = [
   "inspect_current_life_link",
   "search_my_life_links",
   "open_life_link",
-  "draft_life_link_update",
+  "update_life_link_content",
   "start_find_mode"
 ] as const;
 
@@ -42,7 +42,7 @@ export type LifeLinksPageToolCatalogValidation =
 
 const INVALID_CATALOG_ERROR = {
   code: "invalid_tool_catalog",
-  message: "Life Links Agent Access requires its complete five-tool catalog.",
+  message: "Life Links Agent Access requires its complete five-tool physical-context catalog.",
   retryable: false
 } as const;
 

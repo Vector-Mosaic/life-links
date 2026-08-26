@@ -9,8 +9,8 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
-  COMPETITION_CAMERA_BATTERY_KIT_ID,
-  COMPETITION_FIELD_CAMERA_BAG_ID,
+  COMPETITION_CAMPING_KIT_ID,
+  COMPETITION_SLEEPING_BAG_ID,
   COMPETITION_OWNER_ID,
   COMPETITION_TARGET_QR_ID,
   DEFAULT_QR_BASE_URL,
@@ -122,7 +122,7 @@ describe("Life Links Postgres integration", () => {
     const legacyOwnerBefore = await store.getLifeLinkDetail(DEMO_OWNER_ID, "project-home");
     const absentDryRun = await store.resetCompetitionFixture(options);
     expect(absentDryRun).toMatchObject({
-      profile: "webmcp-camera-kit-v1",
+      profile: "webmcp-camping-context-v1",
       ownerId: COMPETITION_OWNER_ID,
       mode: "dry-run",
       applied: false,
@@ -134,12 +134,11 @@ describe("Life Links Postgres integration", () => {
 
     const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(firstApply.after).toEqual(firstApply.expected);
-    const target = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID);
+    const target = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID);
     expect(target?.ancestry.items.map((item) => item.title)).toEqual([
-      "Field Camera Bag",
-      "Main Compartment",
-      "Power Pouch",
-      "Camera Battery Kit"
+      "Camping Kit",
+      "Camping Sleep System",
+      "Camping Sleeping Bag"
     ]);
     expect(target?.lifeLink).toMatchObject({ qrId: COMPETITION_TARGET_QR_ID, privacy: "public" });
 
@@ -151,7 +150,7 @@ describe("Life Links Postgres integration", () => {
     expect(await store.getQrState(COMPETITION_TARGET_QR_ID, COMPETITION_OWNER_ID)).toMatchObject({
       state: "claimed",
       viewerIsOwner: true,
-      link: { ownerId: COMPETITION_OWNER_ID, projectId: COMPETITION_FIELD_CAMERA_BAG_ID }
+      link: { ownerId: COMPETITION_OWNER_ID, projectId: COMPETITION_CAMPING_KIT_ID }
     });
 
     await store.createSession(
@@ -160,14 +159,14 @@ describe("Life Links Postgres integration", () => {
       "2099-01-01T00:00:00.000Z"
     );
     await store.updateLifeLink(COMPETITION_OWNER_ID, {
-      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
+      lifeLinkId: COMPETITION_SLEEPING_BAG_ID,
       expectedUpdatedAt: target!.lifeLink.updatedAt,
       patch: { title: "Drifted Postgres battery kit" }
     });
     await store.createLifeLink({
       id: "competition-postgres-extra-life-link",
       ownerId: COMPETITION_OWNER_ID,
-      parentId: COMPETITION_FIELD_CAMERA_BAG_ID,
+      parentId: COMPETITION_CAMPING_KIT_ID,
       title: "Judge-created Postgres extra",
       createdAt: "2026-08-26T13:00:00.000Z"
     });
@@ -177,7 +176,7 @@ describe("Life Links Postgres integration", () => {
     expect(driftDryRun.applied).toBe(false);
     expect(driftDryRun.after).toEqual(driftDryRun.before);
     expect(
-      (await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title
+      (await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID))?.lifeLink.title
     ).toBe("Drifted Postgres battery kit");
     expect(await store.getSessionByTokenHash("competition-postgres-session-hash")).not.toBeNull();
 
@@ -186,8 +185,8 @@ describe("Life Links Postgres integration", () => {
     expect(await store.getSessionByTokenHash("competition-postgres-session-hash")).toBeNull();
     expect(await store.getLifeLinkDetail(COMPETITION_OWNER_ID, "competition-postgres-extra-life-link")).toBeNull();
     expect(
-      (await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title
-    ).toBe("Camera Battery Kit");
+      (await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID))?.lifeLink.title
+    ).toBe("Camping Sleeping Bag");
     expect(await store.getLifeLinkDetail(DEMO_OWNER_ID, "project-home")).toEqual(legacyOwnerBefore);
 
     const replay = await store.resetCompetitionFixture({ ...options, mode: "apply" });
@@ -200,7 +199,7 @@ describe("Life Links Postgres integration", () => {
     const foreignTarget = await store.createLifeLink({
       id: "competition-postgres-foreign-qr-target",
       ownerId: COMPETITION_OWNER_ID,
-      parentId: COMPETITION_FIELD_CAMERA_BAG_ID,
+      parentId: COMPETITION_CAMPING_KIT_ID,
       title: "Foreign Postgres QR reset sentinel",
       createdAt: "2026-08-26T14:00:00.000Z"
     });
@@ -248,9 +247,9 @@ describe("Life Links Postgres integration", () => {
       mode: "apply" as const
     };
     await store.resetCompetitionFixture(options);
-    const target = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID);
+    const target = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID);
     await store.updateLifeLink(COMPETITION_OWNER_ID, {
-      lifeLinkId: COMPETITION_CAMERA_BATTERY_KIT_ID,
+      lifeLinkId: COMPETITION_SLEEPING_BAG_ID,
       expectedUpdatedAt: target!.lifeLink.updatedAt,
       patch: { title: "Rollback sentinel title" }
     });
@@ -264,7 +263,7 @@ describe("Life Links Postgres integration", () => {
       `CREATE FUNCTION fail_competition_fixture_insert() RETURNS trigger
        LANGUAGE plpgsql AS $$
        BEGIN
-         IF NEW.id = '${COMPETITION_CAMERA_BATTERY_KIT_ID}' THEN
+         IF NEW.id = '${COMPETITION_SLEEPING_BAG_ID}' THEN
            RAISE EXCEPTION 'forced competition fixture insert failure';
          END IF;
          RETURN NEW;
@@ -281,7 +280,7 @@ describe("Life Links Postgres integration", () => {
     }
 
     expect(
-      (await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_CAMERA_BATTERY_KIT_ID))?.lifeLink.title
+      (await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID))?.lifeLink.title
     ).toBe("Rollback sentinel title");
     expect(await store.getSessionByTokenHash("competition-postgres-rollback-session-hash")).not.toBeNull();
 

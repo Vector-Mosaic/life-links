@@ -1,15 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createLinkBodyDocFromPlainText,
   type LifeLinkDetail,
   type LifeLinkRecord,
   type LifeLinkSummary,
   type LinkRecord,
-  type ProjectRecord
+  type ProjectRecord,
+  type UpdateLifeLinkPatch
 } from "@life-links/core";
 
 import { LifeLinksWorkspaceController, type LifeLinksWorkspaceApi } from "./controller";
 import { ApiError } from "../api";
+import { writeCanonicalLifeLinkDraft } from "./editorSession";
 import { classifyLifeLinksRoute, lifeLinkIdFromPath, qrIdFromPath, type WorkspaceBrowserRoute } from "./routes";
 
 const owner = {
@@ -107,6 +109,13 @@ describe("Life Links route classification", () => {
 });
 
 describe("LifeLinksWorkspaceController", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", { localStorage: new MemoryStorage() });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
   it("boots through the shared API boundary and publishes one owner snapshot", async () => {
     const route = new FakeRoute("/");
     const api = fakeApi();
@@ -491,88 +500,99 @@ describe("LifeLinksWorkspaceController", () => {
     controller.dispose();
   });
 
-  it("stages a reauthorized agent draft in memory without a durable write", async () => {
+  it("performs one revision-safe agent content update through the canonical API and opens the result", async () => {
     const api = fakeApi();
-    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    const route = new FakeRoute("/");
+    const updated = {
+      ...canonicalLink,
+      title: "Shelf 1 inventory",
+      updatedAt: "2026-08-25T00:03:00.000Z"
+    };
+    api.updateLifeLink.mockResolvedValue({ lifeLink: updated });
+    const controller = new LifeLinksWorkspaceController({ api, route });
     await controller.start();
-    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
     api.getLifeLinkDetail.mockClear();
 
-    const result = await controller.agentStageLifeLinkDraft({
+    const result = await controller.agentUpdateLifeLinkContent({
       lifeLinkId: canonicalLink.id,
       baseUpdatedAt: canonicalLink.updatedAt,
       title: "Shelf 1 inventory",
-      body: "Dry goods and restock notes",
       sourceLifeLinkIds: [rootLifeLink.id]
     });
 
     expect(result).toEqual({ ok: true });
     expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(3);
-    expect(api.updateLifeLink).not.toHaveBeenCalled();
+    expect(api.updateLifeLink).toHaveBeenCalledOnce();
+    expect(api.updateLifeLink).toHaveBeenCalledWith(
+      canonicalLink.id,
+      canonicalLink.updatedAt,
+      { title: "Shelf 1 inventory" },
+      { signal: undefined }
+    );
     expect(controller.getSnapshot()).toMatchObject({
-      canonicalEditingId: canonicalLink.id,
-      agentDraftProposal: {
-        lifeLinkId: canonicalLink.id,
-        baseUpdatedAt: canonicalLink.updatedAt,
-        proposedFields: ["title", "body"],
-        before: { title: canonicalLink.title, body: canonicalLink.body },
-        after: { title: "Shelf 1 inventory", body: "Dry goods and restock notes" },
-        sourceLifeLinkIds: [rootLifeLink.id]
-      }
+      selectedLifeLinkId: canonicalLink.id,
+      selectedLifeLinkDetail: { lifeLink: updated },
+      canonicalEditingId: null
     });
-    expect(controller.getSnapshot().agentDraftProposal).not.toHaveProperty("privacy");
-    expect(controller.getSnapshot().agentDraftProposal).not.toHaveProperty("parentId");
-    expect(controller.getSnapshot().agentDraftProposal).not.toHaveProperty("qrId");
+    expect(route.pushes).toContain(`/life-links/${canonicalLink.id}`);
     controller.dispose();
   });
 
-  it("keeps the first active agent proposal when overlapping draft calls finish out of order", async () => {
+  it("maps a stale canonical PATCH without claiming a visible update", async () => {
     const api = fakeApi();
+    api.updateLifeLink.mockRejectedValue(new ApiError(
+      409,
+      "stale_life_link",
+      { error: { code: "stale_life_link" } },
+      { message: "Life Link changed after it was read.", retryable: true }
+    ));
     const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
     await controller.start();
-    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
-
-    let releaseFirstRead!: () => void;
-    const firstRead = new Promise<void>((resolve) => {
-      releaseFirstRead = resolve;
-    });
-    api.getLifeLinkDetail.mockClear();
-    api.getLifeLinkDetail.mockImplementationOnce(async () => {
-      await firstRead;
-      return { detail: canonicalDetail };
-    });
-
-    const slower = controller.agentStageLifeLinkDraft({
+    await expect(controller.agentUpdateLifeLinkContent({
       lifeLinkId: canonicalLink.id,
       baseUpdatedAt: canonicalLink.updatedAt,
-      body: "Slower proposal",
+      body: "Must not overwrite a concurrent change",
       sourceLifeLinkIds: []
-    });
-    await vi.waitFor(() => expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(1));
-    const winner = controller.agentStageLifeLinkDraft({
-      lifeLinkId: canonicalLink.id,
-      baseUpdatedAt: canonicalLink.updatedAt,
-      body: "First active proposal",
-      sourceLifeLinkIds: []
-    });
-
-    await expect(winner).resolves.toEqual({ ok: true });
-    releaseFirstRead();
-    await expect(slower).resolves.toEqual({ ok: false, code: "editor_open" });
-    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(4);
-    expect(controller.getSnapshot().agentDraftProposal).toMatchObject({
-      lifeLinkId: canonicalLink.id,
-      after: { body: "First active proposal" }
-    });
-    expect(api.updateLifeLink).not.toHaveBeenCalled();
+    })).resolves.toEqual({ ok: false, code: "stale_life_link" });
+    expect(api.updateLifeLink).toHaveBeenCalledOnce();
+    expect(controller.getSnapshot().selectedLifeLinkId).toBeNull();
     controller.dispose();
   });
 
-  it("rejects an agent draft when the server revision changed and keeps the editor closed", async () => {
+  it("propagates revocation cancellation through the canonical agent PATCH", async () => {
+    const api = fakeApi();
+    const abortController = new AbortController();
+    api.updateLifeLink.mockImplementationOnce(async (_lifeLinkId, _expectedUpdatedAt, _patch, options) =>
+      await new Promise((_, reject) => {
+        options?.signal?.addEventListener(
+          "abort",
+          () => reject(new DOMException("Agent Access revoked", "AbortError")),
+          { once: true }
+        );
+      })
+    );
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+
+    const pending = controller.agentUpdateLifeLinkContent({
+      lifeLinkId: canonicalLink.id,
+      baseUpdatedAt: canonicalLink.updatedAt,
+      body: "Must not outlive the active Agent Access grant",
+      sourceLifeLinkIds: []
+    }, abortController.signal);
+    await vi.waitFor(() => expect(api.updateLifeLink).toHaveBeenCalledOnce());
+    abortController.abort(new DOMException("Agent Access revoked", "AbortError"));
+
+    await expect(pending).resolves.toEqual({ ok: false, code: "cancelled" });
+    expect(api.updateLifeLink.mock.calls[0]?.[3]).toEqual({ signal: abortController.signal });
+    expect(controller.getSnapshot().selectedLifeLinkId).toBeNull();
+    controller.dispose();
+  });
+
+  it("rejects an agent update when the target revision changed before the PATCH", async () => {
     const api = fakeApi();
     const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
     await controller.start();
-    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
     api.getLifeLinkDetail.mockResolvedValueOnce({
       detail: {
         ...canonicalDetail,
@@ -580,26 +600,22 @@ describe("LifeLinksWorkspaceController", () => {
       }
     });
 
-    await expect(controller.agentStageLifeLinkDraft({
+    await expect(controller.agentUpdateLifeLinkContent({
       lifeLinkId: canonicalLink.id,
       baseUpdatedAt: canonicalLink.updatedAt,
-      body: "Stale proposal",
+      body: "Stale update",
       sourceLifeLinkIds: []
     })).resolves.toEqual({ ok: false, code: "stale_life_link" });
 
     expect(api.updateLifeLink).not.toHaveBeenCalled();
-    expect(controller.getSnapshot()).toMatchObject({
-      canonicalEditingId: null,
-      agentDraftProposal: null
-    });
+    expect(controller.getSnapshot().canonicalEditingId).toBeNull();
     controller.dispose();
   });
 
-  it("rejects an agent draft when the target changes during source authorization", async () => {
+  it("rejects an agent update when the target changes during source authorization", async () => {
     const api = fakeApi();
     const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
     await controller.start();
-    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
     const refreshedDetail = {
       ...canonicalDetail,
       lifeLink: {
@@ -614,7 +630,7 @@ describe("LifeLinksWorkspaceController", () => {
       .mockResolvedValueOnce({ detail: canonicalDetail })
       .mockResolvedValueOnce({ detail: refreshedDetail });
 
-    await expect(controller.agentStageLifeLinkDraft({
+    await expect(controller.agentUpdateLifeLinkContent({
       lifeLinkId: canonicalLink.id,
       baseUpdatedAt: canonicalLink.updatedAt,
       body: "Must not overwrite the newer target",
@@ -624,10 +640,31 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(3);
     expect(api.updateLifeLink).not.toHaveBeenCalled();
     expect(controller.getSnapshot()).toMatchObject({
-      selectedLifeLinkDetail: canonicalDetail,
-      canonicalEditingId: null,
-      agentDraftProposal: null
+      canonicalEditingId: null
     });
+    controller.dispose();
+  });
+
+  it("rejects an agent update while a human draft exists, even with the editor closed", async () => {
+    const api = fakeApi();
+    writeCanonicalLifeLinkDraft(canonicalLink.id, canonicalLink.updatedAt, {
+      title: "Human draft",
+      body: canonicalLink.body,
+      bodyDoc: canonicalLink.bodyDoc,
+      bodyDocVersion: canonicalLink.bodyDocVersion,
+      privacy: canonicalLink.privacy
+    });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+
+    await expect(controller.agentUpdateLifeLinkContent({
+      lifeLinkId: canonicalLink.id,
+      baseUpdatedAt: canonicalLink.updatedAt,
+      body: "Agent update",
+      sourceLifeLinkIds: []
+    })).resolves.toEqual({ ok: false, code: "editor_dirty" });
+
+    expect(api.updateLifeLink).not.toHaveBeenCalled();
     controller.dispose();
   });
 
@@ -728,7 +765,7 @@ describe("LifeLinksWorkspaceController", () => {
     controller.dispose();
   });
 
-  it("blocks agent inspection, search, navigation, and Find Mode while the canonical editor is open", async () => {
+  it("blocks agent inspection, search, navigation, update, and Find Mode while the canonical editor is open", async () => {
     const api = fakeApi();
     const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
     await controller.start();
@@ -749,6 +786,12 @@ describe("LifeLinksWorkspaceController", () => {
       ok: false,
       code: "editor_open"
     });
+    await expect(controller.agentUpdateLifeLinkContent({
+      lifeLinkId: canonicalLink.id,
+      baseUpdatedAt: canonicalLink.updatedAt,
+      body: "Blocked",
+      sourceLifeLinkIds: []
+    })).resolves.toEqual({ ok: false, code: "editor_open" });
     await expect(controller.agentStartFindMode({ lifeLinkId: canonicalLink.id })).resolves.toEqual({
       ok: false,
       code: "editor_open"
@@ -790,13 +833,11 @@ describe("LifeLinksWorkspaceController", () => {
     controller.dispose();
   });
 
-  it("refuses to stage a draft if the page leaves the owner surface during source authorization", async () => {
+  it("refuses to update if the page leaves the owner surface during source authorization", async () => {
     const route = new FakeRoute("/");
     const api = fakeApi();
     const controller = new LifeLinksWorkspaceController({ api, route });
     await controller.start();
-    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
-
     let releaseSourceRead!: () => void;
     const sourceRead = new Promise<void>((resolve) => {
       releaseSourceRead = resolve;
@@ -809,10 +850,10 @@ describe("LifeLinksWorkspaceController", () => {
         return { detail: canonicalDetail };
       });
 
-    const pending = controller.agentStageLifeLinkDraft({
+    const pending = controller.agentUpdateLifeLinkContent({
       lifeLinkId: canonicalLink.id,
       baseUpdatedAt: canonicalLink.updatedAt,
-      body: "Must not be staged after leaving the owner workspace",
+      body: "Must not be saved after leaving the owner workspace",
       sourceLifeLinkIds: [rootLifeLink.id]
     });
     await vi.waitFor(() => expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(2));
@@ -821,10 +862,7 @@ describe("LifeLinksWorkspaceController", () => {
     releaseSourceRead();
 
     await expect(pending).resolves.toEqual({ ok: false, code: "life_link_unavailable" });
-    expect(controller.getSnapshot()).toMatchObject({
-      canonicalEditingId: null,
-      agentDraftProposal: null
-    });
+    expect(controller.getSnapshot().canonicalEditingId).toBeNull();
     expect(api.updateLifeLink).not.toHaveBeenCalled();
     controller.dispose();
   });
@@ -910,7 +948,12 @@ function fakeApi() {
       hasMore: false,
       nextCursor: null
     })),
-    updateLifeLink: vi.fn(async () => ({ lifeLink: canonicalLink })),
+    updateLifeLink: vi.fn(async (
+      _lifeLinkId: string,
+      _expectedUpdatedAt: string,
+      _patch: UpdateLifeLinkPatch,
+      _options: { signal?: AbortSignal } = {}
+    ) => ({ lifeLink: canonicalLink })),
     moveLifeLink: vi.fn(async () => ({ lifeLink: canonicalLink })),
     uploadLifeLinkMedia: vi.fn(async () => ({ media: canonicalLink.media[0] })),
     deleteLifeLinkMedia: vi.fn(async () => undefined),
@@ -931,4 +974,20 @@ function summary(lifeLink: LifeLinkRecord, childCount: number): LifeLinkSummary 
     updatedAt: lifeLink.updatedAt,
     childCount
   };
+}
+
+class MemoryStorage {
+  private readonly values = new Map<string, string>();
+
+  getItem(key: string) {
+    return this.values.get(key) ?? null;
+  }
+
+  setItem(key: string, value: string) {
+    this.values.set(key, value);
+  }
+
+  removeItem(key: string) {
+    this.values.delete(key);
+  }
 }

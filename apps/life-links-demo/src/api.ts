@@ -204,11 +204,13 @@ export async function searchLifeLinks(
 export async function updateLifeLink(
   lifeLinkId: string,
   expectedUpdatedAt: string,
-  patch: UpdateLifeLinkPatch
+  patch: UpdateLifeLinkPatch,
+  options: { signal?: AbortSignal } = {}
 ) {
   return apiFetch<{ lifeLink: LifeLinkRecord }>(`/api/life-links/${encodeURIComponent(lifeLinkId)}`, {
     method: "PATCH",
-    body: JSON.stringify({ ...patch, expectedUpdatedAt })
+    body: JSON.stringify({ ...patch, expectedUpdatedAt }),
+    signal: options.signal
   });
 }
 

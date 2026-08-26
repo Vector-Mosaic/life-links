@@ -18,7 +18,9 @@ application from work completed for the challenge.
 - optional QR binding at every level, public QR resolution, claim, batch
   export, and Find Mode;
 - rich notes, media, privacy, authentication, and PostgreSQL persistence; and
-- deterministic synthetic camera-kit data for repeatable local and judge flows.
+- deterministic synthetic camping-kit context for repeatable local and judge
+  flows across a working sleeping bag, failed low-R sleeping pad, owner upgrade
+  preferences, budget, and a planned-only upgrade record.
 
 ## WebMCP Agent Access
 
@@ -29,14 +31,19 @@ the owner workspace. Life Links then registers exactly five page tools through
 - `inspect_current_life_link`
 - `search_my_life_links`
 - `open_life_link`
-- `draft_life_link_update`
+- `update_life_link_content`
 - `start_find_mode`
 
 The tools reuse the ordinary application controller and authorization paths.
 They create visible page effects, reject stale or unauthorized context, and do
-not give an agent a hidden write path. `draft_life_link_update` creates a
-reviewable proposal only; a person must explicitly Apply it and use the normal
-Save action before anything is persisted.
+not give an agent a hidden or parallel write path. Inspection returns bounded
+substantive selected-record context, and search returns bounded paths plus note
+summaries. `update_life_link_content` immediately saves only a title and/or
+plain-text body through the canonical owner PATCH, using the exact `updatedAt`
+revision obtained from a prior read. It rejects stale state, an open editor, a
+saved human draft, unavailable owner source records, and access or owner-
+surface changes. It cannot change privacy, hierarchy, QR bindings, media, or
+purchase state. Find Mode prepares the target; the human performs the scan.
 
 ## Run locally
 
@@ -51,9 +58,10 @@ The standalone lockfile is generated from this collapsed workspace, reviewed,
 and committed. The canonical monorepo lockfile is intentionally not copied
 because its workspace importer paths are different.
 
-The two automated browser journeys build their own application bundles. The
-controlled-host test proves the full page-tool contract, while the native-host
-test requires an installed Google Chrome with WebMCP testing support:
+The three automated browser journeys build their own application bundles. The
+controlled-host test proves the page-tool contract and human-draft conflict
+boundary. The native-host test requires an installed Google Chrome with WebMCP
+testing support. The challenge test runs the complete camping-context proof:
 
 ```bash
 pnpm exec playwright install chromium
@@ -61,6 +69,15 @@ pnpm test:e2e:webmcp:local
 pnpm test:e2e:webmcp:real
 pnpm test:e2e:challenge
 ```
+
+The challenge journey starts at the public Camping Sleeping Bag QR, enters the
+owner workspace, retrieves the bag, pad, preference, and budget context, then
+uses one source-backed `update_life_link_content` call to persist a sleeping-pad
+priority in the private Camping Upgrade Plan. It reloads to prove the new
+revision persisted, locates the QR-bound pad through Find Mode, revokes tool
+access, and confirms a fresh logged-out context still receives only the public
+bag. The synthetic plan explicitly remains planned only—not purchased, owned,
+or installed.
 
 The PostgreSQL integration suite is opt-in and requires a disposable database:
 

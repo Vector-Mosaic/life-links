@@ -12,7 +12,7 @@ export type AgentActivityVisibleEffect =
   | "current_life_link_focused"
   | "search_results_shown"
   | "life_link_opened"
-  | "unsaved_draft_staged"
+  | "life_link_content_updated"
   | "find_mode_started";
 
 export type AgentActivityOutcome = "succeeded" | "failed" | "cancelled";
@@ -68,8 +68,8 @@ export function agentActivityLabel(entry: AgentActivityEntry) {
   if (entry.visibleEffect === "life_link_opened") {
     return "Opened a Life Link in the workspace";
   }
-  if (entry.visibleEffect === "unsaved_draft_staged") {
-    return "Staged an unsaved Life Link draft";
+  if (entry.visibleEffect === "life_link_content_updated") {
+    return "Updated Life Link content";
   }
   return "Started Find Mode for a Life Link";
 }
@@ -148,8 +148,8 @@ function visibleEffectForTool(tool: LifeLinksAgentToolName): AgentActivityVisibl
       return "search_results_shown";
     case "open_life_link":
       return "life_link_opened";
-    case "draft_life_link_update":
-      return "unsaved_draft_staged";
+    case "update_life_link_content":
+      return "life_link_content_updated";
     case "start_find_mode":
       return "find_mode_started";
   }
@@ -175,8 +175,8 @@ function toolLabel(tool: LifeLinksAgentToolName) {
       return "Search";
     case "open_life_link":
       return "Open";
-    case "draft_life_link_update":
-      return "Draft";
+    case "update_life_link_content":
+      return "Update";
     case "start_find_mode":
       return "Find Mode";
   }

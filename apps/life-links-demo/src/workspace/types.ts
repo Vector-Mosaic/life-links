@@ -29,22 +29,6 @@ export type LifeLinkBranchState = {
   loading: boolean;
 };
 
-export type AgentLifeLinkDraftProposal = {
-  lifeLinkId: string;
-  baseUpdatedAt: string;
-  proposedFields: Array<"title" | "body">;
-  before: {
-    title: string;
-    body: string;
-  };
-  after: {
-    title: string;
-    body: string;
-  };
-  sourceLifeLinkIds: string[];
-  createdAt: string;
-};
-
 export type AgentToolControllerActionResult =
   | { ok: true }
   | {
@@ -52,6 +36,7 @@ export type AgentToolControllerActionResult =
       code:
         | "cancelled"
         | "editor_open"
+        | "editor_dirty"
         | "life_link_unavailable"
         | "stale_life_link"
         | "source_life_link_unavailable"
@@ -70,6 +55,14 @@ export type AgentLifeLinkSearchPayload = {
 export type AgentSearchLifeLinksControllerResult =
   | { ok: true; search: AgentLifeLinkSearchPayload }
   | Exclude<AgentToolControllerActionResult, { ok: true }>;
+
+export type AgentUpdateLifeLinkContentInput = {
+  lifeLinkId: string;
+  baseUpdatedAt: string;
+  title?: string;
+  body?: string;
+  sourceLifeLinkIds: readonly string[];
+};
 
 export type LifeLinksWorkspaceSnapshot = {
   currentUser: ApiUser | null;
@@ -105,7 +98,6 @@ export type LifeLinksWorkspaceSnapshot = {
   expandedLifeLinkIds: string[];
   highlightedLifeLinkId: string | null;
   canonicalEditingId: string | null;
-  agentDraftProposal: AgentLifeLinkDraftProposal | null;
   lifeLinkSearchQuery: string;
   lifeLinkSearchResults: LifeLinkSearchItem[];
   lifeLinkSearchTotalCount: number;
