@@ -2,6 +2,12 @@
   "name": "life-links-webmcp-challenge",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
+  "author": "Justin Sublette",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Vector-Mosaic/life-links.git"
+  },
   "type": "module",
   "packageManager": "pnpm@10.14.0",
   "engines": {
@@ -11,6 +17,10 @@
     "build": "pnpm --filter @life-links/api build",
     "dev": "pnpm --filter @life-links/api dev",
     "test": "pnpm --filter @life-links/core test && pnpm --filter @life-links/demo test && pnpm --filter @life-links/api test",
+    "test:postgres": "pnpm --filter @life-links/api test:postgres",
+    "test:e2e:webmcp:local": "pnpm --filter @life-links/demo test:e2e:webmcp:local",
+    "test:e2e:webmcp:real": "pnpm --filter @life-links/demo test:e2e:webmcp:real",
+    "test:e2e:challenge": "pnpm --filter @life-links/demo test:e2e:challenge",
     "typecheck": "pnpm --filter @life-links/core typecheck && pnpm --filter @life-links/demo exec tsc --noEmit && pnpm --filter @life-links/api typecheck"
   }
 }
