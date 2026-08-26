@@ -23,7 +23,7 @@ export interface WebMcpToolDefinition<TResult extends WebMcpJsonValue = WebMcpJs
   readonly description: string;
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly annotations?: WebMcpToolAnnotations;
-  readonly execute: (input: unknown, context: WebMcpExecutionContext) => TResult | Promise<TResult>;
+  readonly execute: (input: unknown, context?: WebMcpExecutionContext) => TResult | Promise<TResult>;
 }
 
 export interface WebMcpRegistrationOptions {
@@ -114,7 +114,7 @@ export function createWebMcpCompatibilityProbe(
       readOnlyHint: false,
       untrustedContentHint: true
     },
-    execute: async (input, context) => {
+    execute: async (input, context = {}) => {
       const message = parseProbeMessage(input);
       if (message === null) {
         return {

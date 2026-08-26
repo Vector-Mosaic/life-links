@@ -130,6 +130,15 @@ describe("WebMCP compatibility contract", () => {
     });
   });
 
+  it("accepts the native Chrome callback shape with no execution context argument", async () => {
+    const tool = createWebMcpCompatibilityProbe(vi.fn());
+
+    await expect(tool.execute({ message: "native callback" })).resolves.toMatchObject({
+      ok: true,
+      executionSignalAvailable: false
+    });
+  });
+
   it("uses registration abort for catalog removal without assuming it cancels a captured invocation", async () => {
     const modelContext = new ControlledModelContext();
     const controller = new AbortController();

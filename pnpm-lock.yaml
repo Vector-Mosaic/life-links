@@ -80,6 +80,9 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.3)
+      webmcp-types:
+        specifier: 0.1.5
+        version: 0.1.5
 
   packages/life-links-core:
     devDependencies:
@@ -1758,6 +1761,9 @@ packages:
   w3c-keyname@2.2.8:
     resolution: {integrity: sha512-dpojBhNsCNN7T82Tm7k26A6G9ML3NkhDsnw9n/eoxSRlVBB4CEtIQ/KTCLI2Fwf3ataSXRhYFkQi3SlnFwPvPQ==}
 
+  webmcp-types@0.1.5:
+    resolution: {integrity: sha512-QAfuzNJ+hiY2JLpPbD/6xZruLQlsqtWUDqQCRruqD0dbtZHDg6IUZ2K0zctlRokwuscGlr47i6hKv8mQPSQLhw==}
+
   which-module@2.0.1:
     resolution: {integrity: sha512-iBdZ57RDvnOR9AGBhML2vFZf7h8vmBjhoaZqODJBFWHVtKkDmKuHai3cx5PgVMrX5YDNp27AofYbAwctSS+vhQ==}
 
@@ -3420,6 +3426,8 @@ snapshots:
       - yaml
 
   w3c-keyname@2.2.8: {}
+
+  webmcp-types@0.1.5: {}
 
   which-module@2.0.1: {}
 

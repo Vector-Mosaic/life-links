@@ -437,6 +437,344 @@ describe("LifeLinksWorkspaceController", () => {
     });
     controller.dispose();
   });
+
+  it("stages a reauthorized agent draft in memory without a durable write", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+    api.getLifeLinkDetail.mockClear();
+
+    const result = await controller.agentStageLifeLinkDraft({
+      lifeLinkId: canonicalLink.id,
+      baseUpdatedAt: canonicalLink.updatedAt,
+      title: "Shelf 1 inventory",
+      body: "Dry goods and restock notes",
+      sourceLifeLinkIds: [rootLifeLink.id]
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(3);
+    expect(api.updateLifeLink).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      canonicalEditingId: canonicalLink.id,
+      agentDraftProposal: {
+        lifeLinkId: canonicalLink.id,
+        baseUpdatedAt: canonicalLink.updatedAt,
+        proposedFields: ["title", "body"],
+        before: { title: canonicalLink.title, body: canonicalLink.body },
+        after: { title: "Shelf 1 inventory", body: "Dry goods and restock notes" },
+        sourceLifeLinkIds: [rootLifeLink.id]
+      }
+    });
+    expect(controller.getSnapshot().agentDraftProposal).not.toHaveProperty("privacy");
+    expect(controller.getSnapshot().agentDraftProposal).not.toHaveProperty("parentId");
+    expect(controller.getSnapshot().agentDraftProposal).not.toHaveProperty("qrId");
+    controller.dispose();
+  });
+
+  it("keeps the first active agent proposal when overlapping draft calls finish out of order", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+
+    let releaseFirstRead!: () => void;
+    const firstRead = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    api.getLifeLinkDetail.mockClear();
+    api.getLifeLinkDetail.mockImplementationOnce(async () => {
+      await firstRead;
+      return { detail: canonicalDetail };
+    });
+
+    const slower = controller.agentStageLifeLinkDraft({
+      lifeLinkId: canonicalLink.id,
+      baseUpdatedAt: canonicalLink.updatedAt,
+      body: "Slower proposal",
+      sourceLifeLinkIds: []
+    });
+    await vi.waitFor(() => expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(1));
+    const winner = controller.agentStageLifeLinkDraft({
+      lifeLinkId: canonicalLink.id,
+      baseUpdatedAt: canonicalLink.updatedAt,
+      body: "First active proposal",
+      sourceLifeLinkIds: []
+    });
+
+    await expect(winner).resolves.toEqual({ ok: true });
+    releaseFirstRead();
+    await expect(slower).resolves.toEqual({ ok: false, code: "editor_open" });
+    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(4);
+    expect(controller.getSnapshot().agentDraftProposal).toMatchObject({
+      lifeLinkId: canonicalLink.id,
+      after: { body: "First active proposal" }
+    });
+    expect(api.updateLifeLink).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("rejects an agent draft when the server revision changed and keeps the editor closed", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+    api.getLifeLinkDetail.mockResolvedValueOnce({
+      detail: {
+        ...canonicalDetail,
+        lifeLink: { ...canonicalLink, updatedAt: "2026-08-25T00:03:00.000Z" }
+      }
+    });
+
+    await expect(controller.agentStageLifeLinkDraft({
+      lifeLinkId: canonicalLink.id,
+      baseUpdatedAt: canonicalLink.updatedAt,
+      body: "Stale proposal",
+      sourceLifeLinkIds: []
+    })).resolves.toEqual({ ok: false, code: "stale_life_link" });
+
+    expect(api.updateLifeLink).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      canonicalEditingId: null,
+      agentDraftProposal: null
+    });
+    controller.dispose();
+  });
+
+  it("rejects an agent draft when the target changes during source authorization", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+    const refreshedDetail = {
+      ...canonicalDetail,
+      lifeLink: {
+        ...canonicalLink,
+        body: "Changed while the source was being authorized",
+        updatedAt: "2026-08-25T00:03:00.000Z"
+      }
+    };
+    api.getLifeLinkDetail.mockClear();
+    api.getLifeLinkDetail
+      .mockResolvedValueOnce({ detail: canonicalDetail })
+      .mockResolvedValueOnce({ detail: canonicalDetail })
+      .mockResolvedValueOnce({ detail: refreshedDetail });
+
+    await expect(controller.agentStageLifeLinkDraft({
+      lifeLinkId: canonicalLink.id,
+      baseUpdatedAt: canonicalLink.updatedAt,
+      body: "Must not overwrite the newer target",
+      sourceLifeLinkIds: [rootLifeLink.id]
+    })).resolves.toEqual({ ok: false, code: "stale_life_link" });
+
+    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(3);
+    expect(api.updateLifeLink).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      selectedLifeLinkDetail: canonicalDetail,
+      canonicalEditingId: null,
+      agentDraftProposal: null
+    });
+    controller.dispose();
+  });
+
+  it("routes agent search, open, inspect, and Find Mode through visible controller state", async () => {
+    const route = new FakeRoute("/");
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+
+    await expect(controller.agentInspectCurrentLifeLink({ lifeLinkId: canonicalLink.id })).resolves.toEqual({ ok: true });
+    await expect(controller.agentSearchLifeLinks({ query: "Shelf", limit: 10 })).resolves.toMatchObject({
+      ok: true,
+      search: {
+        query: "Shelf",
+        results: [expect.objectContaining({ lifeLink: canonicalSummary })],
+        totalCount: 1,
+        hasMore: false,
+        truncated: false,
+        nextCursor: null
+      }
+    });
+    expect(controller.getSnapshot()).toMatchObject({
+      activeView: "projects",
+      lifeLinkSearchQuery: "Shelf",
+      lifeLinkSearchResults: [expect.objectContaining({ lifeLink: canonicalSummary })]
+    });
+
+    await expect(controller.agentOpenLifeLink({ lifeLinkId: canonicalLink.id })).resolves.toEqual({ ok: true });
+    await expect(controller.agentStartFindMode({ lifeLinkId: canonicalLink.id })).resolves.toEqual({ ok: true });
+    expect(controller.getSnapshot()).toMatchObject({
+      activeView: "search",
+      findTargetId: link.id,
+      activeQrId: link.id
+    });
+    expect(route.pushes).toContain(`/life-links/${canonicalLink.id}`);
+    expect(route.pushes.at(-1)).toBe("/");
+    controller.dispose();
+  });
+
+  it("returns each overlapping agent search's own bounded API payload", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    const firstSummary = { ...canonicalSummary, id: "life-link-search-first", title: "First result" };
+    const secondSummary = { ...canonicalSummary, id: "life-link-search-second", title: "Second result" };
+    const firstResponse = {
+      results: [{
+        lifeLink: firstSummary,
+        path: { items: [firstSummary], truncated: false, omittedCount: 0 },
+        bodySummary: "First result body",
+        matchClass: "recorded_path" as const
+      }],
+      totalCount: 1,
+      truncated: false,
+      hasMore: false,
+      nextCursor: null
+    };
+    const secondResponse = {
+      results: [{
+        lifeLink: secondSummary,
+        path: { items: [secondSummary], truncated: false, omittedCount: 0 },
+        bodySummary: "Second result body",
+        matchClass: "recorded_path" as const
+      }],
+      totalCount: 1,
+      truncated: false,
+      hasMore: false,
+      nextCursor: null
+    };
+    let resolveFirst!: (value: typeof firstResponse) => void;
+    let resolveSecond!: (value: typeof secondResponse) => void;
+    api.searchLifeLinks.mockImplementation((query: string) => new Promise((resolve) => {
+      if (query === "first") {
+        resolveFirst = resolve;
+      } else {
+        resolveSecond = resolve;
+      }
+    }));
+
+    const first = controller.agentSearchLifeLinks({ query: "first", limit: 10 });
+    const second = controller.agentSearchLifeLinks({ query: "second", limit: 10 });
+    await vi.waitFor(() => expect(api.searchLifeLinks).toHaveBeenCalledTimes(2));
+    resolveSecond(secondResponse);
+    await expect(second).resolves.toMatchObject({
+      ok: true,
+      search: { query: "second", results: [{ lifeLink: { id: secondSummary.id } }] }
+    });
+    resolveFirst(firstResponse);
+    await expect(first).resolves.toMatchObject({
+      ok: true,
+      search: { query: "first", results: [{ lifeLink: { id: firstSummary.id } }] }
+    });
+    expect(controller.getSnapshot()).toMatchObject({
+      lifeLinkSearchQuery: "first",
+      lifeLinkSearchResults: [{ lifeLink: { id: firstSummary.id } }]
+    });
+    controller.dispose();
+  });
+
+  it("blocks agent inspection, search, navigation, and Find Mode while the canonical editor is open", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+    await controller.openCanonicalEditor(canonicalLink.id);
+    api.getLifeLinkDetail.mockClear();
+    api.searchLifeLinks.mockClear();
+
+    await expect(controller.agentInspectCurrentLifeLink({ lifeLinkId: canonicalLink.id })).resolves.toEqual({
+      ok: false,
+      code: "editor_open"
+    });
+    await expect(controller.agentSearchLifeLinks({ query: "Shelf", limit: 10 })).resolves.toEqual({
+      ok: false,
+      code: "editor_open"
+    });
+    await expect(controller.agentOpenLifeLink({ lifeLinkId: canonicalLink.id })).resolves.toEqual({
+      ok: false,
+      code: "editor_open"
+    });
+    await expect(controller.agentStartFindMode({ lifeLinkId: canonicalLink.id })).resolves.toEqual({
+      ok: false,
+      code: "editor_open"
+    });
+    expect(api.getLifeLinkDetail).not.toHaveBeenCalled();
+    expect(api.searchLifeLinks).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      canonicalEditingId: canonicalLink.id,
+      activeView: "projects",
+      findTargetId: null
+    });
+    controller.dispose();
+  });
+
+  it("denies agent operations on the public QR surface and honors cancellation before reads", async () => {
+    const publicApi = fakeApi();
+    const publicController = new LifeLinksWorkspaceController({
+      api: publicApi,
+      route: new FakeRoute(`/qr/${link.id}`)
+    });
+    await publicController.start();
+    await expect(publicController.agentOpenLifeLink({ lifeLinkId: canonicalLink.id })).resolves.toEqual({
+      ok: false,
+      code: "life_link_unavailable"
+    });
+    expect(publicApi.getLifeLinkDetail).not.toHaveBeenCalled();
+    publicController.dispose();
+
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    const abortController = new AbortController();
+    abortController.abort();
+    await expect(controller.agentSearchLifeLinks(
+      { query: "Shelf", limit: 10 },
+      abortController.signal
+    )).resolves.toEqual({ ok: false, code: "cancelled" });
+    expect(api.searchLifeLinks).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("refuses to stage a draft if the page leaves the owner surface during source authorization", async () => {
+    const route = new FakeRoute("/");
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+
+    let releaseSourceRead!: () => void;
+    const sourceRead = new Promise<void>((resolve) => {
+      releaseSourceRead = resolve;
+    });
+    api.getLifeLinkDetail.mockClear();
+    api.getLifeLinkDetail
+      .mockResolvedValueOnce({ detail: canonicalDetail })
+      .mockImplementationOnce(async () => {
+        await sourceRead;
+        return { detail: canonicalDetail };
+      });
+
+    const pending = controller.agentStageLifeLinkDraft({
+      lifeLinkId: canonicalLink.id,
+      baseUpdatedAt: canonicalLink.updatedAt,
+      body: "Must not be staged after leaving the owner workspace",
+      sourceLifeLinkIds: [rootLifeLink.id]
+    });
+    await vi.waitFor(() => expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(2));
+    route.pop(`/qr/${link.id}`);
+    await vi.waitFor(() => expect(controller.getSnapshot().routeQrId).toBe(link.id));
+    releaseSourceRead();
+
+    await expect(pending).resolves.toEqual({ ok: false, code: "life_link_unavailable" });
+    expect(controller.getSnapshot()).toMatchObject({
+      canonicalEditingId: null,
+      agentDraftProposal: null
+    });
+    expect(api.updateLifeLink).not.toHaveBeenCalled();
+    controller.dispose();
+  });
 });
 
 class FakeRoute implements WorkspaceBrowserRoute {
@@ -504,7 +842,10 @@ function fakeApi() {
     })),
     createLifeLink: vi.fn(async () => ({ lifeLink: canonicalLink })),
     getLifeLinkDetail: vi.fn(async () => ({ detail: canonicalDetail })),
-    searchLifeLinks: vi.fn(async () => ({
+    searchLifeLinks: vi.fn(async (
+      _query: string,
+      _options: { cursor?: string | null; limit?: number; signal?: AbortSignal } = {}
+    ) => ({
       results: [{
         lifeLink: canonicalSummary,
         path: canonicalDetail.ancestry,

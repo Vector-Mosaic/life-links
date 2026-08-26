@@ -3,6 +3,7 @@ import {
   DEFAULT_QR_BASE_URL,
   DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
   DEFAULT_LIFE_LINK_SEARCH_LIMIT,
+  MAX_LIFE_LINK_SOURCE_REFERENCE_COUNT,
   linksToCsv,
   normalizeBatchCount,
   parseQrId,
@@ -51,6 +52,8 @@ import {
   type WorkspaceBrowserRoute
 } from "./routes";
 import type {
+  AgentSearchLifeLinksControllerResult,
+  AgentToolControllerActionResult,
   CanonicalLifeLinkEditorPatch,
   InventoryFilter,
   LifeLinkBranchState,
@@ -134,7 +137,7 @@ export interface LifeLinksWorkspaceActions {
   removeMedia(qrId: string, mediaId: string): Promise<void>;
   addProject(): Promise<void>;
   refresh(): Promise<void>;
-  selectLifeLink(input: { lifeLinkId: string; source: "human" | "route" | "search" | "scan" }): Promise<void>;
+  selectLifeLink(input: { lifeLinkId: string; source: "human" | "agent" | "route" | "search" | "scan" }): Promise<void>;
   toggleLifeLinkExpanded(lifeLinkId: string): Promise<void>;
   loadMoreLifeLinks(parentId: string | null): Promise<void>;
   createLifeLink(input: CreateLifeLinkInput): Promise<void>;
@@ -142,7 +145,34 @@ export interface LifeLinksWorkspaceActions {
   detachLifeLink(lifeLinkId: string): Promise<void>;
   attachQrToLifeLink(lifeLinkId: string, scanText: string): Promise<void>;
   searchLifeLinks(query?: string, append?: boolean): Promise<void>;
+  agentInspectCurrentLifeLink(
+    input: { lifeLinkId: string },
+    signal?: AbortSignal
+  ): Promise<AgentToolControllerActionResult>;
+  agentSearchLifeLinks(
+    input: { query: string; limit: number },
+    signal?: AbortSignal
+  ): Promise<AgentSearchLifeLinksControllerResult>;
+  agentOpenLifeLink(
+    input: { lifeLinkId: string },
+    signal?: AbortSignal
+  ): Promise<AgentToolControllerActionResult>;
+  agentStageLifeLinkDraft(
+    input: {
+      lifeLinkId: string;
+      baseUpdatedAt: string;
+      title?: string;
+      body?: string;
+      sourceLifeLinkIds: readonly string[];
+    },
+    signal?: AbortSignal
+  ): Promise<AgentToolControllerActionResult>;
+  agentStartFindMode(
+    input: { lifeLinkId: string },
+    signal?: AbortSignal
+  ): Promise<AgentToolControllerActionResult>;
   openPublicQrInWorkspace(): Promise<void>;
+  discardAgentDraftProposal(): void;
   saveCanonicalLifeLink(
     lifeLinkId: string,
     expectedUpdatedAt: string,
@@ -204,6 +234,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       expandedLifeLinkIds: [],
       highlightedLifeLinkId: null,
       canonicalEditingId: null,
+      agentDraftProposal: null,
       lifeLinkSearchQuery: "",
       lifeLinkSearchResults: [],
       lifeLinkSearchTotalCount: 0,
@@ -281,7 +312,10 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   toggleGuestView() {
-    this.update((current) => ({ guestView: !current.guestView }));
+    this.update((current) => ({
+      guestView: !current.guestView,
+      ...(!current.guestView ? { canonicalEditingId: null, agentDraftProposal: null } : {})
+    }));
   }
 
   setTheme(theme: ThemeMode) {
@@ -300,11 +334,15 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     if (this.snapshot.selectedLifeLinkId !== lifeLinkId || !this.snapshot.selectedLifeLinkDetail) {
       await this.selectLifeLink({ lifeLinkId, source: "human" });
     }
-    this.update({ canonicalEditingId: lifeLinkId });
+    this.update({ canonicalEditingId: lifeLinkId, agentDraftProposal: null });
   }
 
   closeCanonicalEditor() {
-    this.update({ canonicalEditingId: null });
+    this.update({ canonicalEditingId: null, agentDraftProposal: null });
+  }
+
+  discardAgentDraftProposal() {
+    this.update({ agentDraftProposal: null });
   }
 
   async refreshOwnerLibrary(user = this.snapshot.currentUser) {
@@ -342,7 +380,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async selectLifeLink(
-    input: { lifeLinkId: string; source: "human" | "route" | "search" | "scan" },
+    input: { lifeLinkId: string; source: "human" | "agent" | "route" | "search" | "scan" },
     updateHistory = true
   ) {
     this.update({ busy: true, error: "" });
@@ -350,26 +388,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       const { detail } = await this.api.getLifeLinkDetail(input.lifeLinkId, {
         limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT
       });
-      const pathname = ownerLifeLinkPath(detail.lifeLink.id);
-      this.update((current) => ({
-        activeView: "projects",
-        activeQrId: detail.lifeLink.qrId,
-        publicQrState: null,
-        routePathname: pathname,
-        routeQrId: null,
-        routeLifeLinkId: detail.lifeLink.id,
-        selectedLifeLinkId: detail.lifeLink.id,
-        selectedLifeLinkDetail: detail,
-        highlightedLifeLinkId: detail.lifeLink.id,
-        expandedLifeLinkIds: mergeIds(
-          current.expandedLifeLinkIds,
-          detail.ancestry.items.slice(0, -1).map((item) => item.id)
-        ),
-        ...mergeDetailIntoHierarchy(current, detail)
-      }));
-      if (updateHistory && this.route.pathname() !== pathname) {
-        this.route.push(pathname);
-      }
+      this.applySelectedLifeLinkDetail(detail, updateHistory);
     } catch (selectError) {
       this.update({ error: messageFromError(selectError) });
     } finally {
@@ -507,6 +526,295 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
   }
 
+  async agentInspectCurrentLifeLink(
+    input: { lifeLinkId: string },
+    signal?: AbortSignal
+  ): Promise<AgentToolControllerActionResult> {
+    const agentOwnerId = this.currentAgentOwnerId();
+    if (!agentOwnerId || this.snapshot.selectedLifeLinkId !== input.lifeLinkId) {
+      return { ok: false, code: "life_link_unavailable" };
+    }
+    if (this.snapshot.canonicalEditingId !== null) {
+      return { ok: false, code: "editor_open" };
+    }
+    if (signal?.aborted) {
+      return { ok: false, code: "cancelled" };
+    }
+    try {
+      const { detail } = await this.api.getLifeLinkDetail(input.lifeLinkId, {
+        limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
+        signal
+      });
+      if (signal?.aborted) {
+        return { ok: false, code: "cancelled" };
+      }
+      if (
+        this.currentAgentOwnerId() !== agentOwnerId ||
+        this.snapshot.selectedLifeLinkId !== input.lifeLinkId ||
+        this.snapshot.canonicalEditingId !== null
+      ) {
+        return {
+          ok: false,
+          code: this.snapshot.canonicalEditingId !== null ? "editor_open" : "life_link_unavailable"
+        };
+      }
+      this.applySelectedLifeLinkDetail(detail, false, false);
+      return { ok: true };
+    } catch (error) {
+      return agentReadFailure(error, "life_link_unavailable");
+    }
+  }
+
+  async agentSearchLifeLinks(
+    input: { query: string; limit: number },
+    signal?: AbortSignal
+  ): Promise<AgentSearchLifeLinksControllerResult> {
+    const agentOwnerId = this.currentAgentOwnerId();
+    if (!agentOwnerId) {
+      return { ok: false, code: "life_link_unavailable" };
+    }
+    if (this.snapshot.canonicalEditingId !== null) {
+      return { ok: false, code: "editor_open" };
+    }
+    if (signal?.aborted) {
+      return { ok: false, code: "cancelled" };
+    }
+    const limit = Math.max(1, Math.min(10, Math.trunc(input.limit)));
+    const result = await this.api.searchLifeLinks(input.query, { limit, signal }).catch((error: unknown) => {
+      if (isAbortError(error) || signal?.aborted) {
+        return null;
+      }
+      throw error;
+    });
+    if (!result || signal?.aborted) {
+      return { ok: false, code: "cancelled" };
+    }
+    if (this.currentAgentOwnerId() !== agentOwnerId || this.snapshot.canonicalEditingId !== null) {
+      return {
+        ok: false,
+        code: this.snapshot.canonicalEditingId !== null ? "editor_open" : "life_link_unavailable"
+      };
+    }
+    const boundedResults = result.results.slice(0, limit);
+    const search = {
+      query: input.query,
+      results: boundedResults,
+      totalCount: result.totalCount,
+      nextCursor: result.nextCursor,
+      hasMore: result.hasMore || result.results.length > boundedResults.length,
+      truncated: result.truncated || result.hasMore || result.results.length > boundedResults.length
+    };
+    this.update({
+      activeView: "projects",
+      lifeLinkSearchQuery: search.query,
+      lifeLinkSearchResults: search.results,
+      lifeLinkSearchTotalCount: search.totalCount,
+      lifeLinkSearchNextCursor: search.nextCursor,
+      lifeLinkSearchTruncated: search.truncated,
+      lifeLinkSearchLoading: false,
+      error: ""
+    });
+    return { ok: true, search };
+  }
+
+  async agentOpenLifeLink(
+    input: { lifeLinkId: string },
+    signal?: AbortSignal
+  ): Promise<AgentToolControllerActionResult> {
+    const agentOwnerId = this.currentAgentOwnerId();
+    if (!agentOwnerId) {
+      return { ok: false, code: "life_link_unavailable" };
+    }
+    if (this.snapshot.canonicalEditingId !== null) {
+      return { ok: false, code: "editor_open" };
+    }
+    if (signal?.aborted) {
+      return { ok: false, code: "cancelled" };
+    }
+    try {
+      const { detail } = await this.api.getLifeLinkDetail(input.lifeLinkId, {
+        limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
+        signal
+      });
+      if (signal?.aborted) {
+        return { ok: false, code: "cancelled" };
+      }
+      if (this.currentAgentOwnerId() !== agentOwnerId || this.snapshot.canonicalEditingId !== null) {
+        return {
+          ok: false,
+          code: this.snapshot.canonicalEditingId !== null ? "editor_open" : "life_link_unavailable"
+        };
+      }
+      this.applySelectedLifeLinkDetail(detail, true);
+      return { ok: true };
+    } catch (error) {
+      return agentReadFailure(error, "life_link_unavailable");
+    }
+  }
+
+  async agentStageLifeLinkDraft(
+    input: {
+      lifeLinkId: string;
+      baseUpdatedAt: string;
+      title?: string;
+      body?: string;
+      sourceLifeLinkIds: readonly string[];
+    },
+    signal?: AbortSignal
+  ): Promise<AgentToolControllerActionResult> {
+    const agentOwnerId = this.currentAgentOwnerId();
+    if (!agentOwnerId || this.snapshot.selectedLifeLinkId !== input.lifeLinkId) {
+      return { ok: false, code: "life_link_unavailable" };
+    }
+    if (this.snapshot.agentDraftProposal !== null) {
+      return { ok: false, code: "editor_open" };
+    }
+    if (signal?.aborted) {
+      return { ok: false, code: "cancelled" };
+    }
+    let detail: LifeLinkDetail;
+    try {
+      detail = (await this.api.getLifeLinkDetail(input.lifeLinkId, {
+        limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
+        signal
+      })).detail;
+    } catch (error) {
+      return agentReadFailure(error, "life_link_unavailable");
+    }
+    if (signal?.aborted) {
+      return { ok: false, code: "cancelled" };
+    }
+    if (
+      this.currentAgentOwnerId() !== agentOwnerId ||
+      this.snapshot.selectedLifeLinkId !== input.lifeLinkId ||
+      detail.lifeLink.updatedAt !== input.baseUpdatedAt
+    ) {
+      return {
+        ok: false,
+        code: detail.lifeLink.updatedAt === input.baseUpdatedAt ? "life_link_unavailable" : "stale_life_link"
+      };
+    }
+
+    const sourceLifeLinkIds = Array.from(new Set(input.sourceLifeLinkIds));
+    if (sourceLifeLinkIds.length > MAX_LIFE_LINK_SOURCE_REFERENCE_COUNT) {
+      return { ok: false, code: "source_life_link_unavailable" };
+    }
+    for (const sourceLifeLinkId of sourceLifeLinkIds) {
+      if (sourceLifeLinkId === input.lifeLinkId) {
+        continue;
+      }
+      try {
+        await this.api.getLifeLinkDetail(sourceLifeLinkId, { limit: 1, signal });
+      } catch (error) {
+        if (isAbortError(error) || signal?.aborted) {
+          return { ok: false, code: "cancelled" };
+        }
+        return { ok: false, code: "source_life_link_unavailable" };
+      }
+    }
+    if (signal?.aborted) {
+      return { ok: false, code: "cancelled" };
+    }
+    if (
+      this.currentAgentOwnerId() !== agentOwnerId ||
+      this.snapshot.selectedLifeLinkId !== input.lifeLinkId
+    ) {
+      return { ok: false, code: "life_link_unavailable" };
+    }
+
+    let refreshedDetail: LifeLinkDetail;
+    try {
+      refreshedDetail = (await this.api.getLifeLinkDetail(input.lifeLinkId, {
+        limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
+        signal
+      })).detail;
+    } catch (error) {
+      return agentReadFailure(error, "life_link_unavailable");
+    }
+    if (signal?.aborted) {
+      return { ok: false, code: "cancelled" };
+    }
+    if (
+      this.currentAgentOwnerId() !== agentOwnerId ||
+      this.snapshot.selectedLifeLinkId !== input.lifeLinkId ||
+      refreshedDetail.lifeLink.updatedAt !== input.baseUpdatedAt
+    ) {
+      return {
+        ok: false,
+        code: refreshedDetail.lifeLink.updatedAt === input.baseUpdatedAt
+          ? "life_link_unavailable"
+          : "stale_life_link"
+      };
+    }
+    if (this.snapshot.agentDraftProposal !== null) {
+      return { ok: false, code: "editor_open" };
+    }
+
+    this.applySelectedLifeLinkDetail(refreshedDetail, false);
+    this.update({
+      canonicalEditingId: input.lifeLinkId,
+      agentDraftProposal: {
+        lifeLinkId: input.lifeLinkId,
+        baseUpdatedAt: input.baseUpdatedAt,
+        proposedFields: [
+          ...(input.title === undefined ? [] : ["title" as const]),
+          ...(input.body === undefined ? [] : ["body" as const])
+        ],
+        before: {
+          title: refreshedDetail.lifeLink.title,
+          body: refreshedDetail.lifeLink.body
+        },
+        after: {
+          title: input.title ?? refreshedDetail.lifeLink.title,
+          body: input.body ?? refreshedDetail.lifeLink.body
+        },
+        sourceLifeLinkIds,
+        createdAt: new Date().toISOString()
+      }
+    });
+    return { ok: true };
+  }
+
+  async agentStartFindMode(
+    input: { lifeLinkId: string },
+    signal?: AbortSignal
+  ): Promise<AgentToolControllerActionResult> {
+    const agentOwnerId = this.currentAgentOwnerId();
+    if (!agentOwnerId) {
+      return { ok: false, code: "life_link_unavailable" };
+    }
+    if (this.snapshot.canonicalEditingId !== null) {
+      return { ok: false, code: "editor_open" };
+    }
+    if (signal?.aborted) {
+      return { ok: false, code: "cancelled" };
+    }
+    try {
+      const { detail } = await this.api.getLifeLinkDetail(input.lifeLinkId, {
+        limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
+        signal
+      });
+      if (signal?.aborted) {
+        return { ok: false, code: "cancelled" };
+      }
+      if (this.currentAgentOwnerId() !== agentOwnerId || this.snapshot.canonicalEditingId !== null) {
+        return {
+          ok: false,
+          code: this.snapshot.canonicalEditingId !== null ? "editor_open" : "life_link_unavailable"
+        };
+      }
+      if (!detail.lifeLink.qrId) {
+        return { ok: false, code: "qr_not_attached" };
+      }
+      this.applySelectedLifeLinkDetail(detail, true);
+      this.setActiveView("search");
+      this.update({ findTargetId: detail.lifeLink.qrId, activeQrId: detail.lifeLink.qrId });
+      return { ok: true };
+    } catch (error) {
+      return agentReadFailure(error, "life_link_unavailable");
+    }
+  }
+
   async openPublicQrInWorkspace() {
     const { activeQrId, currentUser } = this.snapshot;
     if (!currentUser) {
@@ -542,6 +850,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       this.update({
         currentUser: result.user,
         qrBaseUrl: result.qrBaseUrl,
+        agentDraftProposal: null,
         routePathname: this.route.pathname(),
         routeQrId: nextRoute.qrId,
         routeLifeLinkId: nextRoute.lifeLinkId
@@ -572,6 +881,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       projects: [],
       editingId: null,
       canonicalEditingId: null,
+      agentDraftProposal: null,
       rootLifeLinks: emptyLifeLinkBranch(),
       lifeLinkChildren: {},
       selectedLifeLinkId: null,
@@ -592,6 +902,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       routePathname: `/qr/${encodeURIComponent(qrId)}`,
       routeQrId: qrId,
       routeLifeLinkId: null,
+      agentDraftProposal: null,
       scanMessage: {
         tone: "neutral",
         title: "QR opened",
@@ -746,7 +1057,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
           current.selectedLifeLinkDetail?.lifeLink.id === lifeLinkId
             ? { ...current.selectedLifeLinkDetail, lifeLink: result.lifeLink }
             : current.selectedLifeLinkDetail,
-        canonicalEditingId: null
+        canonicalEditingId: null,
+        agentDraftProposal: null
       }));
       await this.refreshOwnerLibrary();
       await this.loadLifeLinkBranch(result.lifeLink.parentId, false);
@@ -889,6 +1201,40 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       return;
     }
     window.location.href = `/api/qr-batches/${encodeURIComponent(this.snapshot.lastBatchId)}.zip`;
+  }
+
+  private currentAgentOwnerId() {
+    return this.snapshot.routeQrId === null && !this.snapshot.guestView
+      ? this.snapshot.currentUser?.id ?? null
+      : null;
+  }
+
+  private applySelectedLifeLinkDetail(
+    detail: LifeLinkDetail,
+    updateHistory: boolean,
+    clearAgentDraft = true
+  ) {
+    const pathname = ownerLifeLinkPath(detail.lifeLink.id);
+    this.update((current) => ({
+      activeView: "projects",
+      activeQrId: detail.lifeLink.qrId,
+      publicQrState: null,
+      routePathname: pathname,
+      routeQrId: null,
+      routeLifeLinkId: detail.lifeLink.id,
+      selectedLifeLinkId: detail.lifeLink.id,
+      selectedLifeLinkDetail: detail,
+      highlightedLifeLinkId: detail.lifeLink.id,
+      expandedLifeLinkIds: mergeIds(
+        current.expandedLifeLinkIds,
+        detail.ancestry.items.slice(0, -1).map((item) => item.id)
+      ),
+      agentDraftProposal: clearAgentDraft ? null : current.agentDraftProposal,
+      ...mergeDetailIntoHierarchy(current, detail)
+    }));
+    if (updateHistory && this.route.pathname() !== pathname) {
+      this.route.push(pathname);
+    }
   }
 
   private async boot(lifecycle: number) {
@@ -1157,6 +1503,25 @@ async function readQrState(api: LifeLinksWorkspaceApi, qrId: string): Promise<Qr
     }
     throw error;
   }
+}
+
+function agentReadFailure(
+  error: unknown,
+  fallbackCode: "life_link_unavailable" | "source_life_link_unavailable"
+): AgentToolControllerActionResult {
+  if (isAbortError(error)) {
+    return { ok: false, code: "cancelled" };
+  }
+  if (error instanceof ApiError && (error.status === 401 || error.status === 403 || error.status === 404)) {
+    return { ok: false, code: fallbackCode };
+  }
+  throw error;
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : error instanceof Error && error.name === "AbortError";
 }
 
 function initialTheme(): ThemeMode {

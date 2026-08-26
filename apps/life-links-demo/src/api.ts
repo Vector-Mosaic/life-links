@@ -169,7 +169,7 @@ export async function createLifeLink(input: CreateLifeLinkInput) {
 
 export async function getLifeLinkDetail(
   lifeLinkId: string,
-  options: { cursor?: string | null; limit?: number } = {}
+  options: { cursor?: string | null; limit?: number; signal?: AbortSignal } = {}
 ) {
   const query = new URLSearchParams();
   if (options.cursor) {
@@ -180,13 +180,14 @@ export async function getLifeLinkDetail(
   }
   const suffix = query.size ? `?${query.toString()}` : "";
   return apiFetch<{ detail: LifeLinkDetail }>(
-    `/api/life-links/${encodeURIComponent(lifeLinkId)}${suffix}`
+    `/api/life-links/${encodeURIComponent(lifeLinkId)}${suffix}`,
+    { signal: options.signal }
   );
 }
 
 export async function searchLifeLinks(
   q: string,
-  options: { cursor?: string | null; limit?: number } = {}
+  options: { cursor?: string | null; limit?: number; signal?: AbortSignal } = {}
 ) {
   const query = new URLSearchParams({ q });
   if (options.cursor) {
@@ -195,7 +196,9 @@ export async function searchLifeLinks(
   if (options.limit !== undefined) {
     query.set("limit", String(options.limit));
   }
-  return apiFetch<LifeLinkSearchResponse>(`/api/life-links/search?${query.toString()}`);
+  return apiFetch<LifeLinkSearchResponse>(`/api/life-links/search?${query.toString()}`, {
+    signal: options.signal
+  });
 }
 
 export async function updateLifeLink(

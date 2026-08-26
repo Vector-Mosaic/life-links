@@ -1134,7 +1134,11 @@ function securityHeaders(config: LifeLinksConfig) {
     }
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "no-referrer");
-    response.setHeader("Permissions-Policy", "camera=(self), microphone=(), geolocation=()");
+    response.setHeader(
+      "Permissions-Policy",
+      "camera=(self), microphone=(), geolocation=(), tools=(self)"
+    );
+    response.setHeader("Origin-Agent-Cluster", "?1");
     response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
     response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
     response.setHeader(

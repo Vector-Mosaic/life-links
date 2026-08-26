@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import {
   Archive,
@@ -33,6 +33,18 @@ import {
   buildQrUrl,
   searchOwnedLinks
 } from "@life-links/core";
+import { AgentAccessPanel, type AgentAccessRegistrationStatus } from "./agent/AgentAccessPanel";
+import { AgentActivityPanel } from "./agent/AgentActivityPanel";
+import {
+  instrumentAgentToolCatalog,
+  type AgentActivityEntry
+} from "./agent/activity";
+import { getBrowserWebMcpHost } from "./agent/browserWebMcpHost";
+import { createLifeLinksAgentToolCatalog } from "./agent/toolHandlers";
+import {
+  agentAccessGrantIsActive,
+  usePageToolRegistration
+} from "./agent/usePageToolRegistration";
 import { LifeLinkEditor } from "./owner/LifeLinkEditor";
 import { OwnerWorkspace } from "./owner/OwnerWorkspace";
 import { RichBodyRenderer } from "./richBody";
@@ -82,9 +94,13 @@ function LifeLinksApp() {
     theme,
     routePathname,
     canonicalEditingId,
+    agentDraftProposal,
     selectedLifeLinkDetail,
     rootLifeLinks
   } = snapshot;
+  const [agentAccessOwnerId, setAgentAccessOwnerId] = useState<string | null>(null);
+  const [agentActivities, setAgentActivities] = useState<AgentActivityEntry[]>([]);
+  const agentActivityEligibleRef = useRef(false);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -101,6 +117,39 @@ function LifeLinksApp() {
   );
   const unclaimedLinks = useMemo(() => links.filter((link) => link.status === "unclaimed"), [links]);
   const route = classifyLifeLinksRoute(routePathname, Boolean(currentUser));
+  const agentAccessEnabled = agentAccessGrantIsActive(
+    agentAccessOwnerId,
+    currentUser?.id ?? null,
+    route.surface,
+    guestView
+  );
+  agentActivityEligibleRef.current = agentAccessEnabled;
+  const recordAgentActivity = useCallback((entry: AgentActivityEntry) => {
+    if (!agentActivityEligibleRef.current) {
+      return;
+    }
+    setAgentActivities((current) => [entry, ...current].slice(0, 10));
+  }, []);
+  const agentToolDefinitions = useMemo(
+    () => instrumentAgentToolCatalog(createLifeLinksAgentToolCatalog(controller), recordAgentActivity),
+    [controller, recordAgentActivity]
+  );
+  const webMcpSupported = getBrowserWebMcpHost(
+    typeof document === "undefined" ? null : document
+  ).status === "supported";
+  const registration = usePageToolRegistration({
+    definitions: agentToolDefinitions,
+    eligibility: {
+      authenticatedOwnerId: currentUser?.id ?? null,
+      surface: route.surface,
+      agentAccessEnabled: agentAccessEnabled && !guestView
+    }
+  });
+
+  useEffect(() => {
+    setAgentAccessOwnerId(null);
+    setAgentActivities([]);
+  }, [currentUser?.id, guestView, route.surface]);
   const activeLink = useMemo(() => {
     if (route.surface === "public-qr") {
       if (publicQrState?.state === "claimed") {
@@ -163,7 +212,12 @@ function LifeLinksApp() {
   const nextTheme = theme === "light" ? "dark" : "light";
   const setActiveView = (view: View) => controller.setActiveView(view);
   const handleLogin = (email: string, password: string) => controller.login(email, password);
-  const handleLogout = () => controller.logout();
+  const handleLogout = () => {
+    agentActivityEligibleRef.current = false;
+    setAgentAccessOwnerId(null);
+    setAgentActivities([]);
+    return controller.logout();
+  };
   const openQr = (qrId: string) => controller.openQr(qrId);
   const handleOpenScan = (scanText: string) => controller.scanQr(scanText);
   const handleFindScan = (scanText: string) => controller.evaluateFindScan(scanText);
@@ -173,6 +227,26 @@ function LifeLinksApp() {
   const downloadSelectedQr = (format: "svg" | "png") => controller.downloadSelectedQr(format);
   const downloadCsv = (ids?: string[]) => controller.downloadCsv(ids);
   const downloadZip = () => controller.downloadZip();
+  const setAgentAccess = (enabled: boolean) => {
+    const grantedOwnerId =
+      enabled && currentUser && route.surface === "owner-workspace" && !guestView
+        ? currentUser.id
+        : null;
+    agentActivityEligibleRef.current = grantedOwnerId !== null;
+    setAgentAccessOwnerId(grantedOwnerId);
+    if (grantedOwnerId === null) {
+      setAgentActivities([]);
+    }
+  };
+  const agentRegistrationStatus: AgentAccessRegistrationStatus =
+    registration.status === "registered"
+      ? "ready"
+      : registration.status === "registering"
+        ? "registering"
+        : registration.status === "error"
+          ? "error"
+          : "inactive";
+  const agentRegistrationError = registration.status === "error" ? registration.error.message : "";
 
   const navItems: Array<{ view: View; label: string; icon: typeof Archive }> = [
     { view: "home", label: "Home", icon: Home },
@@ -298,6 +372,17 @@ function LifeLinksApp() {
         </header>
 
         {error && <div className="error-banner">{error}</div>}
+
+        <section className="agent-console-grid" aria-label="Life Links agent controls">
+          <AgentAccessPanel
+            supported={webMcpSupported}
+            enabled={agentAccessEnabled}
+            registrationStatus={agentRegistrationStatus}
+            registrationError={agentRegistrationError}
+            onEnabledChange={setAgentAccess}
+          />
+          <AgentActivityPanel activities={agentActivities} />
+        </section>
 
         {activeView === "home" && (
           <section className="home-stack">
@@ -632,8 +717,10 @@ function LifeLinksApp() {
         <LifeLinkEditor
           mode="canonical"
           link={selectedLifeLinkDetail?.lifeLink.id === canonicalEditingId ? selectedLifeLinkDetail.lifeLink : null}
+          agentDraftProposal={agentDraftProposal}
           busy={busy}
           onClose={() => controller.closeCanonicalEditor()}
+          onDiscardAgentDraft={() => controller.discardAgentDraftProposal()}
           onSave={(lifeLinkId, expectedUpdatedAt, patch) =>
             void controller.saveCanonicalLifeLink(lifeLinkId, expectedUpdatedAt, patch)
           }

@@ -818,14 +818,19 @@ describe("Life Links API", () => {
         HSTS_ENABLED: "true"
       }
     });
-    const response = await request(secured.app).get("/healthz");
+    const response = await request(secured.app).get("/");
     expect(response.status).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/html");
     expect(response.headers["content-security-policy"]).toContain("default-src 'self'");
     expect(response.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
     expect(response.headers["strict-transport-security"]).toContain("max-age=31536000");
     expect(response.headers["x-content-type-options"]).toBe("nosniff");
     expect(response.headers["referrer-policy"]).toBe("no-referrer");
-    expect(response.headers["permissions-policy"]).toContain("camera=(self)");
+    expect(response.headers["permissions-policy"]).toBe(
+      "camera=(self), microphone=(), geolocation=(), tools=(self)"
+    );
+    expect(response.headers["origin-agent-cluster"]).toBe("?1");
+    expect(response.headers["origin-agent-cluster"]).not.toBe("?0");
   });
 
   it("rejects cross-site mutating requests when origin checks are enabled", async () => {
