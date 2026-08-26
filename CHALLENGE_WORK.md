@@ -42,6 +42,7 @@ functionality.
 | Deterministic camera-kit fixture, guarded reset, and complete challenge journey | No | `b0316f418eb8be3d44850513fbf0759a06b1cb29` | `e674dabc7f058ef0be00b66057c8a8509d4428ad` | Reset atomicity plus local and hosted journey tests |
 | Hosted qualification hardening | No | `ef5dd310fcb6647155b80be2a075284055bfaec3` | `e102bba78d2082dbd91b4f722d063c995f5b3228` | Runtime identity gates and hosted acceptance lane |
 | Preserve newer navigation when Save completes after navigation | No | `5b850e618c88c50b8079305b1314df1c38cb52e3` | `6e0d1cf28a91485ab690fff67050a704d4ee327d` | Workspace controller regression tests |
+| Rich physical-context retrieval, revision-safe direct update, and deterministic camping challenge loop | No | `2fff0f5d8bd791cd43e5fef4f7640b4a7a563552` | `bbdfba3f1eccd7d2ff4f3905c17eb2ecb9ea2c36` | BC-120/130/140 unit, contract, controlled-host, native-Chrome, persistence, and complete local challenge-loop evidence |
 
 Two canonical checkpoints intentionally produce no invented standalone product
 commit: `2ada1078594cee1a6d3b46b48718b30a01b41736` changes release tooling outside
@@ -49,10 +50,18 @@ the admitted tree and maps to `74017e73046b7eb4901297a4f63c225620c1b1ba`;
 `94855eb34b7ef865d03079de8f4cf6ddd9457499` changes the excluded deployment
 binding and maps to `e674dabc7f058ef0be00b66057c8a8509d4428ad`.
 
-The implemented WebMCP catalog is exactly:
+The draft tool and camera fixture rows above preserve the first locally and
+hosted-qualified challenge checkpoint as history; they do not describe the
+current release candidate. The current implemented WebMCP catalog is exactly:
 `inspect_current_life_link`, `search_my_life_links`, `open_life_link`,
-`draft_life_link_update`, and `start_find_mode`. Agent tools never bypass the
-ordinary owner-session boundary, and the draft tool never persists a write.
+`update_life_link_content`, and `start_find_mode`. Inspect and search return
+substantive but bounded owner context. The update tool requires the exact base
+revision, changes only title and/or body through the ordinary canonical PATCH,
+may validate up to eight same-owner source Life Link IDs, and rejects open
+editor, saved human draft, stale-revision, owner/surface, or access conflicts.
+Agent tools never bypass the ordinary owner-session boundary. Child creation,
+privacy, placement, QR binding, media, ownership, and purchase operations are
+outside this catalog.
 
 ## Projection and deployed-source mapping
 
