@@ -15,7 +15,7 @@ const passwordPath = path.resolve(testDirectory, "../src/password.ts");
 const serverPath = path.resolve(testDirectory, "../src/server.ts");
 const storePath = path.resolve(testDirectory, "../src/store.ts");
 const webClientPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/api.ts");
-const webAppPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/App.tsx");
+const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/workspace/controller.ts");
 
 const INCIDENTAL_RUNTIME_ROUTES = new Set(["GET /healthz", "GET /readyz", "GET /version"]);
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
@@ -246,14 +246,16 @@ function templatePlaceholder(expression: ts.Expression): string | null {
   if (ts.isIdentifier(expression)) {
     return expression.text;
   }
+  if (ts.isPropertyAccessExpression(expression)) {
+    return expression.name.text;
+  }
   if (
     ts.isCallExpression(expression) &&
     ts.isIdentifier(expression.expression) &&
     expression.expression.text === "encodeURIComponent" &&
-    expression.arguments.length === 1 &&
-    ts.isIdentifier(expression.arguments[0])
+    expression.arguments.length === 1
   ) {
-    return expression.arguments[0].text;
+    return templatePlaceholder(expression.arguments[0]);
   }
   return null;
 }
@@ -375,10 +377,10 @@ describe("Life Links OpenAPI v1", () => {
     const operations = contractOperations(parseStrictJson(readSource(contractPath)));
     const publishedShapes = new Set([...operations.keys()].map(operationShape));
     const webOperations = clientOperations(webClientPath, "apiFetch");
-    const downloads = directBrowserDownloads(webAppPath);
+    const downloads = directBrowserDownloads(webControllerPath);
     expect(webOperations).toEqual(EXPECTED_WEB_CLIENT_OPERATIONS);
     expect(downloads).toEqual(["GET /api/qr-batches/{lastBatchId}.zip"]);
-    expect(readSource(webAppPath)).toContain("`/qr/${encodeURIComponent(qrId)}`");
+    expect(readSource(webControllerPath)).toContain("`/qr/${encodeURIComponent(qrId)}`");
     for (const clientOperation of [...webOperations, ...downloads]) {
       expect(publishedShapes, `undocumented client operation ${clientOperation}`).toContain(operationShape(clientOperation));
     }
