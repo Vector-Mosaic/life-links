@@ -488,7 +488,12 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     if (lifeLink.privacy === "private" && !viewerIsOwner) {
       return { state: "private", qrId };
     }
-    return { state: "claimed", link: this.projectTaggedLifeLink(lifeLink), viewerIsOwner };
+    const projected = this.projectTaggedLifeLink(lifeLink);
+    return {
+      state: "claimed",
+      link: viewerIsOwner ? projected : { ...projected, projectId: null },
+      viewerIsOwner
+    };
   }
 
   async claimQr(qrId: string, userId: string, commandValue: string | ClaimQrCommand): Promise<ClaimOutcome> {
@@ -525,6 +530,9 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
         const existingBinding = this.qrBindings.get(qrId);
         const existingLifeLink = existingBinding ? this.lifeLinks.get(existingBinding.lifeLinkId) : null;
         if (existingLifeLink?.ownerId === userId) {
+          if (command.mode === "attach" && existingLifeLink.id !== command.lifeLinkId) {
+            throw new LifeLinkDomainError("qr_already_bound", "QR is already bound to another Life Link.");
+          }
           result = "already_owned";
           resolvedLifeLinkId = existingLifeLink.id;
         } else if (existingLifeLink) {

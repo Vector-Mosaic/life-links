@@ -189,6 +189,13 @@ describe("Life Links Postgres integration", () => {
       title: "Duplicate",
       createdAt
     });
+    const grandchild = await store.createLifeLink({
+      id: `pg-grandchild-${randomUUID()}`,
+      ownerId: "demo-owner",
+      parentId: child.id,
+      title: "Nested child",
+      createdAt
+    });
     const firstPage = await store.listLifeLinks("demo-owner", root.id, { limit: 1 });
     const secondPage = await store.listLifeLinks("demo-owner", root.id, { limit: 1, cursor: firstPage.nextCursor });
     expect(firstPage.items).toHaveLength(1);
@@ -222,6 +229,20 @@ describe("Life Links Postgres integration", () => {
         expectedUpdatedAt: root.updatedAt
       })
     ).rejects.toMatchObject({ code: "hierarchy_cycle" });
+    await expect(
+      store.moveLifeLink("demo-owner", {
+        lifeLinkId: child.id,
+        parentId: null,
+        expectedUpdatedAt: child.updatedAt
+      })
+    ).rejects.toMatchObject({ code: "stale_life_link", retryable: true });
+    const moved = await store.moveLifeLink("demo-owner", {
+      lifeLinkId: child.id,
+      parentId: null,
+      expectedUpdatedAt: updated!.updatedAt
+    });
+    expect(moved?.parentId).toBeNull();
+    expect((await store.getLifeLinkDetail("demo-owner", grandchild.id))?.lifeLink.parentId).toBe(child.id);
 
     const batch = await store.createQrBatch("demo-owner", 1, DEFAULT_QR_BASE_URL);
     const attached = await store.claimQr(batch.qrCodes[0].id, "demo-owner", {
@@ -231,6 +252,20 @@ describe("Life Links Postgres integration", () => {
     });
     expect(attached).toMatchObject({ result: "claimed", state: { state: "claimed" } });
     expect((await store.getLifeLinkDetail("demo-owner", sibling.id))?.lifeLink.qrId).toBe(batch.qrCodes[0].id);
+    await expect(
+      store.claimQr(batch.qrCodes[0].id, "demo-owner", {
+        commandId: `pg-attach-same-${randomUUID()}`,
+        mode: "attach",
+        lifeLinkId: sibling.id
+      })
+    ).resolves.toMatchObject({ result: "already_owned", replayed: false });
+    await expect(
+      store.claimQr(batch.qrCodes[0].id, "demo-owner", {
+        commandId: `pg-attach-different-${randomUUID()}`,
+        mode: "attach",
+        lifeLinkId: child.id
+      })
+    ).rejects.toMatchObject({ code: "qr_already_bound" });
     await expect(
       store.createLifeLinkMedia("demo-owner", sibling.id, {
         kind: "image",

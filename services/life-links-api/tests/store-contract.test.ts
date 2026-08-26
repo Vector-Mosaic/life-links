@@ -48,6 +48,12 @@ describe("canonical Life Links store contract", () => {
       parentId: root.id,
       createdAt
     });
+    const grandchild = await store.createLifeLink({
+      id: "move-grandchild",
+      ownerId: DEMO_OWNER_ID,
+      parentId: child.id,
+      createdAt
+    });
     const updated = await store.updateLifeLink(DEMO_OWNER_ID, {
       lifeLinkId: child.id,
       expectedUpdatedAt: child.updatedAt,
@@ -77,6 +83,20 @@ describe("canonical Life Links store contract", () => {
     ).rejects.toMatchObject({ code: "hierarchy_cycle" });
     await expect(
       store.moveLifeLink(DEMO_OWNER_ID, {
+        lifeLinkId: child.id,
+        parentId: null,
+        expectedUpdatedAt: child.updatedAt
+      })
+    ).rejects.toMatchObject({ code: "stale_life_link", retryable: true });
+    const moved = await store.moveLifeLink(DEMO_OWNER_ID, {
+      lifeLinkId: child.id,
+      parentId: null,
+      expectedUpdatedAt: updated!.updatedAt
+    });
+    expect(moved?.parentId).toBeNull();
+    expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, grandchild.id))?.lifeLink.parentId).toBe(child.id);
+    await expect(
+      store.moveLifeLink(DEMO_OWNER_ID, {
         lifeLinkId: root.id,
         parentId: root.id,
         expectedUpdatedAt: root.updatedAt
@@ -101,6 +121,28 @@ describe("canonical Life Links store contract", () => {
     expect(replay).toMatchObject({ result: "claimed", replayed: true });
     expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, target.id))?.lifeLink.qrId).toBe(qrId);
     expect(first.state.state === "claimed" ? first.state.link.id : null).toBe(qrId);
+
+    await expect(
+      store.claimQr(qrId, DEMO_OWNER_ID, {
+        commandId: "attach-passport-same-target",
+        mode: "attach",
+        lifeLinkId: target.id
+      })
+    ).resolves.toMatchObject({ result: "already_owned", replayed: false });
+
+    const differentTarget = await store.createLifeLink({
+      id: "different-physical-passport",
+      ownerId: DEMO_OWNER_ID,
+      title: "Different target",
+      createdAt: "2026-08-25T12:00:01.000Z"
+    });
+    await expect(
+      store.claimQr(qrId, DEMO_OWNER_ID, {
+        commandId: "attach-passport-different-target",
+        mode: "attach",
+        lifeLinkId: differentTarget.id
+      })
+    ).rejects.toMatchObject({ code: "qr_already_bound" });
 
     await expect(store.claimQr(batch.qrCodes[1].id, DEMO_OWNER_ID, command)).rejects.toBeInstanceOf(
       ClaimIdempotencyConflictError

@@ -1,4 +1,17 @@
-import type { ExportBatchRecord, LinkRecord, ProjectRecord, QrViewState, UserRecord } from "@life-links/core";
+import type {
+  CreateLifeLinkInput,
+  ExportBatchRecord,
+  LifeLinkDetail,
+  LifeLinkMediaRecord,
+  LifeLinkRecord,
+  LifeLinkSearchItem,
+  LifeLinkSummary,
+  LinkRecord,
+  ProjectRecord,
+  QrViewState,
+  UpdateLifeLinkPatch,
+  UserRecord
+} from "@life-links/core";
 
 export type ApiUser = Pick<UserRecord, "id" | "email" | "displayName" | "createdAt">;
 
@@ -51,6 +64,110 @@ export async function login(email: string, password: string) {
 
 export async function logout() {
   return apiFetch<void>("/api/auth/logout", { method: "POST" });
+}
+
+export type LifeLinkPageResponse = {
+  lifeLinks: LifeLinkSummary[];
+  nextCursor: string | null;
+  truncated: boolean;
+};
+
+export type LifeLinkSearchResponse = {
+  results: LifeLinkSearchItem[];
+  totalCount: number;
+  truncated: boolean;
+  hasMore: boolean;
+  nextCursor: string | null;
+};
+
+export async function listLifeLinks(options: { parentId?: string | null; cursor?: string | null; limit?: number } = {}) {
+  const query = new URLSearchParams();
+  if (options.parentId) {
+    query.set("parentId", options.parentId);
+  }
+  if (options.cursor) {
+    query.set("cursor", options.cursor);
+  }
+  if (options.limit !== undefined) {
+    query.set("limit", String(options.limit));
+  }
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return apiFetch<LifeLinkPageResponse>(`/api/life-links${suffix}`);
+}
+
+export async function createLifeLink(input: CreateLifeLinkInput) {
+  return apiFetch<{ lifeLink: LifeLinkRecord }>("/api/life-links", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function getLifeLinkDetail(
+  lifeLinkId: string,
+  options: { cursor?: string | null; limit?: number } = {}
+) {
+  const query = new URLSearchParams();
+  if (options.cursor) {
+    query.set("cursor", options.cursor);
+  }
+  if (options.limit !== undefined) {
+    query.set("limit", String(options.limit));
+  }
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return apiFetch<{ detail: LifeLinkDetail }>(
+    `/api/life-links/${encodeURIComponent(lifeLinkId)}${suffix}`
+  );
+}
+
+export async function searchLifeLinks(
+  q: string,
+  options: { cursor?: string | null; limit?: number } = {}
+) {
+  const query = new URLSearchParams({ q });
+  if (options.cursor) {
+    query.set("cursor", options.cursor);
+  }
+  if (options.limit !== undefined) {
+    query.set("limit", String(options.limit));
+  }
+  return apiFetch<LifeLinkSearchResponse>(`/api/life-links/search?${query.toString()}`);
+}
+
+export async function updateLifeLink(
+  lifeLinkId: string,
+  expectedUpdatedAt: string,
+  patch: UpdateLifeLinkPatch
+) {
+  return apiFetch<{ lifeLink: LifeLinkRecord }>(`/api/life-links/${encodeURIComponent(lifeLinkId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ ...patch, expectedUpdatedAt })
+  });
+}
+
+export async function moveLifeLink(lifeLinkId: string, parentId: string | null, expectedUpdatedAt: string) {
+  return apiFetch<{ lifeLink: LifeLinkRecord }>(
+    `/api/life-links/${encodeURIComponent(lifeLinkId)}/parent`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ parentId, expectedUpdatedAt })
+    }
+  );
+}
+
+export async function uploadLifeLinkMedia(lifeLinkId: string, file: File) {
+  const body = new FormData();
+  body.append("file", file);
+  return apiFetch<{ media: LifeLinkMediaRecord }>(
+    `/api/life-links/${encodeURIComponent(lifeLinkId)}/media`,
+    { method: "POST", body }
+  );
+}
+
+export async function deleteLifeLinkMedia(lifeLinkId: string, mediaId: string) {
+  return apiFetch<void>(
+    `/api/life-links/${encodeURIComponent(lifeLinkId)}/media/${encodeURIComponent(mediaId)}`,
+    { method: "DELETE" }
+  );
 }
 
 export async function listLinks() {
@@ -108,6 +225,13 @@ export async function claimQr(qrId: string, commandId: string) {
   return apiFetch<{ result: string; state: QrViewState }>(`/api/qr/${encodeURIComponent(qrId)}/claim`, {
     method: "POST",
     body: JSON.stringify({ commandId })
+  });
+}
+
+export async function attachQr(qrId: string, lifeLinkId: string, commandId: string) {
+  return apiFetch<{ result: string; state: QrViewState }>(`/api/qr/${encodeURIComponent(qrId)}/claim`, {
+    method: "POST",
+    body: JSON.stringify({ commandId, mode: "attach", lifeLinkId })
   });
 }
 

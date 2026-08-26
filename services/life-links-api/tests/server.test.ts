@@ -1,7 +1,13 @@
 import request from "supertest";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { DEFAULT_QR_BASE_URL, DEMO_PASSWORD, MAX_BODY_DOC_BYTES, MAX_MEDIA_PER_LINK } from "@life-links/core";
+import {
+  DEFAULT_QR_BASE_URL,
+  DEMO_PASSWORD,
+  MAX_BODY_DOC_BYTES,
+  MAX_LIFE_LINK_CHILD_PAGE_LIMIT,
+  MAX_MEDIA_PER_LINK
+} from "@life-links/core";
 
 import { readConfig } from "../src/config.js";
 import { createLogger, type LogEvent, type Logger } from "../src/logger.js";
@@ -24,6 +30,33 @@ async function createSeededAgent(options: { logger?: Logger; store?: LifeLinksSt
     logger: options.logger ?? createLogger("life_links_test", { env: "ci", sink: () => undefined })
   });
   return { store, app, agent: request.agent(app) };
+}
+
+function expectNoHierarchyDisclosure(value: unknown): void {
+  const forbiddenKeys = new Set([
+    "lifeLinkId",
+    "parentId",
+    "ancestry",
+    "children",
+    "path",
+    "hierarchy",
+    "rootId",
+    "descendants"
+  ]);
+  const visit = (candidate: unknown): void => {
+    if (Array.isArray(candidate)) {
+      candidate.forEach(visit);
+      return;
+    }
+    if (!candidate || typeof candidate !== "object") {
+      return;
+    }
+    for (const [key, nested] of Object.entries(candidate as Record<string, unknown>)) {
+      expect(forbiddenKeys.has(key), `public QR payload disclosed canonical hierarchy field ${key}`).toBe(false);
+      visit(nested);
+    }
+  };
+  visit(value);
 }
 
 describe("Life Links API", () => {
@@ -243,6 +276,9 @@ describe("Life Links API", () => {
 
   it("gates owner links and projects behind auth", async () => {
     expect((await request(ctx.app).get("/api/links")).status).toBe(401);
+    expect((await request(ctx.app).get("/api/life-links")).status).toBe(401);
+    expect((await request(ctx.app).get("/api/life-links/search").query({ q: "camera" })).status).toBe(401);
+    expect((await request(ctx.app).post("/api/life-links").send({ title: "No session" })).status).toBe(401);
     await login();
 
     const links = await ctx.agent.get("/api/links");
@@ -252,16 +288,196 @@ describe("Life Links API", () => {
     expect(projects.body.projects.map((project: { name: string }) => project.name)).toContain("Home archive");
   });
 
+  it("creates, browses, searches, revises, and moves canonical Life Links with bounded hierarchy reads", async () => {
+    await login();
+
+    const root = await ctx.agent.post("/api/life-links").send({
+      title: "Competition camera kit",
+      body: "Physical capture equipment",
+      privacy: "private"
+    });
+    expect(root.status).toBe(201);
+    expect(root.body.lifeLink).toMatchObject({
+      parentId: null,
+      qrId: null,
+      title: "Competition camera kit",
+      body: "Physical capture equipment",
+      bodyDocVersion: 1,
+      privacy: "private",
+      media: []
+    });
+    expect(root.body.lifeLink.id).toMatch(/^life-link-/);
+
+    const batteries = await ctx.agent.post("/api/life-links").send({
+      parentId: root.body.lifeLink.id,
+      title: "Competition batteries",
+      bodyDoc: {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "Charge before filming" }] }]
+      },
+      bodyDocVersion: 1,
+      privacy: "public"
+    });
+    const lenses = await ctx.agent.post("/api/life-links").send({
+      parentId: root.body.lifeLink.id,
+      title: "Competition lenses"
+    });
+    expect(batteries.status).toBe(201);
+    expect(lenses.status).toBe(201);
+    expect(batteries.body.lifeLink).toMatchObject({
+      parentId: root.body.lifeLink.id,
+      body: "Charge before filming",
+      privacy: "public"
+    });
+
+    const firstPage = await ctx.agent
+      .get("/api/life-links")
+      .query({ parentId: root.body.lifeLink.id, limit: 1 });
+    expect(firstPage.status).toBe(200);
+    expect(firstPage.body.lifeLinks).toHaveLength(1);
+    expect(firstPage.body.truncated).toBe(true);
+    expect(firstPage.body.nextCursor).toEqual(expect.any(String));
+    const secondPage = await ctx.agent
+      .get("/api/life-links")
+      .query({ parentId: root.body.lifeLink.id, limit: 1, cursor: firstPage.body.nextCursor });
+    expect(secondPage.status).toBe(200);
+    expect(secondPage.body.lifeLinks).toHaveLength(1);
+    expect(secondPage.body.lifeLinks[0].id).not.toBe(firstPage.body.lifeLinks[0].id);
+    expect(secondPage.body.truncated).toBe(false);
+    expect(secondPage.body.nextCursor).toBeNull();
+
+    const detail = await ctx.agent.get(`/api/life-links/${batteries.body.lifeLink.id}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.detail.lifeLink.id).toBe(batteries.body.lifeLink.id);
+    expect(detail.body.detail.ancestry.items.map((item: { id: string }) => item.id)).toEqual([
+      root.body.lifeLink.id,
+      batteries.body.lifeLink.id
+    ]);
+    expect(detail.body.detail.children).toEqual([]);
+
+    const search = await ctx.agent.get("/api/life-links/search").query({ q: "Charge before filming", limit: 1 });
+    expect(search.status).toBe(200);
+    expect(search.body).toMatchObject({ totalCount: 1, truncated: false, hasMore: false, nextCursor: null });
+    expect(search.body.results[0]).toMatchObject({
+      lifeLink: { id: batteries.body.lifeLink.id },
+      matchClass: "body",
+      bodySummary: "Charge before filming"
+    });
+    expect(search.body.results[0].path.items.map((item: { id: string }) => item.id)).toEqual([
+      root.body.lifeLink.id,
+      batteries.body.lifeLink.id
+    ]);
+
+    const update = await ctx.agent.patch(`/api/life-links/${batteries.body.lifeLink.id}`).send({
+      expectedUpdatedAt: batteries.body.lifeLink.updatedAt,
+      title: "Competition charged batteries",
+      body: "Ready for the demo",
+      privacy: "private"
+    });
+    expect(update.status).toBe(200);
+    expect(update.body.lifeLink).toMatchObject({
+      title: "Competition charged batteries",
+      body: "Ready for the demo",
+      privacy: "private"
+    });
+    expect(update.body.lifeLink.updatedAt).not.toBe(batteries.body.lifeLink.updatedAt);
+
+    const stale = await ctx.agent.patch(`/api/life-links/${batteries.body.lifeLink.id}`).send({
+      expectedUpdatedAt: batteries.body.lifeLink.updatedAt,
+      title: "Stale overwrite"
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toEqual({
+      code: "stale_life_link",
+      message: "Life Link changed after it was read.",
+      retryable: true
+    });
+
+    const cycle = await ctx.agent.patch(`/api/life-links/${root.body.lifeLink.id}/parent`).send({
+      parentId: batteries.body.lifeLink.id,
+      expectedUpdatedAt: root.body.lifeLink.updatedAt
+    });
+    expect(cycle.status).toBe(409);
+    expect(cycle.body.error).toMatchObject({ code: "hierarchy_cycle", retryable: false, reason: "cycle" });
+
+    const detached = await ctx.agent.patch(`/api/life-links/${batteries.body.lifeLink.id}/parent`).send({
+      parentId: null,
+      expectedUpdatedAt: update.body.lifeLink.updatedAt
+    });
+    expect(detached.status).toBe(200);
+    expect(detached.body.lifeLink.parentId).toBeNull();
+    const detachedDetail = await ctx.agent.get(`/api/life-links/${batteries.body.lifeLink.id}`);
+    expect(detachedDetail.body.detail.ancestry.items.map((item: { id: string }) => item.id)).toEqual([
+      batteries.body.lifeLink.id
+    ]);
+  });
+
+  it("rejects invalid canonical bounds and missing owner-scoped resources with structured errors", async () => {
+    await login();
+    const excessiveLimit = await ctx.agent
+      .get("/api/life-links")
+      .query({ limit: MAX_LIFE_LINK_CHILD_PAGE_LIMIT + 1 });
+    expect(excessiveLimit.status).toBe(400);
+    expect(excessiveLimit.body.error).toMatchObject({
+      code: "invalid_life_link",
+      retryable: false,
+      reason: "invalid_life_link_limit"
+    });
+
+    const badCursor = await ctx.agent.get("/api/life-links").query({ cursor: "not-an-opaque-cursor" });
+    expect(badCursor.status).toBe(400);
+    expect(badCursor.body.error).toMatchObject({
+      code: "invalid_life_link",
+      reason: "invalid_cursor"
+    });
+
+    const missingDetail = await ctx.agent.get("/api/life-links/life-link-missing");
+    expect(missingDetail.status).toBe(404);
+    expect(missingDetail.body.error).toMatchObject({ code: "life_link_not_found", retryable: false });
+
+    const invalidRevision = await ctx.agent.patch("/api/life-links/life-link-missing").send({ title: "No revision" });
+    expect(invalidRevision.status).toBe(400);
+    expect(invalidRevision.body.error).toMatchObject({
+      code: "invalid_life_link",
+      reason: "invalid_expected_updated_at"
+    });
+
+    const unsupportedField = await ctx.agent.post("/api/life-links").send({
+      title: "Unknown field",
+      projectId: "project-studio"
+    });
+    expect(unsupportedField.status).toBe(400);
+    expect(unsupportedField.body.error).toMatchObject({
+      code: "invalid_life_link",
+      reason: "unsupported_request_field"
+    });
+
+    const emptyParent = await ctx.agent.post("/api/life-links").send({ parentId: "", title: "Invalid parent" });
+    expect(emptyParent.status).toBe(400);
+    expect(emptyParent.body.error).toMatchObject({
+      code: "invalid_life_link",
+      reason: "invalid_parent_id"
+    });
+  });
+
   it("renders public QR states without auto-creating unknown inventory", async () => {
     const unclaimed = await request(ctx.app).get("/api/qr/LL-DEMO-0000A");
     expect(unclaimed.status).toBe(200);
     expect(unclaimed.body.state).toBe("unclaimed");
+    expectNoHierarchyDisclosure(unclaimed.body);
 
     const privateClaimed = await request(ctx.app).get("/api/qr/LL-DEMO-00001");
     expect(privateClaimed.status).toBe(200);
     expect(privateClaimed.body.state).toBe("private");
     expect(privateClaimed.body).not.toHaveProperty("ownerId");
     expect(JSON.stringify(privateClaimed.body)).not.toContain("demo-owner");
+    expectNoHierarchyDisclosure(privateClaimed.body);
+
+    const publicClaimed = await request(ctx.app).get("/api/qr/LL-DEMO-00002");
+    expect(publicClaimed.status).toBe(200);
+    expect(publicClaimed.body.state).toBe("claimed");
+    expect(publicClaimed.body.link.projectId).toBeNull();
+    expectNoHierarchyDisclosure(publicClaimed.body);
 
     await login();
     const ownerPrivate = await ctx.agent.get("/api/qr/LL-DEMO-00001");
@@ -346,6 +562,57 @@ describe("Life Links API", () => {
     expect(rejected.body.error).toBe("media_limit_reached");
   });
 
+  it("uploads, privately reads, and deletes media for an untagged canonical Life Link", async () => {
+    await login();
+    const created = await ctx.agent.post("/api/life-links").send({ title: "Untagged media cabinet" });
+    expect(created.status).toBe(201);
+    const lifeLinkId = created.body.lifeLink.id as string;
+
+    const upload = await ctx.agent
+      .post(`/api/life-links/${lifeLinkId}/media`)
+      .attach("file", Buffer.from("canonical-image-bytes"), {
+        filename: "cabinet.png",
+        contentType: "image/png"
+      });
+    expect(upload.status).toBe(201);
+    expect(upload.body.media).toMatchObject({
+      lifeLinkId,
+      ownerId: "demo-owner",
+      kind: "image",
+      mimeType: "image/png",
+      fileName: "cabinet.png"
+    });
+    expect(upload.body.media.url).toBe(
+      `/api/life-links/${encodeURIComponent(lifeLinkId)}/media/${encodeURIComponent(upload.body.media.id)}`
+    );
+
+    const ownerRead = await ctx.agent.get(upload.body.media.url);
+    expect(ownerRead.status).toBe(200);
+    expect(ownerRead.headers["cache-control"]).toBe("private, no-store");
+    expect(ownerRead.headers["content-type"]).toContain("image/png");
+    expect(ownerRead.body.equals(Buffer.from("canonical-image-bytes"))).toBe(true);
+
+    const publicRead = await request(ctx.app).get(upload.body.media.url);
+    expect(publicRead.status).toBe(401);
+    const guest = request.agent(ctx.app);
+    await login(guest, "guest@life-links.test");
+    const forbiddenRead = await guest.get(upload.body.media.url);
+    expect(forbiddenRead.status).toBe(404);
+    expect(forbiddenRead.body.error).toMatchObject({
+      code: "life_link_not_found",
+      reason: "media_not_found_or_forbidden"
+    });
+
+    const deleted = await ctx.agent.delete(upload.body.media.url);
+    expect(deleted.status).toBe(204);
+    const missing = await ctx.agent.get(upload.body.media.url);
+    expect(missing.status).toBe(404);
+    expect(missing.body.error).toMatchObject({
+      code: "life_link_not_found",
+      reason: "media_not_found_or_forbidden"
+    });
+  });
+
   it("claims QR codes idempotently and prevents double ownership", async () => {
     await login();
     const first = await ctx.agent
@@ -397,6 +664,122 @@ describe("Life Links API", () => {
       .send({ commandId: "claim-body-authority" });
     expect(bodyFirst.body.result).toBe("claimed");
     expect(bodyReplay.body.result).toBe("claimed");
+  });
+
+  it("attaches QR inventory idempotently to eligible untagged Life Links without reassignment", async () => {
+    await login();
+    const firstTarget = await ctx.agent.post("/api/life-links").send({ title: "Attach target one" });
+    const secondTarget = await ctx.agent.post("/api/life-links").send({ title: "Attach target two" });
+    expect(firstTarget.status).toBe(201);
+    expect(secondTarget.status).toBe(201);
+
+    const attach = await ctx.agent.post("/api/qr/LL-DEMO-0000A/claim").send({
+      commandId: "attach-existing-life-link",
+      mode: "attach",
+      lifeLinkId: firstTarget.body.lifeLink.id
+    });
+    const replay = await ctx.agent.post("/api/qr/LL-DEMO-0000A/claim").send({
+      commandId: "attach-existing-life-link",
+      mode: "attach",
+      lifeLinkId: firstTarget.body.lifeLink.id
+    });
+    expect(attach.status).toBe(200);
+    expect(attach.body.result).toBe("claimed");
+    expect(replay.status).toBe(200);
+    expect(replay.body.result).toBe("claimed");
+    const attachedDetail = await ctx.agent.get(`/api/life-links/${firstTarget.body.lifeLink.id}`);
+    expect(attachedDetail.body.detail.lifeLink.qrId).toBe("LL-DEMO-0000A");
+
+    const commandConflict = await ctx.agent.post("/api/qr/LL-DEMO-0000A/claim").send({
+      commandId: "attach-existing-life-link",
+      mode: "attach",
+      lifeLinkId: secondTarget.body.lifeLink.id
+    });
+    expect(commandConflict.status).toBe(409);
+    expect(commandConflict.body.error).toBe("idempotency_key_conflict");
+
+    const reassignment = await ctx.agent.post("/api/qr/LL-DEMO-0000A/claim").send({
+      commandId: "attach-reassignment-rejected",
+      mode: "attach",
+      lifeLinkId: secondTarget.body.lifeLink.id
+    });
+    expect(reassignment.status).toBe(409);
+    expect(reassignment.body.error).toMatchObject({ code: "qr_already_bound", retryable: false });
+
+    const secondSticker = await ctx.agent.post("/api/qr/LL-DEMO-0000B/claim").send({
+      commandId: "attach-second-sticker-rejected",
+      mode: "attach",
+      lifeLinkId: firstTarget.body.lifeLink.id
+    });
+    expect(secondSticker.status).toBe(409);
+    expect(secondSticker.body.error).toMatchObject({ code: "life_link_already_tagged", retryable: false });
+
+    const missingTarget = await ctx.agent.post("/api/qr/LL-DEMO-0000C/claim").send({
+      commandId: "attach-missing-target",
+      mode: "attach",
+      lifeLinkId: "life-link-missing"
+    });
+    expect(missingTarget.status).toBe(404);
+    expect(missingTarget.body.error).toMatchObject({ code: "life_link_not_found", retryable: false });
+    expect((await ctx.agent.get("/api/qr/LL-DEMO-0000C")).body.state).toBe("unclaimed");
+  });
+
+  it("keeps legacy full-save placement a no-op when unchanged and rejects nested flattening", async () => {
+    await login();
+    const project = await ctx.agent.post("/api/projects").send({ name: "Compatibility root" });
+    expect(project.status).toBe(201);
+    const intermediate = await ctx.agent.post("/api/life-links").send({
+      parentId: project.body.project.id,
+      title: "Canonical intermediate"
+    });
+    expect(intermediate.status).toBe(201);
+    const nested = await ctx.agent.post("/api/life-links").send({
+      parentId: intermediate.body.lifeLink.id,
+      title: "Nested legacy editor target",
+      body: "Preserve this hierarchy",
+      privacy: "private"
+    });
+    expect(nested.status).toBe(201);
+    const attach = await ctx.agent.post("/api/qr/LL-DEMO-0000D/claim").send({
+      commandId: "attach-nested-legacy-target",
+      mode: "attach",
+      lifeLinkId: nested.body.lifeLink.id
+    });
+    expect(attach.status).toBe(200);
+
+    const projected = (await ctx.agent.get("/api/links")).body.links.find(
+      (link: { id: string }) => link.id === "LL-DEMO-0000D"
+    );
+    expect(projected).toMatchObject({
+      id: "LL-DEMO-0000D",
+      projectId: project.body.project.id,
+      title: "Nested legacy editor target"
+    });
+
+    const unchangedFullSave = await ctx.agent.patch("/api/links/LL-DEMO-0000D").send({
+      title: projected.title,
+      body: projected.body,
+      bodyDoc: projected.bodyDoc,
+      bodyDocVersion: projected.bodyDocVersion,
+      privacy: projected.privacy,
+      projectId: projected.projectId
+    });
+    expect(unchangedFullSave.status).toBe(200);
+    const afterUnchangedSave = await ctx.agent.get(`/api/life-links/${nested.body.lifeLink.id}`);
+    expect(afterUnchangedSave.body.detail.lifeLink.parentId).toBe(intermediate.body.lifeLink.id);
+
+    const flatten = await ctx.agent.patch("/api/links/LL-DEMO-0000D").send({
+      title: projected.title,
+      body: projected.body,
+      bodyDoc: projected.bodyDoc,
+      bodyDocVersion: projected.bodyDocVersion,
+      privacy: projected.privacy,
+      projectId: null
+    });
+    expect(flatten.status).toBe(409);
+    expect(flatten.body).toEqual({ error: "hierarchy_conflict" });
+    const afterRejectedFlatten = await ctx.agent.get(`/api/life-links/${nested.body.lifeLink.id}`);
+    expect(afterRejectedFlatten.body.detail.lifeLink.parentId).toBe(intermediate.body.lifeLink.id);
   });
 
   it("generates batches and exports CSV and ZIP receipts", async () => {
@@ -504,6 +887,11 @@ describe("Life Links API", () => {
       .set("Authorization", `Bearer ${token}`)
       .send({ name: "Native Originless" });
     expect(allowed.status).toBe(201);
+    const canonicalAllowed = await request(guarded.app)
+      .post("/api/life-links")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ title: "Native canonical originless" });
+    expect(canonicalAllowed.status).toBe(201);
 
     const forbidden = await request(guarded.app)
       .post("/api/projects")
@@ -512,6 +900,13 @@ describe("Life Links API", () => {
       .send({ name: "Hostile Origin" });
     expect(forbidden.status).toBe(403);
     expect(forbidden.body.error).toBe("origin_forbidden");
+    const canonicalForbidden = await request(guarded.app)
+      .post("/api/life-links")
+      .set("Authorization", `Bearer ${token}`)
+      .set("Origin", "https://evil.example")
+      .send({ title: "Hostile canonical origin" });
+    expect(canonicalForbidden.status).toBe(403);
+    expect(canonicalForbidden.body.error).toBe("origin_forbidden");
 
     expect(JSON.stringify(events).includes(token)).toBe(false);
     expect(events.find((event) => event.event === "life_links.security.origin_rejected")).toMatchObject({

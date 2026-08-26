@@ -6,7 +6,7 @@
   "scripts": {
     "build": "pnpm --filter @life-links/core build && pnpm --filter @life-links/demo build && tsc -b --force",
     "typecheck": "pnpm --filter @life-links/core build && tsc -b --force",
-    "test": "pnpm --filter @life-links/core build && vitest run tests/server.test.ts tests/openapi-contract.test.ts",
+    "test": "pnpm --filter @life-links/core build && vitest run tests/server.test.ts tests/openapi-contract.test.ts tests/store-contract.test.ts",
     "test:contract": "vitest run tests/openapi-contract.test.ts",
     "test:postgres": "pnpm --filter @life-links/core build && vitest run tests/postgres.integration.test.ts",
     "dev": "pnpm run build && node dist/main.js",

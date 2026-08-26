@@ -533,9 +533,14 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     }
     const ownerLifeLinks = await this.loadOwnerLifeLinks(this.pool, lifeLink.ownerId);
     const markers = await this.loadProjectCompatibility(this.pool);
+    const projected = projectLifeLinkAsLink(
+      lifeLink,
+      qr,
+      deriveProjectCompatibilityId(ownerLifeLinks, markers, lifeLink.id)
+    );
     return {
       state: "claimed",
-      link: projectLifeLinkAsLink(lifeLink, qr, deriveProjectCompatibilityId(ownerLifeLinks, markers, lifeLink.id)),
+      link: viewerIsOwner ? projected : { ...projected, projectId: null },
       viewerIsOwner
     };
   }
@@ -584,7 +589,12 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
             [qrId]
           );
           if (bindingResult.rows[0]) {
-            result = String(bindingResult.rows[0].owner_id) === userId ? "already_owned" : "owned_by_other";
+            const bindingOwnerId = String(bindingResult.rows[0].owner_id);
+            const boundLifeLinkId = String(bindingResult.rows[0].life_link_id);
+            if (bindingOwnerId === userId && command.mode === "attach" && boundLifeLinkId !== command.lifeLinkId) {
+              throw new LifeLinkDomainError("qr_already_bound", "QR is already bound to another Life Link.");
+            }
+            result = bindingOwnerId === userId ? "already_owned" : "owned_by_other";
           } else {
             const now = new Date().toISOString();
             let resolvedLifeLinkId: string;

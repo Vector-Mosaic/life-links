@@ -19,16 +19,24 @@ const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-
 
 const INCIDENTAL_RUNTIME_ROUTES = new Set(["GET /healthz", "GET /readyz", "GET /version"]);
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
+  "DELETE /api/life-links/{lifeLinkId}/media/{mediaId}",
   "DELETE /api/links/{qrId}/media/{mediaId}",
   "GET /api/config",
+  "GET /api/life-links",
+  "GET /api/life-links/search",
+  "GET /api/life-links/{lifeLinkId}",
   "GET /api/links",
   "GET /api/me",
   "GET /api/projects",
   "GET /api/qr/{qrId}",
+  "PATCH /api/life-links/{lifeLinkId}",
+  "PATCH /api/life-links/{lifeLinkId}/parent",
   "PATCH /api/links/{qrId}",
   "POST /api/auth/login",
   "POST /api/auth/logout",
   "POST /api/find/scan",
+  "POST /api/life-links",
+  "POST /api/life-links/{lifeLinkId}/media",
   "POST /api/links/{qrId}/media",
   "POST /api/projects",
   "POST /api/qr-batches",
@@ -233,13 +241,23 @@ function operationPathFromExpression(expression: ts.Expression): string | null {
   }
   let result = expression.head.text;
   for (const span of expression.templateSpans) {
+    if (
+      (ts.isIdentifier(span.expression) && span.expression.text === "suffix") ||
+      (ts.isCallExpression(span.expression) &&
+        ts.isPropertyAccessExpression(span.expression.expression) &&
+        span.expression.expression.name.text === "toString")
+    ) {
+      result = result.replace(/\?$/, "");
+      result += span.literal.text;
+      continue;
+    }
     const placeholder = templatePlaceholder(span.expression);
     if (!placeholder) {
       return null;
     }
     result += `{${placeholder}}${span.literal.text}`;
   }
-  return result;
+  return result.split("?", 1)[0];
 }
 
 function templatePlaceholder(expression: ts.Expression): string | null {
@@ -303,7 +321,7 @@ function clientOperations(filePath: string, callName: "apiFetch" | "request"): s
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
-  return operations.sort();
+  return [...new Set(operations)].sort();
 }
 
 function directBrowserDownloads(filePath: string): string[] {
@@ -364,12 +382,12 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(18);
+    expect(published).toHaveLength(27);
     for (const incidental of INCIDENTAL_RUNTIME_ROUTES) {
       expect(published).not.toContain(incidental);
     }
     const operationIds = [...contractOperations(document).values()].map((operation) => operation.operationId);
-    expect(new Set(operationIds).size).toBe(18);
+    expect(new Set(operationIds).size).toBe(27);
     expect(operationIds.every((operationId) => typeof operationId === "string" && operationId.length > 0)).toBe(true);
   });
 
@@ -436,6 +454,15 @@ describe("Life Links OpenAPI v1", () => {
     expect(document.security).toEqual([{ CookieSession: [] }, { BearerSession: [] }]);
 
     const protectedOperationIds = [
+      "listCanonicalLifeLinks",
+      "createCanonicalLifeLink",
+      "searchCanonicalLifeLinks",
+      "getCanonicalLifeLink",
+      "updateCanonicalLifeLink",
+      "moveCanonicalLifeLink",
+      "uploadCanonicalLifeLinkMedia",
+      "getCanonicalLifeLinkMedia",
+      "deleteCanonicalLifeLinkMedia",
       "listOwnedLifeLinks",
       "updateOwnedLifeLink",
       "uploadLifeLinkMedia",
@@ -498,6 +525,85 @@ describe("Life Links OpenAPI v1", () => {
     }
   });
 
+  it("pins the bounded canonical hierarchy contract and keeps public QR schemas compatibility-only", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    expect([...operations.keys()]).toEqual(
+      expect.arrayContaining([
+        "GET /api/life-links",
+        "POST /api/life-links",
+        "GET /api/life-links/search",
+        "GET /api/life-links/{lifeLinkId}",
+        "PATCH /api/life-links/{lifeLinkId}",
+        "PATCH /api/life-links/{lifeLinkId}/parent",
+        "POST /api/life-links/{lifeLinkId}/media",
+        "GET /api/life-links/{lifeLinkId}/media/{mediaId}",
+        "DELETE /api/life-links/{lifeLinkId}/media/{mediaId}"
+      ])
+    );
+
+    const components = objectValue(document.components, "components");
+    const schemas = objectValue(components.schemas, "schemas");
+    const parameters = objectValue(components.parameters, "parameters");
+    expect(objectValue(schemas.LifeLinkId, "LifeLinkId")).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 200,
+      pattern: "^[A-Za-z0-9._:-]+$"
+    });
+    expect(objectValue(schemas.LifeLinkCursor, "LifeLinkCursor")).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 4096
+    });
+    expect(objectValue(objectValue(parameters.LifeLinkPageLimit, "page limit").schema, "page limit schema")).toEqual({
+      type: "integer",
+      minimum: 1,
+      maximum: 100,
+      default: 25
+    });
+    expect(objectValue(objectValue(parameters.LifeLinkSearchQuery, "search query").schema, "search query schema")).toMatchObject({
+      type: "string",
+      minLength: 1,
+      maxLength: 2048
+    });
+
+    const createRequest = objectValue(schemas.LifeLinkCreateRequest, "create request");
+    const createProperties = objectValue(createRequest.properties, "create properties");
+    expect(objectValue(createProperties.title, "create title").default).toBe("Untitled link");
+    expect(objectValue(createProperties.privacy, "create privacy").default).toBe("private");
+    const updateRequest = objectValue(schemas.LifeLinkPatchRequest, "patch request");
+    expect(updateRequest.required).toEqual(["expectedUpdatedAt"]);
+    expect(updateRequest.anyOf).toEqual(
+      expect.arrayContaining([
+        { required: ["title"] },
+        { required: ["body"] },
+        { required: ["bodyDoc"] },
+        { required: ["privacy"] }
+      ])
+    );
+    expect(objectValue(schemas.LifeLinkErrorCode, "error code").enum).toEqual([
+      "life_link_not_found",
+      "invalid_life_link",
+      "duplicate_life_link_id",
+      "invalid_parent",
+      "hierarchy_cycle",
+      "stale_life_link",
+      "qr_already_bound",
+      "life_link_already_tagged",
+      "output_limit_exceeded"
+    ]);
+
+    const publicQr = operationById(operations, "resolveLifeLinkQr");
+    expect(String(publicQr.description)).toContain("projectId to null");
+    expect(String(publicQr.description)).toContain("never expose canonical Life Link identity");
+    const publicLinkProperties = objectValue(objectValue(schemas.Link, "legacy Link").properties, "legacy Link properties");
+    for (const field of ["lifeLinkId", "parentId", "ancestry", "children", "path", "hierarchy", "rootId", "descendants"]) {
+      expect(publicLinkProperties, `public compatibility Link must omit ${field}`).not.toHaveProperty(field);
+    }
+    expect(objectValue(schemas.QrPrivateState, "private QR state").required).toEqual(["state", "qrId"]);
+  });
+
   it("binds claim retries to command identity, authenticated owner, and QR without logging raw command ids", () => {
     const document = parseStrictJson(readSource(contractPath));
     const operations = contractOperations(document);
@@ -541,19 +647,19 @@ describe("Life Links OpenAPI v1", () => {
     );
     expect(conflictSchema.oneOf).toEqual([
       { $ref: "#/components/schemas/ClaimOwnedByOtherResponse" },
-      { $ref: "#/components/schemas/IdempotencyConflictError" }
+      { $ref: "#/components/schemas/IdempotencyConflictError" },
+      { $ref: "#/components/schemas/LifeLinkErrorResponse" }
     ]);
 
     const serverSource = readSource(serverPath);
     const storeSource = readSource(storePath);
-    expect(serverSource).toContain(
-      'const bodyCommandId = String((request.body as { commandId?: string }).commandId ?? "").trim()'
-    );
+    expect(serverSource).toContain('const bodyCommandId = String(claimBody.commandId ?? "").trim()');
     expect(serverSource).toContain(
       'const headerCommandId = String(request.headers["idempotency-key"] ?? "").trim()'
     );
     expect(serverSource).toContain("const commandId = bodyCommandId || headerCommandId || cryptoRandomCommandId()");
     expect(serverSource).toContain("commandId.length > 128");
+    expect(serverSource).toContain('mode: "attach", lifeLinkId: attachedLifeLinkId');
     expect(serverSource).toContain('response.status(409).json({ error: "idempotency_key_conflict" })');
     expect(storeSource).toContain("existingEvent.qrId !== qrId || existingEvent.ownerId !== userId");
     expect(serverSource).not.toMatch(/command_id\s*:\s*commandId/);
