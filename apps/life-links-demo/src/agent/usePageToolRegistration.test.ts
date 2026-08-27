@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { LIFE_LINKS_PAGE_TOOL_NAMES } from "./browserWebMcpHost";
 import {
   PageToolRegistrationLifecycle,
-  agentAccessGrantIsActive,
+  agentConnectionIsActive,
   eligiblePageToolScopeKey,
   type PageToolEligibility
 } from "./usePageToolRegistration";
@@ -81,7 +81,7 @@ class FirstRegistrationPauseModelContext extends ControlledModelContext {
 const ELIGIBLE: PageToolEligibility = {
   authenticatedOwnerId: "owner-one",
   surface: "owner-workspace",
-  agentAccessEnabled: true
+  agentConnected: true
 };
 
 function makeCatalog(version: string): readonly WebMcpToolDefinition[] {
@@ -94,16 +94,16 @@ function makeCatalog(version: string): readonly WebMcpToolDefinition[] {
 }
 
 describe("page tool registration lifecycle", () => {
-  it("scopes an Agent Access grant to the exact owner and owner workspace", () => {
-    expect(agentAccessGrantIsActive("owner-one", "owner-one", "owner-workspace", false)).toBe(true);
-    expect(agentAccessGrantIsActive("owner-one", "owner-two", "owner-workspace", false)).toBe(false);
-    expect(agentAccessGrantIsActive("owner-one", "owner-one", "public-qr", false)).toBe(false);
-    expect(agentAccessGrantIsActive("owner-one", "owner-one", "login", false)).toBe(false);
-    expect(agentAccessGrantIsActive("owner-one", "owner-one", "owner-workspace", true)).toBe(false);
-    expect(agentAccessGrantIsActive(null, "owner-one", "owner-workspace", false)).toBe(false);
+  it("activates a saved connection only in its authenticated owner workspace", () => {
+    expect(agentConnectionIsActive(true, "owner-one", "owner-workspace", false)).toBe(true);
+    expect(agentConnectionIsActive(false, "owner-one", "owner-workspace", false)).toBe(false);
+    expect(agentConnectionIsActive(true, "owner-one", "public-qr", false)).toBe(false);
+    expect(agentConnectionIsActive(true, "owner-one", "login", false)).toBe(false);
+    expect(agentConnectionIsActive(true, "owner-one", "owner-workspace", true)).toBe(false);
+    expect(agentConnectionIsActive(true, null, "owner-workspace", false)).toBe(false);
   });
 
-  it("requires authenticated owner, owner workspace, and explicit Agent Access together", async () => {
+  it("requires authenticated owner, owner workspace, and a saved connection together", async () => {
     expect(
       eligiblePageToolScopeKey({ ...ELIGIBLE, authenticatedOwnerId: null })
     ).toBeNull();
@@ -114,7 +114,7 @@ describe("page tool registration lifecycle", () => {
       eligiblePageToolScopeKey({ ...ELIGIBLE, surface: "public-qr" })
     ).toBeNull();
     expect(
-      eligiblePageToolScopeKey({ ...ELIGIBLE, agentAccessEnabled: false })
+      eligiblePageToolScopeKey({ ...ELIGIBLE, agentConnected: false })
     ).toBeNull();
     expect(eligiblePageToolScopeKey(ELIGIBLE)).toBe("owner:owner-one");
 
@@ -125,7 +125,7 @@ describe("page tool registration lifecycle", () => {
       { ...ELIGIBLE, authenticatedOwnerId: null },
       { ...ELIGIBLE, surface: "login" as const },
       { ...ELIGIBLE, surface: "public-qr" as const },
-      { ...ELIGIBLE, agentAccessEnabled: false }
+      { ...ELIGIBLE, agentConnected: false }
     ]) {
       await expect(
         lifecycle.synchronize({
@@ -228,7 +228,7 @@ describe("page tool registration lifecycle", () => {
 
     await lifecycle.synchronize({
       documentLike,
-      eligibility: { ...ELIGIBLE, agentAccessEnabled: false },
+      eligibility: { ...ELIGIBLE, agentConnected: false },
       definitions: catalog
     });
     expect(firstSignal?.aborted).toBe(true);
@@ -313,7 +313,7 @@ describe("page tool registration lifecycle", () => {
 
     await lifecycle.synchronize({
       documentLike,
-      eligibility: { ...ELIGIBLE, agentAccessEnabled: false },
+      eligibility: { ...ELIGIBLE, agentConnected: false },
       definitions: catalog
     });
 

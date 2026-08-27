@@ -42,7 +42,7 @@ export type LifeLinksPageToolCatalogValidation =
 
 const INVALID_CATALOG_ERROR = {
   code: "invalid_tool_catalog",
-  message: "Life Links Agent Access requires its complete five-tool physical-context catalog.",
+  message: "The Life Links agent connection requires its complete five-tool physical-context catalog.",
   retryable: false
 } as const;
 

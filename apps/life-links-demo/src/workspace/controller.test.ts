@@ -10,7 +10,7 @@ import {
 } from "@life-links/core";
 
 import { LifeLinksWorkspaceController, type LifeLinksWorkspaceApi } from "./controller";
-import { ApiError } from "../api";
+import { ApiError, type ApiAgentConnection } from "../api";
 import { writeCanonicalLifeLinkDraft } from "./editorSession";
 import { classifyLifeLinksRoute, lifeLinkIdFromPath, qrIdFromPath, type WorkspaceBrowserRoute } from "./routes";
 
@@ -19,6 +19,16 @@ const owner = {
   email: "owner@example.test",
   displayName: "Owner",
   createdAt: "2026-08-25T00:00:00.000Z"
+};
+
+const connectedAgentConnection: ApiAgentConnection = {
+  connected: true,
+  connectedAt: "2026-08-27T21:00:00.000Z"
+};
+
+const disconnectedAgentConnection: ApiAgentConnection = {
+  connected: false,
+  connectedAt: null
 };
 
 const project: ProjectRecord = {
@@ -141,6 +151,44 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.listProjects).toHaveBeenCalledOnce();
     expect(api.listLifeLinks).toHaveBeenCalledWith({ limit: 25 });
     expect(listener).toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("hydrates one durable agent connection across logout and login until explicit disconnect", async () => {
+    const route = new FakeRoute("/");
+    const api = fakeApi();
+    api.getMe.mockResolvedValue({
+      user: owner,
+      qrBaseUrl: "https://example.test",
+      agentConnection: connectedAgentConnection
+    });
+    api.login.mockResolvedValue({
+      user: owner,
+      qrBaseUrl: "https://example.test",
+      agentConnection: connectedAgentConnection
+    });
+    const controller = new LifeLinksWorkspaceController({ api, route });
+
+    await controller.start();
+    expect(controller.getSnapshot().agentConnection).toEqual(connectedAgentConnection);
+
+    await controller.logout();
+    expect(controller.getSnapshot()).toMatchObject({
+      currentUser: null,
+      agentConnection: disconnectedAgentConnection
+    });
+    expect(api.disconnectAgent).not.toHaveBeenCalled();
+
+    await controller.login(owner.email, "password");
+    expect(controller.getSnapshot().agentConnection).toEqual(connectedAgentConnection);
+
+    await controller.disconnectAgent();
+    expect(api.disconnectAgent).toHaveBeenCalledOnce();
+    expect(controller.getSnapshot().agentConnection).toEqual(disconnectedAgentConnection);
+
+    await controller.connectAgent();
+    expect(api.connectAgent).toHaveBeenCalledOnce();
+    expect(controller.getSnapshot().agentConnection).toEqual(connectedAgentConnection);
     controller.dispose();
   });
 
@@ -566,7 +614,7 @@ describe("LifeLinksWorkspaceController", () => {
       await new Promise((_, reject) => {
         options?.signal?.addEventListener(
           "abort",
-          () => reject(new DOMException("Agent Access revoked", "AbortError")),
+          () => reject(new DOMException("Agent connection removed", "AbortError")),
           { once: true }
         );
       })
@@ -577,11 +625,11 @@ describe("LifeLinksWorkspaceController", () => {
     const pending = controller.agentUpdateLifeLinkContent({
       lifeLinkId: canonicalLink.id,
       baseUpdatedAt: canonicalLink.updatedAt,
-      body: "Must not outlive the active Agent Access grant",
+      body: "Must not outlive the active agent connection",
       sourceLifeLinkIds: []
     }, abortController.signal);
     await vi.waitFor(() => expect(api.updateLifeLink).toHaveBeenCalledOnce());
-    abortController.abort(new DOMException("Agent Access revoked", "AbortError"));
+    abortController.abort(new DOMException("Agent connection removed", "AbortError"));
 
     await expect(pending).resolves.toEqual({ ok: false, code: "cancelled" });
     expect(api.updateLifeLink.mock.calls[0]?.[3]).toEqual({ signal: abortController.signal });
@@ -899,9 +947,19 @@ class FakeRoute implements WorkspaceBrowserRoute {
 function fakeApi() {
   return {
     getConfig: vi.fn(async () => ({ qrBaseUrl: "https://example.test", maxBatchCount: 10000 })),
-    getMe: vi.fn(async () => ({ user: owner, qrBaseUrl: "https://example.test" })),
-    login: vi.fn(async () => ({ user: owner, qrBaseUrl: "https://example.test" })),
+    getMe: vi.fn(async () => ({
+      user: owner,
+      qrBaseUrl: "https://example.test",
+      agentConnection: disconnectedAgentConnection
+    })),
+    login: vi.fn(async () => ({
+      user: owner,
+      qrBaseUrl: "https://example.test",
+      agentConnection: disconnectedAgentConnection
+    })),
     logout: vi.fn(async () => undefined),
+    connectAgent: vi.fn(async () => ({ agentConnection: connectedAgentConnection })),
+    disconnectAgent: vi.fn(async () => ({ agentConnection: disconnectedAgentConnection })),
     listLinks: vi.fn(async () => ({ links: [link] })),
     listProjects: vi.fn(async () => ({ projects: [project] })),
     updateLink: vi.fn(async () => ({ link })),

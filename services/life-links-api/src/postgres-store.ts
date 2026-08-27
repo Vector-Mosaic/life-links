@@ -89,6 +89,22 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     return result.rows[0] ? mapUser(result.rows[0]) : null;
   }
 
+  async connectAgent(userId: string): Promise<StoredUser | null> {
+    const result = await this.pool.query(
+      "UPDATE users SET agent_connected_at = COALESCE(agent_connected_at, now()) WHERE id = $1 RETURNING *",
+      [userId]
+    );
+    return result.rows[0] ? mapUser(result.rows[0]) : null;
+  }
+
+  async disconnectAgent(userId: string): Promise<StoredUser | null> {
+    const result = await this.pool.query(
+      "UPDATE users SET agent_connected_at = NULL WHERE id = $1 RETURNING *",
+      [userId]
+    );
+    return result.rows[0] ? mapUser(result.rows[0]) : null;
+  }
+
   async createSession(userId: string, tokenHash: string, expiresAt: string): Promise<SessionRecord> {
     const session: SessionRecord = {
       id: randomUUID(),
@@ -106,7 +122,8 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
 
   async getSessionByTokenHash(tokenHash: string): Promise<(SessionRecord & { user: StoredUser }) | null> {
     const result = await this.pool.query(
-      `SELECT s.*, u.id AS user_id_value, u.email, u.display_name, u.password_hash, u.created_at AS user_created_at
+      `SELECT s.*, u.id AS user_id_value, u.email, u.display_name, u.password_hash,
+              u.agent_connected_at AS user_agent_connected_at, u.created_at AS user_created_at
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.token_hash = $1 AND s.expires_at > now()`,
@@ -127,6 +144,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         email: String(row.email),
         displayName: String(row.display_name),
         passwordHash: String(row.password_hash),
+        agentConnectedAt: nullableIso(row.user_agent_connected_at),
         createdAt: toIso(row.user_created_at)
       }
     };
@@ -1356,6 +1374,7 @@ function mapUser(row: Record<string, unknown>): StoredUser {
     email: String(row.email),
     displayName: String(row.display_name),
     passwordHash: String(row.password_hash),
+    agentConnectedAt: nullableIso(row.agent_connected_at),
     createdAt: toIso(row.created_at)
   };
 }
@@ -1462,6 +1481,10 @@ function lifeLinkMediaUrl(lifeLinkId: string, mediaId: string): string {
 
 function nullableString(value: unknown): string | null {
   return value === null || value === undefined ? null : String(value);
+}
+
+function nullableIso(value: unknown): string | null {
+  return value === null || value === undefined ? null : toIso(value);
 }
 
 function asBuffer(value: unknown): Buffer {

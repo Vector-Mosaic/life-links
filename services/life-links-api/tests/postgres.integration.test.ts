@@ -117,7 +117,14 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(4);
+    expect(migrations.rows[0].count).toBe(5);
+    const agentConnectionColumn = await adminPool.query(
+      `SELECT is_nullable, data_type
+       FROM information_schema.columns
+       WHERE table_schema = $1 AND table_name = 'users' AND column_name = 'agent_connected_at'`,
+      [schemaName]
+    );
+    expect(agentConnectionColumn.rows).toEqual([{ is_nullable: "YES", data_type: "timestamp with time zone" }]);
   });
 
   it("dry-runs and atomically restores the isolated competition fixture without touching another owner", async () => {
@@ -151,6 +158,9 @@ describe("Life Links Postgres integration", () => {
 
     const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(firstApply.after).toEqual(firstApply.expected);
+    expect((await store.getUserById(COMPETITION_OWNER_ID))?.agentConnectedAt).toBeNull();
+    const connectedAt = (await store.connectAgent(COMPETITION_OWNER_ID))?.agentConnectedAt;
+    expect(connectedAt).toEqual(expect.any(String));
     const start = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_START_LIFE_LINK_ID);
     expect(start?.ancestry.items.map((item) => item.title)).toEqual([
       COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
@@ -217,6 +227,7 @@ describe("Life Links Postgres integration", () => {
     const restored = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(restored.after).toEqual(restored.expected);
     expect(await store.getSessionByTokenHash("competition-postgres-session-hash")).toBeNull();
+    expect((await store.getUserById(COMPETITION_OWNER_ID))?.agentConnectedAt).toBe(connectedAt);
     expect(await store.getLifeLinkDetail(COMPETITION_OWNER_ID, "competition-postgres-extra-life-link")).toBeNull();
     expect(
       (await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID))?.lifeLink.title
@@ -226,6 +237,7 @@ describe("Life Links Postgres integration", () => {
     const replay = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(replay.before).toEqual(replay.expected);
     expect(replay.after).toEqual(replay.expected);
+    expect((await store.getUserById(COMPETITION_OWNER_ID))?.agentConnectedAt).toBe(connectedAt);
 
     const foreignBatch = await store.createQrBatch(DEMO_OWNER_ID, 1, options.qrBaseUrl);
     const foreignQrId = foreignBatch.qrCodes[0].id;
@@ -508,6 +520,20 @@ describe("Life Links Postgres integration", () => {
       password: DEMO_PASSWORD
     });
     expect(login.status).toBe(200);
+    expect(login.body.agentConnection).toEqual({ connected: false, connectedAt: null });
+    const connected = await agent.put("/api/agent-connection");
+    expect(connected.body.agentConnection).toMatchObject({ connected: true, connectedAt: expect.any(String) });
+    const durableConnectedAt = connected.body.agentConnection.connectedAt;
+    expect((await agent.post("/api/auth/logout")).status).toBe(204);
+    const relogin = await agent.post("/api/auth/login").send({
+      email: "owner@life-links.test",
+      password: DEMO_PASSWORD
+    });
+    expect(relogin.body.agentConnection).toEqual({ connected: true, connectedAt: durableConnectedAt });
+    expect((await agent.delete("/api/agent-connection")).body.agentConnection).toEqual({
+      connected: false,
+      connectedAt: null
+    });
 
     const links = await agent.get("/api/links");
     expect(links.status).toBe(200);
@@ -703,7 +729,7 @@ describe("Life Links Postgres integration", () => {
 
       await runMigrations(fixturePostgres.pool, migrationDir, logger);
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(4);
+      expect(receiptCount.rows[0].count).toBe(5);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -724,7 +750,8 @@ describe("Life Links Postgres integration", () => {
         "001_initial.sql",
         "002_link_media.sql",
         "003_link_body_doc.sql",
-        "004_recursive_life_links.sql"
+        "004_recursive_life_links.sql",
+        "005_agent_connection.sql"
       ]);
     } finally {
       await concurrent.store.close();

@@ -42,7 +42,7 @@ import {
 import { getBrowserWebMcpHost } from "./agent/browserWebMcpHost";
 import { createLifeLinksAgentToolCatalog } from "./agent/toolHandlers";
 import {
-  agentAccessGrantIsActive,
+  agentConnectionIsActive,
   usePageToolRegistration
 } from "./agent/usePageToolRegistration";
 import { LifeLinkEditor } from "./owner/LifeLinkEditor";
@@ -71,6 +71,7 @@ function LifeLinksApp() {
   const { controller, snapshot } = useLifeLinksWorkspace();
   const {
     currentUser,
+    agentConnection,
     qrBaseUrl,
     links,
     projects,
@@ -97,7 +98,6 @@ function LifeLinksApp() {
     selectedLifeLinkDetail,
     rootLifeLinks
   } = snapshot;
-  const [agentAccessOwnerId, setAgentAccessOwnerId] = useState<string | null>(null);
   const [agentActivities, setAgentActivities] = useState<AgentActivityEntry[]>([]);
   const agentActivityEligibleRef = useRef(false);
   const ownerWorkspaceHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -132,13 +132,13 @@ function LifeLinksApp() {
     return undefined;
   }, [route.surface]);
 
-  const agentAccessEnabled = agentAccessGrantIsActive(
-    agentAccessOwnerId,
+  const agentToolsActive = agentConnectionIsActive(
+    agentConnection.connected,
     currentUser?.id ?? null,
     route.surface,
     guestView
   );
-  agentActivityEligibleRef.current = agentAccessEnabled;
+  agentActivityEligibleRef.current = agentToolsActive;
   const recordAgentActivity = useCallback((entry: AgentActivityEntry) => {
     if (!agentActivityEligibleRef.current) {
       return;
@@ -157,14 +157,13 @@ function LifeLinksApp() {
     eligibility: {
       authenticatedOwnerId: currentUser?.id ?? null,
       surface: route.surface,
-      agentAccessEnabled: agentAccessEnabled && !guestView
+      agentConnected: agentConnection.connected && !guestView
     }
   });
 
   useEffect(() => {
-    setAgentAccessOwnerId(null);
     setAgentActivities([]);
-  }, [currentUser?.id, guestView, route.surface]);
+  }, [agentConnection.connected, currentUser?.id, guestView, route.surface]);
   const activeLink = useMemo(() => {
     if (route.surface === "public-qr") {
       if (publicQrState?.state === "claimed") {
@@ -229,7 +228,6 @@ function LifeLinksApp() {
   const handleLogin = (email: string, password: string) => controller.login(email, password);
   const handleLogout = () => {
     agentActivityEligibleRef.current = false;
-    setAgentAccessOwnerId(null);
     setAgentActivities([]);
     return controller.logout();
   };
@@ -242,17 +240,8 @@ function LifeLinksApp() {
   const downloadSelectedQr = (format: "svg" | "png") => controller.downloadSelectedQr(format);
   const downloadCsv = (ids?: string[]) => controller.downloadCsv(ids);
   const downloadZip = () => controller.downloadZip();
-  const setAgentAccess = (enabled: boolean) => {
-    const grantedOwnerId =
-      enabled && currentUser && route.surface === "owner-workspace" && !guestView
-        ? currentUser.id
-        : null;
-    agentActivityEligibleRef.current = grantedOwnerId !== null;
-    setAgentAccessOwnerId(grantedOwnerId);
-    if (grantedOwnerId === null) {
-      setAgentActivities([]);
-    }
-  };
+  const connectAgent = () => controller.connectAgent();
+  const disconnectAgent = () => controller.disconnectAgent();
   const agentRegistrationStatus: AgentAccessRegistrationStatus =
     registration.status === "registered"
       ? "ready"
@@ -394,21 +383,23 @@ function LifeLinksApp() {
         <section className="agent-command-center" aria-label="Life Links agent controls">
           <header className="agent-command-heading">
             <div>
-              <p className="eyebrow">Explicit page-session authority</p>
-              <h3>Agent connection</h3>
+              <p className="eyebrow">Durable account connection</p>
+              <h3>Agent workspace</h3>
             </div>
-            <span className="agent-session-boundary">
-              <Lock size={14} />
-              Ends with this page session
+            <span className="agent-connection-boundary">
+              {agentConnection.connected ? <ShieldCheck size={14} /> : <Lock size={14} />}
+              {agentConnection.connected ? "Connected until you disconnect" : "Not connected"}
             </span>
           </header>
           <div className="agent-console-grid">
             <AgentAccessPanel
               supported={webMcpSupported}
-              enabled={agentAccessEnabled}
+              connected={agentConnection.connected}
+              busy={busy}
               registrationStatus={agentRegistrationStatus}
               registrationError={agentRegistrationError}
-              onEnabledChange={setAgentAccess}
+              onConnect={connectAgent}
+              onDisconnect={disconnectAgent}
             />
             <AgentActivityPanel activities={agentActivities} />
           </div>

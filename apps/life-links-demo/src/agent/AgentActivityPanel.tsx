@@ -11,7 +11,7 @@ export function AgentActivityPanel({ activities }: { activities: readonly AgentA
             <Activity size={18} />
             <h3 id="agent-activity-title">Agent activity</h3>
           </div>
-          <p className="panel-help">Page-session activity only. Content and raw tool arguments are not retained.</p>
+          <p className="panel-help">Recent activity on this page. Content and raw tool arguments are not retained.</p>
         </div>
       </header>
       <div className="agent-activity-content">
@@ -38,7 +38,7 @@ export function AgentActivityPanel({ activities }: { activities: readonly AgentA
             ))}
           </ol>
         ) : (
-          <p className="agent-activity-empty">No agent tool activity in this page session.</p>
+          <p className="agent-activity-empty">No agent activity yet.</p>
         )}
       </div>
     </section>

@@ -60,6 +60,7 @@ import { hashPassword } from "./password.js";
 
 export type StoredUser = UserRecord & {
   passwordHash: string;
+  agentConnectedAt: string | null;
 };
 
 export type SessionRecord = {
@@ -160,6 +161,8 @@ export type CompetitionFixtureResetReport = {
 export type LifeLinksStore = {
   getUserByEmail(email: string): Promise<StoredUser | null>;
   getUserById(userId: string): Promise<StoredUser | null>;
+  connectAgent(userId: string): Promise<StoredUser | null>;
+  disconnectAgent(userId: string): Promise<StoredUser | null>;
   createSession(userId: string, tokenHash: string, expiresAt: string): Promise<SessionRecord>;
   getSessionByTokenHash(tokenHash: string): Promise<(SessionRecord & { user: StoredUser }) | null>;
   deleteSessionByTokenHash(tokenHash: string): Promise<void>;
@@ -247,6 +250,36 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
 
   async getUserById(userId: string): Promise<StoredUser | null> {
     return this.users.get(userId) ?? null;
+  }
+
+  async connectAgent(userId: string): Promise<StoredUser | null> {
+    return this.withOwnerLock(userId, async () => {
+      const user = this.users.get(userId);
+      if (!user) {
+        return null;
+      }
+      if (user.agentConnectedAt) {
+        return user;
+      }
+      const connected = { ...user, agentConnectedAt: new Date().toISOString() };
+      this.users.set(userId, connected);
+      return connected;
+    });
+  }
+
+  async disconnectAgent(userId: string): Promise<StoredUser | null> {
+    return this.withOwnerLock(userId, async () => {
+      const user = this.users.get(userId);
+      if (!user) {
+        return null;
+      }
+      if (!user.agentConnectedAt) {
+        return user;
+      }
+      const disconnected = { ...user, agentConnectedAt: null };
+      this.users.set(userId, disconnected);
+      return disconnected;
+    });
   }
 
   async createSession(userId: string, tokenHash: string, expiresAt: string): Promise<SessionRecord> {
@@ -727,7 +760,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     for (const user of data.users) {
       if (!this.users.has(user.id)) {
         const passwordHash = await hashPassword(password);
-        this.users.set(user.id, { ...user, passwordHash });
+        this.users.set(user.id, { ...user, passwordHash, agentConnectedAt: null });
         this.userIdsByEmail.set(user.email.toLowerCase(), user.id);
       }
     }
@@ -1020,7 +1053,11 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     if (existingOwner) {
       this.userIdsByEmail.delete(existingOwner.email.toLowerCase());
     }
-    this.users.set(ownerId, { ...fixture.owner, passwordHash });
+    this.users.set(ownerId, {
+      ...fixture.owner,
+      passwordHash,
+      agentConnectedAt: existingOwner?.agentConnectedAt ?? null
+    });
     this.userIdsByEmail.set(fixture.owner.email.toLowerCase(), ownerId);
     this.batches.set(fixture.batch.id, { ...fixture.batch });
     this.batchQrIds.set(fixture.batch.id, fixture.qrInventory.map((item) => item.id));

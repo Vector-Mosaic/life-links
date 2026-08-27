@@ -17,7 +17,7 @@ export type LifeLinksAgentSurface = "owner-workspace" | "login" | "public-qr";
 export interface PageToolEligibility {
   readonly authenticatedOwnerId: string | null;
   readonly surface: LifeLinksAgentSurface;
-  readonly agentAccessEnabled: boolean;
+  readonly agentConnected: boolean;
 }
 
 export type PageToolRegistrationErrorCode =
@@ -77,7 +77,7 @@ const INVALID_CATALOG_STATUS: PageToolRegistrationStatus = {
   status: "error",
   error: {
     code: "invalid_tool_catalog",
-    message: "Life Links Agent Access requires its complete five-tool catalog.",
+    message: "The Life Links agent connection requires its complete tool catalog.",
     retryable: false
   }
 };
@@ -86,7 +86,7 @@ const DUPLICATE_TOOL_STATUS: PageToolRegistrationStatus = {
   error: {
     code: "duplicate_tool_name",
     message:
-      "Agent Access could not start because a Life Links page tool is already registered. Turn Agent Access off and try again.",
+      "The saved agent connection could not start because a Life Links page tool is already registered.",
     retryable: true
   }
 };
@@ -94,7 +94,7 @@ const REGISTRATION_FAILED_STATUS: PageToolRegistrationStatus = {
   status: "error",
   error: {
     code: "registration_failed",
-    message: "Agent Access could not register its page tools in this browser.",
+    message: "The saved agent connection could not register its page tools in this browser.",
     retryable: true
   }
 };
@@ -125,7 +125,7 @@ function safeRegistrationError(error: unknown): PageToolRegistrationStatus {
 export function eligiblePageToolScopeKey(eligibility: PageToolEligibility): string | null {
   const ownerId = eligibility.authenticatedOwnerId?.trim();
   if (
-    !eligibility.agentAccessEnabled ||
+    !eligibility.agentConnected ||
     eligibility.surface !== "owner-workspace" ||
     !ownerId
   ) {
@@ -134,16 +134,15 @@ export function eligiblePageToolScopeKey(eligibility: PageToolEligibility): stri
   return `owner:${ownerId}`;
 }
 
-export function agentAccessGrantIsActive(
-  grantedOwnerId: string | null,
+export function agentConnectionIsActive(
+  connected: boolean,
   authenticatedOwnerId: string | null,
   surface: LifeLinksAgentSurface,
   guestView: boolean
 ): boolean {
   return Boolean(
-    grantedOwnerId &&
+    connected &&
       authenticatedOwnerId &&
-      grantedOwnerId === authenticatedOwnerId &&
       surface === "owner-workspace" &&
       !guestView
   );
@@ -421,7 +420,7 @@ export function usePageToolRegistration({
   }, [
     definitions,
     documentLike,
-    eligibility.agentAccessEnabled,
+    eligibility.agentConnected,
     eligibility.authenticatedOwnerId,
     eligibility.surface,
     hostIdentity,

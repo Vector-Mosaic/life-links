@@ -148,7 +148,7 @@ describe("WebMCP compatibility contract", () => {
     const registeredTool = modelContext.tools.get(WEBMCP_COMPATIBILITY_PROBE_NAME);
     expect(registeredTool).toBeDefined();
 
-    controller.abort(new DOMException("agent access disabled", "AbortError"));
+    controller.abort(new DOMException("agent connection removed", "AbortError"));
     expect(modelContext.tools.has(WEBMCP_COMPATIBILITY_PROBE_NAME)).toBe(false);
 
     await expect(registeredTool!.execute({ message: "already running" }, {})).resolves.toMatchObject({

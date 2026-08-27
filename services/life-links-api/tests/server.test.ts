@@ -307,6 +307,56 @@ describe("Life Links API", () => {
     expect(after.body.user).toBeNull();
   });
 
+  it("connects an owner agent once, preserves it across logout, and revokes only on explicit disconnect", async () => {
+    const events: LogEvent[] = [];
+    ctx = await createSeededAgent({
+      logger: createLogger("life_links_test", { env: "ci", sink: (event) => events.push(event) })
+    });
+
+    const signedOut = await ctx.agent.get("/api/me");
+    expect(signedOut.body).toMatchObject({
+      user: null,
+      agentConnection: { connected: false, connectedAt: null }
+    });
+    expect((await ctx.agent.put("/api/agent-connection")).status).toBe(401);
+    expect((await ctx.agent.delete("/api/agent-connection")).status).toBe(401);
+
+    const firstLogin = await login();
+    expect(firstLogin.body.agentConnection).toEqual({ connected: false, connectedAt: null });
+
+    const connected = await ctx.agent.put("/api/agent-connection");
+    expect(connected.status).toBe(200);
+    expect(connected.body.agentConnection).toMatchObject({ connected: true, connectedAt: expect.any(String) });
+    const connectedAt = connected.body.agentConnection.connectedAt as string;
+
+    const replay = await ctx.agent.put("/api/agent-connection");
+    expect(replay.body.agentConnection).toEqual({ connected: true, connectedAt });
+    expect((await ctx.agent.get("/api/me")).body.agentConnection).toEqual({ connected: true, connectedAt });
+
+    expect((await ctx.agent.post("/api/auth/logout")).status).toBe(204);
+    expect((await ctx.agent.get("/api/me")).body).toMatchObject({
+      user: null,
+      agentConnection: { connected: false, connectedAt: null }
+    });
+
+    const secondLogin = await login();
+    expect(secondLogin.body.agentConnection).toEqual({ connected: true, connectedAt });
+
+    const disconnected = await ctx.agent.delete("/api/agent-connection");
+    expect(disconnected.body.agentConnection).toEqual({ connected: false, connectedAt: null });
+    const disconnectReplay = await ctx.agent.delete("/api/agent-connection");
+    expect(disconnectReplay.body.agentConnection).toEqual({ connected: false, connectedAt: null });
+
+    const connectionEvents = events.filter((event) => event.event.startsWith("life_links.agent_connection."));
+    expect(connectionEvents.map((event) => event.event)).toEqual([
+      "life_links.agent_connection.connected",
+      "life_links.agent_connection.connected",
+      "life_links.agent_connection.disconnected",
+      "life_links.agent_connection.disconnected"
+    ]);
+    expect(JSON.stringify(connectionEvents)).not.toMatch(/password|title|body|media|qr/i);
+  });
+
   it("issues native bearer sessions only when requested and accepts bearer auth", async () => {
     const webLogin = await request(ctx.app).post("/api/auth/login").send({
       email: "owner@life-links.test",
@@ -1074,6 +1124,15 @@ describe("Life Links API", () => {
       password: DEMO_PASSWORD
     });
     expect(allowed.status).toBe(200);
+    const browser = request.agent(guarded.app);
+    const browserLogin = await browser.post("/api/auth/login").set("Origin", DEFAULT_QR_BASE_URL).send({
+      email: "owner@life-links.test",
+      password: DEMO_PASSWORD
+    });
+    expect(browserLogin.status).toBe(200);
+    expect((await browser.put("/api/agent-connection")).status).toBe(403);
+    expect((await browser.put("/api/agent-connection").set("Origin", "https://evil.example")).status).toBe(403);
+    expect((await browser.put("/api/agent-connection").set("Origin", DEFAULT_QR_BASE_URL)).status).toBe(200);
     expect(events.find((event) => event.event === "life_links.security.origin_rejected")).toMatchObject({
       method: "POST",
       path: "/api/auth/login",

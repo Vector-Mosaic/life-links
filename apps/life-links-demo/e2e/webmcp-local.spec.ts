@@ -63,7 +63,7 @@ const targetLifeLink: LifeLinkRecord = {
 const CANONICAL_TOOL_NAMES = [...LIFE_LINKS_PAGE_TOOL_NAMES].sort();
 
 test.describe("local controlled WebMCP host", () => {
-  test("registers only with consent, invokes all five tools, and cleans every eligibility boundary", async ({
+  test("connects once, invokes all five tools, persists, and disconnects only explicitly", async ({
     baseURL,
     page
   }) => {
@@ -71,18 +71,19 @@ test.describe("local controlled WebMCP host", () => {
     const state = await mockLifeLinksApi(page, baseURL ?? "http://127.0.0.1:4174");
 
     await page.goto("/");
-    await expect(page.getByRole("heading", { name: "Agent Access" })).toBeVisible();
-    const accessToggle = page.getByRole("checkbox", { name: /Off|On for this page session/ });
-    await expect(accessToggle).not.toBeChecked();
+    await expect(page.locator("#agent-access-title")).toHaveText("Agent Connection");
+    const connectButton = page.getByRole("button", { name: "Connect Agent" });
+    await expect(connectButton).toBeVisible();
     await expect.poll(() => controlledHostSnapshot(page)).toMatchObject({
       activeNames: [],
       registrationNames: []
     });
 
-    await accessToggle.check();
-    await expect(page.getByText("Five Life Links page tools are available to the agent in this live page.")).toBeVisible();
+    await connectButton.click();
+    await expect(page.getByText("Connected until you disconnect. Life Links tools are available to your agent.")).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
     expect((await controlledHostSnapshot(page)).registrationNames.sort()).toEqual(CANONICAL_TOOL_NAMES);
+    expect(state.connectRequests).toBe(1);
 
     const openResult = await invokeControlledTool(page, "open_life_link", {
       lifeLinkId: targetLifeLink.id
@@ -200,16 +201,13 @@ test.describe("local controlled WebMCP host", () => {
     await expect(activity).not.toContainText(targetLifeLink.id);
     expect(state.patchRequests).toHaveLength(1);
 
-    await accessToggle.uncheck();
-    await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
-    await expect(page.getByText("No agent tool activity in this page session.")).toBeVisible();
-
-    await accessToggle.check();
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
-    await page
-      .getByRole("complementary", { name: "Life Links navigation" })
-      .getByRole("button", { name: "My Life Links" })
-      .click();
+    expect(state.connectRequests).toBe(1);
+    await expect(invokeControlledTool(page, "open_life_link", {
+      lifeLinkId: targetLifeLink.id
+    })).resolves.toMatchObject({ ok: true, lifeLinkId: targetLifeLink.id });
     await expect(page.locator(".life-link-owner-detail")).toContainText(proposedTitle);
     await page.locator(".life-link-owner-detail").getByRole("button", { name: "Open QR page" }).click();
     await expect(page).toHaveURL(new RegExp(`/qr/${targetLifeLink.qrId}$`));
@@ -218,18 +216,34 @@ test.describe("local controlled WebMCP host", () => {
 
     await page.getByRole("button", { name: "Open in My Life Links" }).click();
     await expect(page).toHaveURL(new RegExp(`/life-links/${targetLifeLink.id}$`));
-    await expect(page.getByRole("checkbox", { name: /Off|On for this page session/ })).not.toBeChecked();
-    await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
-
-    const restoredAccessToggle = page.getByRole("checkbox", { name: /Off|On for this page session/ });
-    await restoredAccessToggle.check();
+    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
+
     state.holdLogout = true;
     await page.locator(".sidebar-actions").getByRole("button", { name: "Logout" }).click();
     await state.logoutStarted;
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
     state.releaseLogout();
     await expect(page.getByRole("heading", { name: "Sign in to Life Links" })).toBeVisible();
+    expect(state.disconnectRequests).toBe(0);
+
+    await page.getByLabel("Email").fill(owner.email);
+    await page.getByLabel("Password").fill("durable-agent-connection");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.locator("#agent-access-title")).toHaveText("Agent Connection");
+    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
+    await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
+    expect(state.connectRequests).toBe(1);
+    expect(state.disconnectRequests).toBe(0);
+
+    await page.getByRole("button", { name: "Disconnect Agent" }).click();
+    await expect(page.getByRole("button", { name: "Connect Agent" })).toBeVisible();
+    await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
+    expect(state.disconnectRequests).toBe(1);
+
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Connect Agent" })).toBeVisible();
+    await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
 
     expect(state.patchRequests).toHaveLength(1);
   });
@@ -237,6 +251,10 @@ test.describe("local controlled WebMCP host", () => {
 
 type MockApiState = {
   patchRequests: Array<{ path: string; body: unknown }>;
+  connectRequests: number;
+  disconnectRequests: number;
+  connected: boolean;
+  signedIn: boolean;
   holdLogout: boolean;
   logoutStarted: Promise<void>;
   releaseLogout(): void;
@@ -253,6 +271,10 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
   });
   const state: MockApiState = {
     patchRequests: [],
+    connectRequests: 0,
+    disconnectRequests: 0,
+    connected: false,
+    signedIn: true,
     holdLogout: false,
     logoutStarted,
     releaseLogout
@@ -296,7 +318,36 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
       return;
     }
     if (path === "/api/me" && method === "GET") {
-      await route.fulfill({ json: { user: owner, qrBaseUrl: baseURL } });
+      await route.fulfill({
+        json: {
+          user: state.signedIn ? owner : null,
+          qrBaseUrl: baseURL,
+          agentConnection: mockAgentConnection(state.connected)
+        }
+      });
+      return;
+    }
+    if (path === "/api/auth/login" && method === "POST") {
+      state.signedIn = true;
+      await route.fulfill({
+        json: {
+          user: owner,
+          qrBaseUrl: baseURL,
+          agentConnection: mockAgentConnection(state.connected)
+        }
+      });
+      return;
+    }
+    if (path === "/api/agent-connection" && method === "PUT") {
+      state.connectRequests += 1;
+      state.connected = true;
+      await route.fulfill({ json: { agentConnection: mockAgentConnection(true) } });
+      return;
+    }
+    if (path === "/api/agent-connection" && method === "DELETE") {
+      state.disconnectRequests += 1;
+      state.connected = false;
+      await route.fulfill({ json: { agentConnection: mockAgentConnection(false) } });
       return;
     }
     if (path === "/api/links" && method === "GET") {
@@ -347,6 +398,7 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
       return;
     }
     if (path === "/api/auth/logout" && method === "POST") {
+      state.signedIn = false;
       if (state.holdLogout) {
         markLogoutStarted();
         await logoutRelease;
@@ -362,6 +414,13 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
   });
 
   return state;
+}
+
+function mockAgentConnection(connected: boolean) {
+  return {
+    connected,
+    connectedAt: connected ? "2026-08-27T21:00:00.000Z" : null
+  };
 }
 
 async function seedCanonicalDraft(page: Page, storageKey: string, title: string) {

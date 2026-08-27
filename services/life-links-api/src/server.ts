@@ -222,6 +222,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
     });
     response.json({
       user: publicUser(user),
+      agentConnection: agentConnectionForUser(user),
       qrBaseUrl: config.qrBaseUrl,
       ...(wantsNativeSession ? { sessionToken: token } : {})
     });
@@ -245,8 +246,37 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   app.get("/api/me", (request: AppRequest, response) => {
     response.json({
       user: request.user ? publicUser(request.user) : null,
+      agentConnection: agentConnectionForUser(request.user),
       qrBaseUrl: config.qrBaseUrl
     });
+  });
+
+  app.put("/api/agent-connection", requireAuthenticated, async (request: AppRequest, response) => {
+    const user = await store.connectAgent(request.user!.id);
+    if (!user) {
+      response.status(401).json({ error: "authentication_required" });
+      return;
+    }
+    logger.info("life_links.agent_connection.connected", {
+      msg: "Owner connected agent",
+      ...requestLogFields(request),
+      user_id: user.id
+    });
+    response.json({ agentConnection: agentConnectionForUser(user) });
+  });
+
+  app.delete("/api/agent-connection", requireAuthenticated, async (request: AppRequest, response) => {
+    const user = await store.disconnectAgent(request.user!.id);
+    if (!user) {
+      response.status(401).json({ error: "authentication_required" });
+      return;
+    }
+    logger.info("life_links.agent_connection.disconnected", {
+      msg: "Owner disconnected agent",
+      ...requestLogFields(request),
+      user_id: user.id
+    });
+    response.json({ agentConnection: agentConnectionForUser(user) });
   });
 
   app.get("/api/life-links", requireAuthenticated, async (request: AppRequest, response) => {
@@ -1822,6 +1852,13 @@ function publicUser(user: StoredUser) {
     email: user.email,
     displayName: user.displayName,
     createdAt: user.createdAt
+  };
+}
+
+function agentConnectionForUser(user: StoredUser | undefined) {
+  return {
+    connected: Boolean(user?.agentConnectedAt),
+    connectedAt: user?.agentConnectedAt ?? null
   };
 }
 

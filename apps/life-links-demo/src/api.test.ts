@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, attachQr, login, updateLifeLink } from "./api";
+import { ApiError, attachQr, connectAgent, disconnectAgent, login, updateLifeLink } from "./api";
 
 describe("Life Links API error normalization", () => {
   afterEach(() => {
@@ -92,15 +92,51 @@ describe("Life Links API error normalization", () => {
       })
     });
   });
+
+  it("connects and disconnects through the one durable agent-connection resource", async () => {
+    const connected = {
+      agentConnection: {
+        connected: true,
+        connectedAt: "2026-08-27T21:00:00.000Z"
+      }
+    };
+    const disconnected = {
+      agentConnection: {
+        connected: false,
+        connectedAt: null
+      }
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(200, connected))
+      .mockResolvedValueOnce(jsonResponse(200, disconnected));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(connectAgent()).resolves.toEqual(connected);
+    await expect(disconnectAgent()).resolves.toEqual(disconnected);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/agent-connection", {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      method: "PUT"
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/agent-connection", {
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      method: "DELETE"
+    });
+  });
 });
 
 function stubJsonResponse(status: number, body: unknown) {
-  const fetchMock = vi.fn(async () => new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" }
-  }));
+  const fetchMock = vi.fn(async () => jsonResponse(status, body));
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+function jsonResponse(status: number, body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" }
+  });
 }
 
 async function rejectedApiError(request: Promise<unknown>): Promise<ApiError> {

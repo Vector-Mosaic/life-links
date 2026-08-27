@@ -64,7 +64,7 @@ test.describe("installed Chrome native WebMCP host", () => {
     await page.getByLabel("Password").fill(DEMO_PASSWORD);
     await page.getByRole("button", { name: /sign in/i }).click();
 
-    await expect(page.getByRole("heading", { name: "Agent Access" })).toBeVisible();
+    await expect(page.locator("#agent-access-title")).toHaveText("Agent Connection");
     expect(await nativeHostShape(page)).toEqual({
       modelContext: "object",
       registerTool: "function",
@@ -73,9 +73,8 @@ test.describe("installed Chrome native WebMCP host", () => {
     });
     await expect.poll(() => nativeToolNames(page)).toEqual([]);
 
-    const accessToggle = page.getByRole("checkbox", { name: /Off|On for this page session/ });
-    await accessToggle.check();
-    await expect(page.getByText("Five Life Links page tools are available to the agent in this live page.")).toBeVisible();
+    await page.getByRole("button", { name: "Connect Agent" }).click();
+    await expect(page.getByText("Connected until you disconnect. Life Links tools are available to your agent.")).toBeVisible();
     await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
 
     const search = await invokeNativeTool(page, "search_my_life_links", {
@@ -204,9 +203,8 @@ test.describe("installed Chrome native WebMCP host", () => {
 
     const reloadResponse = await page.reload();
     assertWebMcpDocumentHeaders(reloadResponse);
-    await expect(page.getByRole("heading", { name: "Agent Access" })).toBeVisible();
-    await expect.poll(() => nativeToolNames(page)).toEqual([]);
-    await accessToggle.check();
+    await expect(page.locator("#agent-access-title")).toHaveText("Agent Connection");
+    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
     await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
 
     const persistedOpen = await invokeNativeTool(page, "open_life_link", {
@@ -269,7 +267,7 @@ test.describe("installed Chrome native WebMCP host", () => {
       })
     );
     await delayedSearchStarted;
-    await accessToggle.uncheck();
+    await page.getByRole("button", { name: "Disconnect Agent" }).click();
     await expect.poll(() => nativeToolNames(page)).toEqual([]);
     releaseDelayedSearch?.();
     const revokedOutcome = await revokedInvocation;
@@ -277,12 +275,22 @@ test.describe("installed Chrome native WebMCP host", () => {
     expect(revokedOutcome).toMatchObject({ message: expect.stringContaining("UnknownError") });
     await page.unroute(delayedSearchPattern);
     await page.waitForTimeout(100);
-    await expect(page.getByText("No agent tool activity in this page session.")).toBeVisible();
+    await expect(page.getByText("No agent activity yet.")).toBeVisible();
 
-    await accessToggle.check();
+    await page.getByRole("button", { name: "Connect Agent" }).click();
     await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
     await page.locator(".sidebar-actions").getByRole("button", { name: "Logout" }).click();
     await expect(page.getByRole("heading", { name: "Sign in to Life Links" })).toBeVisible();
+    await expect.poll(() => nativeToolNames(page)).toEqual([]);
+
+    await page.getByLabel("Email").fill(DEMO_EMAIL);
+    await page.getByLabel("Password").fill(DEMO_PASSWORD);
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
+    await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
+
+    await page.getByRole("button", { name: "Disconnect Agent" }).click();
+    await expect(page.getByRole("button", { name: "Connect Agent" })).toBeVisible();
     await expect.poll(() => nativeToolNames(page)).toEqual([]);
     expect(patchRequests).toHaveLength(1);
   });

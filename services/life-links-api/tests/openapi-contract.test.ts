@@ -6,9 +6,9 @@ import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 type JsonObject = Record<string, unknown>;
-type HttpMethod = "get" | "post" | "patch" | "delete";
+type HttpMethod = "get" | "post" | "patch" | "put" | "delete";
 
-const HTTP_METHODS: HttpMethod[] = ["get", "post", "patch", "delete"];
+const HTTP_METHODS: HttpMethod[] = ["get", "post", "patch", "put", "delete"];
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const contractPath = path.resolve(testDirectory, "../../../contracts/http/openapi.json");
 const passwordPath = path.resolve(testDirectory, "../src/password.ts");
@@ -20,6 +20,7 @@ const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
   "DELETE /api/life-links/{lifeLinkId}/media/{mediaId}",
   "DELETE /api/links/{qrId}/media/{mediaId}",
+  "DELETE /api/agent-connection",
   "GET /api/config",
   "GET /api/life-links",
   "GET /api/life-links/search",
@@ -39,7 +40,8 @@ const EXPECTED_WEB_CLIENT_OPERATIONS = [
   "POST /api/links/{qrId}/media",
   "POST /api/projects",
   "POST /api/qr-batches",
-  "POST /api/qr/{qrId}/claim"
+  "POST /api/qr/{qrId}/claim",
+  "PUT /api/agent-connection"
 ].sort();
 
 function readSource(filePath: string): string {
@@ -215,7 +217,7 @@ function expressRouteToOpenApi(route: string): string {
 
 function implementedApplicationOperations(serverSource: string): string[] {
   const literalRegistrations = [
-    ...serverSource.matchAll(/app\.(get|post|patch|delete)\(\s*"([^"]+)"/g)
+    ...serverSource.matchAll(/app\.(get|post|patch|put|delete)\(\s*"([^"]+)"/g)
   ].map((match) => `${match[1].toUpperCase()} ${expressRouteToOpenApi(match[2])}`);
   const allRegistrations = [
     ...serverSource.matchAll(/app\.(get|post|patch|delete|put|head|options)\(/g)
@@ -387,10 +389,10 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(30);
+    expect(published).toHaveLength(32);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     const operationIds = [...contractOperations(document).values()].map((operation) => operation.operationId);
-    expect(new Set(operationIds).size).toBe(30);
+    expect(new Set(operationIds).size).toBe(32);
     expect(operationIds.every((operationId) => typeof operationId === "string" && operationId.length > 0)).toBe(true);
   });
 
@@ -515,7 +517,9 @@ describe("Life Links OpenAPI v1", () => {
       "downloadLifeLinkQrBatchCsv",
       "downloadLifeLinkQrBatchZip",
       "claimLifeLinkQr",
-      "evaluateLifeLinkFindScan"
+      "evaluateLifeLinkFindScan",
+      "connectLifeLinksAgent",
+      "disconnectLifeLinksAgent"
     ];
     for (const operationId of protectedOperationIds) {
       const operation = operationById(operations, operationId);
@@ -544,7 +548,7 @@ describe("Life Links OpenAPI v1", () => {
       );
     }
 
-    const mutatingOperations = [...operations.entries()].filter(([key]) => /^(POST|PATCH|DELETE) /.test(key));
+    const mutatingOperations = [...operations.entries()].filter(([key]) => /^(POST|PATCH|PUT|DELETE) /.test(key));
     for (const [key, operation] of mutatingOperations) {
       const parameters = (operation.parameters ?? []) as JsonObject[];
       expect(parameters, `${key} must describe browser Origin enforcement`).toContainEqual({
@@ -571,6 +575,43 @@ describe("Life Links OpenAPI v1", () => {
         });
       }
     }
+  });
+
+  it("publishes a one-time durable agent connection separate from application sessions", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    const connection = objectValue(schemas.AgentConnection, "AgentConnection");
+    expect(connection.required).toEqual(["connected", "connectedAt"]);
+    expect(objectValue(connection.properties, "AgentConnection properties")).toMatchObject({
+      connected: { type: "boolean" },
+      connectedAt: {
+        oneOf: [{ type: "string", format: "date-time" }, { type: "null" }]
+      }
+    });
+
+    for (const [key, operationId] of [
+      ["PUT /api/agent-connection", "connectLifeLinksAgent"],
+      ["DELETE /api/agent-connection", "disconnectLifeLinksAgent"]
+    ] as const) {
+      const operation = operations.get(key);
+      expect(operation?.operationId).toBe(operationId);
+      expect(operation?.security).toBeUndefined();
+      expect(operation?.parameters).toContainEqual({ $ref: "#/components/parameters/BrowserOrigin" });
+      expect(objectValue(operation?.responses, `${key} responses`)).toMatchObject({
+        "200": { $ref: "#/components/responses/AgentConnectionOk" },
+        "401": { $ref: "#/components/responses/Unauthorized" },
+        "403": { $ref: "#/components/responses/Forbidden" }
+      });
+    }
+
+    const login = objectValue(schemas.LoginResponse, "LoginResponse");
+    const me = objectValue(schemas.MeResponse, "MeResponse");
+    expect(login.required).toContain("agentConnection");
+    expect(me.required).toContain("agentConnection");
+    expect(String(operationById(operations, "logoutLifeLinksOwner").description)).toContain("idempotent");
+    const responses = objectValue(objectValue(document.components, "components").responses, "responses");
+    expect(String(objectValue(responses.LogoutNoContent, "LogoutNoContent").description)).toContain("agent connection");
   });
 
   it("pins the bounded canonical hierarchy contract and keeps public QR schemas compatibility-only", () => {

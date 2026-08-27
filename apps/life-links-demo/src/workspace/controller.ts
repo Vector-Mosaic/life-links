@@ -21,11 +21,13 @@ import {
   ApiError,
   attachQr,
   claimQr,
+  connectAgent,
   createLifeLink,
   createProject,
   createQrBatch,
   deleteLifeLinkMedia,
   deleteLinkMedia,
+  disconnectAgent,
   findScan,
   getConfig,
   getLifeLinkDetail,
@@ -73,6 +75,8 @@ export type LifeLinksWorkspaceApi = {
   getMe: typeof getMe;
   login: typeof login;
   logout: typeof logout;
+  connectAgent: typeof connectAgent;
+  disconnectAgent: typeof disconnectAgent;
   listLinks: typeof listLinks;
   listProjects: typeof listProjects;
   updateLink: typeof updateLink;
@@ -99,6 +103,8 @@ const defaultApi: LifeLinksWorkspaceApi = {
   getMe,
   login,
   logout,
+  connectAgent,
+  disconnectAgent,
   listLinks,
   listProjects,
   updateLink,
@@ -135,6 +141,8 @@ export interface LifeLinksWorkspaceActions {
   evaluateFindScan(scanText: string): Promise<void>;
   login(email: string, password: string): Promise<void>;
   logout(): Promise<void>;
+  connectAgent(): Promise<void>;
+  disconnectAgent(): Promise<void>;
   generateBatch(): Promise<void>;
   claimActiveLink(): Promise<void>;
   saveLink(qrId: string, patch: LinkEditorPatch): Promise<void>;
@@ -196,6 +204,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const routeQrId = qrIdFromPath(routePathname);
     this.snapshot = {
       currentUser: null,
+      agentConnection: { connected: false, connectedAt: null },
       qrBaseUrl: DEFAULT_QR_BASE_URL,
       links: [],
       projects: [],
@@ -856,6 +865,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       const nextRoute = classifyLifeLinksRoute(this.route.pathname(), true);
       this.update({
         currentUser: result.user,
+        agentConnection: result.agentConnection,
         qrBaseUrl: result.qrBaseUrl,
         routePathname: this.route.pathname(),
         routeQrId: nextRoute.qrId,
@@ -879,10 +889,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async logout() {
-    await this.api.logout().catch(() => undefined);
+    const logoutRequest = this.api.logout().catch(() => undefined);
     const nextRoute = classifyLifeLinksRoute(this.route.pathname(), false);
     this.update({
       currentUser: null,
+      agentConnection: { connected: false, connectedAt: null },
       links: [],
       projects: [],
       editingId: null,
@@ -898,6 +909,39 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       routeQrId: nextRoute.qrId,
       routeLifeLinkId: nextRoute.lifeLinkId
     });
+    await logoutRequest;
+  }
+
+  async connectAgent() {
+    if (!this.snapshot.currentUser) {
+      this.update({ error: "Log in to connect your agent." });
+      return;
+    }
+    this.update({ busy: true, error: "" });
+    try {
+      const result = await this.api.connectAgent();
+      this.update({ agentConnection: result.agentConnection });
+    } catch (connectionError) {
+      this.update({ error: messageFromError(connectionError) });
+    } finally {
+      this.update({ busy: false });
+    }
+  }
+
+  async disconnectAgent() {
+    if (!this.snapshot.currentUser) {
+      this.update({ error: "Log in to disconnect your agent." });
+      return;
+    }
+    this.update({ busy: true, error: "" });
+    try {
+      const result = await this.api.disconnectAgent();
+      this.update({ agentConnection: result.agentConnection });
+    } catch (connectionError) {
+      this.update({ error: messageFromError(connectionError) });
+    } finally {
+      this.update({ busy: false });
+    }
   }
 
   async openQr(qrId: string, updateHistory = true) {
@@ -1245,6 +1289,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       this.update({
         qrBaseUrl: me.qrBaseUrl || config.qrBaseUrl,
         currentUser: me.user,
+        agentConnection: me.agentConnection,
         routePathname,
         routeQrId: routeState.qrId,
         routeLifeLinkId: routeState.lifeLinkId

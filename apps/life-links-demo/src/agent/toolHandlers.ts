@@ -235,7 +235,7 @@ const ERROR_DETAILS: Readonly<Record<AgentToolErrorCode, { readonly message: str
     retryable: false
   },
   owner_workspace_unavailable: {
-    message: "Open the signed-in owner workspace and enable Agent Access before using this tool.",
+    message: "Open the signed-in owner workspace with its saved agent connection before using this tool.",
     retryable: true
   },
   editor_open: {

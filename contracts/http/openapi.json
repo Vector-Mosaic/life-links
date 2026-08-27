@@ -31,6 +31,9 @@
       "name": "session"
     },
     {
+      "name": "agent-connection"
+    },
+    {
       "name": "links"
     },
     {
@@ -195,7 +198,7 @@
       "post": {
         "operationId": "logoutLifeLinksOwner",
         "summary": "Delete the active session when present",
-        "description": "The operation is idempotent and succeeds even when no valid session exists. It clears the browser session cookie and deletes the authenticated bearer or cookie session when present. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "description": "The operation is idempotent and succeeds even when no valid session exists. It clears the browser session cookie and deletes the authenticated bearer or cookie session when present. It does not revoke the owner's durable agent connection. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
         "tags": [
           "session"
         ],
@@ -256,6 +259,74 @@
         "responses": {
           "200": {
             "$ref": "#/components/responses/MeOk"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/agent-connection": {
+      "put": {
+        "operationId": "connectLifeLinksAgent",
+        "summary": "Connect the owner's agent persistently",
+        "description": "The authenticated owner grants agent access once. The mutation is idempotent, preserves the original connection timestamp on replay, and the durable connection survives page reloads, browser restarts, logout, and session expiry until the owner explicitly disconnects it. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "tags": [
+          "agent-connection"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/AgentConnectionOk"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "disconnectLifeLinksAgent",
+        "summary": "Disconnect the owner's agent",
+        "description": "The authenticated owner explicitly revokes the durable agent connection. The mutation is idempotent. Logging out or deleting an application session does not perform this operation. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "tags": [
+          "agent-connection"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/AgentConnectionOk"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
@@ -1644,6 +1715,44 @@
           }
         }
       },
+      "AgentConnection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "connected",
+          "connectedAt"
+        ],
+        "properties": {
+          "connected": {
+            "type": "boolean",
+            "description": "Whether the owner has an active durable agent connection."
+          },
+          "connectedAt": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The original one-time connection timestamp, or null when disconnected."
+          }
+        }
+      },
+      "AgentConnectionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agentConnection"
+        ],
+        "properties": {
+          "agentConnection": {
+            "$ref": "#/components/schemas/AgentConnection"
+          }
+        }
+      },
       "Project": {
         "type": "object",
         "additionalProperties": false,
@@ -2736,11 +2845,15 @@
         "additionalProperties": false,
         "required": [
           "user",
+          "agentConnection",
           "qrBaseUrl"
         ],
         "properties": {
           "user": {
             "$ref": "#/components/schemas/User"
+          },
+          "agentConnection": {
+            "$ref": "#/components/schemas/AgentConnection"
           },
           "qrBaseUrl": {
             "type": "string",
@@ -2760,6 +2873,7 @@
         "additionalProperties": false,
         "required": [
           "user",
+          "agentConnection",
           "qrBaseUrl"
         ],
         "properties": {
@@ -2772,6 +2886,9 @@
                 "type": "null"
               }
             ]
+          },
+          "agentConnection": {
+            "$ref": "#/components/schemas/AgentConnection"
           },
           "qrBaseUrl": {
             "type": "string",
@@ -3247,7 +3364,7 @@
         }
       },
       "LoginOk": {
-        "description": "Authenticated user and QR base URL. Browser login also sets the session cookie; native login returns sessionToken in the JSON body.",
+        "description": "Authenticated user, separate durable agent-connection state, and QR base URL. Browser login also sets the session cookie; native login returns sessionToken in the JSON body.",
         "headers": {
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"
@@ -3265,7 +3382,7 @@
         }
       },
       "LogoutNoContent": {
-        "description": "Session deleted when present and browser cookie cleared.",
+        "description": "Session deleted when present and browser cookie cleared. The durable agent connection is not revoked.",
         "headers": {
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"
@@ -3276,7 +3393,7 @@
         }
       },
       "MeOk": {
-        "description": "Current user when authenticated, otherwise null.",
+        "description": "Current user and that owner's separate durable agent-connection state when authenticated; otherwise user is null and agentConnection is disconnected/null.",
         "headers": {
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"
@@ -3286,6 +3403,21 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/MeResponse"
+            }
+          }
+        }
+      },
+      "AgentConnectionOk": {
+        "description": "Current durable owner agent-connection state.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/AgentConnectionResponse"
             }
           }
         }

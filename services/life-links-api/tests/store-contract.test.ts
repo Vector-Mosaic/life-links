@@ -28,6 +28,23 @@ describe("canonical Life Links store contract", () => {
     await store.seedDemo(DEMO_PASSWORD, DEFAULT_QR_BASE_URL);
   });
 
+  it("connects and disconnects an owner agent idempotently", async () => {
+    expect((await store.getUserById(DEMO_OWNER_ID))?.agentConnectedAt).toBeNull();
+
+    const connected = await store.connectAgent(DEMO_OWNER_ID);
+    expect(connected?.agentConnectedAt).toEqual(expect.any(String));
+    expect(new Date(connected!.agentConnectedAt!).toISOString()).toBe(connected!.agentConnectedAt);
+
+    const replay = await store.connectAgent(DEMO_OWNER_ID);
+    expect(replay?.agentConnectedAt).toBe(connected?.agentConnectedAt);
+
+    const disconnected = await store.disconnectAgent(DEMO_OWNER_ID);
+    expect(disconnected?.agentConnectedAt).toBeNull();
+    expect((await store.disconnectAgent(DEMO_OWNER_ID))?.agentConnectedAt).toBeNull();
+    expect(await store.connectAgent("missing-owner")).toBeNull();
+    expect(await store.disconnectAgent("missing-owner")).toBeNull();
+  });
+
   it("creates arbitrary recursive structure with deterministic cursor paging and duplicate titles", async () => {
     const createdAt = "2026-08-25T12:00:00.000Z";
     const root = await store.createLifeLink({ id: "root-a", ownerId: DEMO_OWNER_ID, title: "Archive", createdAt });
@@ -80,6 +97,9 @@ describe("canonical Life Links store contract", () => {
 
     const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(firstApply.after).toEqual(firstApply.expected);
+    expect((await store.getUserById(COMPETITION_OWNER_ID))?.agentConnectedAt).toBeNull();
+    const connectedAt = (await store.connectAgent(COMPETITION_OWNER_ID))?.agentConnectedAt;
+    expect(connectedAt).toEqual(expect.any(String));
     const start = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_START_LIFE_LINK_ID);
     expect(start?.ancestry.items.map((item) => item.title)).toEqual([
       COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
@@ -146,6 +166,7 @@ describe("canonical Life Links store contract", () => {
     const restored = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(restored.after).toEqual(restored.expected);
     expect(await store.getSessionByTokenHash("competition-session-hash")).toBeNull();
+    expect((await store.getUserById(COMPETITION_OWNER_ID))?.agentConnectedAt).toBe(connectedAt);
     expect(await store.getLifeLinkDetail(COMPETITION_OWNER_ID, "competition-extra-life-link")).toBeNull();
     expect((await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID))?.lifeLink.title).toBe(
       "Camping Sleeping Bag"
@@ -155,6 +176,7 @@ describe("canonical Life Links store contract", () => {
     const replay = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(replay.before).toEqual(replay.expected);
     expect(replay.after).toEqual(replay.expected);
+    expect((await store.getUserById(COMPETITION_OWNER_ID))?.agentConnectedAt).toBe(connectedAt);
 
     const foreignBatch = await store.createQrBatch(DEMO_OWNER_ID, 1, options.qrBaseUrl);
     const foreignQrId = foreignBatch.qrCodes[0].id;

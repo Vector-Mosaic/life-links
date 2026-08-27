@@ -8,7 +8,7 @@ import type {
   UpdateLifeLinkPatch
 } from "@life-links/core";
 
-import type { ApiUser } from "../api";
+import type { ApiAgentConnection, ApiUser } from "../api";
 
 export type WorkspaceView = "home" | "factory" | "scan" | "projects" | "search";
 export type InventoryFilter = "all" | "claimed" | "unclaimed";
@@ -66,6 +66,7 @@ export type AgentUpdateLifeLinkContentInput = {
 
 export type LifeLinksWorkspaceSnapshot = {
   currentUser: ApiUser | null;
+  agentConnection: ApiAgentConnection;
   qrBaseUrl: string;
   links: LinkRecord[];
   projects: ProjectRecord[];

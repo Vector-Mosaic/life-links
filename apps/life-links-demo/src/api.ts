@@ -15,6 +15,19 @@ import type {
 
 export type ApiUser = Pick<UserRecord, "id" | "email" | "displayName" | "createdAt">;
 
+export type ApiAgentConnection = {
+  connected: boolean;
+  connectedAt: string | null;
+};
+
+export type ApiSession = {
+  user: ApiUser | null;
+  qrBaseUrl: string;
+  agentConnection: ApiAgentConnection;
+};
+
+export type AuthenticatedApiSession = Omit<ApiSession, "user"> & { user: ApiUser };
+
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
   const bodyIsFormData = init.body instanceof FormData;
   const response = await fetch(path, {
@@ -117,11 +130,11 @@ export async function getConfig() {
 }
 
 export async function getMe() {
-  return apiFetch<{ user: ApiUser | null; qrBaseUrl: string }>("/api/me");
+  return apiFetch<ApiSession>("/api/me");
 }
 
 export async function login(email: string, password: string) {
-  return apiFetch<{ user: ApiUser; qrBaseUrl: string }>("/api/auth/login", {
+  return apiFetch<AuthenticatedApiSession>("/api/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password })
   });
@@ -129,6 +142,18 @@ export async function login(email: string, password: string) {
 
 export async function logout() {
   return apiFetch<void>("/api/auth/logout", { method: "POST" });
+}
+
+export async function connectAgent() {
+  return apiFetch<{ agentConnection: ApiAgentConnection }>("/api/agent-connection", {
+    method: "PUT"
+  });
+}
+
+export async function disconnectAgent() {
+  return apiFetch<{ agentConnection: ApiAgentConnection }>("/api/agent-connection", {
+    method: "DELETE"
+  });
 }
 
 export type LifeLinkPageResponse = {

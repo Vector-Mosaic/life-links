@@ -2687,7 +2687,7 @@ textarea {
   letter-spacing: -0.02em;
 }
 
-.agent-session-boundary {
+.agent-connection-boundary {
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -2728,7 +2728,7 @@ textarea {
 }
 
 .agent-access-heading,
-.agent-access-toggle,
+.agent-connection-action,
 .agent-access-status,
 .agent-activity-item,
 .agent-activity-item > div > span {
@@ -2752,25 +2752,11 @@ textarea {
   color: var(--accent);
 }
 
-.agent-access-toggle {
+.agent-connection-action {
   min-height: 36px;
-  padding: 7px 10px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line));
-  border-radius: 999px;
-  background: var(--accent-soft);
+  padding: 7px 12px;
   font-size: 0.8rem;
   font-weight: 800;
-}
-
-.agent-access-toggle input {
-  width: 17px;
-  height: 17px;
-  margin: 0;
-  accent-color: var(--accent);
-}
-
-.agent-access-toggle-copy {
-  color: var(--ink) !important;
 }
 
 .agent-access-status {
@@ -2823,8 +2809,8 @@ textarea {
   border-color: color-mix(in srgb, var(--accent) 24%, var(--line));
 }
 
-.agent-access-scope-item.denied {
-  border-color: color-mix(in srgb, var(--amber) 22%, var(--line));
+.agent-access-scope-item.connection {
+  border-color: color-mix(in srgb, var(--success-line) 30%, var(--line));
 }
 
 .agent-access-scope p,
@@ -3241,7 +3227,7 @@ textarea {
     padding: 3px 3px 0;
   }
 
-  .agent-session-boundary {
+  .agent-connection-boundary {
     justify-content: flex-start;
     white-space: normal;
   }

@@ -4,16 +4,20 @@ export type AgentAccessRegistrationStatus = "inactive" | "registering" | "ready"
 
 export function AgentAccessPanel({
   supported,
-  enabled,
+  connected,
+  busy,
   registrationStatus,
   registrationError,
-  onEnabledChange
+  onConnect,
+  onDisconnect
 }: {
   supported: boolean;
-  enabled: boolean;
+  connected: boolean;
+  busy: boolean;
   registrationStatus: AgentAccessRegistrationStatus;
   registrationError: string;
-  onEnabledChange(enabled: boolean): void;
+  onConnect(): void;
+  onDisconnect(): void;
 }) {
   const accessReady = supported && registrationStatus === "ready";
   return (
@@ -22,44 +26,43 @@ export function AgentAccessPanel({
         <div className="agent-access-title-group">
           <div className="panel-title">
             <Bot size={18} />
-            <h3 id="agent-access-title">Agent Access</h3>
+            <h3 id="agent-access-title">Agent Connection</h3>
           </div>
         </div>
-        <label className="agent-access-toggle">
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={!supported}
-            onChange={(event) => onEnabledChange(event.currentTarget.checked)}
-          />
-          <span className="agent-access-toggle-copy">
-            {enabled ? "On for this page session" : "Off"}
-          </span>
-        </label>
+        <button
+          className={connected ? "secondary-button agent-connection-action" : "primary-button agent-connection-action"}
+          type="button"
+          disabled={busy}
+          onClick={connected ? onDisconnect : onConnect}
+        >
+          {connected ? "Disconnect Agent" : "Connect Agent"}
+        </button>
       </header>
 
       {!supported ? (
         <div className="agent-access-status unavailable" role="status">
           <CircleAlert size={17} />
           <span className="agent-access-status-copy">
-            WebMCP unavailable in this browser. The human workspace remains fully available.
+            {connected
+              ? "Connected until you disconnect. This browser does not expose the agent tools, but your saved connection remains active."
+              : "WebMCP tools are unavailable in this browser. You can still save the connection here and use it from a supported agent browser."}
           </span>
         </div>
       ) : (
         <div className={accessReady ? "agent-access-status ready" : "agent-access-status"} role="status">
           <ShieldCheck size={17} />
           <span className="agent-access-status-copy">
-            {registrationMessage(enabled, registrationStatus, registrationError)}
+            {registrationMessage(connected, registrationStatus, registrationError)}
           </span>
         </div>
       )}
 
       <div className="agent-access-scope">
         <p className="agent-access-scope-item allowed">
-          <strong>Allowed:</strong> inspect, bounded search, visible navigation, revision-safe title/body updates, and Find Mode.
+          <strong>Available now:</strong> inspect, search, navigate, update Life Link content, and start Find Mode.
         </p>
-        <p className="agent-access-scope-item denied">
-          <strong>Never granted:</strong> privacy, hierarchy, QR, media, claim, delete, purchase, or batch changes.
+        <p className="agent-access-scope-item connection">
+          <strong>One connection:</strong> saved to your account until you explicitly disconnect it.
         </p>
       </div>
     </section>
@@ -67,18 +70,18 @@ export function AgentAccessPanel({
 }
 
 function registrationMessage(
-  enabled: boolean,
+  connected: boolean,
   status: AgentAccessRegistrationStatus,
   error: string
 ) {
-  if (!enabled || status === "inactive") {
-    return "Enable access to expose five page tools. Access resets on reload, logout, or leaving the owner workspace.";
+  if (!connected || status === "inactive") {
+    return "Connect your agent once. Life Links remembers the connection until you disconnect it.";
   }
   if (status === "registering") {
-    return "Registering the five Life Links page tools...";
+    return "Connecting your saved agent to this Life Links workspace...";
   }
   if (status === "ready") {
-    return "Five Life Links page tools are available to the agent in this live page.";
+    return "Connected until you disconnect. Life Links tools are available to your agent.";
   }
-  return error || "The page tools could not be registered. Turn Agent Access off, then try again.";
+  return error || "Your connection is saved, but this browser could not make the Life Links tools available.";
 }

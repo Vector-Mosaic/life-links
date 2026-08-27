@@ -279,10 +279,11 @@ test.describe("competition physical-context loop", () => {
     }));
     expect(hierarchyViewport.scrollWidth).toBeLessThanOrEqual(hierarchyViewport.clientWidth + 1);
 
-    const accessToggle = page.getByRole("checkbox", { name: /Off|On for this page session/ });
-    await expect(accessToggle).not.toBeChecked();
+    const connectButton = page.getByRole("button", { name: "Connect Agent" });
+    await expect(connectButton).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
-    await accessToggle.check();
+    await connectButton.click();
+    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
     const registeredCatalog = await controlledHostSnapshot(page);
     expect(registeredCatalog.registrationNames).toHaveLength(5);
@@ -498,13 +499,9 @@ test.describe("competition physical-context loop", () => {
     await page.reload();
     await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID}`);
     await expect(page.locator(".life-link-owner-detail")).toContainText("Planned upgrade priority: sleeping pad.");
-    const restoredAccessToggle = page.getByRole("checkbox", { name: /Off|On for this page session/ });
-    await expect(restoredAccessToggle).not.toBeChecked();
-    await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
-    expect((await controlledHostSnapshot(page)).registrationNames).toEqual([]);
-
-    await restoredAccessToggle.check();
+    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
+    expect((await controlledHostSnapshot(page)).registrationNames.sort()).toEqual(CANONICAL_TOOL_NAMES);
     const persistedInspection = await invokeControlledTool(page, "inspect_current_life_link", {});
     expect(persistedInspection).toMatchObject({
       ok: true,
@@ -540,7 +537,8 @@ test.describe("competition physical-context loop", () => {
     await expect(page.locator(".scan-status")).toContainText("Match found");
     await expect(page.locator(".scan-status")).toContainText(COMPETITION_TARGET_QR_ID);
 
-    await restoredAccessToggle.uncheck();
+    await page.getByRole("button", { name: "Disconnect Agent" }).click();
+    await expect(page.getByRole("button", { name: "Connect Agent" })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
     const revokedHost = await controlledHostSnapshot(page);
     expect([...revokedHost.abortedNames].sort()).toEqual(CANONICAL_TOOL_NAMES);
@@ -669,7 +667,7 @@ function assertNoHierarchyDisclosure(value: unknown): void {
 async function assertPublicQrHasNoHierarchy(page: import("@playwright/test").Page, title: string): Promise<void> {
   await expect(page.locator(".public-content").getByRole("heading", { name: title })).toBeVisible();
   await expect(page.locator(".life-link-breadcrumbs")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Agent Access" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Agent Connection" })).toHaveCount(0);
   for (const ancestorTitle of TARGET_PATH.slice(0, -1)) {
     await expect(page.getByText(ancestorTitle, { exact: true })).toHaveCount(0);
   }
