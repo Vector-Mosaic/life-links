@@ -136,12 +136,12 @@ This MIT grant covers the files included in this standalone Life Links release.
 Monorepo-only files and materials excluded from this release are outside the
 grant.
 
-## Prepublication status
+## Release status
 
-The selected public repository target is
-`https://github.com/Vector-Mosaic/life-links`. This licensed candidate remains
-private until the project owner factually confirms publication rights for the
-included code, assets, name, and product identity and its exact Git identity,
-source projection, clean-clone build, and tests pass the release gate.
-Competition terms acceptance, judge credentials, final deployment identity,
-and final submission remain separate release actions.
+The project owner confirmed on August 26, 2026 that he has the rights and
+authority to publish the admitted code and assets, the Life Links name, and
+product identity under MIT. The selected public repository target is
+`https://github.com/Vector-Mosaic/life-links`. Exact repository visibility,
+public Git identity, deployed revision, competition registration, terms
+acceptance, judge credentials, and final submission remain separately
+verifiable steps; this source tree does not claim that they already occurred.

@@ -101,8 +101,10 @@ This standalone release is licensed under the root MIT `LICENSE`, copyright
 the project license nor this projection grants rights to monorepo-only files or
 materials excluded from this standalone release.
 
-Before publication, the project owner must factually confirm publication rights
-for the included code, assets, name, and product identity, and the final
-licensed tree, Git identity, projection, history, clean-clone build, and tests
-must pass their release gates. Competition registration, terms acceptance,
-judge credentials, and final submission remain owner-controlled actions.
+On August 26, 2026, the project owner confirmed that he has the rights and
+authority to publish the included code and assets, the Life Links name, and
+product identity under MIT. The final licensed tree, Git identity, projection,
+history, clean-clone build, and tests passed their private release gates before
+first publication. Public repository visibility and exact Git identity must be
+read back after publication. Competition registration, terms acceptance, judge
+credentials, and final submission remain owner-controlled actions.
