@@ -125,8 +125,8 @@ candidate.
 
 This standalone release is licensed under the root MIT `LICENSE`, copyright
 (c) 2026 Justin Sublette. The selected public repository owner is
-`Vector-Mosaic`, and the public commit/tag identity is
-`Justin Sublette <216620060+Vector-Mosaic@users.noreply.github.com>`. Neither
+`Vector-Mosaic`, and the public release identity is
+`Justin Sublette <j.sublette@vmosiac.com>`. Neither
 the project license nor this projection grants rights to monorepo-only files or
 materials excluded from this standalone release.
 
