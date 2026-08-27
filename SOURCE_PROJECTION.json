@@ -368,7 +368,7 @@
   "profile_id": "life-links-webmcp-challenge",
   "profile_path": "systems/life_links/config/publication/webmcp_challenge_public_release.profile.json",
   "profile_sha256": "2ce0560cc384c8b50284cc1edc003b2e2951798237ae8333d3042b827a0091de",
-  "projection_commit": "3293e2ce51302ff11eff79424582cae878eacbc7",
+  "projection_commit": "557468d78790a8d883838a5086d39bca33133a41",
   "scaffold_destinations": [
     ".env.example",
     ".gitignore",
@@ -437,9 +437,9 @@
       "template": "systems/life_links/config/publication/templates/THIRD_PARTY_NOTICES.md"
     },
     {
-      "byte_count": 9865,
+      "byte_count": 10020,
       "destination": "CHALLENGE_WORK.md",
-      "sha256": "b3a66ce551a87605451a58adbfa3bece1c35f02bfcb87857d56f37faa7673a03",
+      "sha256": "e81d18929eaca80d110f98bcda93a8294ccb5ab4bac33a30d3b29377262d17b2",
       "template": "systems/life_links/config/publication/templates/CHALLENGE_WORK.md"
     }
   ],

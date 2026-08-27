@@ -107,13 +107,16 @@ all three runtime identities without inventing or abbreviating them:
 - `SOURCE_TREE_SHA256` / `/version.source_tree_sha256`: nonzero lowercase
   64-hex normalized release-tree digest.
 
-The eventual public release head will be the commit containing this completed
-mapping. Its full SHA will be verified from Git and `/version.build_sha` rather
-than embedded as an impossible self-reference. The family-adventure deployment
-revision remains unset until its forward-only public projection, clean-clone
-qualification, release freeze, and exact-identity same-lane redeployment pass.
-The six-record public release and hosted qualification are source-bound
-predecessor checkpoints, not the current submission candidate.
+The forward-only public commit containing this completed mapping is the
+selected family-adventure candidate. Git resolves its full SHA, while the live
+`/version` response must report that same public commit, this projection's
+canonical source, and this projection's normalized source-tree digest before
+submission. This file intentionally avoids embedding its own commit or a
+mutable deployment occurrence. Exact release, deployment, reset, and hosted-
+qualification identities belong in the current submission handoff and
+operational evidence. The six-record public release and hosted qualification
+remain source-bound predecessor checkpoints, not the current submission
+candidate.
 
 ## Rights, license, and submission boundary
 
