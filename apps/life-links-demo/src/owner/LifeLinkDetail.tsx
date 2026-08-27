@@ -44,15 +44,18 @@ export function LifeLinkDetail({
   const physicalLocator = deriveLifeLinkPhysicalLocator(detail.ancestry);
   return (
     <article className="life-link-owner-detail" data-selected-life-link-id={lifeLink.id}>
-      <LifeLinkBreadcrumbs ancestry={detail.ancestry} onSelect={onSelect} />
-      {detail.ancestry.truncated ? (
-        <p className="hierarchy-bound-note">
-          {detail.ancestry.omittedCount} middle path level{detail.ancestry.omittedCount === 1 ? " is" : "s are"} hidden here.
-        </p>
-      ) : null}
+      <section className="life-link-detail-path" aria-label="Recorded path context">
+        <p className="eyebrow">Recorded path</p>
+        <LifeLinkBreadcrumbs ancestry={detail.ancestry} onSelect={onSelect} />
+        {detail.ancestry.truncated ? (
+          <p className="hierarchy-bound-note">
+            {detail.ancestry.omittedCount} middle path level{detail.ancestry.omittedCount === 1 ? " is" : "s are"} hidden here.
+          </p>
+        ) : null}
+      </section>
       <header className="life-link-detail-header">
-        <div>
-          <p className="eyebrow">My Life Links</p>
+        <div className="life-link-detail-identity">
+          <p className="eyebrow">Selected Life Link</p>
           <h3>{lifeLink.title || "Untitled Life Link"}</h3>
           <code>{lifeLink.id}</code>
         </div>
@@ -110,14 +113,20 @@ export function LifeLinkDetail({
         ) : null}
       </section>
 
-      <div className="life-link-detail-body">
-        {lifeLink.body ? (
-          <RichBodyRenderer body={lifeLink.body} bodyDoc={lifeLink.bodyDoc} />
-        ) : (
-          <p className="inline-note">No note yet. Add details that help you or an assistant understand this place or object.</p>
-        )}
-        <CanonicalMediaGallery media={lifeLink.media} title={lifeLink.title || lifeLink.id} />
-      </div>
+      <section className="life-link-detail-content" aria-labelledby="life-link-recorded-context-heading">
+        <header className="life-link-detail-content-heading">
+          <p className="eyebrow">Recorded context</p>
+          <h4 id="life-link-recorded-context-heading">What this Life Link remembers</h4>
+        </header>
+        <div className="life-link-detail-body">
+          {lifeLink.body ? (
+            <RichBodyRenderer body={lifeLink.body} bodyDoc={lifeLink.bodyDoc} />
+          ) : (
+            <p className="inline-note">No note yet. Add details that help you or an assistant understand this place or object.</p>
+          )}
+          <CanonicalMediaGallery media={lifeLink.media} title={lifeLink.title || lifeLink.id} />
+        </div>
+      </section>
 
       <div className="life-link-detail-actions">
         <button className="primary-button" onClick={() => onEdit(lifeLink.id)} disabled={busy}>

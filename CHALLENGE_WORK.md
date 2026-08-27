@@ -44,6 +44,7 @@ functionality.
 | Preserve newer navigation when Save completes after navigation | No | `5b850e618c88c50b8079305b1314df1c38cb52e3` | `6e0d1cf28a91485ab690fff67050a704d4ee327d` | Workspace controller regression tests |
 | Rich physical-context retrieval, revision-safe direct update, and deterministic camping challenge loop | No | `2fff0f5d8bd791cd43e5fef4f7640b4a7a563552` | `bbdfba3f1eccd7d2ff4f3905c17eb2ecb9ea2c36` | BC-120/130/140 unit, contract, controlled-host, native-Chrome, persistence, and complete local challenge-loop evidence |
 | Sixty-record family-adventure fixture and shared nearest-QR physical locator | No | exact canonical source recorded by this release's `SOURCE_PROJECTION.json` | this forward-only release projection | Fixture/reset counts and identity tests; core locator edge cases; handler and human-UI parity; controlled and native family journey tests |
+| Judged-path presentation, trust-state clarity, and responsive accessibility | No | exact canonical source recorded by this release's `SOURCE_PROJECTION.json` | this forward-only release projection | Public, private, owner-only, unclaimed, and missing-state regression coverage; keyboard focus transfer; desktop and phone browser qualification; light/dark contrast and reduced-motion checks |
 
 Two canonical checkpoints intentionally produce no invented standalone product
 commit: `2ada1078594cee1a6d3b46b48718b30a01b41736` changes release tooling outside

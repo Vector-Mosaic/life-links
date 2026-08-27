@@ -228,15 +228,40 @@ test.describe("competition physical-context loop", () => {
     await expect(page.locator(".public-content")).not.toContainText("Camping Sleeping Pad");
     await expect(page.locator(".public-content")).not.toContainText("cold through the ground");
 
+    await page.goto(`/qr/${COMPETITION_DECOY_QR_ID}`);
+    await expect(page.getByRole("heading", { name: "Private context protected" })).toBeVisible();
+    await expect(page.getByText("Log in as the owner to view this content.")).toBeVisible();
+    await expect(page.getByText("Private context remains hidden.")).toBeVisible();
+    await expect(page.getByText("Shared by the owner", { exact: false })).toHaveCount(0);
+    await expect(page.locator(".public-content")).toHaveCount(0);
+
+    await page.goto(`/qr/${COMPETITION_TARGET_QR_ID}`);
+
     await page.getByLabel("Email").fill(CHALLENGE_EMAIL);
     await page.getByLabel("Password").fill(CHALLENGE_PASSWORD);
     await page.getByRole("button", { name: /sign in/i }).click();
     const openInWorkspace = page.getByRole("button", { name: "Open in My Life Links" });
     await expect(openInWorkspace).toBeVisible();
+
+    await page.goto(`/qr/${COMPETITION_DECOY_QR_ID}`);
+    await expect(page.getByRole("heading", { name: "Private context visible to owner" })).toBeVisible();
+    await expect(page.getByText("Owner-only view")).toBeVisible();
+    await expect(page.getByText("Owner-only", { exact: true })).toBeVisible();
+    await expect(page.getByText(/This context is not public/)).toBeVisible();
+    await expect(page.getByText("Owner-only context, not publicly shared.")).toBeVisible();
+    await expect(page.getByText("Shared by the owner", { exact: false })).toHaveCount(0);
+    await expect(page.getByText(/intentionally published by the owner/)).toHaveCount(0);
+
+    await page.goto(`/qr/${COMPETITION_TARGET_QR_ID}`);
+    await expect(openInWorkspace).toBeVisible();
     await expect(page).toHaveURL(`${challengeBaseURL}/qr/${COMPETITION_TARGET_QR_ID}`);
-    await openInWorkspace.click();
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    await openInWorkspace.focus();
+    await openInWorkspace.press("Enter");
 
     await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID}`);
+    await expect(page.locator(".topbar h2")).toBeFocused();
+    expect(await page.evaluate(() => window.scrollY)).toBe(0);
     await expect(
       page.locator(`[data-selected-life-link-id="${COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID}"]`)
     ).toBeVisible();

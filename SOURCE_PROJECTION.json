@@ -1,6 +1,6 @@
 {
-  "canonical_source_byte_count": 1103585,
-  "canonical_source_tree_sha256": "d4794c117e211c1fb3daa3e449c7bff77af0f0f29716f7e8cdfabc6468f0550c",
+  "canonical_source_byte_count": 1133557,
+  "canonical_source_tree_sha256": "5b0ef2218099e190023f17e64afdb5037a0dd8366ab2c47e9335c7ef8eeb0da7",
   "excluded_globs": [
     "**/node_modules/**",
     "**/dist/**",
@@ -368,7 +368,7 @@
   "profile_id": "life-links-webmcp-challenge",
   "profile_path": "systems/life_links/config/publication/webmcp_challenge_public_release.profile.json",
   "profile_sha256": "2ce0560cc384c8b50284cc1edc003b2e2951798237ae8333d3042b827a0091de",
-  "projection_commit": "557468d78790a8d883838a5086d39bca33133a41",
+  "projection_commit": "f898af48c14c2102ead77b85ec8771bf612c3f2c",
   "scaffold_destinations": [
     ".env.example",
     ".gitignore",
@@ -437,15 +437,15 @@
       "template": "systems/life_links/config/publication/templates/THIRD_PARTY_NOTICES.md"
     },
     {
-      "byte_count": 10020,
+      "byte_count": 10414,
       "destination": "CHALLENGE_WORK.md",
-      "sha256": "e81d18929eaca80d110f98bcda93a8294ccb5ab4bac33a30d3b29377262d17b2",
+      "sha256": "3c54e4e8ff9e24cf1cd962778d5c72b84578fbddd373573881033d542dc14317",
       "template": "systems/life_links/config/publication/templates/CHALLENGE_WORK.md"
     }
   ],
   "schema_version": "life_links.source_projection.v2",
-  "source_byte_count": 1102450,
-  "source_commit": "3293e2ce51302ff11eff79424582cae878eacbc7",
+  "source_byte_count": 1132422,
+  "source_commit": "f898af48c14c2102ead77b85ec8771bf612c3f2c",
   "source_file_count": 86,
   "source_mappings": [
     {
@@ -465,5 +465,5 @@
       "source": "systems/life_links/contracts/http"
     }
   ],
-  "source_tree_sha256": "40f61262b66cb13fb4d0eeffa43549c31cf031ce0a24acefa507c374354455a6"
+  "source_tree_sha256": "2a26218a0972408246fb977e4167ec79e71a4db0d438c813525bd009afdcd659"
 }

@@ -100,6 +100,7 @@ function LifeLinksApp() {
   const [agentAccessOwnerId, setAgentAccessOwnerId] = useState<string | null>(null);
   const [agentActivities, setAgentActivities] = useState<AgentActivityEntry[]>([]);
   const agentActivityEligibleRef = useRef(false);
+  const ownerWorkspaceHeadingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -116,6 +117,21 @@ function LifeLinksApp() {
   );
   const unclaimedLinks = useMemo(() => links.filter((link) => link.status === "unclaimed"), [links]);
   const route = classifyLifeLinksRoute(routePathname, Boolean(currentUser));
+  const previousRouteSurfaceRef = useRef(route.surface);
+
+  useEffect(() => {
+    const previousSurface = previousRouteSurfaceRef.current;
+    previousRouteSurfaceRef.current = route.surface;
+    if (previousSurface === "public-qr" && route.surface === "owner-workspace") {
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+      const focusFrame = window.requestAnimationFrame(() => {
+        ownerWorkspaceHeadingRef.current?.focus({ preventScroll: true });
+      });
+      return () => window.cancelAnimationFrame(focusFrame);
+    }
+    return undefined;
+  }, [route.surface]);
+
   const agentAccessEnabled = agentAccessGrantIsActive(
     agentAccessOwnerId,
     currentUser?.id ?? null,
@@ -327,9 +343,12 @@ function LifeLinksApp() {
 
       <main className="workspace">
         <header className="topbar">
-          <div>
+          <div className="topbar-title">
             <p className="eyebrow">Physical-world context</p>
-            <h2>{viewTitle(activeView)}</h2>
+            <h2 ref={ownerWorkspaceHeadingRef} tabIndex={-1}>
+              {viewTitle(activeView)}
+            </h2>
+            <p className="topbar-context">Private context for the things, places, and plans that shape your life.</p>
           </div>
           <div className="topbar-actions">
             <button
@@ -372,15 +391,27 @@ function LifeLinksApp() {
 
         {error && <div className="error-banner">{error}</div>}
 
-        <section className="agent-console-grid" aria-label="Life Links agent controls">
-          <AgentAccessPanel
-            supported={webMcpSupported}
-            enabled={agentAccessEnabled}
-            registrationStatus={agentRegistrationStatus}
-            registrationError={agentRegistrationError}
-            onEnabledChange={setAgentAccess}
-          />
-          <AgentActivityPanel activities={agentActivities} />
+        <section className="agent-command-center" aria-label="Life Links agent controls">
+          <header className="agent-command-heading">
+            <div>
+              <p className="eyebrow">Explicit page-session authority</p>
+              <h3>Agent connection</h3>
+            </div>
+            <span className="agent-session-boundary">
+              <Lock size={14} />
+              Ends with this page session
+            </span>
+          </header>
+          <div className="agent-console-grid">
+            <AgentAccessPanel
+              supported={webMcpSupported}
+              enabled={agentAccessEnabled}
+              registrationStatus={agentRegistrationStatus}
+              registrationError={agentRegistrationError}
+              onEnabledChange={setAgentAccess}
+            />
+            <AgentActivityPanel activities={agentActivities} />
+          </div>
         </section>
 
         {activeView === "home" && (
@@ -793,16 +824,80 @@ function PublicQrShell({
   onLogin: (email: string, password: string) => void;
   onOpenWorkspace: () => void;
 }) {
+  const recordHeading = notFoundQrId
+    ? "Life Link not found"
+    : privateQrId
+      ? "Private context protected"
+      : link?.status === "unclaimed"
+        ? "Unclaimed permanent Life Link"
+        : link?.privacy === "private"
+          ? "Private context visible to owner"
+          : "Owner-published physical context";
+  const recordStatus = notFoundQrId
+    ? "Resolution status"
+    : privateQrId
+      ? "Private boundary"
+      : link?.status === "unclaimed"
+        ? "Public handle"
+        : link?.privacy === "private"
+          ? "Owner-only view"
+          : "Public view";
+  const recordFootnote = notFoundQrId
+    ? "No matching Life Link was found."
+    : privateQrId
+      ? "Private context remains hidden."
+      : link?.status === "unclaimed"
+        ? "No owner content is attached yet."
+        : link?.privacy === "private"
+          ? "Owner-only context, not publicly shared."
+          : "Shared by the owner, not inferred by the scanner.";
+
   return (
     <main className="public-shell">
-      <section className="public-qr-panel">
+      <header className="public-brand-bar">
         <div className="brand-block">
           <div className="brand-mark">LL</div>
           <div>
             <h1>Life Links</h1>
-            <p>A permanent handle for the physical world</p>
+            <p>Private context for physical life</p>
           </div>
         </div>
+        <span className="public-trust-pill">
+          <Lock size={14} />
+          Private by default
+        </span>
+      </header>
+
+      <section className="public-intro" aria-labelledby="public-life-links-title">
+        <p className="eyebrow">A context layer for physical life</p>
+        <h2 id="public-life-links-title">AI knows the world. Life Links lets it know yours.</h2>
+        <p className="public-lede">
+          A permanent QR reconnects a real place, container, or object with the context its owner chose to preserve.
+        </p>
+        <ul className="public-principles" aria-label="Life Links principles">
+          <li>
+            <QrCode size={18} />
+            <span><strong>Permanent handle</strong> for a physical subject</span>
+          </li>
+          <li>
+            <ShieldCheck size={18} />
+            <span><strong>Owner-controlled</strong> context and agent access</span>
+          </li>
+          <li>
+            <Layers size={18} />
+            <span><strong>Private depth</strong> behind a deliberately public edge</span>
+          </li>
+        </ul>
+      </section>
+
+      <section className="public-record-card" aria-labelledby="public-record-title">
+        <header className="public-record-heading">
+          <div>
+            <p className="eyebrow">Scanned Life Link</p>
+            <h2 id="public-record-title">{recordHeading}</h2>
+          </div>
+          <span className="public-live-status"><span aria-hidden="true" /> {recordStatus}</span>
+        </header>
         {error && <div className="error-banner">{error}</div>}
         <QrDetail
           link={link}
@@ -816,20 +911,36 @@ function PublicQrShell({
           onEdit={() => undefined}
           onDownloadSvg={() => undefined}
           onDownloadPng={() => undefined}
+          publicPresentation
         />
       </section>
-      {signedIn ? (
-        <section className="login-panel compact public-owner-entry">
-          <strong>Signed in as the owner</strong>
-          <p>Keep this permanent QR page public-facing, or enter the private hierarchy explicitly.</p>
-          <button className="primary-button" onClick={onOpenWorkspace} disabled={busy}>
-            <FolderOpen size={18} />
-            <span>Open in My Life Links</span>
-          </button>
-        </section>
-      ) : (
-        <LoginForm error="" busy={busy} onLogin={onLogin} compact />
-      )}
+
+      <aside className="public-owner-gate" aria-label="Owner access">
+        <div className="public-owner-boundary">
+          <ShieldCheck size={18} />
+          <div>
+            <strong>This is the public edge</strong>
+            <p>The private hierarchy, history, preferences, plans, and agent controls stay behind owner sign-in.</p>
+          </div>
+        </div>
+        {signedIn ? (
+          <section className="login-panel compact public-owner-entry">
+            <strong>Signed in as the owner</strong>
+            <p>Keep this permanent QR page public-facing, or enter the private hierarchy explicitly.</p>
+            <button className="primary-button" onClick={onOpenWorkspace} disabled={busy}>
+              <FolderOpen size={18} />
+              <span>Open in My Life Links</span>
+            </button>
+          </section>
+        ) : (
+          <LoginForm error="" busy={busy} onLogin={onLogin} compact />
+        )}
+      </aside>
+
+      <footer className="public-footnote">
+        <span>Recorded context, not live sensing.</span>
+        <span>{recordFootnote}</span>
+      </footer>
     </main>
   );
 }
@@ -983,7 +1094,8 @@ function QrDetail({
   onClaim,
   onEdit,
   onDownloadSvg,
-  onDownloadPng
+  onDownloadPng,
+  publicPresentation = false
 }: {
   link: LinkRecord | null;
   privateQrId: string | null;
@@ -996,19 +1108,24 @@ function QrDetail({
   onEdit: (id: string) => void;
   onDownloadSvg: () => void;
   onDownloadPng: () => void;
+  publicPresentation?: boolean;
 }) {
   if (notFoundQrId) {
     return (
-      <div className="empty-state">
-        <span>QR not found: {notFoundQrId}</span>
+      <div className={publicPresentation ? "qr-detail public-qr-detail" : "qr-detail"}>
+        <div className={publicPresentation ? "empty-state public-record-state" : "empty-state"}>
+          <QrCode size={36} />
+          <strong>QR not found</strong>
+          <span>{notFoundQrId}</span>
+        </div>
       </div>
     );
   }
 
   if (privateQrId) {
     return (
-      <div className="qr-detail">
-        <div className="phone-page">
+      <div className={publicPresentation ? "qr-detail public-qr-detail" : "qr-detail"}>
+        <div className={publicPresentation ? "phone-page public-record-surface" : "phone-page"}>
           <div className="phone-bar">
             <span>{privateQrId}</span>
             <span>Private</span>
@@ -1024,15 +1141,19 @@ function QrDetail({
   }
 
   if (!link) {
-    return <div className="empty-state">No QR selected.</div>;
+    return (
+      <div className={publicPresentation ? "qr-detail public-qr-detail" : "qr-detail"}>
+        <div className={publicPresentation ? "empty-state public-record-state" : "empty-state"}>No QR selected.</div>
+      </div>
+    );
   }
 
   const project = projects.find((item) => item.id === link.projectId);
   const privateGuest = guestView && link.privacy === "private";
 
   return (
-    <div className="qr-detail">
-      <div className="phone-page">
+    <div className={publicPresentation ? "qr-detail public-qr-detail" : "qr-detail"}>
+      <div className={publicPresentation ? "phone-page public-record-surface" : "phone-page"}>
         <div className="phone-bar">
           <span>{link.id}</span>
           <span>{link.privacy === "private" ? "Private" : "Public"}</span>
@@ -1054,50 +1175,68 @@ function QrDetail({
           </div>
         ) : (
           <article className="public-content">
-            <p className="project-label">{project?.name ?? "Life Link"}</p>
+            <div className="public-content-heading">
+              <p className="project-label">{project?.name ?? "Life Link"}</p>
+              {publicPresentation ? (
+                <span className={link.privacy === "private" ? "public-state-chip private" : "public-state-chip"}>
+                  {link.privacy === "private" ? <Lock size={14} /> : <Globe2 size={14} />}
+                  {link.privacy === "private" ? "Owner-only" : "Owner shared"}
+                </span>
+              ) : null}
+            </div>
             <h3>{link.title || "Untitled link"}</h3>
             <RichBodyRenderer body={link.body} bodyDoc={link.bodyDoc} />
             <MediaGallery media={link.media} title={link.title || link.id} />
+            {publicPresentation ? (
+              <p className={link.privacy === "private" ? "public-disclosure-note private" : "public-disclosure-note"}>
+                {link.privacy === "private" ? <Lock size={16} /> : <ShieldCheck size={16} />}
+                {link.privacy === "private"
+                  ? "Visible only because the owner is signed in. This context is not public."
+                  : "Only context intentionally published by the owner appears on this permanent page."}
+              </p>
+            ) : null}
           </article>
         )}
       </div>
-      <div className="meta-stack">
-        <code>{link.url}</code>
-        <div className="button-row">
-          <button
-            className="secondary-button"
-            onClick={onGuestToggle}
-            disabled={!canEdit}
-            data-tooltip={guestView ? "Return to the owner editing preview." : "Preview how this QR appears to a public visitor."}
-          >
-            {guestView ? <ShieldCheck size={18} /> : <Globe2 size={18} />}
-            <span>{guestView ? "Owner" : "Guest"}</span>
-            <Tooltip text={guestView ? "Return to the owner editing preview." : "Preview how this QR appears to a public visitor."} />
-          </button>
-          <button
-            className="secondary-button"
-            onClick={() => onEdit(link.id)}
-            disabled={link.status === "unclaimed" || !canEdit}
-            data-tooltip={link.status === "unclaimed" ? "Claim this QR before editing its content." : "Edit title, body, project, privacy, and media."}
-          >
-            <Pencil size={18} />
-            <span>Edit</span>
-            <Tooltip text={link.status === "unclaimed" ? "Claim this QR before editing its content." : "Edit title, body, project, privacy, and media."} />
-          </button>
+      {publicPresentation ? null : (
+        <div className="meta-stack">
+          <code>{link.url}</code>
+          <div className="button-row">
+            <button
+              className="secondary-button"
+              onClick={onGuestToggle}
+              disabled={!canEdit}
+              data-tooltip={guestView ? "Return to the owner editing preview." : "Preview how this QR appears to a public visitor."}
+            >
+              {guestView ? <ShieldCheck size={18} /> : <Globe2 size={18} />}
+              <span>{guestView ? "Owner" : "Guest"}</span>
+              <Tooltip text={guestView ? "Return to the owner editing preview." : "Preview how this QR appears to a public visitor."} />
+            </button>
+            <button
+              className="secondary-button"
+              onClick={() => onEdit(link.id)}
+              disabled={link.status === "unclaimed" || !canEdit}
+              data-tooltip={link.status === "unclaimed" ? "Claim this QR before editing its content." : "Edit title, body, project, privacy, and media."}
+            >
+              <Pencil size={18} />
+              <span>Edit</span>
+              <Tooltip text={link.status === "unclaimed" ? "Claim this QR before editing its content." : "Edit title, body, project, privacy, and media."} />
+            </button>
+          </div>
+          <div className="button-row">
+            <button className="secondary-button" onClick={onDownloadSvg} disabled={!canEdit} data-tooltip="Download this QR code as a print-quality SVG file.">
+              <Download size={18} />
+              <span>SVG</span>
+              <Tooltip text="Download this QR code as a print-quality SVG file." />
+            </button>
+            <button className="secondary-button" onClick={onDownloadPng} disabled={!canEdit} data-tooltip="Download this QR code as a PNG image file.">
+              <Download size={18} />
+              <span>PNG</span>
+              <Tooltip text="Download this QR code as a PNG image file." />
+            </button>
+          </div>
         </div>
-        <div className="button-row">
-          <button className="secondary-button" onClick={onDownloadSvg} disabled={!canEdit} data-tooltip="Download this QR code as a print-quality SVG file.">
-            <Download size={18} />
-            <span>SVG</span>
-            <Tooltip text="Download this QR code as a print-quality SVG file." />
-          </button>
-          <button className="secondary-button" onClick={onDownloadPng} disabled={!canEdit} data-tooltip="Download this QR code as a PNG image file.">
-            <Download size={18} />
-            <span>PNG</span>
-            <Tooltip text="Download this QR code as a PNG image file." />
-          </button>
-        </div>
-      </div>
+      )}
     </div>
   );
 }

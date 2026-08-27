@@ -87,7 +87,16 @@ export function OwnerWorkspace({
         </button>
       </div>
 
-      <div className="panel hierarchy-search-panel">
+      <section className="panel hierarchy-search-panel" aria-labelledby="life-link-search-heading">
+        <div className="hierarchy-search-intro">
+          <div>
+            <p className="eyebrow">Retrieve physical context</p>
+            <h3 id="life-link-search-heading">Find what you need</h3>
+          </div>
+          <p className="panel-help">
+            Search your recorded places, containers, objects, notes, and QR IDs without expanding the whole hierarchy.
+          </p>
+        </div>
         <form
           className="hierarchy-search-form"
           onSubmit={(event) => {
@@ -128,18 +137,37 @@ export function OwnerWorkspace({
                     className="hierarchy-search-open"
                     onClick={() => void controller.selectLifeLink({ lifeLinkId: result.lifeLink.id, source: "search" })}
                   >
-                    <strong>{result.lifeLink.title || "Untitled Life Link"}</strong>
-                    <span>{formatRecordedLifeLinkPath(result.path)}</span>
+                    <strong className="hierarchy-search-result-title">
+                      {result.lifeLink.title || "Untitled Life Link"}
+                    </strong>
+                    <span className="hierarchy-search-path">
+                      <span className="hierarchy-search-result-label">Recorded path</span>
+                      <span>{formatRecordedLifeLinkPath(result.path)}</span>
+                    </span>
                     <span
                       className={physicalLocator ? "physical-locator-summary" : "physical-locator-summary unavailable"}
                     >
-                      {physicalLocator
-                        ? `Recorded QR locator: ${physicalLocator.title || "Untitled Life Link"} · ${physicalLocator.qrId}. Recorded placement, not live-location proof.`
-                        : result.path.truncated
-                          ? "No reliable QR locator can be derived from this bounded recorded path."
-                          : "No QR-bound locator is recorded for this path."}
+                      <span className="physical-locator-summary-label">Recorded QR locator: </span>
+                      {physicalLocator ? (
+                        <>
+                          <strong className="physical-locator-summary-value">
+                            {physicalLocator.title || "Untitled Life Link"} · {physicalLocator.qrId}
+                          </strong>
+                          <small className="physical-locator-summary-caveat">
+                            Recorded placement, not live-location proof.
+                          </small>
+                        </>
+                      ) : (
+                        <span className="physical-locator-summary-value">
+                          {result.path.truncated
+                            ? "No reliable QR locator can be derived from this bounded recorded path."
+                            : "No QR-bound locator is recorded for this path."}
+                        </span>
+                      )}
                     </span>
-                    <small>{result.bodySummary || result.lifeLink.id}</small>
+                    <small className="hierarchy-search-body-summary">
+                      {result.bodySummary || result.lifeLink.id}
+                    </small>
                   </button>
                   {isMoveTarget ? (
                     <button
@@ -166,7 +194,7 @@ export function OwnerWorkspace({
         ) : lifeLinkSearchQuery.trim() && !lifeLinkSearchLoading ? (
           <p className="inline-note">No matching Life Links in this library.</p>
         ) : null}
-      </div>
+      </section>
 
       {dialog ? (
         <div className="panel hierarchy-action-panel" role="region" aria-label={`${dialog.kind} Life Link`}>
@@ -241,9 +269,12 @@ export function OwnerWorkspace({
 
       <div className="hierarchy-main-grid">
         <div className="panel hierarchy-tree-panel">
-          <div className="panel-title">
+          <div className="panel-title hierarchy-library-heading">
             <FolderTree size={18} />
-            <h3>Hierarchy</h3>
+            <div>
+              <p className="eyebrow">Recorded structure</p>
+              <h3>Hierarchy</h3>
+            </div>
           </div>
           <LifeLinkTree
             roots={rootLifeLinks.items}

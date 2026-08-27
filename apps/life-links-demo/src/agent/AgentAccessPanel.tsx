@@ -18,10 +18,12 @@ export function AgentAccessPanel({
   const accessReady = supported && registrationStatus === "ready";
   return (
     <section className="panel agent-access-panel" aria-labelledby="agent-access-title">
-      <div className="agent-access-heading">
-        <div className="panel-title">
-          <Bot size={18} />
-          <h3 id="agent-access-title">Agent Access</h3>
+      <header className="agent-access-heading">
+        <div className="agent-access-title-group">
+          <div className="panel-title">
+            <Bot size={18} />
+            <h3 id="agent-access-title">Agent Access</h3>
+          </div>
         </div>
         <label className="agent-access-toggle">
           <input
@@ -30,25 +32,35 @@ export function AgentAccessPanel({
             disabled={!supported}
             onChange={(event) => onEnabledChange(event.currentTarget.checked)}
           />
-          <span>{enabled ? "On for this page session" : "Off"}</span>
+          <span className="agent-access-toggle-copy">
+            {enabled ? "On for this page session" : "Off"}
+          </span>
         </label>
-      </div>
+      </header>
 
       {!supported ? (
         <div className="agent-access-status unavailable" role="status">
           <CircleAlert size={17} />
-          <span>WebMCP unavailable in this browser. The human workspace remains fully available.</span>
+          <span className="agent-access-status-copy">
+            WebMCP unavailable in this browser. The human workspace remains fully available.
+          </span>
         </div>
       ) : (
         <div className={accessReady ? "agent-access-status ready" : "agent-access-status"} role="status">
           <ShieldCheck size={17} />
-          <span>{registrationMessage(enabled, registrationStatus, registrationError)}</span>
+          <span className="agent-access-status-copy">
+            {registrationMessage(enabled, registrationStatus, registrationError)}
+          </span>
         </div>
       )}
 
       <div className="agent-access-scope">
-        <p><strong>Allowed:</strong> inspect, bounded search, visible navigation, revision-safe title/body updates, and Find Mode.</p>
-        <p><strong>Never granted:</strong> privacy, hierarchy, QR, media, claim, delete, purchase, or batch changes.</p>
+        <p className="agent-access-scope-item allowed">
+          <strong>Allowed:</strong> inspect, bounded search, visible navigation, revision-safe title/body updates, and Find Mode.
+        </p>
+        <p className="agent-access-scope-item denied">
+          <strong>Never granted:</strong> privacy, hierarchy, QR, media, claim, delete, purchase, or batch changes.
+        </p>
       </div>
     </section>
   );
