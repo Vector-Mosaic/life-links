@@ -71,9 +71,17 @@ test.describe("installed Chrome native WebMCP host", () => {
       getTools: "function",
       executeTool: "function"
     });
-    await expect.poll(() => nativeToolNames(page)).toEqual([]);
+    const existingDisconnectButton = page.getByRole("button", {
+      name: "Disconnect Agent",
+      exact: true
+    });
+    if (await existingDisconnectButton.isVisible()) {
+      await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
+      await existingDisconnectButton.click();
+      await expect.poll(() => nativeToolNames(page)).toEqual([]);
+    }
 
-    await page.getByRole("button", { name: "Connect Agent" }).click();
+    await page.getByRole("button", { name: "Connect Agent", exact: true }).click();
     await expect(page.getByText("Connected until you disconnect. Life Links tools are available to your agent.")).toBeVisible();
     await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
 
@@ -204,7 +212,7 @@ test.describe("installed Chrome native WebMCP host", () => {
     const reloadResponse = await page.reload();
     assertWebMcpDocumentHeaders(reloadResponse);
     await expect(page.locator("#agent-access-title")).toHaveText("Agent Connection");
-    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Disconnect Agent", exact: true })).toBeVisible();
     await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
 
     const persistedOpen = await invokeNativeTool(page, "open_life_link", {
@@ -267,7 +275,7 @@ test.describe("installed Chrome native WebMCP host", () => {
       })
     );
     await delayedSearchStarted;
-    await page.getByRole("button", { name: "Disconnect Agent" }).click();
+    await page.getByRole("button", { name: "Disconnect Agent", exact: true }).click();
     await expect.poll(() => nativeToolNames(page)).toEqual([]);
     releaseDelayedSearch?.();
     const revokedOutcome = await revokedInvocation;
@@ -277,7 +285,7 @@ test.describe("installed Chrome native WebMCP host", () => {
     await page.waitForTimeout(100);
     await expect(page.getByText("No agent activity yet.")).toBeVisible();
 
-    await page.getByRole("button", { name: "Connect Agent" }).click();
+    await page.getByRole("button", { name: "Connect Agent", exact: true }).click();
     await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
     await page.locator(".sidebar-actions").getByRole("button", { name: "Logout" }).click();
     await expect(page.getByRole("heading", { name: "Sign in to Life Links" })).toBeVisible();
@@ -286,11 +294,11 @@ test.describe("installed Chrome native WebMCP host", () => {
     await page.getByLabel("Email").fill(DEMO_EMAIL);
     await page.getByLabel("Password").fill(DEMO_PASSWORD);
     await page.getByRole("button", { name: /sign in/i }).click();
-    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Disconnect Agent", exact: true })).toBeVisible();
     await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
 
-    await page.getByRole("button", { name: "Disconnect Agent" }).click();
-    await expect(page.getByRole("button", { name: "Connect Agent" })).toBeVisible();
+    await page.getByRole("button", { name: "Disconnect Agent", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Connect Agent", exact: true })).toBeVisible();
     await expect.poll(() => nativeToolNames(page)).toEqual([]);
     expect(patchRequests).toHaveLength(1);
   });

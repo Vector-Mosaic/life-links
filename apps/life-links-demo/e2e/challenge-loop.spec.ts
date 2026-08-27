@@ -279,15 +279,29 @@ test.describe("competition physical-context loop", () => {
     }));
     expect(hierarchyViewport.scrollWidth).toBeLessThanOrEqual(hierarchyViewport.clientWidth + 1);
 
-    const connectButton = page.getByRole("button", { name: "Connect Agent" });
+    const existingDisconnectButton = page.getByRole("button", {
+      name: "Disconnect Agent",
+      exact: true
+    });
+    if (await existingDisconnectButton.isVisible()) {
+      await expect
+        .poll(async () => (await controlledHostSnapshot(page)).activeNames)
+        .toEqual(CANONICAL_TOOL_NAMES);
+      await existingDisconnectButton.click();
+      await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
+    }
+    const connectButton = page.getByRole("button", { name: "Connect Agent", exact: true });
     await expect(connectButton).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
+    const registrationCountBeforeConnect = (await controlledHostSnapshot(page)).registrationNames
+      .length;
     await connectButton.click();
-    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Disconnect Agent", exact: true })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
     const registeredCatalog = await controlledHostSnapshot(page);
-    expect(registeredCatalog.registrationNames).toHaveLength(5);
-    expect([...registeredCatalog.registrationNames].sort()).toEqual(CANONICAL_TOOL_NAMES);
+    const currentRegistrationNames = registeredCatalog.registrationNames.slice(registrationCountBeforeConnect);
+    expect(currentRegistrationNames).toHaveLength(5);
+    expect([...currentRegistrationNames].sort()).toEqual(CANONICAL_TOOL_NAMES);
 
     const tubInspection = await invokeControlledTool(page, "inspect_current_life_link", {});
     expect(tubInspection).toMatchObject({
@@ -499,7 +513,7 @@ test.describe("competition physical-context loop", () => {
     await page.reload();
     await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID}`);
     await expect(page.locator(".life-link-owner-detail")).toContainText("Planned upgrade priority: sleeping pad.");
-    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Disconnect Agent", exact: true })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
     expect((await controlledHostSnapshot(page)).registrationNames.sort()).toEqual(CANONICAL_TOOL_NAMES);
     const persistedInspection = await invokeControlledTool(page, "inspect_current_life_link", {});
@@ -537,8 +551,8 @@ test.describe("competition physical-context loop", () => {
     await expect(page.locator(".scan-status")).toContainText("Match found");
     await expect(page.locator(".scan-status")).toContainText(COMPETITION_TARGET_QR_ID);
 
-    await page.getByRole("button", { name: "Disconnect Agent" }).click();
-    await expect(page.getByRole("button", { name: "Connect Agent" })).toBeVisible();
+    await page.getByRole("button", { name: "Disconnect Agent", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Connect Agent", exact: true })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
     const revokedHost = await controlledHostSnapshot(page);
     expect([...revokedHost.abortedNames].sort()).toEqual(CANONICAL_TOOL_NAMES);
