@@ -1735,6 +1735,19 @@ textarea {
   color: var(--muted);
 }
 
+.hierarchy-search-open .physical-locator-summary {
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 750;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.hierarchy-search-open .physical-locator-summary.unavailable {
+  color: var(--muted);
+  font-weight: 650;
+}
+
 .hierarchy-search-more,
 .hierarchy-root-more {
   justify-self: start;
@@ -1963,6 +1976,44 @@ textarea {
 
 .qr-binding-badge.attached {
   color: var(--accent);
+}
+
+.physical-locator-card {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--soft));
+}
+
+.physical-locator-heading,
+.physical-locator-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.physical-locator-heading > div {
+  display: grid;
+  gap: 4px;
+}
+
+.physical-locator-heading .eyebrow,
+.physical-locator-copy {
+  margin: 0;
+}
+
+.physical-locator-copy {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.physical-locator-actions {
+  justify-content: flex-start;
 }
 
 .life-link-detail-body {
@@ -2327,6 +2378,7 @@ textarea {
   }
 
   .hierarchy-toolbar .primary-button,
+  .physical-locator-actions .secondary-button,
   .life-link-detail-actions .primary-button,
   .life-link-detail-actions .secondary-button {
     width: 100%;

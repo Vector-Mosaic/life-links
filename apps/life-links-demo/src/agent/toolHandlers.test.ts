@@ -162,6 +162,71 @@ describe("Life Links five-tool catalog", () => {
     expect(secondResult).toMatchObject({ ok: true, lifeLink: { id: second.id } });
   });
 
+  it("exposes the same ancestor-first physical locator through inspect and search for existing Find Mode", async () => {
+    const home = lifeLink({ id: "life-link-home", parentId: null, qrId: null, title: "Home" });
+    const gearTub = lifeLink({
+      id: "life-link-gear-tub",
+      parentId: home.id,
+      qrId: "LL-GEAR-TUB",
+      title: "Basement Gear Tub"
+    });
+    const stove = lifeLink({
+      id: "life-link-camp-stove",
+      parentId: gearTub.id,
+      qrId: "LL-CAMP-STOVE",
+      title: "Camp Stove"
+    });
+    const ancestry = [summary(home), summary(gearTub), summary(stove)];
+    const searchItem: LifeLinkSearchItem = {
+      lifeLink: summary(stove),
+      path: { items: ancestry, truncated: false, omittedCount: 0 },
+      bodySummary: stove.body,
+      matchClass: "exact_title"
+    };
+    controller.current = snapshot({
+      selectedLifeLinkId: stove.id,
+      selectedLifeLinkDetail: detail(stove, ancestry),
+      lifeLinkSearchResults: [searchItem],
+      lifeLinkSearchTotalCount: 1
+    });
+    const expectedLocator = {
+      lifeLinkId: gearTub.id,
+      title: gearTub.title,
+      qrId: gearTub.qrId,
+      relation: "ancestor"
+    };
+
+    const inspected = await requiredTool("inspect_current_life_link").execute({}, {});
+    const searched = await requiredTool("search_my_life_links").execute({ query: "stove", limit: 10 }, {});
+
+    expect(inspected).toMatchObject({ ok: true, lifeLink: { id: stove.id }, physicalLocator: expectedLocator });
+    expect(searched).toMatchObject({
+      ok: true,
+      results: [{ id: stove.id, physicalLocator: expectedLocator }]
+    });
+
+    controller.agentStartFindMode.mockImplementationOnce(async () => {
+      controller.current = snapshot({
+        selectedLifeLinkId: gearTub.id,
+        selectedLifeLinkDetail: detail(gearTub, [summary(home), summary(gearTub)]),
+        findTargetId: gearTub.qrId
+      });
+      return { ok: true };
+    });
+    await expect(
+      requiredTool("start_find_mode").execute({ lifeLinkId: expectedLocator.lifeLinkId }, {})
+    ).resolves.toMatchObject({
+      ok: true,
+      lifeLinkId: gearTub.id,
+      qrId: gearTub.qrId,
+      visibleEffect: "find_mode_started"
+    });
+    expect(controller.agentStartFindMode).toHaveBeenCalledWith(
+      { lifeLinkId: expectedLocator.lifeLinkId },
+      undefined
+    );
+  });
+
   it("rejects login, public QR, guest, and already-aborted invocations before effects", async () => {
     const inspect = requiredTool("inspect_current_life_link");
     const cases: AgentToolWorkspaceSnapshot[] = [
@@ -260,7 +325,18 @@ describe("Life Links five-tool catalog", () => {
       return {
         lifeLink: summary(record),
         path: {
-          items: [summary(lifeLink({ id: `root-${index}`, title: long })), summary(record)],
+          items: [
+            summary(lifeLink({ id: `root-${index}`, parentId: null, qrId: null, title: long })),
+            summary(
+              lifeLink({
+                id: `container-${index}`,
+                parentId: `root-${index}`,
+                qrId: `LL-CONTAINER-${index}`,
+                title: `Container ${index}`
+              })
+            ),
+            summary(record)
+          ],
           truncated: true,
           omittedCount: 30
         },
@@ -279,6 +355,18 @@ describe("Life Links five-tool catalog", () => {
     expect(controller.agentSearchLifeLinks).toHaveBeenCalledWith({ query: "battery", limit: 10 }, undefined);
     expect(result).toMatchObject({ ok: true, query: "battery", totalCount: 40, hasMore: true, truncated: true });
     expect((result as { results: unknown[] }).results.length).toBeLessThanOrEqual(10);
+    expect(result).toMatchObject({
+      results: [
+        {
+          pathTruncated: true,
+          physicalLocator: {
+            lifeLinkId: "container-0",
+            qrId: "LL-CONTAINER-0",
+            relation: "ancestor"
+          }
+        }
+      ]
+    });
     expect(outputBytes(result)).toBeLessThanOrEqual(MAX_LIFE_LINK_TOOL_OUTPUT_BYTES);
   });
 

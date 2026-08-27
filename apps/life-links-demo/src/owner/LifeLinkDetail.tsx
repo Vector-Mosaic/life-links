@@ -1,5 +1,9 @@
 import { Camera, CornerUpLeft, Move, Pencil, Plus, QrCode } from "lucide-react";
-import type { LifeLinkDetail as LifeLinkDetailRecord, LifeLinkMediaRecord } from "@life-links/core";
+import {
+  deriveLifeLinkPhysicalLocator,
+  type LifeLinkDetail as LifeLinkDetailRecord,
+  type LifeLinkMediaRecord
+} from "@life-links/core";
 
 import { RichBodyRenderer } from "../richBody";
 import { Tooltip } from "../ui/Tooltip";
@@ -37,6 +41,7 @@ export function LifeLinkDetail({
   }
 
   const { lifeLink } = detail;
+  const physicalLocator = deriveLifeLinkPhysicalLocator(detail.ancestry);
   return (
     <article className="life-link-owner-detail" data-selected-life-link-id={lifeLink.id}>
       <LifeLinkBreadcrumbs ancestry={detail.ancestry} onSelect={onSelect} />
@@ -59,6 +64,51 @@ export function LifeLinkDetail({
           </span>
         </div>
       </header>
+
+      <section
+        className="physical-locator-card"
+        aria-label="Recorded QR locator"
+        data-physical-locator-id={physicalLocator?.lifeLinkId}
+        data-physical-locator-relation={physicalLocator?.relation}
+      >
+        <div className="physical-locator-heading">
+          <div>
+            <p className="eyebrow">Recorded QR locator</p>
+            <strong>
+              {physicalLocator
+                ? physicalLocator.title || "Untitled Life Link"
+                : "No reliable QR-bound locator"}
+            </strong>
+          </div>
+          {physicalLocator ? (
+            <span className="qr-binding-badge attached">
+              <QrCode size={14} />
+              {physicalLocator.qrId}
+            </span>
+          ) : null}
+        </div>
+        <p className="physical-locator-copy">
+          {physicalLocator?.relation === "ancestor"
+            ? "This Life Link is recorded inside this QR-bound ancestor. Recorded placement does not confirm current physical location."
+            : physicalLocator?.relation === "self"
+              ? "This Life Link's own QR is its recorded physical return point. Recorded placement does not confirm current physical location."
+              : detail.ancestry.truncated
+                ? "No reliable QR locator can be derived because the bounded recorded path omits possible ancestors."
+                : "No QR-bound locator is recorded for this Life Link or its ancestors."}
+        </p>
+        {physicalLocator?.relation === "ancestor" ? (
+          <div className="physical-locator-actions">
+            <button className="secondary-button" onClick={() => onSelect(physicalLocator.lifeLinkId)} disabled={busy}>
+              <QrCode size={17} />
+              <span>Open recorded container</span>
+            </button>
+            <button className="secondary-button" onClick={() => onFind(physicalLocator.qrId)} disabled={busy}>
+              <Camera size={17} />
+              <span>Find recorded container</span>
+            </button>
+          </div>
+        ) : null}
+      </section>
 
       <div className="life-link-detail-body">
         {lifeLink.body ? (

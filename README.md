@@ -17,10 +17,45 @@ application from work completed for the challenge.
   bounded search/path context, and cycle-safe moves;
 - optional QR binding at every level, public QR resolution, claim, batch
   export, and Find Mode;
-- rich notes, media, privacy, authentication, and PostgreSQL persistence; and
-- deterministic synthetic camping-kit context for repeatable local and judge
-  flows across a working sleeping bag, failed low-R sleeping pad, owner upgrade
-  preferences, budget, and a planned-only upgrade record.
+- rich notes, media, privacy, authentication, and PostgreSQL persistence;
+- one human/agent physical-locator derivation that selects the nearest
+  QR-bound container from canonical ancestry without storing a second location
+  field; and
+- deterministic synthetic family-adventure context for a family of four,
+  including 60 meaningful Life Links, six QR-labelled basement tubs, retained
+  bag/pad QRs, prior-trip experience, preferences, packing intent, and a
+  planned-only upgrade record.
+
+## Challenge story: pack -> experience -> improve
+
+**AI already knows the world. Life Links lets it know yours.**
+
+The challenge proof follows one family across time instead of presenting a
+collection of disconnected tool calls. Two adults and two children keep enough
+gear for a multi-day camping, hiking, and cycling trip in six large labelled
+tubs on a basement rack. Their Life Links record what they own, how kits are
+configured, where each item returns, what condition it is in, what the family
+prefers, what happened last time, and what they intend to change.
+
+Before the trip, the owner can ask the page agent where to find the family tent,
+four sleep systems, stove, first-aid kit, rain layers, or bike repair kit. Life
+Links searches the private hierarchy but returns the useful physical answer:
+the nearest QR-bound tub and its QR ID. The human UI shows the same result, and
+Find Mode still requires the person to scan the physical container.
+
+After the trip, a durable experience record says what actually worked and
+failed. The existing bag kept its user warm around 35°F, cold came through the
+low-R sleeping pad, and child bike-light mounts loosened on rough ground. When
+planning next year, the agent combines those facts with the family's warmth-
+over-weight preference, instruction not to replace working gear, and $250
+budget. It uses the ordinary revision-safe Life Links update to record the pad
+as the next planned upgrade. The result remains explicitly planned—not
+purchased, owned, or installed—and survives reload after Agent Access expires.
+
+The product vision is broad: a private, user-controlled context layer for
+physical life. The judged path is deliberately narrow and repeatable: pack the
+family, use recorded experience, improve one next-trip decision, and reconnect
+the decision to the right physical tub.
 
 ## WebMCP Agent Access
 
@@ -38,7 +73,11 @@ The tools reuse the ordinary application controller and authorization paths.
 They create visible page effects, reject stale or unauthorized context, and do
 not give an agent a hidden or parallel write path. Inspection returns bounded
 substantive selected-record context, and search returns bounded paths plus note
-summaries. `update_life_link_content` immediately saves only a title and/or
+summaries. Both also return the same derived physical locator shown in human
+detail/search: nearest QR-bound ancestor first, QR-bound subject only as a
+complete-path fallback, and null for missing or truncated-ambiguous placement.
+This is recorded placement, not live-location proof.
+`update_life_link_content` immediately saves only a title and/or
 plain-text body through the canonical owner PATCH, using the exact `updatedAt`
 revision obtained from a prior read. It rejects stale state, an open editor, a
 saved human draft, unavailable owner source records, and access or owner-
@@ -61,7 +100,7 @@ because its workspace importer paths are different.
 The three automated browser journeys build their own application bundles. The
 controlled-host test proves the page-tool contract and human-draft conflict
 boundary. The native-host test requires an installed Google Chrome with WebMCP
-testing support. The challenge test runs the complete camping-context proof:
+testing support. The challenge test runs the complete family-adventure proof:
 
 ```bash
 pnpm exec playwright install chromium
@@ -70,14 +109,19 @@ pnpm test:e2e:webmcp:real
 pnpm test:e2e:challenge
 ```
 
-The challenge journey starts at the public Camping Sleeping Bag QR, enters the
-owner workspace, retrieves the bag, pad, preference, and budget context, then
-uses one source-backed `update_life_link_content` call to persist a sleeping-pad
-priority in the private Camping Upgrade Plan. It reloads to prove the new
-revision persisted, locates the QR-bound pad through Find Mode, revokes tool
-access, and confirms a fresh logged-out context still receives only the public
-bag. The synthetic plan explicitly remains planned only—not purchased, owned,
-or installed.
+The challenge journey starts at public Green Family Sleep Systems Tub QR
+`LL-WEBMCP-00004`, proves public hierarchy redaction, and enters the owner
+workspace. Packing searches cover representative gear in all six tubs and show
+the same exact tub locator in agent and human output. The retained QR-bound pad
+still resolves to the nearer Green tub ancestor. The journey then retrieves the
+working bag, failed pad, family preferences, $250 budget, and prior four-day
+trip before using one four-source `update_life_link_content` call to persist a
+sleeping-pad priority in the private Next-Year Upgrade Plan. It reloads to prove
+the new revision persisted and Agent Access reset, rejects Blue Shelter Tub QR
+`LL-WEBMCP-00003`, matches the Green tub in Find Mode, revokes tool access, and
+confirms a fresh logged-out context still receives only the generic public
+Green tub. The synthetic plan explicitly remains planned only—not purchased,
+owned, or installed.
 
 The PostgreSQL integration suite is opt-in and requires a disposable database:
 
@@ -140,8 +184,11 @@ grant.
 
 The project owner confirmed on August 26, 2026 that he has the rights and
 authority to publish the admitted code and assets, the Life Links name, and
-product identity under MIT. The selected public repository target is
-`https://github.com/Vector-Mosaic/life-links`. Exact repository visibility,
-public Git identity, deployed revision, competition registration, terms
-acceptance, judge credentials, and final submission remain separately
-verifiable steps; this source tree does not claim that they already occurred.
+product identity under MIT. The public repository is
+`https://github.com/Vector-Mosaic/life-links`, with a preserved
+`pre-webmcp-existing-app` baseline. `SOURCE_PROJECTION.json` in each generated
+release binds that tree to its exact canonical source. The family-adventure
+projection, clean-clone qualification, deployed revision, hosted journey,
+competition registration, terms acceptance, judge credentials, and final
+submission remain separately verifiable; this source tree does not infer those
+events merely because the implementation or documentation exists.

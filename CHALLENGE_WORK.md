@@ -43,6 +43,7 @@ functionality.
 | Hosted qualification hardening | No | `ef5dd310fcb6647155b80be2a075284055bfaec3` | `e102bba78d2082dbd91b4f722d063c995f5b3228` | Runtime identity gates and hosted acceptance lane |
 | Preserve newer navigation when Save completes after navigation | No | `5b850e618c88c50b8079305b1314df1c38cb52e3` | `6e0d1cf28a91485ab690fff67050a704d4ee327d` | Workspace controller regression tests |
 | Rich physical-context retrieval, revision-safe direct update, and deterministic camping challenge loop | No | `2fff0f5d8bd791cd43e5fef4f7640b4a7a563552` | `bbdfba3f1eccd7d2ff4f3905c17eb2ecb9ea2c36` | BC-120/130/140 unit, contract, controlled-host, native-Chrome, persistence, and complete local challenge-loop evidence |
+| Sixty-record family-adventure fixture and shared nearest-QR physical locator | No | exact canonical source recorded by this release's `SOURCE_PROJECTION.json` | this forward-only release projection | Fixture/reset counts and identity tests; core locator edge cases; handler and human-UI parity; controlled and native family journey tests |
 
 Two canonical checkpoints intentionally produce no invented standalone product
 commit: `2ada1078594cee1a6d3b46b48718b30a01b41736` changes release tooling outside
@@ -50,9 +51,10 @@ the admitted tree and maps to `74017e73046b7eb4901297a4f63c225620c1b1ba`;
 `94855eb34b7ef865d03079de8f4cf6ddd9457499` changes the excluded deployment
 binding and maps to `e674dabc7f058ef0be00b66057c8a8509d4428ad`.
 
-The draft tool and camera fixture rows above preserve the first locally and
-hosted-qualified challenge checkpoint as history; they do not describe the
-current release candidate. The current implemented WebMCP catalog is exactly:
+The draft tool, camera fixture, and six-record camping rows above preserve the
+earlier locally and hosted-qualified challenge checkpoints as history; they do
+not describe the current family-adventure release candidate. The current
+implemented WebMCP catalog remains exactly:
 `inspect_current_life_link`, `search_my_life_links`, `open_life_link`,
 `update_life_link_content`, and `start_find_mode`. Inspect and search return
 substantive but bounded owner context. The update tool requires the exact base
@@ -62,6 +64,27 @@ editor, saved human draft, stale-revision, owner/surface, or access conflicts.
 Agent tools never bypass the ordinary owner-session boundary. Child creation,
 privacy, placement, QR binding, media, ownership, and purchase operations are
 outside this catalog.
+
+The replacement `webmcp-family-adventure-context-v2` fixture contains exactly
+one synthetic owner, 60 meaningful recursive Life Links, eight QR inventory
+rows/bindings, one batch, one Project compatibility marker, and no sessions,
+media, or claims. Six QRs identify labelled basement tubs for shelter, family
+sleep systems, kitchen/water, safety/lighting, hiking/weather, and cycling/
+repairs. Stable Sleeping Bag and Sleeping Pad QRs `LL-WEBMCP-00001` and
+`LL-WEBMCP-00002` remain bound for compatibility. Public Green Family Sleep
+Systems Tub QR `LL-WEBMCP-00004` is the start and Find Mode target; private
+Blue Shelter Tub QR `LL-WEBMCP-00003` is the deterministic decoy.
+
+Inspect and search now return one additive `physicalLocator` object or null,
+using the same core derivation as human detail/search. The nearest QR-bound
+ancestor excluding the subject wins, even if the subject retains its own QR;
+the subject is a fallback only when a complete path proves no QR-bound ancestor
+exists. Missing or truncated-ambiguous evidence returns null. This adds no
+sixth tool, HTTP operation, stored locator, agent-only hierarchy, or write
+authority. It lets the family ask where gear is packed, use prior-trip
+experience and preferences to update a planned-only next-year decision, and
+then reconnect that decision to the physical tub through unchanged human-
+scanned Find Mode.
 
 ## Projection and deployed-source mapping
 
@@ -86,11 +109,11 @@ all three runtime identities without inventing or abbreviating them:
 
 The eventual public release head will be the commit containing this completed
 mapping. Its full SHA will be verified from Git and `/version.build_sha` rather
-than embedded as an impossible self-reference. The final deployment revision
-remains unset
-until clean-clone qualification, the rights/license gate, public release freeze,
-and exact-identity redeployment pass. The earlier private hosted qualification
-is a source-bound baseline, not the submitted public release.
+than embedded as an impossible self-reference. The family-adventure deployment
+revision remains unset until its forward-only public projection, clean-clone
+qualification, release freeze, and exact-identity same-lane redeployment pass.
+The six-record public release and hosted qualification are source-bound
+predecessor checkpoints, not the current submission candidate.
 
 ## Rights, license, and submission boundary
 
@@ -105,6 +128,8 @@ On August 26, 2026, the project owner confirmed that he has the rights and
 authority to publish the included code and assets, the Life Links name, and
 product identity under MIT. The final licensed tree, Git identity, projection,
 history, clean-clone build, and tests passed their private release gates before
-first publication. Public repository visibility and exact Git identity must be
-read back after publication. Competition registration, terms acceptance, judge
-credentials, and final submission remain owner-controlled actions.
+first publication. The existing public repository and baseline tag have been
+read back; each forward-only family-adventure commit and its exact Git identity
+must be read back again after publication. Competition registration, terms
+acceptance, judge credentials, and final submission remain owner-controlled
+actions.

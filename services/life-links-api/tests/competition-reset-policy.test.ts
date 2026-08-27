@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { COMPETITION_OWNER_ID } from "@life-links/core";
+import { COMPETITION_FIXTURE_PROFILE, COMPETITION_OWNER_ID } from "@life-links/core";
 
 import { authorizeCompetitionReset, requireCompetitionResetPassword } from "../src/competition-reset-policy.js";
 import { readConfig } from "../src/config.js";
@@ -99,6 +99,7 @@ describe("competition fixture reset policy", () => {
 
   it("authorizes only the exact challenge environment and fixed sandbox owner", () => {
     expect(authorizeCompetitionReset(config(), runtime(), selector)).toMatchObject({
+      profile: COMPETITION_FIXTURE_PROFILE,
       ownerId: COMPETITION_OWNER_ID,
       environmentId: ENVIRONMENT_ID,
       mode: "dry-run"

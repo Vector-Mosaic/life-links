@@ -1,14 +1,19 @@
 import { expect, test, type Page, type Response } from "@playwright/test";
 import {
-  COMPETITION_DECOY_QR_ID,
+  COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
+  COMPETITION_FAMILY_PREFERENCES_ID,
+  COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
+  COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_QR_ID,
+  COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+  COMPETITION_FOUR_DAY_FAMILY_TRIP_ID,
   COMPETITION_INITIAL_UPGRADE_PLAN_BODY,
+  COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
+  COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE,
   COMPETITION_OWNER_EMAIL,
   COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
   COMPETITION_SLEEPING_BAG_ID,
   COMPETITION_SLEEPING_PAD_ID,
-  COMPETITION_TARGET_QR_ID,
-  COMPETITION_UPGRADE_PLAN_ID,
-  COMPETITION_UPGRADE_PREFERENCES_ID
+  COMPETITION_SLEEPING_PAD_QR_ID
 } from "@life-links/core";
 
 const CANONICAL_TOOL_NAMES = [
@@ -33,6 +38,12 @@ if (!DEMO_EMAIL || !DEMO_PASSWORD) {
   throw new Error("A non-local native WebMCP target requires explicit LIFE_LINKS_WEBMCP_REAL_EMAIL and LIFE_LINKS_WEBMCP_REAL_PASSWORD.");
 }
 const MAX_TOOL_OUTPUT_BYTES = 1536;
+const SOURCE_LIFE_LINK_IDS = [
+  COMPETITION_SLEEPING_BAG_ID,
+  COMPETITION_SLEEPING_PAD_ID,
+  COMPETITION_FAMILY_PREFERENCES_ID,
+  COMPETITION_FOUR_DAY_FAMILY_TRIP_ID
+];
 
 test.describe("installed Chrome native WebMCP host", () => {
   test("discovers and invokes the five physical-context tools without a host shim", async ({ page }) => {
@@ -74,7 +85,6 @@ test.describe("installed Chrome native WebMCP host", () => {
     expect(search.value).toMatchObject({
       ok: true,
       query: "Camping Sleeping Pad",
-      resultCount: 1,
       visibleEffect: "search_results_highlighted"
     });
     expect(search.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
@@ -83,36 +93,57 @@ test.describe("installed Chrome native WebMCP host", () => {
       title: string;
       qrId: string | null;
       bodySummary: string;
+      physicalLocator: {
+        lifeLinkId: string;
+        title: string;
+        qrId: string;
+        relation: "ancestor" | "self";
+      } | null;
     }>;
-    expect(searchResults).toHaveLength(1);
-    expect(searchResults[0]).toMatchObject({
+    const padSearchResult = searchResults.find((result) => result.id === COMPETITION_SLEEPING_PAD_ID);
+    expect(padSearchResult).toBeDefined();
+    expect(padSearchResult).toMatchObject({
       id: COMPETITION_SLEEPING_PAD_ID,
       title: "Camping Sleeping Pad",
-      qrId: COMPETITION_DECOY_QR_ID
+      qrId: COMPETITION_SLEEPING_PAD_QR_ID,
+      physicalLocator: {
+        lifeLinkId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
+        title: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+        qrId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_QR_ID,
+        relation: "ancestor"
+      }
     });
-    expect(searchResults[0].bodySummary).toContain("Cold came through the ground");
+    expect(padSearchResult!.bodySummary).toContain("Cold came through the ground");
     await expect(page.getByLabel("Search My Life Links")).toHaveValue("Camping Sleeping Pad");
-    await expect(page.locator(`[data-life-link-search-id="${searchResults[0].id}"]`)).toContainText("Camping Sleeping Pad");
+    await expect(page.locator(`[data-life-link-search-id="${padSearchResult!.id}"]`)).toContainText("Camping Sleeping Pad");
+    await expect(page.locator(`[data-life-link-search-id="${padSearchResult!.id}"]`)).toContainText(
+      `Recorded QR locator: ${COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE}`
+    );
+    await expect(page.locator(`[data-life-link-search-id="${padSearchResult!.id}"]`)).toContainText(
+      COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_QR_ID
+    );
 
     const open = await invokeNativeTool(page, "open_life_link", {
-      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID
+      lifeLinkId: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID
     });
     expect(open.value).toMatchObject({
       ok: true,
-      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID,
-      title: "Camping Upgrade Plan",
-      recordedPath: "Camping Kit > Camping Upgrade Plan",
+      lifeLinkId: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
+      title: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE,
+      recordedPath: `${COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE} > ${COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE}`,
       visibleEffect: "life_link_opened"
     });
     expect(open.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
-    await expect(page.locator(`[data-selected-life-link-id="${COMPETITION_UPGRADE_PLAN_ID}"]`)).toBeVisible();
-    await expect(page.locator(".life-link-owner-detail").getByRole("heading", { name: "Camping Upgrade Plan" })).toBeVisible();
+    await expect(page.locator(`[data-selected-life-link-id="${COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID}"]`)).toBeVisible();
+    await expect(
+      page.locator(".life-link-owner-detail").getByRole("heading", { name: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE })
+    ).toBeVisible();
 
     const inspect = await invokeNativeTool(page, "inspect_current_life_link", {});
     expect(inspect.value).toMatchObject({
       ok: true,
       lifeLink: {
-        id: COMPETITION_UPGRADE_PLAN_ID,
+        id: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
         qrId: null,
         body: COMPETITION_INITIAL_UPGRADE_PLAN_BODY,
         bodyTruncated: false
@@ -127,21 +158,13 @@ test.describe("installed Chrome native WebMCP host", () => {
       lifeLinkId: selectedLifeLink.id,
       baseUpdatedAt: selectedLifeLink.updatedAt,
       body: COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
-      sourceLifeLinkIds: [
-        COMPETITION_SLEEPING_BAG_ID,
-        COMPETITION_SLEEPING_PAD_ID,
-        COMPETITION_UPGRADE_PREFERENCES_ID
-      ]
+      sourceLifeLinkIds: SOURCE_LIFE_LINK_IDS
     });
     expect(update.value).toMatchObject({
       ok: true,
       lifeLinkId: selectedLifeLink.id,
       updatedFields: ["body"],
-      sourceLifeLinkIds: [
-        COMPETITION_SLEEPING_BAG_ID,
-        COMPETITION_SLEEPING_PAD_ID,
-        COMPETITION_UPGRADE_PREFERENCES_ID
-      ],
+      sourceLifeLinkIds: SOURCE_LIFE_LINK_IDS,
       saved: true,
       privacyChanged: false,
       visibleEffect: "life_link_content_updated"
@@ -153,7 +176,7 @@ test.describe("installed Chrome native WebMCP host", () => {
     await expect(page.locator(".life-link-owner-detail")).toContainText("Planned upgrade priority: sleeping pad.");
     await expect(page.locator(".life-link-owner-detail")).toContainText("stay within the $250 budget");
     expect(patchRequests).toHaveLength(1);
-    expect(patchRequests[0].url).toContain(`/api/life-links/${COMPETITION_UPGRADE_PLAN_ID}`);
+    expect(patchRequests[0].url).toContain(`/api/life-links/${COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID}`);
     expect(patchRequests[0].body).toEqual({
       body: COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
       expectedUpdatedAt: selectedLifeLink.updatedAt
@@ -187,18 +210,18 @@ test.describe("installed Chrome native WebMCP host", () => {
     await expect.poll(() => nativeToolNames(page)).toEqual(CANONICAL_TOOL_NAMES);
 
     const persistedOpen = await invokeNativeTool(page, "open_life_link", {
-      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID
+      lifeLinkId: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID
     });
     expect(persistedOpen.value).toMatchObject({
       ok: true,
-      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID,
+      lifeLinkId: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
       updatedAt
     });
     const persistedInspect = await invokeNativeTool(page, "inspect_current_life_link", {});
     expect(persistedInspect.value).toMatchObject({
       ok: true,
       lifeLink: {
-        id: COMPETITION_UPGRADE_PLAN_ID,
+        id: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
         updatedAt,
         bodyTruncated: false
       }
@@ -207,18 +230,18 @@ test.describe("installed Chrome native WebMCP host", () => {
     expect((persistedInspect.value.lifeLink as { body: string }).body).toContain("stay within the $250 budget");
 
     const find = await invokeNativeTool(page, "start_find_mode", {
-      lifeLinkId: COMPETITION_SLEEPING_BAG_ID
+      lifeLinkId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID
     });
     expect(find.value).toMatchObject({
       ok: true,
-      lifeLinkId: COMPETITION_SLEEPING_BAG_ID,
-      qrId: COMPETITION_TARGET_QR_ID,
+      lifeLinkId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
+      qrId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_QR_ID,
       cameraStarted: false,
       visibleEffect: "find_mode_started"
     });
     expect(find.bytes).toBeLessThanOrEqual(MAX_TOOL_OUTPUT_BYTES);
     await expect(page.getByRole("heading", { name: "Search And Find" })).toBeVisible();
-    await expect(page.locator(".find-target")).toContainText("Camping Sleeping Bag");
+    await expect(page.locator(".find-target")).toContainText(COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE);
     expect(patchRequests).toHaveLength(1);
 
     let releaseDelayedSearch: (() => void) | undefined;

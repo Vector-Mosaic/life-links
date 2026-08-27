@@ -803,6 +803,13 @@ export type BoundedLifeLinkItems<T> = {
   omittedCount: number;
 };
 
+export type LifeLinkPhysicalLocator = {
+  lifeLinkId: string;
+  title: string;
+  qrId: string;
+  relation: "ancestor" | "self";
+};
+
 export type LifeLinkDetail = {
   lifeLink: LifeLinkRecord;
   ancestry: BoundedLifeLinkItems<LifeLinkSummary>;
@@ -1204,6 +1211,53 @@ export function deriveLifeLinkPath(
     summarizeLifeLink(lifeLink, childCounts.get(lifeLink.id) ?? 0)
   );
   return boundLifeLinkPath(fullPath, maxItems);
+}
+
+/**
+ * Derives the QR-bound physical return point from an existing root-to-subject
+ * path projection. A nested subject resolves to its nearest QR-bound ancestor;
+ * its own QR is only a fallback when the complete path proves that no ancestor
+ * is QR-bound.
+ *
+ * A truncated path retains the root plus the nearest contiguous suffix. A QR
+ * in that suffix is therefore still an exact nearest ancestor. When the suffix
+ * has no QR, omitted ancestors make both a farther visible ancestor and a self
+ * fallback uncertain, so the safe bounded result is null.
+ */
+export function deriveLifeLinkPhysicalLocator(
+  path: BoundedLifeLinkItems<LifeLinkSummary>
+): LifeLinkPhysicalLocator | null {
+  if (!path.items.length) {
+    return null;
+  }
+
+  const subjectIndex = path.items.length - 1;
+  const nearestSuffixStart = path.truncated ? 1 : 0;
+  for (let index = subjectIndex - 1; index >= nearestSuffixStart; index -= 1) {
+    const candidate = path.items[index];
+    if (candidate.qrId) {
+      return {
+        lifeLinkId: candidate.id,
+        title: candidate.title,
+        qrId: candidate.qrId,
+        relation: "ancestor"
+      };
+    }
+  }
+
+  if (path.truncated) {
+    return null;
+  }
+
+  const subject = path.items[subjectIndex];
+  return subject.qrId
+    ? {
+        lifeLinkId: subject.id,
+        title: subject.title,
+        qrId: subject.qrId,
+        relation: "self"
+      }
+    : null;
 }
 
 export function formatRecordedLifeLinkPath(path: BoundedLifeLinkItems<LifeLinkSummary>): string {

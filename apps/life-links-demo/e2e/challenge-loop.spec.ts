@@ -1,16 +1,42 @@
 import { expect, test } from "@playwright/test";
 import {
-  COMPETITION_CAMPING_KIT_ID,
+  COMPETITION_BASEMENT_GEAR_STORAGE_ID,
+  COMPETITION_BASEMENT_GEAR_STORAGE_TITLE,
+  COMPETITION_CYCLING_REPAIRS_TUB_ID,
+  COMPETITION_CYCLING_REPAIRS_TUB_QR_ID,
+  COMPETITION_CYCLING_REPAIRS_TUB_TITLE,
   COMPETITION_DECOY_QR_ID,
+  COMPETITION_FAMILY_ADVENTURE_GEAR_ID,
+  COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
+  COMPETITION_FAMILY_PREFERENCES_ID,
+  COMPETITION_FAMILY_PREFERENCES_TITLE,
+  COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
+  COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_QR_ID,
+  COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+  COMPETITION_FOUR_DAY_FAMILY_TRIP_ID,
+  COMPETITION_FOUR_DAY_FAMILY_TRIP_TITLE,
+  COMPETITION_HIKING_WEATHER_TUB_ID,
+  COMPETITION_HIKING_WEATHER_TUB_QR_ID,
+  COMPETITION_HIKING_WEATHER_TUB_TITLE,
   COMPETITION_INITIAL_UPGRADE_PLAN_BODY,
+  COMPETITION_KITCHEN_WATER_TUB_ID,
+  COMPETITION_KITCHEN_WATER_TUB_QR_ID,
+  COMPETITION_KITCHEN_WATER_TUB_TITLE,
+  COMPETITION_LIFE_LINK_IDS,
+  COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
+  COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE,
   COMPETITION_OWNER_EMAIL,
   COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
+  COMPETITION_SAFETY_LIGHTING_TUB_ID,
+  COMPETITION_SAFETY_LIGHTING_TUB_QR_ID,
+  COMPETITION_SAFETY_LIGHTING_TUB_TITLE,
+  COMPETITION_SHELTER_TUB_ID,
+  COMPETITION_SHELTER_TUB_QR_ID,
+  COMPETITION_SHELTER_TUB_TITLE,
   COMPETITION_SLEEPING_BAG_ID,
   COMPETITION_SLEEPING_PAD_ID,
-  COMPETITION_SLEEP_SYSTEM_ID,
-  COMPETITION_TARGET_QR_ID,
-  COMPETITION_UPGRADE_PLAN_ID,
-  COMPETITION_UPGRADE_PREFERENCES_ID
+  COMPETITION_SLEEPING_PAD_QR_ID,
+  COMPETITION_TARGET_QR_ID
 } from "@life-links/core";
 
 import { LIFE_LINKS_PAGE_TOOL_NAMES } from "../src/agent/browserWebMcpHost";
@@ -50,15 +76,95 @@ const HOSTED_EXPECTED_RUNTIME_IDENTITY = HOSTED_CHALLENGE_BASE_URL
     }
   : null;
 const CANONICAL_TOOL_NAMES = [...LIFE_LINKS_PAGE_TOOL_NAMES].sort();
-const TARGET_PATH = ["Camping Kit", "Camping Sleep System", "Camping Sleeping Bag"];
+const TARGET_PATH = [
+  COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
+  COMPETITION_BASEMENT_GEAR_STORAGE_TITLE,
+  COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE
+];
 const SOURCE_LIFE_LINK_IDS = [
   COMPETITION_SLEEPING_BAG_ID,
   COMPETITION_SLEEPING_PAD_ID,
-  COMPETITION_UPGRADE_PREFERENCES_ID
+  COMPETITION_FAMILY_PREFERENCES_ID,
+  COMPETITION_FOUR_DAY_FAMILY_TRIP_ID
 ];
 
+const PACKING_LOCATOR_CASES = [
+  {
+    query: "Family Tent",
+    lifeLinkId: COMPETITION_LIFE_LINK_IDS.familyTent,
+    title: "Family Tent",
+    locatorId: COMPETITION_SHELTER_TUB_ID,
+    locatorTitle: COMPETITION_SHELTER_TUB_TITLE,
+    qrId: COMPETITION_SHELTER_TUB_QR_ID
+  },
+  {
+    query: "Adult One Sleep System",
+    lifeLinkId: COMPETITION_LIFE_LINK_IDS.adultOneSleepSystem,
+    title: "Adult One Sleep System",
+    locatorId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
+    locatorTitle: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+    qrId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_QR_ID
+  },
+  {
+    query: "Adult Two Sleep System",
+    lifeLinkId: COMPETITION_LIFE_LINK_IDS.adultTwoSleepSystem,
+    title: "Adult Two Sleep System",
+    locatorId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
+    locatorTitle: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+    qrId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_QR_ID
+  },
+  {
+    query: "Child One Sleeping Bag",
+    lifeLinkId: COMPETITION_LIFE_LINK_IDS.childOneSleepingBag,
+    title: "Child One Sleeping Bag",
+    locatorId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
+    locatorTitle: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+    qrId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_QR_ID
+  },
+  {
+    query: "Child Two Sleeping Bag",
+    lifeLinkId: COMPETITION_LIFE_LINK_IDS.childTwoSleepingBag,
+    title: "Child Two Sleeping Bag",
+    locatorId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
+    locatorTitle: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+    qrId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_QR_ID
+  },
+  {
+    query: "Two-Burner Camp Stove",
+    lifeLinkId: COMPETITION_LIFE_LINK_IDS.twoBurnerStove,
+    title: "Two-Burner Camp Stove",
+    locatorId: COMPETITION_KITCHEN_WATER_TUB_ID,
+    locatorTitle: COMPETITION_KITCHEN_WATER_TUB_TITLE,
+    qrId: COMPETITION_KITCHEN_WATER_TUB_QR_ID
+  },
+  {
+    query: "Family First Aid Kit",
+    lifeLinkId: COMPETITION_LIFE_LINK_IDS.familyFirstAidKit,
+    title: "Family First Aid Kit",
+    locatorId: COMPETITION_SAFETY_LIGHTING_TUB_ID,
+    locatorTitle: COMPETITION_SAFETY_LIGHTING_TUB_TITLE,
+    qrId: COMPETITION_SAFETY_LIGHTING_TUB_QR_ID
+  },
+  {
+    query: "Adult Rain Shells",
+    lifeLinkId: COMPETITION_LIFE_LINK_IDS.adultRainShells,
+    title: "Adult Rain Shells",
+    locatorId: COMPETITION_HIKING_WEATHER_TUB_ID,
+    locatorTitle: COMPETITION_HIKING_WEATHER_TUB_TITLE,
+    qrId: COMPETITION_HIKING_WEATHER_TUB_QR_ID
+  },
+  {
+    query: "Bike Repair Kit",
+    lifeLinkId: COMPETITION_LIFE_LINK_IDS.bikeRepairKit,
+    title: "Bike Repair Kit",
+    locatorId: COMPETITION_CYCLING_REPAIRS_TUB_ID,
+    locatorTitle: COMPETITION_CYCLING_REPAIRS_TUB_TITLE,
+    qrId: COMPETITION_CYCLING_REPAIRS_TUB_QR_ID
+  }
+] as const;
+
 test.describe("competition physical-context loop", () => {
-  test("uses bounded physical context to persist one grounded camping upgrade and find the right item", async ({
+  test("packs, learns, persists one grounded family upgrade, and finds the right tub", async ({
     baseURL,
     browser,
     page
@@ -112,13 +218,15 @@ test.describe("competition physical-context loop", () => {
         id: COMPETITION_TARGET_QR_ID,
         ownerId: null,
         projectId: null,
-        title: "Camping Sleeping Bag"
+        title: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE
       },
       viewerIsOwner: false
     });
     assertNoHierarchyDisclosure(initialPublicState);
-    await assertPublicQrHasNoHierarchy(page, "Camping Sleeping Bag");
-    await expect(page.locator(".public-content")).toContainText("kept me warm around 35°F");
+    await assertPublicQrHasNoHierarchy(page, COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE);
+    await expect(page.locator(".public-content")).toContainText("two adults and two children");
+    await expect(page.locator(".public-content")).not.toContainText("Camping Sleeping Pad");
+    await expect(page.locator(".public-content")).not.toContainText("cold through the ground");
 
     await page.getByLabel("Email").fill(CHALLENGE_EMAIL);
     await page.getByLabel("Password").fill(CHALLENGE_PASSWORD);
@@ -128,8 +236,10 @@ test.describe("competition physical-context loop", () => {
     await expect(page).toHaveURL(`${challengeBaseURL}/qr/${COMPETITION_TARGET_QR_ID}`);
     await openInWorkspace.click();
 
-    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_SLEEPING_BAG_ID}`);
-    await expect(page.locator(`[data-selected-life-link-id="${COMPETITION_SLEEPING_BAG_ID}"]`)).toBeVisible();
+    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID}`);
+    await expect(
+      page.locator(`[data-selected-life-link-id="${COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID}"]`)
+    ).toBeVisible();
     const breadcrumbs = page.getByRole("navigation", { name: "Life Link path" });
     await expect(breadcrumbs.locator(":scope > .life-link-breadcrumb-item > button")).toHaveText(TARGET_PATH);
     await expect(breadcrumbs.locator(".life-link-breadcrumb-ellipsis")).toHaveCount(0);
@@ -153,20 +263,54 @@ test.describe("competition physical-context loop", () => {
     expect(registeredCatalog.registrationNames).toHaveLength(5);
     expect([...registeredCatalog.registrationNames].sort()).toEqual(CANONICAL_TOOL_NAMES);
 
-    const bagInspection = await invokeControlledTool(page, "inspect_current_life_link", {});
-    expect(bagInspection).toMatchObject({
+    const tubInspection = await invokeControlledTool(page, "inspect_current_life_link", {});
+    expect(tubInspection).toMatchObject({
       ok: true,
       lifeLink: {
-        id: COMPETITION_SLEEPING_BAG_ID,
+        id: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
         qrId: COMPETITION_TARGET_QR_ID,
         path: TARGET_PATH.map((title) => ({ title })),
         bodyTruncated: false
       },
+      physicalLocator: {
+        lifeLinkId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
+        title: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+        qrId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_QR_ID,
+        relation: "self"
+      },
       visibleEffect: "current_life_link_focused",
       truncated: false
     });
-    expect(readInspectedBody(bagInspection)).toContain("kept me warm around 35°F");
-    expect(readInspectedBody(bagInspection)).toContain("does not want to replace gear that works");
+    expect(readInspectedBody(tubInspection)).toContain("two adults and two children");
+
+    for (const packingCase of PACKING_LOCATOR_CASES) {
+      const packingSearch = await invokeControlledTool(page, "search_my_life_links", {
+        query: packingCase.query,
+        limit: 10
+      });
+      expect(packingSearch).toMatchObject({
+        ok: true,
+        query: packingCase.query,
+        visibleEffect: "search_results_highlighted"
+      });
+      const packingResult = readSearchResult(packingSearch, packingCase.lifeLinkId);
+      expect(packingResult).toMatchObject({
+        id: packingCase.lifeLinkId,
+        title: packingCase.title,
+        physicalLocator: {
+          lifeLinkId: packingCase.locatorId,
+          title: packingCase.locatorTitle,
+          qrId: packingCase.qrId,
+          relation: "ancestor"
+        }
+      });
+      await expect(page.locator(`[data-life-link-search-id="${packingCase.lifeLinkId}"]`)).toContainText(
+        `Recorded QR locator: ${packingCase.locatorTitle}`
+      );
+      await expect(page.locator(`[data-life-link-search-id="${packingCase.lifeLinkId}"]`)).toContainText(
+        packingCase.qrId
+      );
+    }
 
     const padSearch = await invokeControlledTool(page, "search_my_life_links", {
       query: "Camping Sleeping Pad",
@@ -175,83 +319,121 @@ test.describe("competition physical-context loop", () => {
     expect(padSearch).toMatchObject({
       ok: true,
       query: "Camping Sleeping Pad",
-      resultCount: 1,
-      totalCount: 1,
-      results: [
-        {
-          id: COMPETITION_SLEEPING_PAD_ID,
-          title: "Camping Sleeping Pad",
-          qrId: COMPETITION_DECOY_QR_ID,
-          recordedPath: "Camping Kit > Camping Sleep System > Camping Sleeping Pad",
-          matchClass: "exact_title"
-        }
-      ],
       visibleEffect: "search_results_highlighted",
       truncated: false
     });
-    const padSummary = readOnlySearchBodySummary(padSearch);
+    const padResult = readSearchResult(padSearch, COMPETITION_SLEEPING_PAD_ID);
+    expect(padResult).toMatchObject({
+      id: COMPETITION_SLEEPING_PAD_ID,
+      title: "Camping Sleeping Pad",
+      qrId: COMPETITION_SLEEPING_PAD_QR_ID,
+      recordedPath:
+        "Family Adventure Gear > Basement Gear Storage > Green Tub 02 / Family Sleep Systems > Adult Two Sleep System > Camping Sleeping Pad",
+      physicalLocator: {
+        lifeLinkId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
+        title: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+        qrId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_QR_ID,
+        relation: "ancestor"
+      },
+      matchClass: "exact_title"
+    });
+    const padSummary = String(padResult.bodySummary ?? "");
     expect(padSummary).toContain("Cold came through the ground");
     expect(padSummary).toContain("low-R sleeping pad");
+    await expect(page.locator(`[data-life-link-search-id="${COMPETITION_SLEEPING_PAD_ID}"]`)).toContainText(
+      `Recorded QR locator: ${COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE}`
+    );
 
     const preferenceSearch = await invokeControlledTool(page, "search_my_life_links", {
-      query: "warmth",
+      query: COMPETITION_FAMILY_PREFERENCES_TITLE,
       limit: 10
     });
     expect(preferenceSearch).toMatchObject({
       ok: true,
-      query: "warmth",
-      resultCount: 1,
-      totalCount: 1,
-      results: [
-        {
-          id: COMPETITION_UPGRADE_PREFERENCES_ID,
-          title: "Camping Upgrade Preferences",
-          recordedPath: "Camping Kit > Camping Upgrade Preferences",
-          matchClass: "body"
-        }
-      ],
+      query: COMPETITION_FAMILY_PREFERENCES_TITLE,
       visibleEffect: "search_results_highlighted",
       truncated: false
     });
-    const preferenceSummary = readOnlySearchBodySummary(preferenceSearch);
+    const preferenceResult = readSearchResult(preferenceSearch, COMPETITION_FAMILY_PREFERENCES_ID);
+    expect(preferenceResult).toMatchObject({
+      id: COMPETITION_FAMILY_PREFERENCES_ID,
+      title: COMPETITION_FAMILY_PREFERENCES_TITLE,
+      recordedPath: "Family Adventure Gear > Family Preferences and Fit",
+      physicalLocator: null,
+      matchClass: "exact_title"
+    });
+    const preferenceSummary = String(preferenceResult.bodySummary ?? "");
     expect(preferenceSummary).toContain("warmth matters more than minimum weight");
     expect(preferenceSummary).toContain("$250");
 
+    const tripSearch = await invokeControlledTool(page, "search_my_life_links", {
+      query: COMPETITION_FOUR_DAY_FAMILY_TRIP_TITLE,
+      limit: 10
+    });
+    expect(tripSearch).toMatchObject({
+      ok: true,
+      query: COMPETITION_FOUR_DAY_FAMILY_TRIP_TITLE,
+      visibleEffect: "search_results_highlighted",
+      truncated: false
+    });
+    const tripResult = readSearchResult(tripSearch, COMPETITION_FOUR_DAY_FAMILY_TRIP_ID);
+    expect(tripResult).toMatchObject({
+      id: COMPETITION_FOUR_DAY_FAMILY_TRIP_ID,
+      title: COMPETITION_FOUR_DAY_FAMILY_TRIP_TITLE,
+      recordedPath:
+        "Family Adventure Gear > Previous Trip Experiences > Four-Day Family Camping, Hiking and Cycling Trip",
+      physicalLocator: null,
+      matchClass: "exact_title"
+    });
+    const tripSummary = String(tripResult.bodySummary ?? "");
+    expect(tripSummary).toContain("two adults and two children");
+    expect(tripSummary).toContain("35°F");
+    expect(tripSummary).toContain("existing sleeping bag");
+
     const openPlanResult = await invokeControlledTool(page, "open_life_link", {
-      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID
+      lifeLinkId: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID
     });
     expect(openPlanResult).toMatchObject({
       ok: true,
-      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID,
-      title: "Camping Upgrade Plan",
-      recordedPath: "Camping Kit > Camping Upgrade Plan",
+      lifeLinkId: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
+      title: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE,
+      recordedPath: "Family Adventure Gear > Next-Year Upgrade Plan",
       visibleEffect: "life_link_opened"
     });
-    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_UPGRADE_PLAN_ID}`);
+    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID}`);
 
     const planInspection = await invokeControlledTool(page, "inspect_current_life_link", {});
     expect(planInspection).toMatchObject({
       ok: true,
       lifeLink: {
-        id: COMPETITION_UPGRADE_PLAN_ID,
-        body: COMPETITION_INITIAL_UPGRADE_PLAN_BODY,
-        bodyTruncated: false
+        id: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
+        bodyTruncated: false,
+        path: [
+          { title: COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE },
+          { title: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE }
+        ]
       },
+      physicalLocator: null,
       visibleEffect: "current_life_link_focused"
     });
+    expect(
+      [COMPETITION_INITIAL_UPGRADE_PLAN_BODY, COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY].map((body) =>
+        body.replace(/\s+/g, " ").trim()
+      )
+    ).toContain(readInspectedBody(planInspection));
     const baseUpdatedAt = readInspectedUpdatedAt(planInspection);
     expect(baseUpdatedAt).toBe((openPlanResult as { updatedAt: string }).updatedAt);
 
     expect(patchRequests).toEqual([]);
     const updateResult = await invokeControlledTool(page, "update_life_link_content", {
-      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID,
+      lifeLinkId: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
       baseUpdatedAt,
       body: COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
       sourceLifeLinkIds: SOURCE_LIFE_LINK_IDS
     });
     expect(updateResult).toMatchObject({
       ok: true,
-      lifeLinkId: COMPETITION_UPGRADE_PLAN_ID,
+      lifeLinkId: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
       updatedFields: ["body"],
       sourceLifeLinkIds: SOURCE_LIFE_LINK_IDS,
       sourceIdsTruncated: false,
@@ -262,7 +444,7 @@ test.describe("competition physical-context loop", () => {
       truncated: false
     });
     expect((updateResult as { updatedAt: string }).updatedAt).not.toBe(baseUpdatedAt);
-    const canonicalPatchPath = `/api/life-links/${COMPETITION_UPGRADE_PLAN_ID}`;
+    const canonicalPatchPath = `/api/life-links/${COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID}`;
     expect(patchRequests).toHaveLength(1);
     expect(new URL(patchRequests[0].url).pathname).toBe(canonicalPatchPath);
     expect(patchRequests[0].body).toEqual({
@@ -279,9 +461,9 @@ test.describe("competition physical-context loop", () => {
     expect(persistedOwnerDetail.body).toMatchObject({
       detail: {
         lifeLink: {
-          id: COMPETITION_UPGRADE_PLAN_ID,
-          parentId: COMPETITION_CAMPING_KIT_ID,
-          title: "Camping Upgrade Plan",
+          id: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
+          parentId: COMPETITION_FAMILY_ADVENTURE_GEAR_ID,
+          title: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE,
           body: COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY,
           privacy: "private"
         }
@@ -289,7 +471,7 @@ test.describe("competition physical-context loop", () => {
     });
 
     await page.reload();
-    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_UPGRADE_PLAN_ID}`);
+    await expect(page).toHaveURL(`${challengeBaseURL}/life-links/${COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID}`);
     await expect(page.locator(".life-link-owner-detail")).toContainText("Planned upgrade priority: sleeping pad.");
     const restoredAccessToggle = page.getByRole("checkbox", { name: /Off|On for this page session/ });
     await expect(restoredAccessToggle).not.toBeChecked();
@@ -302,7 +484,7 @@ test.describe("competition physical-context loop", () => {
     expect(persistedInspection).toMatchObject({
       ok: true,
       lifeLink: {
-        id: COMPETITION_UPGRADE_PLAN_ID,
+        id: COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
         bodyTruncated: false
       }
     });
@@ -313,25 +495,25 @@ test.describe("competition physical-context loop", () => {
     expect(patchRequests).toHaveLength(1);
 
     const findResult = await invokeControlledTool(page, "start_find_mode", {
-      lifeLinkId: COMPETITION_SLEEPING_PAD_ID
+      lifeLinkId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID
     });
     expect(findResult).toMatchObject({
       ok: true,
-      lifeLinkId: COMPETITION_SLEEPING_PAD_ID,
-      qrId: COMPETITION_DECOY_QR_ID,
+      lifeLinkId: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
+      qrId: COMPETITION_TARGET_QR_ID,
       cameraStarted: false,
       visibleEffect: "find_mode_started"
     });
-    await expect(page.locator(".find-target")).toContainText("Camping Sleeping Pad");
-    await expect(page.locator(".find-target")).toContainText(COMPETITION_DECOY_QR_ID);
+    await expect(page.locator(".find-target")).toContainText(COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE);
+    await expect(page.locator(".find-target")).toContainText(COMPETITION_TARGET_QR_ID);
 
     const sampleScans = page.locator(".sample-scans");
-    await sampleScans.getByRole("button", { name: "Camping Sleeping Bag" }).click();
+    await sampleScans.getByRole("button", { name: COMPETITION_SHELTER_TUB_TITLE }).click();
     await expect(page.locator(".scan-status")).toContainText("Not the selected item");
-    await expect(page.locator(".scan-status")).toContainText(COMPETITION_TARGET_QR_ID);
-    await sampleScans.getByRole("button", { name: "Camping Sleeping Pad" }).click();
-    await expect(page.locator(".scan-status")).toContainText("Match found");
     await expect(page.locator(".scan-status")).toContainText(COMPETITION_DECOY_QR_ID);
+    await sampleScans.getByRole("button", { name: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE }).click();
+    await expect(page.locator(".scan-status")).toContainText("Match found");
+    await expect(page.locator(".scan-status")).toContainText(COMPETITION_TARGET_QR_ID);
 
     await restoredAccessToggle.uncheck();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
@@ -352,23 +534,28 @@ test.describe("competition physical-context loop", () => {
           id: COMPETITION_TARGET_QR_ID,
           ownerId: null,
           projectId: null,
-          title: "Camping Sleeping Bag"
+          title: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE
         },
         viewerIsOwner: false
       });
       assertNoHierarchyDisclosure(freshPublicState);
       const freshPublicJson = JSON.stringify(freshPublicState);
       for (const privateValue of [
-        COMPETITION_CAMPING_KIT_ID,
-        COMPETITION_SLEEP_SYSTEM_ID,
+        COMPETITION_FAMILY_ADVENTURE_GEAR_ID,
+        COMPETITION_BASEMENT_GEAR_STORAGE_ID,
+        COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID,
         COMPETITION_SLEEPING_BAG_ID,
         COMPETITION_SLEEPING_PAD_ID,
-        COMPETITION_UPGRADE_PREFERENCES_ID,
-        COMPETITION_UPGRADE_PLAN_ID,
-        "Camping Kit",
-        "Camping Sleep System",
-        "Camping Upgrade Preferences",
-        "Camping Upgrade Plan",
+        COMPETITION_FAMILY_PREFERENCES_ID,
+        COMPETITION_FOUR_DAY_FAMILY_TRIP_ID,
+        COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID,
+        COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
+        COMPETITION_BASEMENT_GEAR_STORAGE_TITLE,
+        "Adult One Sleep System",
+        "Camping Sleeping Pad",
+        COMPETITION_FAMILY_PREFERENCES_TITLE,
+        COMPETITION_FOUR_DAY_FAMILY_TRIP_TITLE,
+        COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE,
         "cold through the ground",
         "$250",
         COMPETITION_RECOMMENDED_UPGRADE_PLAN_BODY
@@ -378,10 +565,11 @@ test.describe("competition physical-context loop", () => {
 
       const freshPage = await freshContext.newPage();
       await freshPage.goto(`/qr/${COMPETITION_TARGET_QR_ID}`);
-      await assertPublicQrHasNoHierarchy(freshPage, "Camping Sleeping Bag");
-      await expect(freshPage.locator(".public-content")).toContainText("kept me warm around 35°F");
+      await assertPublicQrHasNoHierarchy(freshPage, COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE);
+      await expect(freshPage.locator(".public-content")).toContainText("two adults and two children");
+      await expect(freshPage.locator(".public-content")).not.toContainText("Camping Sleeping Pad");
       await expect(freshPage.locator(".public-content")).not.toContainText("Planned upgrade priority");
-      await expect(freshPage.getByText("Camping Upgrade Plan", { exact: true })).toHaveCount(0);
+      await expect(freshPage.getByText(COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE, { exact: true })).toHaveCount(0);
     } finally {
       await freshContext.close();
     }
@@ -470,9 +658,11 @@ function readInspectedUpdatedAt(result: Record<string, unknown>): string {
   return ((result.lifeLink as { updatedAt?: unknown } | undefined)?.updatedAt ?? "") as string;
 }
 
-function readOnlySearchBodySummary(result: Record<string, unknown>): string {
-  const results = result.results as Array<{ bodySummary?: unknown }> | undefined;
-  return (results?.[0]?.bodySummary ?? "") as string;
+function readSearchResult(result: Record<string, unknown>, lifeLinkId: string): Record<string, unknown> {
+  const results = result.results as Array<Record<string, unknown>> | undefined;
+  const match = results?.find((item) => item.id === lifeLinkId);
+  expect(match, `search output omitted expected Life Link ${lifeLinkId}`).toBeDefined();
+  return match!;
 }
 
 async function browserFetchJson(

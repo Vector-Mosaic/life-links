@@ -10,8 +10,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   COMPETITION_CAMPING_KIT_ID,
+  COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
+  COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_PUBLIC_BODY,
+  COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+  COMPETITION_FIXTURE_PROFILE,
   COMPETITION_SLEEPING_BAG_ID,
+  COMPETITION_SLEEPING_BAG_QR_ID,
   COMPETITION_OWNER_ID,
+  COMPETITION_START_LIFE_LINK_ID,
   COMPETITION_TARGET_QR_ID,
   DEFAULT_QR_BASE_URL,
   DEMO_OWNER_ID,
@@ -122,31 +128,59 @@ describe("Life Links Postgres integration", () => {
     const legacyOwnerBefore = await store.getLifeLinkDetail(DEMO_OWNER_ID, "project-home");
     const absentDryRun = await store.resetCompetitionFixture(options);
     expect(absentDryRun).toMatchObject({
-      profile: "webmcp-camping-context-v1",
+      profile: COMPETITION_FIXTURE_PROFILE,
       ownerId: COMPETITION_OWNER_ID,
       mode: "dry-run",
       applied: false,
       before: { users: 0, sessions: 0, lifeLinks: 0 },
       after: { users: 0, sessions: 0, lifeLinks: 0 },
-      expected: { users: 1, sessions: 0, lifeLinks: 6, qrBindings: 2, batches: 1, qrCodes: 2 }
+      expected: { users: 1, sessions: 0, lifeLinks: 60, qrBindings: 8, batches: 1, qrCodes: 8 }
+    });
+    expect(absentDryRun.expected).toEqual({
+      users: 1,
+      sessions: 0,
+      lifeLinks: 60,
+      qrBindings: 8,
+      projectCompatibility: 1,
+      media: 0,
+      batches: 1,
+      qrCodes: 8,
+      claimEvents: 0
     });
     expect(await store.getUserById(COMPETITION_OWNER_ID)).toBeNull();
 
     const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(firstApply.after).toEqual(firstApply.expected);
-    const target = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID);
-    expect(target?.ancestry.items.map((item) => item.title)).toEqual([
-      "Camping Kit",
-      "Camping Sleep System",
+    const start = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_START_LIFE_LINK_ID);
+    expect(start?.ancestry.items.map((item) => item.title)).toEqual([
+      COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
+      "Basement Gear Storage",
+      COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE
+    ]);
+    expect(start?.lifeLink).toMatchObject({ qrId: COMPETITION_TARGET_QR_ID, privacy: "public" });
+    const sleepingBag = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID);
+    expect(sleepingBag?.ancestry.items.map((item) => item.title)).toEqual([
+      COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
+      "Basement Gear Storage",
+      COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+      "Adult Two Sleep System",
       "Camping Sleeping Bag"
     ]);
-    expect(target?.lifeLink).toMatchObject({ qrId: COMPETITION_TARGET_QR_ID, privacy: "public" });
+    expect(sleepingBag?.lifeLink).toMatchObject({ qrId: COMPETITION_SLEEPING_BAG_QR_ID, privacy: "public" });
 
     expect(await store.getQrState(COMPETITION_TARGET_QR_ID, null)).toMatchObject({
       state: "claimed",
       viewerIsOwner: false,
-      link: { ownerId: null, projectId: null }
+      link: {
+        ownerId: null,
+        projectId: null,
+        title: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
+        body: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_PUBLIC_BODY
+      }
     });
+    expect(JSON.stringify(await store.getQrState(COMPETITION_TARGET_QR_ID, null))).not.toMatch(
+      /low-R|Adult Two|working bag|cold through|upgrade|\$250/i
+    );
     expect(await store.getQrState(COMPETITION_TARGET_QR_ID, COMPETITION_OWNER_ID)).toMatchObject({
       state: "claimed",
       viewerIsOwner: true,
@@ -160,7 +194,7 @@ describe("Life Links Postgres integration", () => {
     );
     await store.updateLifeLink(COMPETITION_OWNER_ID, {
       lifeLinkId: COMPETITION_SLEEPING_BAG_ID,
-      expectedUpdatedAt: target!.lifeLink.updatedAt,
+      expectedUpdatedAt: sleepingBag!.lifeLink.updatedAt,
       patch: { title: "Drifted Postgres battery kit" }
     });
     await store.createLifeLink({

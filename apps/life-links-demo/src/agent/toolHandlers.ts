@@ -4,6 +4,7 @@ import {
   MAX_LIFE_LINK_TOOL_OUTPUT_BYTES,
   MAX_LIFE_LINK_TOOL_SEARCH_RESULTS,
   MAX_TITLE_LENGTH,
+  deriveLifeLinkPhysicalLocator,
   formatRecordedLifeLinkPath,
   type LifeLinkDetail,
   type LifeLinkSearchItem
@@ -131,6 +132,13 @@ export type AgentToolErrorResult = {
   };
 };
 
+export type AgentPhysicalLocator = {
+  readonly lifeLinkId: string;
+  readonly title: string;
+  readonly qrId: string;
+  readonly relation: "ancestor" | "self";
+};
+
 export type AgentInspectCurrentLifeLinkSuccess = {
   readonly ok: true;
   readonly lifeLink: {
@@ -155,6 +163,7 @@ export type AgentInspectCurrentLifeLinkSuccess = {
     readonly childrenTruncated: boolean;
     readonly visibleChildCount: number;
   };
+  readonly physicalLocator: AgentPhysicalLocator | null;
   readonly visibleEffect: "current_life_link_focused";
   readonly truncated: boolean;
 };
@@ -170,6 +179,7 @@ export type AgentSearchLifeLinksSuccess = {
     readonly pathTruncated: boolean;
     readonly bodySummary: string;
     readonly matchClass: LifeLinkSearchItem["matchClass"];
+    readonly physicalLocator: AgentPhysicalLocator | null;
   }[];
   readonly resultCount: number;
   readonly totalCount: number;
@@ -707,6 +717,7 @@ function serializeInspection(detail: LifeLinkDetail): AgentInspectCurrentLifeLin
     qrId: item.qrId,
     childCount: item.childCount
   }));
+  const physicalLocator = serializePhysicalLocator(detail.ancestry);
   let path = [...sourcePath];
   let children = [...sourceChildren];
   const fullBody = detail.lifeLink.body.replace(/\s+/g, " ").trim();
@@ -732,6 +743,7 @@ function serializeInspection(detail: LifeLinkDetail): AgentInspectCurrentLifeLin
         childrenTruncated: detail.childrenPage.truncated || children.length < sourceChildren.length,
         visibleChildCount: children.length
       },
+      physicalLocator,
       visibleEffect: "current_life_link_focused",
       truncated:
         detail.ancestry.truncated ||
@@ -773,7 +785,8 @@ function serializeSearch(search: AgentLifeLinkSearchPayload): AgentSearchLifeLin
       recordedPath: clip(recordedPath, MAX_RESULT_PATH_LENGTH),
       pathTruncated: item.path.truncated || recordedPath.length > MAX_RESULT_PATH_LENGTH,
       bodySummary: clip(item.bodySummary, MAX_RESULT_BODY_SUMMARY_LENGTH),
-      matchClass: item.matchClass
+      matchClass: item.matchClass,
+      physicalLocator: serializePhysicalLocator(item.path)
     };
   });
   let items = [...sourceItems];
@@ -805,6 +818,18 @@ function serializeSearch(search: AgentLifeLinkSearchPayload): AgentSearchLifeLin
     }
     throw new Error("Unable to serialize search_my_life_links within the Life Links output budget.");
   }
+}
+
+function serializePhysicalLocator(path: LifeLinkDetail["ancestry"]): AgentPhysicalLocator | null {
+  const locator = deriveLifeLinkPhysicalLocator(path);
+  return locator
+    ? {
+        lifeLinkId: locator.lifeLinkId,
+        title: clip(locator.title, MAX_RESULT_TITLE_LENGTH),
+        qrId: locator.qrId,
+        relation: locator.relation
+      }
+    : null;
 }
 
 function serializeOpen(detail: LifeLinkDetail): AgentOpenLifeLinkSuccess {

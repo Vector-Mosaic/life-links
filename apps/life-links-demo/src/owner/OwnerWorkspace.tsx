@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { FolderTree, LoaderCircle, Move, Plus, QrCode, Search, X } from "lucide-react";
-import { MAX_TITLE_LENGTH, formatRecordedLifeLinkPath } from "@life-links/core";
+import {
+  MAX_TITLE_LENGTH,
+  deriveLifeLinkPhysicalLocator,
+  formatRecordedLifeLinkPath
+} from "@life-links/core";
 
 import { LifeLinksWorkspaceController } from "../workspace/controller";
 import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
@@ -112,14 +116,29 @@ export function OwnerWorkspace({
             {lifeLinkSearchResults.map((result) => {
               const isMoveTarget = dialog?.kind === "move";
               const isSelf = isMoveTarget && dialog.lifeLinkId === result.lifeLink.id;
+              const physicalLocator = deriveLifeLinkPhysicalLocator(result.path);
               return (
-                <div className="hierarchy-search-result" key={result.lifeLink.id} data-life-link-search-id={result.lifeLink.id}>
+                <div
+                  className="hierarchy-search-result"
+                  key={result.lifeLink.id}
+                  data-life-link-search-id={result.lifeLink.id}
+                  data-physical-locator-id={physicalLocator?.lifeLinkId}
+                >
                   <button
                     className="hierarchy-search-open"
                     onClick={() => void controller.selectLifeLink({ lifeLinkId: result.lifeLink.id, source: "search" })}
                   >
                     <strong>{result.lifeLink.title || "Untitled Life Link"}</strong>
                     <span>{formatRecordedLifeLinkPath(result.path)}</span>
+                    <span
+                      className={physicalLocator ? "physical-locator-summary" : "physical-locator-summary unavailable"}
+                    >
+                      {physicalLocator
+                        ? `Recorded QR locator: ${physicalLocator.title || "Untitled Life Link"} · ${physicalLocator.qrId}. Recorded placement, not live-location proof.`
+                        : result.path.truncated
+                          ? "No reliable QR locator can be derived from this bounded recorded path."
+                          : "No QR-bound locator is recorded for this path."}
+                    </span>
                     <small>{result.bodySummary || result.lifeLink.id}</small>
                   </button>
                   {isMoveTarget ? (

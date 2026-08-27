@@ -22,6 +22,7 @@ import {
   boundLifeLinkSourceReferences,
   coordinateLifeLinkBody,
   createCanonicalLifeLink,
+  deriveLifeLinkPhysicalLocator,
   deriveLifeLinkPath,
   deriveProjectCompatibilityId,
   formatRecordedLifeLinkPath,
@@ -221,7 +222,19 @@ describe("canonical recursive Life Link contract", () => {
   it("derives an iterative bounded path without storing or limiting product depth", () => {
     const records: LifeLinkRecord[] = [];
     for (let index = 0; index < 500; index += 1) {
-      records.push(lifeLink(`node-${index.toString().padStart(3, "0")}`, { parentId: index === 0 ? null : `node-${(index - 1).toString().padStart(3, "0")}` }));
+      records.push(
+        lifeLink(`node-${index.toString().padStart(3, "0")}`, {
+          parentId: index === 0 ? null : `node-${(index - 1).toString().padStart(3, "0")}`,
+          qrId:
+            index === 0
+              ? "LL-ROOT"
+              : index === 498
+                ? "LL-NEAREST-CONTAINER"
+                : index === 499
+                  ? "LL-SUBJECT"
+                  : null
+        })
+      );
     }
 
     const path = deriveLifeLinkPath(records, "node-499");
@@ -231,7 +244,45 @@ describe("canonical recursive Life Link contract", () => {
     expect(path.items.at(-1)?.id).toBe("node-499");
     expect(path).toMatchObject({ truncated: true, omittedCount: 500 - MAX_LIFE_LINK_PATH_ITEMS });
     expect(formatRecordedLifeLinkPath(path)).toContain("node-000 > ... >");
+    expect(deriveLifeLinkPhysicalLocator(path)).toEqual({
+      lifeLinkId: "node-498",
+      title: "node-498",
+      qrId: "LL-NEAREST-CONTAINER",
+      relation: "ancestor"
+    });
+    expect(deriveLifeLinkPhysicalLocator(deriveLifeLinkPath(records, "node-499", 2))).toBeNull();
     expect(records.every((record) => !("path" in record) && !("depth" in record))).toBe(true);
+  });
+
+  it("derives ancestor-first, self-fallback, and absent physical locators without parallel state", () => {
+    const container = lifeLink("container", { qrId: "LL-CONTAINER", title: "Basement Gear Tub" });
+    const nestedTaggedItem = lifeLink("tagged-item", {
+      parentId: container.id,
+      qrId: "LL-TAGGED-ITEM",
+      title: "Camp Stove"
+    });
+    const untaggedRoot = lifeLink("untagged-root", { qrId: null });
+    const selfTagged = lifeLink("self-tagged", {
+      parentId: untaggedRoot.id,
+      qrId: "LL-SELF",
+      title: "Camera Bag"
+    });
+    const untaggedChild = lifeLink("untagged-child", { parentId: untaggedRoot.id, qrId: null });
+    const records = [container, nestedTaggedItem, untaggedRoot, selfTagged, untaggedChild];
+
+    expect(deriveLifeLinkPhysicalLocator(deriveLifeLinkPath(records, nestedTaggedItem.id))).toEqual({
+      lifeLinkId: container.id,
+      title: container.title,
+      qrId: container.qrId,
+      relation: "ancestor"
+    });
+    expect(deriveLifeLinkPhysicalLocator(deriveLifeLinkPath(records, selfTagged.id))).toEqual({
+      lifeLinkId: selfTagged.id,
+      title: selfTagged.title,
+      qrId: selfTagged.qrId,
+      relation: "self"
+    });
+    expect(deriveLifeLinkPhysicalLocator(deriveLifeLinkPath(records, untaggedChild.id))).toBeNull();
   });
 
   it("searches exact QR, title, ancestor path, and body with deterministic bounded output", () => {
