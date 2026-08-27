@@ -45,6 +45,7 @@ functionality.
 | Rich physical-context retrieval, revision-safe direct update, and deterministic camping challenge loop | No | `2fff0f5d8bd791cd43e5fef4f7640b4a7a563552` | `bbdfba3f1eccd7d2ff4f3905c17eb2ecb9ea2c36` | BC-120/130/140 unit, contract, controlled-host, native-Chrome, persistence, and complete local challenge-loop evidence |
 | Sixty-record family-adventure fixture and shared nearest-QR physical locator | No | exact canonical source recorded by this release's `SOURCE_PROJECTION.json` | this forward-only release projection | Fixture/reset counts and identity tests; core locator edge cases; handler and human-UI parity; controlled and native family journey tests |
 | Judged-path presentation, trust-state clarity, and responsive accessibility | No | exact canonical source recorded by this release's `SOURCE_PROJECTION.json` | this forward-only release projection | Public, private, owner-only, unclaimed, and missing-state regression coverage; keyboard focus transfer; desktop and phone browser qualification; light/dark contrast and reduced-motion checks |
+| One-time durable owner Agent connection with explicit disconnect | No | exact canonical source recorded by this release's `SOURCE_PROJECTION.json` | this forward-only release projection | Additive `agent_connected_at` migration; idempotent connect/disconnect API and store contracts; reload, browser-restart, logout/login, fresh-context, reset-preservation, controlled-host, and native-Chrome qualification |
 
 Two canonical checkpoints intentionally produce no invented standalone product
 commit: `2ada1078594cee1a6d3b46b48718b30a01b41736` changes release tooling outside
@@ -62,9 +63,10 @@ substantive but bounded owner context. The update tool requires the exact base
 revision, changes only title and/or body through the ordinary canonical PATCH,
 may validate up to eight same-owner source Life Link IDs, and rejects open
 editor, saved human draft, stale-revision, owner/surface, or access conflicts.
-Agent tools never bypass the ordinary owner-session boundary. Child creation,
-privacy, placement, QR binding, media, ownership, and purchase operations are
-outside this catalog.
+The saved Agent connection survives application sessions, but page tools are
+registered only on an eligible authenticated owner workspace. Agent tools never
+bypass the ordinary owner-session boundary. Child creation, privacy, placement,
+QR binding, media, ownership, and purchase operations are outside this catalog.
 
 The replacement `webmcp-family-adventure-context-v2` fixture contains exactly
 one synthetic owner, 60 meaningful recursive Life Links, eight QR inventory

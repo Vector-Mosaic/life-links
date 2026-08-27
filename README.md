@@ -50,7 +50,8 @@ planning next year, the agent combines those facts with the family's warmth-
 over-weight preference, instruction not to replace working gear, and $250
 budget. It uses the ordinary revision-safe Life Links update to record the pad
 as the next planned upgrade. The result remains explicitly planned—not
-purchased, owned, or installed—and survives reload after Agent Access expires.
+purchased, owned, or installed—and survives reload alongside the owner's saved
+Agent connection.
 
 The product vision is broad: a private, user-controlled context layer for
 physical life. The judged path is deliberately narrow and repeatable: pack the
@@ -59,9 +60,11 @@ the decision to the right physical tub.
 
 ## WebMCP Agent Access
 
-An authenticated owner can explicitly enable session-scoped Agent Access on
-the owner workspace. Life Links then registers exactly five page tools through
-`document.modelContext.registerTool`:
+An authenticated owner selects **Connect Agent** once on the owner workspace.
+Life Links saves that connection for the owner across reloads, browser restarts,
+logout/login, and future visits. Eligible signed-in owner pages then register
+exactly five page tools through `document.modelContext.registerTool` without a
+second prompt. Only **Disconnect Agent** revokes the saved connection:
 
 - `inspect_current_life_link`
 - `search_my_life_links`
@@ -116,12 +119,13 @@ the same exact tub locator in agent and human output. The retained QR-bound pad
 still resolves to the nearer Green tub ancestor. The journey then retrieves the
 working bag, failed pad, family preferences, $250 budget, and prior four-day
 trip before using one four-source `update_life_link_content` call to persist a
-sleeping-pad priority in the private Next-Year Upgrade Plan. It reloads to prove
-the new revision persisted and Agent Access reset, rejects Blue Shelter Tub QR
-`LL-WEBMCP-00003`, matches the Green tub in Find Mode, revokes tool access, and
-confirms a fresh logged-out context still receives only the generic public
-Green tub. The synthetic plan explicitly remains planned only—not purchased,
-owned, or installed.
+sleeping-pad priority in the private Next-Year Upgrade Plan. It reloads, logs
+out, and signs in again to prove both the new revision and the one-time Agent
+connection persisted without reconnecting. It rejects Blue Shelter Tub QR
+`LL-WEBMCP-00003`, matches the Green tub in Find Mode, explicitly disconnects
+the agent, and confirms a fresh logged-out context still receives only the
+generic public Green tub. The synthetic plan explicitly remains planned
+only—not purchased, owned, or installed.
 
 The PostgreSQL integration suite is opt-in and requires a disposable database:
 

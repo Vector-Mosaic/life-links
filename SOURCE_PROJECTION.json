@@ -368,7 +368,7 @@
   "profile_id": "life-links-webmcp-challenge",
   "profile_path": "systems/life_links/config/publication/webmcp_challenge_public_release.profile.json",
   "profile_sha256": "e56d0d299eb114500702e25b32e5c5939f209d9e6985a1ab9cfc96d894712cbc",
-  "projection_commit": "587ffb24be0b72f09ea7fb3442dd323304cdf5f1",
+  "projection_commit": "f18501029c5eec9444eb7a9427dab6410386afec",
   "scaffold_destinations": [
     ".env.example",
     ".gitignore",
@@ -419,9 +419,9 @@
       "template": "systems/life_links/config/publication/templates/env.example"
     },
     {
-      "byte_count": 8906,
+      "byte_count": 9201,
       "destination": "README.md",
-      "sha256": "4ab157439337c77f732ab125b686db806d2b3a8656d16c0d50c531a3f299bc97",
+      "sha256": "766c03336362adbf786d81eceb020be573fe1a51c1ff1c78bfdb0678bc653261",
       "template": "systems/life_links/config/publication/templates/README.md"
     },
     {
@@ -437,15 +437,15 @@
       "template": "systems/life_links/config/publication/templates/THIRD_PARTY_NOTICES.md"
     },
     {
-      "byte_count": 10414,
+      "byte_count": 10964,
       "destination": "CHALLENGE_WORK.md",
-      "sha256": "3c54e4e8ff9e24cf1cd962778d5c72b84578fbddd373573881033d542dc14317",
+      "sha256": "3bd96763cd6b46980287c2f90da89c9d7b863c250c4e53b6b145bf56949bdf5f",
       "template": "systems/life_links/config/publication/templates/CHALLENGE_WORK.md"
     }
   ],
   "schema_version": "life_links.source_projection.v2",
   "source_byte_count": 1156080,
-  "source_commit": "587ffb24be0b72f09ea7fb3442dd323304cdf5f1",
+  "source_commit": "f18501029c5eec9444eb7a9427dab6410386afec",
   "source_file_count": 87,
   "source_mappings": [
     {
