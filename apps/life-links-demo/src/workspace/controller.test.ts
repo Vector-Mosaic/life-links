@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createLinkBodyDocFromPlainText,
+  summarizeLifeLink,
+  type CollectionRecord,
+  type CollectionSectionRecord,
   type LifeLinkDetail,
+  type LifeLinkChangePreview,
   type LifeLinkRecord,
   type LifeLinkSummary,
   type LinkRecord,
-  type ProjectRecord,
   type UpdateLifeLinkPatch
 } from "@life-links/core";
 
@@ -13,6 +16,8 @@ import { LifeLinksWorkspaceController, type LifeLinksWorkspaceApi } from "./cont
 import { ApiError, type ApiAgentConnection } from "../api";
 import { writeCanonicalLifeLinkDraft } from "./editorSession";
 import { classifyLifeLinksRoute, lifeLinkIdFromPath, qrIdFromPath, type WorkspaceBrowserRoute } from "./routes";
+import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedImageFixture, attachmentTranscriptFixture } from "../attachmentImage.testFixtures";
+import { validateAttachmentImageResult } from "../attachmentImage";
 
 const owner = {
   id: "owner-1",
@@ -31,8 +36,8 @@ const disconnectedAgentConnection: ApiAgentConnection = {
   connectedAt: null
 };
 
-const project: ProjectRecord = {
-  id: "project-1",
+const rootFixture = {
+  id: "life-link-pantry",
   ownerId: owner.id,
   name: "Pantry",
   createdAt: "2026-08-25T00:00:00.000Z"
@@ -47,7 +52,6 @@ const link: LinkRecord = {
   body: "Dry goods",
   bodyDoc: createLinkBodyDocFromPlainText("Dry goods"),
   bodyDocVersion: 1,
-  projectId: project.id,
   privacy: "private",
   media: [],
   createdAt: "2026-08-25T00:00:00.000Z",
@@ -55,7 +59,7 @@ const link: LinkRecord = {
 };
 
 const rootLifeLink: LifeLinkRecord = {
-  id: project.id,
+  id: rootFixture.id,
   ownerId: owner.id,
   parentId: null,
   qrId: null,
@@ -64,9 +68,13 @@ const rootLifeLink: LifeLinkRecord = {
   bodyDoc: createLinkBodyDocFromPlainText(""),
   bodyDocVersion: 1,
   privacy: "private",
+  browsingRole: "container",
+  context: { schemaVersion: 1 },
+  placementConfirmedAt: null,
+  publicFieldKeys: [],
   media: [],
-  createdAt: project.createdAt,
-  updatedAt: project.createdAt
+  createdAt: rootFixture.createdAt,
+  updatedAt: rootFixture.createdAt
 };
 
 const canonicalLink: LifeLinkRecord = {
@@ -79,6 +87,10 @@ const canonicalLink: LifeLinkRecord = {
   bodyDoc: link.bodyDoc ?? createLinkBodyDocFromPlainText(link.body),
   bodyDocVersion: link.bodyDocVersion ?? 1,
   privacy: link.privacy,
+  browsingRole: "item",
+  context: { schemaVersion: 1 },
+  placementConfirmedAt: null,
+  publicFieldKeys: [],
   media: [],
   createdAt: link.createdAt,
   updatedAt: link.updatedAt
@@ -91,6 +103,15 @@ const canonicalDetail: LifeLinkDetail = {
   ancestry: { items: [rootSummary, canonicalSummary], truncated: false, omittedCount: 0 },
   children: [],
   childrenPage: { nextCursor: null, truncated: false }
+};
+
+const collection: CollectionRecord = {
+  id: "collection-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", ownerId: owner.id,
+  title: "Camping Gear", purpose: "Family trips", notes: "", createdAt: rootFixture.createdAt, updatedAt: rootFixture.createdAt
+};
+const section: CollectionSectionRecord = {
+  id: "section-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", ownerId: owner.id, collectionId: collection.id,
+  title: "Family sleep systems", position: 0, createdAt: rootFixture.createdAt, updatedAt: rootFixture.createdAt
 };
 
 describe("Life Links route classification", () => {
@@ -138,7 +159,6 @@ describe("LifeLinksWorkspaceController", () => {
     expect(controller.getSnapshot()).toMatchObject({
       currentUser: owner,
       links: [link],
-      projects: [project],
       activeQrId: link.id,
       activeView: "home",
       rootLifeLinks: expect.objectContaining({ items: [rootSummary], loaded: true }),
@@ -148,9 +168,168 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.getConfig).toHaveBeenCalledOnce();
     expect(api.getMe).toHaveBeenCalledOnce();
     expect(api.listLinks).toHaveBeenCalledOnce();
-    expect(api.listProjects).toHaveBeenCalledOnce();
     expect(api.listLifeLinks).toHaveBeenCalledWith({ limit: 25 });
     expect(listener).toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("reads private attachments only while connected, through fresh owner metadata and the typed content API", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    const input = { lifeLinkId: canonicalLink.id, mediaId: "media-manual" };
+    expect(await controller.agentReadAttachment(input)).toEqual({ ok: false, code: "life_link_unavailable" });
+    expect(api.getLifeLinkAttachmentContent).not.toHaveBeenCalled();
+    await controller.connectAgent();
+    const media = { id: input.mediaId, lifeLinkId: input.lifeLinkId, ownerId: owner.id, kind: "document" as const,
+      mimeType: "text/plain", fileName: "manual.txt", sizeBytes: 6, createdAt: link.createdAt, url: `/api/life-links/${input.lifeLinkId}/media/${input.mediaId}` };
+    api.getLifeLinkDetail.mockResolvedValue({ detail: { ...canonicalDetail, lifeLink: { ...canonicalLink, media: [media] } } });
+    const page = { mediaId: input.mediaId, revision: "a".repeat(64), status: "ready" as const, reason: null,
+      format: "text" as const, text: "Manual", offset: 0, nextOffset: null, totalChars: 6, warnings: [] };
+    api.getLifeLinkAttachmentContent.mockResolvedValue(page);
+    const before = controller.getSnapshot();
+    expect(await controller.agentReadAttachment({ lifeLinkId: input.lifeLinkId })).toEqual({ ok: true, kind: "list", attachments: [media], revision: canonicalLink.updatedAt });
+    expect(await controller.agentReadAttachment(input)).toEqual({ ok: true, kind: "content", page });
+    expect(api.getLifeLinkAttachmentContent).toHaveBeenCalledWith(input.lifeLinkId, input.mediaId, { offset: undefined, revision: undefined, limit: 1000, signal: undefined });
+    expect(controller.getSnapshot()).toEqual(before);
+    expect(api.updateLifeLink).not.toHaveBeenCalled();
+    expect(api.uploadLifeLinkMedia).not.toHaveBeenCalled();
+    expect(await controller.agentReadAttachment({ lifeLinkId: input.lifeLinkId, revision: "stale", offset: 1 })).toEqual({ ok: false, code: "stale_life_link" });
+    api.getLifeLinkDetail.mockResolvedValue({ detail: { ...canonicalDetail, lifeLink: { ...canonicalLink, ownerId: "other-owner", media: [media] } } });
+    expect(await controller.agentReadAttachment(input)).toEqual({ ok: false, code: "life_link_unavailable" });
+    controller.dispose();
+  });
+
+  it("drops attachment text after disconnection and preserves cancellation", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    await controller.connectAgent();
+    const media = { id: "media-1", lifeLinkId: canonicalLink.id, ownerId: owner.id, kind: "document" as const,
+      mimeType: "text/plain", fileName: "manual.txt", sizeBytes: 7, createdAt: link.createdAt, url: `/api/life-links/${canonicalLink.id}/media/media-1` };
+    api.getLifeLinkDetail.mockResolvedValue({ detail: { ...canonicalDetail, lifeLink: { ...canonicalLink, media: [media] } } });
+    api.getLifeLinkAttachmentContent.mockImplementation(async () => {
+      await controller.disconnectAgent();
+      return { mediaId: media.id, revision: "a".repeat(64), status: "ready", reason: null, format: "text", text: "private", offset: 0, nextOffset: null, totalChars: 7, warnings: [] };
+    });
+    expect(await controller.agentReadAttachment({ lifeLinkId: canonicalLink.id, mediaId: media.id })).toEqual({ ok: false, code: "life_link_unavailable" });
+    const abort = new AbortController();
+    abort.abort();
+    expect(await controller.agentReadAttachment({ lifeLinkId: canonicalLink.id }, abort.signal)).toEqual({ ok: false, code: "cancelled" });
+    controller.dispose();
+  });
+
+  it.each(["image", "pdf", "docx", "xlsx", "video", "animation"] as const)("reads revision-bound %s bytes without changing the selected item, content, or history", async (kind) => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start(); await controller.connectAgent();
+    const result = kind === "pdf" ? attachmentPdfImageFixture() : kind === "image" ? attachmentImageFixture() : attachmentSelectedImageFixture(kind);
+    const selector = ["pdf", "docx", "xlsx"].includes(kind) ? { page: 2 } : kind === "video" ? { atMs: 1200 } : kind === "animation" ? { frame: 2 } : {};
+    const media = { id: result.mediaId, lifeLinkId: canonicalLink.id, ownerId: owner.id, kind: "image" as const,
+      mimeType: result.source!.mimeType, fileName: "photo.png", sizeBytes: result.source!.sizeBytes, createdAt: link.createdAt, url: "/private-image" };
+    api.getLifeLinkDetail.mockResolvedValue({ detail: { ...canonicalDetail, lifeLink: { ...canonicalLink, media: [media] } } });
+    api.getLifeLinkAttachmentImage.mockResolvedValue(result);
+    const input = { lifeLinkId: canonicalLink.id, mediaId: media.id, representation: "image" as const, mode: "overview" as const, sourceRevision: result.sourceRevision, ...selector };
+    const before = controller.getSnapshot();
+    expect(await controller.agentReadAttachment(input)).toEqual({ ok: true, kind: "image", result });
+    expect(api.getLifeLinkAttachmentImage).toHaveBeenCalledWith(input.lifeLinkId, input.mediaId, { mode: "overview", sourceRevision: result.sourceRevision, ...selector }, undefined);
+    expect(api.getLifeLinkAttachmentContent).not.toHaveBeenCalled();
+    expect(api.updateLifeLink).not.toHaveBeenCalled();
+    expect(api.uploadLifeLinkMedia).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toBe(before);
+    if (["pdf", "docx", "xlsx"].includes(kind)) {
+      expect(await controller.agentReadAttachment({ ...input, page: 1 })).toEqual({ ok: false, code: "effect_not_applied" });
+    }
+    api.getLifeLinkAttachmentImage.mockResolvedValue({ ...result, sourceRevision: "0".repeat(64) });
+    expect(await controller.agentReadAttachment(input)).toEqual({ ok: false, code: "effect_not_applied" });
+    api.getLifeLinkAttachmentImage.mockResolvedValue({ ...result, source: { ...result.source!, sizeBytes: media.sizeBytes + 1 } });
+    expect(await controller.agentReadAttachment(input)).toEqual({ ok: false, code: "effect_not_applied" });
+    api.getLifeLinkAttachmentImage.mockRejectedValue(new ApiError(409, "stale_attachment", {}));
+    expect(await controller.agentReadAttachment(input)).toEqual({ ok: false, code: "stale_life_link" });
+    api.getLifeLinkAttachmentImage.mockRejectedValue(new ApiError(404, "not_found", {}));
+    expect(await controller.agentReadAttachment(input)).toEqual({ ok: false, code: "life_link_unavailable" });
+    controller.dispose();
+  });
+
+  it.each(["image", "docx", "xlsx", "video", "animation"].flatMap((kind) => ["navigation", "disconnect", "editor", "owner", "abort"].map((change) => [kind, change])))
+  ("drops %s bytes if %s changes during pending output-hash verification", async (kind, change) => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start(); await controller.connectAgent();
+    const image = kind === "image" ? attachmentImageFixture() : attachmentSelectedImageFixture(kind as "docx" | "xlsx" | "video" | "animation");
+    const selector = kind === "video" ? { atMs: 1200 } : kind === "animation" ? { frame: 2 } : kind === "image" ? {} : { page: 2 };
+    const media = { id: image.mediaId, lifeLinkId: canonicalLink.id, ownerId: owner.id, kind: "image" as const,
+      mimeType: image.source!.mimeType, fileName: "photo.png", sizeBytes: image.source!.sizeBytes, createdAt: link.createdAt, url: "/private-image" };
+    api.getLifeLinkDetail.mockResolvedValue({ detail: { ...canonicalDetail, lifeLink: { ...canonicalLink, media: [media] } } });
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+    const actualDigest = Uint8Array.from(image.rendition!.sha256.match(/../g)!, (byte) => parseInt(byte, 16)).buffer;
+    let finishDigest!: (value: ArrayBuffer) => void;
+    let enteredDigest!: () => void;
+    const entered = new Promise<void>((resolve) => { enteredDigest = resolve; });
+    const digest = vi.spyOn(crypto.subtle, "digest").mockImplementation(() => {
+      enteredDigest();
+      return new Promise<ArrayBuffer>((resolve) => { finishDigest = resolve; });
+    });
+    api.getLifeLinkAttachmentImage.mockImplementation(async (_id, mediaId, options) => validateAttachmentImageResult(image, mediaId, options));
+    const abort = new AbortController();
+    try {
+      const pending = controller.agentReadAttachment({ lifeLinkId: canonicalLink.id, mediaId: media.id, representation: "image", mode: "overview", sourceRevision: image.sourceRevision, ...selector }, abort.signal);
+      await entered;
+      if (change === "navigation") await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+      if (change === "disconnect") await controller.disconnectAgent();
+      if (change === "editor") await controller.openCanonicalEditor(canonicalLink.id);
+      if (change === "owner") await controller.logout();
+      if (change === "abort") abort.abort();
+      finishDigest(actualDigest);
+      expect(await pending).toEqual({ ok: false, code: change === "abort" ? "cancelled" : change === "editor" ? "editor_open" : "life_link_unavailable" });
+    } finally { digest.mockRestore(); controller.dispose(); }
+  });
+
+  it.each(["navigation", "disconnect", "editor", "owner", "abort"])("drops a transcript if %s changes while the private window is being read", async (change) => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start(); await controller.connectAgent();
+    const page = attachmentTranscriptFixture();
+    const media = { id: page.mediaId, lifeLinkId: canonicalLink.id, ownerId: owner.id, kind: "video" as const,
+      mimeType: "video/mp4", fileName: "clip.mp4", sizeBytes: 900, createdAt: link.createdAt, url: "/private-video" };
+    api.getLifeLinkDetail.mockResolvedValue({ detail: { ...canonicalDetail, lifeLink: { ...canonicalLink, media: [media] } } });
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+    let finish!: (page: ReturnType<typeof attachmentTranscriptFixture>) => void;
+    let entered!: () => void;
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    api.getLifeLinkAttachmentContent.mockImplementation(() => { entered(); return new Promise((resolve) => { finish = resolve; }); });
+    const abort = new AbortController();
+    try {
+      const pending = controller.agentReadAttachment({ lifeLinkId: canonicalLink.id, mediaId: media.id, representation: "transcript", startMs: 30000 }, abort.signal);
+      await ready;
+      if (change === "navigation") await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+      if (change === "disconnect") await controller.disconnectAgent();
+      if (change === "editor") await controller.openCanonicalEditor(canonicalLink.id);
+      if (change === "owner") await controller.logout();
+      if (change === "abort") abort.abort();
+      finish(page);
+      expect(await pending).toEqual({ ok: false, code: change === "abort" ? "cancelled" : change === "editor" ? "editor_open" : "life_link_unavailable" });
+    } finally { controller.dispose(); }
+  });
+
+  it("checks transcript window identity after owner authorization without modifying the item or history", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start(); await controller.connectAgent();
+    const page = attachmentTranscriptFixture();
+    const media = { id: page.mediaId, lifeLinkId: canonicalLink.id, ownerId: owner.id, kind: "video" as const,
+      mimeType: "video/mp4", fileName: "clip.mp4", sizeBytes: 900, createdAt: link.createdAt, url: "/private-video" };
+    api.getLifeLinkDetail.mockResolvedValue({ detail: { ...canonicalDetail, lifeLink: { ...canonicalLink, media: [media] } } });
+    api.getLifeLinkAttachmentContent.mockResolvedValue(page);
+    const input = { lifeLinkId: canonicalLink.id, mediaId: page.mediaId, representation: "transcript" as const, startMs: 30000, durationMs: 30000, audioStreamIndex: 1 };
+    const before = controller.getSnapshot();
+    expect(await controller.agentReadAttachment(input)).toEqual({ ok: true, kind: "content", page });
+    expect(api.getLifeLinkAttachmentContent).toHaveBeenCalledWith(input.lifeLinkId, input.mediaId, expect.objectContaining({ representation: "transcript", startMs: 30000, durationMs: 30000, audioStreamIndex: 1 }));
+    expect(controller.getSnapshot()).toBe(before);
+    expect(api.updateLifeLink).not.toHaveBeenCalled();
+    expect(api.uploadLifeLinkMedia).not.toHaveBeenCalled();
+    page.transcript!.endMs = -1;
+    expect(await controller.agentReadAttachment(input)).toEqual({ ok: false, code: "effect_not_applied" });
     controller.dispose();
   });
 
@@ -193,7 +372,7 @@ describe("LifeLinksWorkspaceController", () => {
   });
 
   it("keeps an authenticated public QR route isolated from the private owner library", async () => {
-    const freshPublicLink = { ...link, title: "Fresh public response", projectId: null };
+    const freshPublicLink = { ...link, title: "Fresh public response" };
     const route = new FakeRoute(`/qr/${link.id}`);
     const api = fakeApi();
     api.listLinks.mockResolvedValue({ links: [{ ...link, title: "Stale private inventory" }] });
@@ -204,11 +383,9 @@ describe("LifeLinksWorkspaceController", () => {
 
     expect(api.getQr).toHaveBeenCalledWith(link.id);
     expect(api.listLinks).not.toHaveBeenCalled();
-    expect(api.listProjects).not.toHaveBeenCalled();
     expect(api.listLifeLinks).not.toHaveBeenCalled();
     expect(controller.getSnapshot()).toMatchObject({
       links: [],
-      projects: [],
       rootLifeLinks: { items: [], loaded: false },
       publicQrState: { state: "claimed", link: freshPublicLink }
     });
@@ -247,30 +424,6 @@ describe("LifeLinksWorkspaceController", () => {
     route.pop(`/qr/${link.id}`);
     await vi.waitFor(() => expect(controller.getSnapshot().routeQrId).toBe(link.id));
     expect(controller.getSnapshot().activeView).toBe("scan");
-    controller.dispose();
-  });
-
-  it("routes editor Save through the controller and updates the shared snapshot", async () => {
-    const route = new FakeRoute("/");
-    const api = fakeApi();
-    const updated = { ...link, title: "Shelf One", updatedAt: "2026-08-25T00:01:00.000Z" };
-    api.updateLink.mockResolvedValue({ link: updated });
-    const controller = new LifeLinksWorkspaceController({ api, route });
-    await controller.start();
-    controller.openEditor(link.id);
-
-    await controller.saveLink(link.id, {
-      title: updated.title,
-      body: updated.body,
-      bodyDoc: updated.bodyDoc,
-      bodyDocVersion: updated.bodyDocVersion,
-      privacy: updated.privacy,
-      projectId: updated.projectId
-    });
-
-    expect(api.updateLink).toHaveBeenCalledWith(link.id, expect.objectContaining({ title: "Shelf One" }));
-    expect(controller.getSnapshot().links[0]).toEqual(updated);
-    expect(controller.getSnapshot().editingId).toBeNull();
     controller.dispose();
   });
 
@@ -339,7 +492,8 @@ describe("LifeLinksWorkspaceController", () => {
 
     await expect(controller.agentStartFindMode({ lifeLinkId: canonicalLink.id })).resolves.toEqual({ ok: true });
     expect(controller.getSnapshot()).toMatchObject({
-      activeView: "search",
+      activeView: "scan",
+      detailsOpen: false,
       routePathname: "/",
       findTargetId: link.id,
       activeQrId: link.id
@@ -349,12 +503,13 @@ describe("LifeLinksWorkspaceController", () => {
     await pendingSave;
 
     expect(controller.getSnapshot()).toMatchObject({
-      activeView: "search",
+      activeView: "scan",
+      detailsOpen: false,
       routePathname: "/",
       findTargetId: link.id,
       activeQrId: link.id
     });
-    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(2);
+    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(3);
     controller.dispose();
   });
 
@@ -369,7 +524,7 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.getLifeLinkDetail).toHaveBeenCalledWith(canonicalLink.id, { limit: 25 });
     expect(route.pushes).toEqual([`/life-links/${canonicalLink.id}`]);
     expect(controller.getSnapshot()).toMatchObject({
-      activeView: "projects",
+      activeView: "workspace",
       selectedLifeLinkId: canonicalLink.id,
       highlightedLifeLinkId: canonicalLink.id,
       routeLifeLinkId: canonicalLink.id,
@@ -398,6 +553,9 @@ describe("LifeLinksWorkspaceController", () => {
     };
     const tailParentSummary = summary(tailParent, 1);
     const deepSummary = summary(deepLifeLink, 0);
+    api.listLifeLinks.mockImplementation(async ({ parentId } = {}) => ({
+      lifeLinks: parentId === tailParent.id ? [deepSummary] : [rootSummary], nextCursor: null, truncated: false
+    }));
     api.getLifeLinkDetail.mockResolvedValue({
       detail: {
         lifeLink: deepLifeLink,
@@ -460,9 +618,10 @@ describe("LifeLinksWorkspaceController", () => {
     await controller.start();
     await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "route" });
 
+    // Direct-layer navigation loads the parent immediately and retains a known
+    // selected path even if its row is outside the server's current page.
     expect(controller.getSnapshot().lifeLinkChildren[rootLifeLink.id]).toMatchObject({
-      items: [canonicalSummary],
-      loaded: false
+      items: [sibling, canonicalSummary], loaded: true
     });
     await controller.loadMoreLifeLinks(rootLifeLink.id);
 
@@ -484,7 +643,7 @@ describe("LifeLinksWorkspaceController", () => {
     await controller.detachLifeLink(canonicalLink.id);
     await controller.attachQrToLifeLink(canonicalLink.id, link.id);
 
-    expect(api.moveLifeLink).toHaveBeenCalledWith(canonicalLink.id, null, canonicalLink.updatedAt);
+    expect(api.moveLifeLink).toHaveBeenCalledWith(canonicalLink.id, null, canonicalLink.updatedAt, { signal: undefined });
     expect(api.attachQr).toHaveBeenCalledWith(link.id, canonicalLink.id, expect.stringMatching(/^attach-/));
     controller.dispose();
   });
@@ -522,7 +681,6 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.claimQr).toHaveBeenCalledWith(link.id, expect.stringMatching(/^claim-/));
     expect(api.getQr).toHaveBeenCalledTimes(2);
     expect(api.listLinks).not.toHaveBeenCalled();
-    expect(api.listProjects).not.toHaveBeenCalled();
     expect(api.listLifeLinks).not.toHaveBeenCalled();
     expect(route.pushes).toEqual([]);
     expect(controller.getSnapshot()).toMatchObject({
@@ -569,7 +727,8 @@ describe("LifeLinksWorkspaceController", () => {
     });
 
     expect(result).toEqual({ ok: true });
-    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(3);
+    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(4);
+    expect(api.getLifeLinkDetail).toHaveBeenLastCalledWith(rootLifeLink.id, { limit: 25, signal: undefined });
     expect(api.updateLifeLink).toHaveBeenCalledOnce();
     expect(api.updateLifeLink).toHaveBeenCalledWith(
       canonicalLink.id,
@@ -736,7 +895,10 @@ describe("LifeLinksWorkspaceController", () => {
       }
     });
     expect(controller.getSnapshot()).toMatchObject({
-      activeView: "projects",
+      activeView: "search",
+      detailsOpen: false,
+      collectionSearchComplete: true,
+      lifeLinkMembershipsComplete: { [canonicalLink.id]: true },
       lifeLinkSearchQuery: "Shelf",
       lifeLinkSearchResults: [expect.objectContaining({ lifeLink: canonicalSummary })]
     });
@@ -744,7 +906,8 @@ describe("LifeLinksWorkspaceController", () => {
     await expect(controller.agentOpenLifeLink({ lifeLinkId: canonicalLink.id })).resolves.toEqual({ ok: true });
     await expect(controller.agentStartFindMode({ lifeLinkId: canonicalLink.id })).resolves.toEqual({ ok: true });
     expect(controller.getSnapshot()).toMatchObject({
-      activeView: "search",
+      activeView: "scan",
+      detailsOpen: false,
       findTargetId: link.id,
       activeQrId: link.id
     });
@@ -753,7 +916,7 @@ describe("LifeLinksWorkspaceController", () => {
     controller.dispose();
   });
 
-  it("returns each overlapping agent search's own bounded API payload", async () => {
+  it("returns each overlapping agent search's own payload while the latest requested search owns the view", async () => {
     const api = fakeApi();
     const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
     await controller.start();
@@ -807,8 +970,8 @@ describe("LifeLinksWorkspaceController", () => {
       search: { query: "first", results: [{ lifeLink: { id: firstSummary.id } }] }
     });
     expect(controller.getSnapshot()).toMatchObject({
-      lifeLinkSearchQuery: "first",
-      lifeLinkSearchResults: [{ lifeLink: { id: firstSummary.id } }]
+      lifeLinkSearchQuery: "second",
+      lifeLinkSearchResults: [{ lifeLink: { id: secondSummary.id } }]
     });
     controller.dispose();
   });
@@ -848,7 +1011,7 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.searchLifeLinks).not.toHaveBeenCalled();
     expect(controller.getSnapshot()).toMatchObject({
       canonicalEditingId: canonicalLink.id,
-      activeView: "projects",
+      activeView: "workspace",
       findTargetId: null
     });
     controller.dispose();
@@ -914,6 +1077,381 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.updateLifeLink).not.toHaveBeenCalled();
     controller.dispose();
   });
+
+  it("enters only a folder's direct layer, collapses Details, and opens item Details", async () => {
+    const api = fakeApi();
+    const route = new FakeRoute("/life-links");
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+    const folderSelectionStates: boolean[] = [];
+    const unsubscribe = controller.subscribe(() => {
+      if (controller.getSnapshot().selectedLifeLinkId === rootLifeLink.id) folderSelectionStates.push(controller.getSnapshot().detailsOpen);
+    });
+    await controller.activateLifeLink(rootLifeLink.id);
+    unsubscribe();
+    expect(folderSelectionStates).not.toContain(true);
+    expect(controller.getSnapshot()).toMatchObject({
+      workspaceMode: "hierarchies", hierarchyParentId: rootLifeLink.id,
+      hierarchyParentDetail: { lifeLink: rootLifeLink }, selectedLifeLinkId: rootLifeLink.id, detailsOpen: false
+    });
+    expect(controller.getSnapshot().lifeLinkChildren[rootLifeLink.id].items).toEqual([canonicalSummary]);
+    await controller.activateLifeLink(canonicalLink.id);
+    expect(controller.getSnapshot()).toMatchObject({
+      hierarchyParentId: rootLifeLink.id, selectedLifeLinkId: canonicalLink.id, detailsOpen: true,
+      membershipsComplete: true
+    });
+    await controller.openHierarchy();
+    expect(route.pathname()).toBe("/life-links");
+    expect(controller.getSnapshot()).toMatchObject({ hierarchyParentId: null, detailsOpen: false, selectedLifeLinkId: null });
+    controller.dispose();
+  });
+
+  it("reloads exact memberships for folders and preserves labels after item-to-container promotion", async () => {
+    const api = fakeApi();
+    let currentSummary: LifeLinkSummary = { ...rootSummary, browsingRole: "item", childCount: 0 };
+    api.listLifeLinks.mockImplementation(async () => ({ lifeLinks: [currentSummary], nextCursor: null, truncated: false }));
+    const memberships = [{ collection, sections: [section] }];
+    api.listLifeLinkCollectionMemberships.mockResolvedValue({ memberships, nextCursor: null, truncated: false });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    expect(controller.getSnapshot().lifeLinkMemberships[rootLifeLink.id]).toEqual(memberships);
+    api.listLifeLinkCollectionMemberships.mockClear();
+    currentSummary = rootSummary;
+    await controller.refreshOwnerLibrary();
+    expect(api.listLifeLinkCollectionMemberships).toHaveBeenCalledWith(rootLifeLink.id, { cursor: null, limit: 25 });
+    expect(controller.getSnapshot()).toMatchObject({
+      rootLifeLinks: { items: [rootSummary] },
+      lifeLinkMemberships: { [rootLifeLink.id]: memberships },
+      lifeLinkMembershipsComplete: { [rootLifeLink.id]: true }
+    });
+    controller.dispose();
+  });
+
+  it("reveals Search and Scan instead of leaving mobile navigation behind open Details", async () => {
+    const controller = new LifeLinksWorkspaceController({ api: fakeApi(), route: new FakeRoute("/life-links") });
+    await controller.start();
+    await controller.activateLifeLink(canonicalLink.id);
+    controller.setActiveView("search");
+    expect(controller.getSnapshot()).toMatchObject({ activeView: "search", detailsOpen: false, selectedLifeLinkId: canonicalLink.id });
+    await controller.openCollection(collection.id, canonicalLink.id);
+    controller.setActiveView("scan");
+    expect(controller.getSnapshot()).toMatchObject({ activeView: "scan", detailsOpen: false, selectedLifeLinkId: canonicalLink.id });
+    controller.dispose();
+  });
+
+  it("exhausts Collection, Section, member and Details membership pages on a deep link", async () => {
+    const api = fakeApi();
+    const anotherCollection = { ...collection, id: "collection-cccccccc-cccc-4ccc-8ccc-cccccccccccc", title: "Winter" };
+    const anotherSection = { ...section, id: "section-dddddddd-dddd-4ddd-8ddd-dddddddddddd", title: "Cycling", position: 1 };
+    const anotherMember = { ...canonicalLink, id: "life-link-second", title: "Helmet" };
+    api.getCollection.mockImplementation(async (_id, options = {}) => ({
+      collection, sections: options.cursor ? [anotherSection] : [section],
+      sectionsPage: { nextCursor: options.cursor ? null : "section-page-2", truncated: !options.cursor }
+    }));
+    api.listCollectionMembers.mockImplementation(async (_id, options = {}) => ({
+      lifeLinks: options.cursor ? [anotherMember] : [canonicalLink],
+      nextCursor: options.cursor ? null : "member-page-2", truncated: !options.cursor
+    }));
+    api.listLifeLinkCollectionMemberships.mockImplementation(async (_id, options = {}) => ({
+      memberships: options.cursor ? [{ collection: anotherCollection, sections: [] }] : [{ collection, sections: [section, anotherSection] }],
+      nextCursor: options.cursor ? null : "membership-page-2", truncated: !options.cursor
+    }));
+    const route = new FakeRoute(`/collections/${collection.id}?lifeLinkId=${canonicalLink.id}`);
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+    expect(api.listLinks).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({
+      workspaceMode: "collections", selectedCollection: collection, collectionSections: [section, anotherSection],
+      collectionMembers: [canonicalLink, anotherMember], collectionComplete: true,
+      detailsOpen: true, selectedLifeLinkId: canonicalLink.id, membershipsComplete: true,
+      selectedLifeLinkMemberships: [{ collection, sections: [section, anotherSection] }, { collection: anotherCollection, sections: [] }]
+    });
+    expect(api.getCollection).toHaveBeenCalledWith(collection.id, { cursor: "section-page-2", limit: 25 });
+    expect(api.listCollectionMembers).toHaveBeenCalledWith(collection.id, { cursor: "member-page-2", limit: 25 });
+    expect(api.listLifeLinkCollectionMemberships).toHaveBeenCalledWith(canonicalLink.id, { cursor: "membership-page-2", limit: 25 });
+    expect(route.pushes).toEqual([]);
+    controller.dispose();
+  });
+
+  it("restores Collection mode and selected member through browser Back without changing identity", async () => {
+    const api = fakeApi();
+    const route = new FakeRoute("/life-links");
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+    await controller.openCollection(collection.id);
+    await controller.selectCollectionMember(canonicalLink.id);
+    const memberRoute = route.pathname();
+    await controller.openHierarchy(rootLifeLink.id);
+    route.pop(memberRoute);
+    await vi.waitFor(() => expect(controller.getSnapshot()).toMatchObject({
+      workspaceMode: "collections", selectedCollection: collection, selectedLifeLinkId: canonicalLink.id, detailsOpen: true
+    }));
+    controller.dispose();
+  });
+
+  it("uses the exact Collection revision and complete nonexclusive Section replacement set", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    await controller.openCollection(collection.id, canonicalLink.id);
+    await controller.replaceCollectionSectionAssignments(canonicalLink.id, [section.id, "section-other"]);
+    expect(api.replaceCollectionSectionAssignments).toHaveBeenCalledWith(collection.id, canonicalLink.id, collection.updatedAt, [section.id, "section-other"], { signal: undefined });
+    expect(controller.getSnapshot()).toMatchObject({ workspaceMode: "collections", selectedLifeLinkId: canonicalLink.id });
+    api.removeCollectionMember.mockRejectedValueOnce(new ApiError(409, "stale_collection", {}));
+    await controller.removeCollectionMember(canonicalLink.id);
+    expect(api.removeCollectionMember).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().error).toContain("Stale collection");
+    expect(controller.getSnapshot().collectionMembers).toEqual([canonicalLink]);
+    controller.dispose();
+  });
+
+  it("retains client creation identity after a lost response, but creates a new identity after success", async () => {
+    const api = fakeApi();
+    api.createCollection.mockRejectedValueOnce(new Error("Response lost"));
+    const ids = vi.fn().mockReturnValueOnce("11111111-1111-4111-8111-111111111111").mockReturnValueOnce("22222222-2222-4222-8222-222222222222");
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections"), commandId: ids });
+    await controller.start();
+    await controller.createCollection({ title: "Camping Gear" });
+    await controller.createCollection({ title: "Camping Gear" });
+    expect(api.createCollection.mock.calls[0][0].id).toBe(api.createCollection.mock.calls[1][0].id);
+    await controller.createCollection({ title: "Camping Gear" });
+    expect(api.createCollection.mock.calls[2][0].id).not.toBe(api.createCollection.mock.calls[1][0].id);
+    controller.dispose();
+  });
+
+  it("refreshes Collection membership and Sections without reopening closed Details or changing the selected member", async () => {
+    const api = fakeApi();
+    api.listCollectionMembers.mockResolvedValue({ lifeLinks: [rootLifeLink, canonicalLink], nextCursor: null, truncated: false });
+    const route = new FakeRoute("/collections");
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+    await controller.openCollection(collection.id, rootLifeLink.id);
+    controller.setDetailsOpen(false);
+    const pathname = route.pathname();
+    const memberships = [{ collection, sections: [section] }];
+    api.listLifeLinkCollectionMemberships.mockResolvedValue({ memberships, nextCursor: null, truncated: false });
+    for (const targetId of [canonicalLink.id, rootLifeLink.id]) {
+      await controller.replaceCollectionSectionAssignments(targetId, [section.id]);
+      expect(controller.getSnapshot()).toMatchObject({
+        workspaceMode: "collections", selectedLifeLinkId: rootLifeLink.id,
+        detailsOpen: false, selectedLifeLinkMemberships: memberships, membershipsComplete: true
+      });
+      expect(route.pathname()).toBe(pathname);
+    }
+    await controller.updateCollectionSection(section.id, "Sleep equipment");
+    expect(controller.getSnapshot().detailsOpen).toBe(false);
+    controller.setDetailsOpen(true);
+    await controller.addCollectionMember(canonicalLink.id);
+    expect(controller.getSnapshot()).toMatchObject({ selectedLifeLinkId: rootLifeLink.id, detailsOpen: true });
+    controller.dispose();
+  });
+
+  it("keeps incomplete memberships explicit and never installs delayed owner data after logout", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    api.listLifeLinkCollectionMemberships.mockResolvedValue({ memberships: [{ collection, sections: [section] }], nextCursor: null, truncated: true });
+    await controller.openCollection(collection.id);
+    expect(controller.getSnapshot()).toMatchObject({ collectionComplete: false, collectionLoading: false });
+    expect(controller.getSnapshot().error).toContain("incomplete");
+    api.listLifeLinkCollectionMemberships.mockResolvedValue({ memberships: [], nextCursor: null, truncated: false });
+    let finish!: (value: { collection: CollectionRecord }) => void;
+    api.createCollection.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const pending = controller.createCollection({ title: "Camping" });
+    await controller.logout();
+    finish({ collection });
+    await pending;
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, collections: [], selectedCollection: null, collectionMembers: [] });
+    controller.dispose();
+  });
+
+  it("prevents a slower Collection member read from replacing the latest click", async () => {
+    const api = fakeApi();
+    const other = { ...canonicalLink, id: "life-link-second" };
+    api.listCollectionMembers.mockResolvedValue({ lifeLinks: [canonicalLink, other], nextCursor: null, truncated: false });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    await controller.openCollection(collection.id);
+    let finish!: (value: { detail: LifeLinkDetail }) => void;
+    api.getLifeLinkDetail.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const first = controller.selectCollectionMember(canonicalLink.id);
+    api.getLifeLinkDetail.mockResolvedValueOnce({ detail: { ...canonicalDetail, lifeLink: other } });
+    await controller.selectCollectionMember(other.id);
+    finish({ detail: canonicalDetail });
+    await first;
+    expect(controller.getSnapshot().selectedLifeLinkId).toBe(other.id);
+    controller.dispose();
+  });
+
+  it("routes context and public fields through one canonical PATCH and QR binding through stable commands", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    await controller.openCollection(collection.id, canonicalLink.id);
+    const patch = { context: { schemaVersion: 1 as const, plan: { text: "Upgrade pad", truthState: "planned" as const } }, publicFieldKeys: ["plan" as const] };
+    await controller.updateSelectedLifeLink(patch);
+    expect(api.updateLifeLink).toHaveBeenCalledWith(canonicalLink.id, canonicalLink.updatedAt, patch, { signal: undefined });
+    expect(controller.getSnapshot().workspaceMode).toBe("collections");
+    api.setLifeLinkQrBinding.mockRejectedValueOnce(new Error("Response lost"));
+    await controller.setLifeLinkQrBinding(canonicalLink.id, link.url);
+    await controller.setLifeLinkQrBinding(canonicalLink.id, link.id);
+    expect(api.setLifeLinkQrBinding.mock.calls[0]).toEqual(api.setLifeLinkQrBinding.mock.calls[1]);
+    expect(api.attachQr).not.toHaveBeenCalled();
+    await controller.clearLifeLinkQrBinding(canonicalLink.id);
+    expect(api.clearLifeLinkQrBinding).toHaveBeenCalledWith(canonicalLink.id, canonicalLink.updatedAt, expect.any(String), { signal: undefined });
+    controller.dispose();
+  });
+
+  it("searches Collection and Section names with matching member identity through canonical endpoints", async () => {
+    const api = fakeApi();
+    api.listCollections.mockResolvedValue({ collections: [collection], nextCursor: null, truncated: false });
+    api.listLifeLinkCollectionMemberships.mockResolvedValue({ memberships: [{ collection, sections: [section] }], nextCursor: null, truncated: false });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    await controller.searchLifeLinks("sleep");
+    expect(controller.getSnapshot()).toMatchObject({
+      collectionSearchComplete: true, collectionSearchResults: [{ collection, sections: [section], members: [canonicalLink] }],
+      lifeLinkMemberships: { [canonicalLink.id]: [{ collection, sections: [section] }] },
+      lifeLinkMembershipsComplete: { [canonicalLink.id]: true }
+    });
+    expect(api.searchLifeLinks).toHaveBeenCalledWith("sleep", { cursor: null, limit: 25 });
+    controller.dispose();
+  });
+
+  it("edits membership from hierarchy Details without navigating to the Collection", async () => {
+    const api = fakeApi();
+    const route = new FakeRoute("/life-links");
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+    await controller.activateLifeLink(canonicalLink.id);
+    const pathname = route.pathname();
+    const editor = await controller.loadCollectionForAssignment(collection.id, canonicalLink.id);
+    expect(editor).toEqual({ collection, sections: [section], membership: null });
+    api.listLifeLinkCollectionMemberships.mockResolvedValue({ memberships: [{ collection, sections: [section] }], nextCursor: null, truncated: false });
+    await controller.addCollectionMember(canonicalLink.id, editor.collection);
+    await controller.replaceCollectionSectionAssignments(canonicalLink.id, [section.id], editor.collection);
+    expect(route.pathname()).toBe(pathname);
+    expect(controller.getSnapshot()).toMatchObject({
+      workspaceMode: "hierarchies", hierarchyParentId: rootLifeLink.id, selectedLifeLinkId: canonicalLink.id,
+      detailsOpen: true, selectedCollection: null, selectedLifeLinkMemberships: [{ collection, sections: [section] }],
+      lifeLinkMemberships: { [canonicalLink.id]: [{ collection, sections: [section] }] }
+    });
+    controller.dispose();
+  });
+
+  it("retains the committed Collection revision when reconciliation fails", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    await controller.openCollection(collection.id);
+    const changed = { ...collection, updatedAt: "2026-08-29T12:00:00.000Z", title: "Summer camping" };
+    api.updateCollection.mockResolvedValue({ collection: changed });
+    api.getCollection.mockRejectedValueOnce(new Error("Read unavailable"));
+    await controller.updateCollection({ title: changed.title });
+    expect(controller.getSnapshot()).toMatchObject({ selectedCollection: changed, collectionComplete: false, collectionLoading: false });
+    expect(controller.getSnapshot().error).toBe("Read unavailable");
+    controller.dispose();
+  });
+
+  it("uses the shared create and move commands for stable agent identity, hierarchy placement, and visible result", async () => {
+    const api = fakeApi();
+    let current = { ...canonicalLink, id: "life-link-new-kit", qrId: null };
+    api.createLifeLink.mockImplementation(async () => ({ lifeLink: current }));
+    const get = api.getLifeLinkDetail.getMockImplementation()!;
+    api.getLifeLinkDetail.mockImplementation(async (id, options) => id === current.id ? { detail: { ...canonicalDetail, lifeLink: current } } : get(id, options));
+    api.moveLifeLink.mockImplementation(async () => { current = { ...current, parentId: null, updatedAt: "2026-08-29T12:00:00.000Z" }; return { lifeLink: current }; });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    const input = { id: current.id, parentId: rootLifeLink.id, browsingRole: "item" as const, title: current.title };
+    expect(await controller.agentCreateLifeLink(input)).toEqual({ ok: true });
+    expect(api.createLifeLink).toHaveBeenCalledWith(input, { signal: undefined });
+    expect(controller.getSnapshot()).toMatchObject({ selectedLifeLinkId: current.id, workspaceMode: "hierarchies", detailsOpen: true });
+    expect(await controller.agentMoveLifeLink({ lifeLinkId: current.id, parentId: null, baseUpdatedAt: canonicalLink.updatedAt })).toEqual({ ok: true });
+    expect(api.moveLifeLink).toHaveBeenCalledWith(current.id, null, canonicalLink.updatedAt, { signal: undefined });
+    expect(controller.getSnapshot().selectedLifeLinkDetail?.lifeLink.parentId).toBeNull();
+    controller.dispose();
+  });
+
+  it("uses shared Collection commands, original revisions, stable Section IDs, and exact assignment sets", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    const input = { action: "create_collection" as const, id: collection.id, title: collection.title };
+    expect(await controller.agentMaintainCollection(input)).toEqual({ ok: true });
+    expect(api.createCollection).toHaveBeenCalledWith({ id: input.id, title: input.title, purpose: undefined, notes: undefined }, { signal: undefined });
+    const newer = { ...collection, updatedAt: "2026-08-29T12:00:00.000Z" };
+    api.getCollection.mockResolvedValue({ collection: newer, sections: [section], sectionsPage: { nextCursor: null, truncated: false } });
+    expect(await controller.agentMaintainCollection({ action: "create_section", collectionId: collection.id, baseUpdatedAt: collection.updatedAt, id: section.id, title: section.title })).toEqual({ ok: true });
+    expect(api.createCollectionSection).toHaveBeenCalledWith(collection.id, collection.updatedAt, { id: section.id, title: section.title }, { signal: undefined });
+    expect(await controller.agentMaintainCollection({ action: "replace_sections", collectionId: collection.id, baseUpdatedAt: collection.updatedAt, lifeLinkId: canonicalLink.id, sectionIds: [section.id] })).toEqual({ ok: true });
+    expect(api.replaceCollectionSectionAssignments).toHaveBeenCalledWith(collection.id, canonicalLink.id, collection.updatedAt, [section.id], { signal: undefined });
+    expect(controller.getSnapshot()).toMatchObject({ workspaceMode: "collections", selectedCollection: newer, collectionComplete: true });
+    api.updateCollection.mockRejectedValueOnce(new ApiError(409, "stale_collection", {}, { retryable: true }));
+    expect(await controller.agentMaintainCollection({ action: "update_collection", collectionId: collection.id, baseUpdatedAt: collection.updatedAt, title: "Changed" })).toEqual({ ok: false, code: "stale_collection" });
+    controller.dispose();
+  });
+
+  it("reconciles QR changes and explicit public fields on the requested record from Collection mode", async () => {
+    const api = fakeApi();
+    let current = { ...canonicalLink };
+    const get = api.getLifeLinkDetail.getMockImplementation()!;
+    api.getLifeLinkDetail.mockImplementation(async (id, options) => id === current.id ? { detail: { ...canonicalDetail, lifeLink: current } } : get(id, options));
+    api.clearLifeLinkQrBinding.mockImplementation(async () => { current = { ...current, qrId: null }; return { lifeLink: current }; });
+    api.updateLifeLink.mockImplementation(async (_id, _rev, patch) => { current = { ...current, ...patch }; return { lifeLink: current }; });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    await controller.openCollection(collection.id);
+    expect(await controller.agentManageLifeLinkQr({ action: "detach", lifeLinkId: current.id, commandId: "same-retry-id", baseUpdatedAt: current.updatedAt })).toEqual({ ok: true });
+    expect(api.clearLifeLinkQrBinding).toHaveBeenCalledWith(current.id, current.updatedAt, "same-retry-id", { signal: undefined });
+    expect(controller.getSnapshot()).toMatchObject({ workspaceMode: "hierarchies", selectedLifeLinkId: current.id, selectedLifeLinkDetail: { lifeLink: { qrId: null } } });
+    expect(await controller.agentManageLifeLinkQr({ action: "set_public_projection", lifeLinkId: current.id, baseUpdatedAt: current.updatedAt, privacy: "public", publicFieldKeys: ["plan"] })).toEqual({ ok: true });
+    expect(api.updateLifeLink).toHaveBeenCalledWith(current.id, current.updatedAt, { privacy: "public", publicFieldKeys: ["plan"] }, { signal: undefined });
+    controller.dispose();
+  });
+
+  it("cancels new tool operations before writes and refuses late owner or editor changes", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    const abort = new AbortController();
+    api.getLifeLinkDetail.mockImplementationOnce(async () => { abort.abort(); return { detail: canonicalDetail }; });
+    expect(await controller.agentMoveLifeLink({ lifeLinkId: canonicalLink.id, parentId: null, baseUpdatedAt: canonicalLink.updatedAt }, abort.signal)).toEqual({ ok: false, code: "cancelled" });
+    expect(api.moveLifeLink).not.toHaveBeenCalled();
+    api.getCollection.mockImplementationOnce(async () => { await controller.logout(); return { collection, sections: [], sectionsPage: { nextCursor: null, truncated: false } }; });
+    expect(await controller.agentMaintainCollection({ action: "add_member", collectionId: collection.id, lifeLinkId: canonicalLink.id, baseUpdatedAt: collection.updatedAt })).toEqual({ ok: false, code: "life_link_unavailable" });
+    expect(api.addCollectionMember).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("lets canonical QR receipts resolve historical attach replay but rejects a new attach over an existing binding", async () => {
+    const api = fakeApi();
+    const current = { ...canonicalLink, qrId: "LL-NEWER-BINDING", updatedAt: "2026-08-29T00:00:00.000Z" };
+    api.getLifeLinkDetail.mockResolvedValue({ detail: { ...canonicalDetail, lifeLink: current } });
+    api.setLifeLinkQrBinding.mockResolvedValue({ lifeLink: current });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    const historical = { action: "attach" as const, lifeLinkId: current.id, qrId: canonicalLink.qrId!, commandId: "original-attach", baseUpdatedAt: canonicalLink.updatedAt };
+    expect(await controller.agentManageLifeLinkQr(historical)).toEqual({ ok: true });
+    expect(api.setLifeLinkQrBinding).toHaveBeenCalledWith(current.id, historical.qrId, historical.baseUpdatedAt, historical.commandId, { signal: undefined });
+    expect(controller.getSnapshot().selectedLifeLinkDetail?.lifeLink).toEqual(current);
+    expect(await controller.agentManageLifeLinkQr({ ...historical, commandId: "new-attach", baseUpdatedAt: current.updatedAt })).toEqual({ ok: false, code: "invalid_operation" });
+    expect(api.setLifeLinkQrBinding).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+
+  it("cancels collection continuation reads without installing their delayed payload", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    const abort = new AbortController();
+    api.listCollections.mockImplementationOnce(async () => ({ collections: [collection], nextCursor: null, truncated: false }));
+    api.listCollections.mockImplementationOnce(async () => { abort.abort(); return { collections: [collection], nextCursor: null, truncated: false }; });
+    expect(await controller.agentListCollections({ limit: 10 }, abort.signal)).toEqual({ ok: false, code: "cancelled" });
+    expect(controller.getSnapshot().collectionsComplete).toBe(false);
+    expect(controller.getSnapshot().collections).toEqual([]);
+    expect(api.listCollections.mock.calls[1][0]?.signal).toBe(abort.signal);
+    controller.dispose();
+  });
 });
 
 class FakeRoute implements WorkspaceBrowserRoute {
@@ -946,6 +1484,27 @@ class FakeRoute implements WorkspaceBrowserRoute {
 
 function fakeApi() {
   return {
+    getLifeLinkAttachmentContent: vi.fn<LifeLinksWorkspaceApi["getLifeLinkAttachmentContent"]>(),
+    getLifeLinkAttachmentImage: vi.fn<LifeLinksWorkspaceApi["getLifeLinkAttachmentImage"]>(),
+    getChangeHistory: vi.fn<LifeLinksWorkspaceApi["getChangeHistory"]>(async () => ({ limit: 5, entries: [] })),
+    previewLifeLinkChange: vi.fn<LifeLinksWorkspaceApi["previewLifeLinkChange"]>(),
+    getLifeLinkChangePreview: vi.fn<LifeLinksWorkspaceApi["getLifeLinkChangePreview"]>(),
+    applyLifeLinkChange: vi.fn<LifeLinksWorkspaceApi["applyLifeLinkChange"]>(),
+    undoChange: vi.fn<LifeLinksWorkspaceApi["undoChange"]>(),
+    listCollections: vi.fn<LifeLinksWorkspaceApi["listCollections"]>(async () => ({ collections: [], nextCursor: null, truncated: false })),
+    getCollection: vi.fn<LifeLinksWorkspaceApi["getCollection"]>(async () => ({ collection, sections: [section], sectionsPage: { nextCursor: null, truncated: false } })),
+    createCollection: vi.fn<LifeLinksWorkspaceApi["createCollection"]>(async () => ({ collection })),
+    updateCollection: vi.fn<LifeLinksWorkspaceApi["updateCollection"]>(async () => ({ collection })),
+    listCollectionMembers: vi.fn<LifeLinksWorkspaceApi["listCollectionMembers"]>(async () => ({ lifeLinks: [canonicalLink], nextCursor: null, truncated: false })),
+    listLifeLinkCollectionMemberships: vi.fn<LifeLinksWorkspaceApi["listLifeLinkCollectionMemberships"]>(async () => ({ memberships: [], nextCursor: null, truncated: false })),
+    addCollectionMember: vi.fn<LifeLinksWorkspaceApi["addCollectionMember"]>(async () => ({ collection })),
+    removeCollectionMember: vi.fn<LifeLinksWorkspaceApi["removeCollectionMember"]>(async () => ({ collection })),
+    createCollectionSection: vi.fn<LifeLinksWorkspaceApi["createCollectionSection"]>(async () => ({ collection, section })),
+    updateCollectionSection: vi.fn<LifeLinksWorkspaceApi["updateCollectionSection"]>(async () => ({ collection, section })),
+    removeCollectionSection: vi.fn<LifeLinksWorkspaceApi["removeCollectionSection"]>(async () => ({ collection })),
+    replaceCollectionSectionAssignments: vi.fn<LifeLinksWorkspaceApi["replaceCollectionSectionAssignments"]>(async () => ({ collection })),
+    setLifeLinkQrBinding: vi.fn<LifeLinksWorkspaceApi["setLifeLinkQrBinding"]>(async () => ({ lifeLink: canonicalLink })),
+    clearLifeLinkQrBinding: vi.fn<LifeLinksWorkspaceApi["clearLifeLinkQrBinding"]>(async () => ({ lifeLink: { ...canonicalLink, qrId: null } })),
     getConfig: vi.fn(async () => ({ qrBaseUrl: "https://example.test", maxBatchCount: 10000 })),
     getMe: vi.fn(async () => ({
       user: owner,
@@ -961,11 +1520,8 @@ function fakeApi() {
     connectAgent: vi.fn(async () => ({ agentConnection: connectedAgentConnection })),
     disconnectAgent: vi.fn(async () => ({ agentConnection: disconnectedAgentConnection })),
     listLinks: vi.fn(async () => ({ links: [link] })),
-    listProjects: vi.fn(async () => ({ projects: [project] })),
-    updateLink: vi.fn(async () => ({ link })),
     uploadLinkMedia: vi.fn(async () => ({ media: link.media[0] })),
     deleteLinkMedia: vi.fn(async () => undefined),
-    createProject: vi.fn(async () => ({ project })),
     createQrBatch: vi.fn(async () => ({
       batch: {
         id: "batch-1",
@@ -984,13 +1540,18 @@ function fakeApi() {
       scannedQrId: scanText,
       match: targetQrId === scanText
     })),
-    listLifeLinks: vi.fn(async (options: { parentId?: string | null; cursor?: string | null; limit?: number } = {}) => ({
+    listLifeLinks: vi.fn<LifeLinksWorkspaceApi["listLifeLinks"]>(async (options = {}) => ({
       lifeLinks: options.parentId === rootLifeLink.id ? [canonicalSummary] : [rootSummary],
       nextCursor: null,
       truncated: false
     })),
     createLifeLink: vi.fn(async () => ({ lifeLink: canonicalLink })),
-    getLifeLinkDetail: vi.fn(async () => ({ detail: canonicalDetail })),
+    getLifeLinkDetail: vi.fn<LifeLinksWorkspaceApi["getLifeLinkDetail"]>(async (id) => ({
+      detail: id === rootLifeLink.id ? {
+        lifeLink: rootLifeLink, ancestry: { items: [rootSummary], truncated: false, omittedCount: 0 },
+        children: [canonicalSummary], childrenPage: { nextCursor: null, truncated: false }
+      } : canonicalDetail
+    })),
     searchLifeLinks: vi.fn(async (
       _query: string,
       _options: { cursor?: string | null; limit?: number; signal?: AbortSignal } = {}
@@ -1022,16 +1583,220 @@ function fakeApi() {
   } satisfies LifeLinksWorkspaceApi;
 }
 
+describe("shared owner changes and agent confirmation", () => {
+  beforeEach(() => { vi.stubGlobal("window", { localStorage: new MemoryStorage() }); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const preview: LifeLinkChangePreview = { id: "preview-delete", operation: "delete", rootIds: [rootLifeLink.id],
+    items: [rootLifeLink, canonicalLink], parentId: null, target: null,
+    sideEffects: { lifeLinks: 2, media: 1, qrBindings: 1, collectionMemberships: 1, collectionSectionAssignments: 2 }, createdAt: rootLifeLink.createdAt };
+
+  async function setup() {
+    const api = fakeApi();
+    api.previewLifeLinkChange.mockResolvedValue(preview);
+    api.applyLifeLinkChange.mockResolvedValue({ operation: "delete", affectedIds: [rootLifeLink.id, canonicalLink.id], history: { limit: 5, entries: [{ id: "change-1", label: "Delete 2 Life Links", createdAt: preview.createdAt }] } });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links"), commandId: () => "stable-command" });
+    await controller.start();
+    await controller.connectAgent();
+    await controller.agentPreviewLifeLinkChange({ operation: "delete", lifeLinkIds: [rootLifeLink.id] });
+    return { api, controller };
+  }
+
+  it("waits for one app-observed confirmation after a full preview, then commits exactly once", async () => {
+    const { api, controller } = await setup();
+    const pending = controller.agentApplyLifeLinkChange(preview.id);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentChangeConfirmation).toEqual(preview));
+    expect(api.applyLifeLinkChange).not.toHaveBeenCalled();
+    controller.confirmAgentChange(true);
+    expect(await pending).toMatchObject({ ok: true });
+    expect(api.applyLifeLinkChange).toHaveBeenCalledExactlyOnceWith(preview.id, "change-stable-command", undefined);
+    expect(controller.getSnapshot().agentChangeConfirmation).toBeNull();
+    expect(controller.getSnapshot()).toMatchObject({ busy: false, rootLifeLinks: { loaded: true } });
+    controller.dispose();
+  });
+
+  it("reserves one agent apply before async draft reads and never replaces its confirmation", async () => {
+    const { api, controller } = await setup();
+    const detail = await api.getLifeLinkDetail(rootLifeLink.id);
+    const reading = deferred<typeof detail>();
+    api.getLifeLinkDetail.mockImplementationOnce(() => reading.promise);
+    const first = controller.agentApplyLifeLinkChange(preview.id);
+    const secondAbort = new AbortController();
+    expect(await controller.agentApplyLifeLinkChange(preview.id, secondAbort.signal)).toEqual({ ok: false, code: "invalid_operation" });
+    secondAbort.abort();
+    reading.resolve(detail);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentChangeConfirmation).toEqual(preview));
+    controller.confirmAgentChange(false);
+    expect(await first).toEqual({ ok: false, code: "cancelled" });
+    expect(api.applyLifeLinkChange).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("replays an uncertain confirmed deletion without rereading deleted items or confirming twice", async () => {
+    const { api, controller } = await setup();
+    api.applyLifeLinkChange.mockImplementationOnce(async () => {
+      // The store committed, but the response was lost; all selected records are gone.
+      api.getLifeLinkDetail.mockRejectedValue(new ApiError(404, "life_link_not_found", {}));
+      api.listLifeLinks.mockResolvedValue({ lifeLinks: [], nextCursor: null, truncated: false });
+      throw new Error("connection lost after commit");
+    });
+    const first = controller.agentApplyLifeLinkChange(preview.id);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentChangeConfirmation).toEqual(preview));
+    controller.confirmAgentChange(true);
+    expect(await first).toEqual({ ok: false, code: "effect_not_applied" });
+    const readsAfterCommit = api.getLifeLinkDetail.mock.calls.length;
+    expect(await controller.agentApplyLifeLinkChange(preview.id)).toMatchObject({ ok: true, change: { operation: "delete", affectedIds: [rootLifeLink.id, canonicalLink.id] } });
+    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(readsAfterCommit);
+    expect(api.applyLifeLinkChange.mock.calls.map((call) => call[1])).toEqual(["change-stable-command", "change-stable-command"]);
+    expect(controller.getSnapshot().agentChangeConfirmation).toBeNull();
+    controller.dispose();
+  });
+
+  it("still checks descendant drafts before the first apply", async () => {
+    const { api, controller } = await setup();
+    writeCanonicalLifeLinkDraft(canonicalLink.id, canonicalLink.updatedAt, { title: "Unsaved child", body: "Draft", bodyDoc: canonicalLink.bodyDoc, bodyDocVersion: 1, privacy: canonicalLink.privacy, context: canonicalLink.context });
+    expect(await controller.agentApplyLifeLinkChange(preview.id)).toEqual({ ok: false, code: "editor_dirty" });
+    expect(controller.getSnapshot().agentChangeConfirmation).toBeNull();
+    expect(api.applyLifeLinkChange).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("requires a fresh app choice after a definitive stale-preview rejection", async () => {
+    const { api, controller } = await setup();
+    api.applyLifeLinkChange.mockRejectedValueOnce(new ApiError(409, "stale_life_link", {}));
+    const first = controller.agentApplyLifeLinkChange(preview.id);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentChangeConfirmation).toEqual(preview));
+    controller.confirmAgentChange(true);
+    expect(await first).toEqual({ ok: false, code: "stale_life_link" });
+    const retry = controller.agentApplyLifeLinkChange(preview.id);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentChangeConfirmation).toEqual(preview));
+    controller.confirmAgentChange(false);
+    expect(await retry).toEqual({ ok: false, code: "cancelled" });
+    expect(api.applyLifeLinkChange).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+
+  it.each(["disconnect", "logout", "dispose"])("%s clears uncertain agent commit authority", async (mode) => {
+    const { api, controller } = await setup();
+    api.applyLifeLinkChange.mockRejectedValueOnce(new Error("connection lost"));
+    const first = controller.agentApplyLifeLinkChange(preview.id);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentChangeConfirmation).toEqual(preview));
+    controller.confirmAgentChange(true);
+    await first;
+    if (mode === "disconnect") { await controller.disconnectAgent(); await controller.connectAgent(); }
+    else if (mode === "logout") { await controller.logout(); await controller.login(owner.email, "test-password"); await controller.connectAgent(); }
+    else { controller.dispose(); await controller.start(); }
+    expect((await controller.agentApplyLifeLinkChange(preview.id)).ok).toBe(false);
+    expect(api.applyLifeLinkChange).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+
+  it("disconnecting during admission reads cancels before displaying a confirmation", async () => {
+    const { api, controller } = await setup();
+    const detail = await api.getLifeLinkDetail(rootLifeLink.id);
+    const reading = deferred<typeof detail>();
+    api.getLifeLinkDetail.mockImplementationOnce(() => reading.promise);
+    const pending = controller.agentApplyLifeLinkChange(preview.id);
+    await controller.disconnectAgent();
+    reading.resolve(detail);
+    expect(await pending).toEqual({ ok: false, code: "cancelled" });
+    expect(controller.getSnapshot().agentChangeConfirmation).toBeNull();
+    expect(api.applyLifeLinkChange).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it.each(["cancel", "abort", "disconnect", "logout"])("%s cancels a pending agent deletion with zero writes", async (mode) => {
+    const { api, controller } = await setup();
+    const abort = new AbortController();
+    const pending = controller.agentApplyLifeLinkChange(preview.id, abort.signal);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentChangeConfirmation).not.toBeNull());
+    if (mode === "cancel") controller.confirmAgentChange(false);
+    else if (mode === "abort") abort.abort();
+    else if (mode === "disconnect") await controller.disconnectAgent();
+    else await controller.logout();
+    expect((await pending).ok).toBe(false);
+    expect(api.applyLifeLinkChange).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().agentChangeConfirmation).toBeNull();
+    controller.dispose();
+  });
+
+  it("keeps one command identity through an uncertain network response", async () => {
+    const { api, controller } = await setup();
+    api.applyLifeLinkChange.mockRejectedValueOnce(new Error("connection lost"));
+    await expect(controller.applyLifeLinkChange(preview.id)).rejects.toThrow("connection lost");
+    await controller.applyLifeLinkChange(preview.id);
+    expect(api.applyLifeLinkChange.mock.calls.map((call) => call[1])).toEqual(["change-stable-command", "change-stable-command"]);
+    controller.dispose();
+  });
+
+  it("loads account history after reload and requests only the displayed newest entry", async () => {
+    const api = fakeApi();
+    const history = { limit: 5 as const, entries: [{ id: "existing-change", label: "Edit Collection", createdAt: preview.createdAt }] };
+    api.getChangeHistory.mockResolvedValue(history);
+    api.undoChange.mockResolvedValue({ operation: "undo", affectedIds: [], history: { limit: 5, entries: [] } });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links"), commandId: () => "undo-id" });
+    await controller.start();
+    expect(controller.getSnapshot().changeHistory).toEqual(history);
+    await controller.undoLastChange();
+    expect(api.undoChange).toHaveBeenCalledExactlyOnceWith("existing-change", "change-undo-id");
+    controller.dispose();
+  });
+
+  it.each(["navigate", "change owner"])("does not restore the old selection when users %s during mutation readback", async (action) => {
+    const { api, controller } = await setup();
+    await controller.activateLifeLink(canonicalLink.id);
+    const reading = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listLifeLinks"]>>>();
+    let refreshing = false;
+    api.listLifeLinks.mockImplementationOnce(() => { refreshing = true; return reading.promise; });
+    api.applyLifeLinkChange.mockResolvedValue({ operation: "move", affectedIds: [canonicalLink.id], history: { limit: 5, entries: [] } });
+    const pending = controller.applyLifeLinkChange(preview.id);
+    await vi.waitFor(() => expect(refreshing).toBe(true));
+    if (action === "change owner") {
+      await controller.logout();
+      api.login.mockResolvedValue({ user: { ...owner, id: "owner-2" }, qrBaseUrl: "https://example.test", agentConnection: disconnectedAgentConnection });
+      api.listLifeLinks.mockResolvedValue({ lifeLinks: [], nextCursor: null, truncated: false });
+      api.listLinks.mockResolvedValue({ links: [] });
+      api.getLifeLinkDetail.mockRejectedValue(new ApiError(404, "life_link_not_found", {}));
+      await controller.login("second@example.test", "test-password");
+    }
+    await controller.openCollections();
+    api.getLifeLinkDetail.mockClear();
+    reading.resolve({ lifeLinks: [rootSummary], nextCursor: null, truncated: false });
+    await pending;
+    expect(controller.getSnapshot()).toMatchObject({ workspaceMode: "collections", routePathname: "/collections", selectedLifeLinkId: null, error: "" });
+    expect(api.getLifeLinkDetail).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("does not let an older automatic history failure erase a newer successful history", async () => {
+    const { api, controller } = await setup();
+    await controller.getChangeHistory();
+    const oldHistory = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["getChangeHistory"]>>>();
+    api.getChangeHistory.mockImplementationOnce(() => oldHistory.promise);
+    const historyCalls = vi.spyOn(controller, "getChangeHistory");
+    await controller.connectAgent(); // busy -> idle starts the older automatic request.
+    const oldRequest = historyCalls.mock.results[0].value as Promise<unknown>;
+    const history = { limit: 5 as const, entries: [{ id: "newer-change", label: "Move 1 Life Link", createdAt: preview.createdAt }] };
+    api.getChangeHistory.mockResolvedValue(history);
+    await controller.getChangeHistory();
+    oldHistory.reject(new Error("older refresh failed"));
+    await expect(oldRequest).rejects.toThrow("older refresh failed");
+    expect(controller.getSnapshot().changeHistory).toEqual(history);
+    api.getChangeHistory.mockRejectedValueOnce(new Error("current refresh failed"));
+    await expect(controller.getChangeHistory()).rejects.toThrow("current refresh failed");
+    expect(controller.getSnapshot().changeHistory.entries).toEqual([]);
+    controller.dispose();
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((accept, fail) => { resolve = accept; reject = fail; });
+  return { promise, resolve, reject };
+}
+
 function summary(lifeLink: LifeLinkRecord, childCount: number): LifeLinkSummary {
-  return {
-    id: lifeLink.id,
-    parentId: lifeLink.parentId,
-    qrId: lifeLink.qrId,
-    title: lifeLink.title,
-    privacy: lifeLink.privacy,
-    updatedAt: lifeLink.updatedAt,
-    childCount
-  };
+  return summarizeLifeLink(lifeLink, childCount);
 }
 
 class MemoryStorage {

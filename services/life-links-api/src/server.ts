@@ -12,11 +12,15 @@ import {
   type ClaimQrCommand,
   type LifeLinkDomainErrorCode,
   type LifeLinkPageRequest,
+  type PreviewLifeLinkChangeInput,
   LifeLinkDomainError,
   type LinkBodyDoc,
-  type LinkMediaKind,
+  ATTACHMENT_MIME_TYPES,
+  type AttachmentImageReadOptions,
+  resolveAttachmentMimeType,
   type LinkRecord,
   type PrivacyStatus,
+  COMPETITION_FIXTURE_PROFILE,
   LINK_BODY_DOC_VERSION,
   MAX_BATCH_COUNT,
   MAX_BODY_LENGTH,
@@ -25,7 +29,6 @@ import {
   MAX_LIFE_LINK_SEARCH_LIMIT,
   MAX_MEDIA_BYTES,
   MAX_MEDIA_PER_LINK,
-  MAX_PROJECT_NAME_LENGTH,
   MAX_QR_ID_LENGTH,
   MAX_SCAN_TEXT_LENGTH,
   MAX_TITLE_LENGTH,
@@ -34,6 +37,16 @@ import {
   isValidQrId,
   linksToCsv,
   normalizeLinkBodyDoc,
+  normalizeLifeLinkBrowsingRole,
+  normalizeLifeLinkContext,
+  normalizePublicFieldKeys,
+  normalizeCollectionId,
+  normalizeCollectionSectionId,
+  normalizeCollectionPatch,
+  normalizeCollectionSectionTitle,
+  normalizeCollectionSectionIds,
+  normalizeSetLifeLinkQrBindingCommand,
+  normalizeClearLifeLinkQrBindingCommand,
   normalizeBatchCount,
   parseQrId
 } from "@life-links/core";
@@ -42,6 +55,7 @@ import type { LifeLinksConfig } from "./config.js";
 import type { Logger } from "./logger.js";
 import { createSessionToken, hasSessionTokenShape, hashSessionToken, verifyPassword } from "./password.js";
 import { ClaimIdempotencyConflictError, type LifeLinksStore, type StoredUser } from "./store.js";
+import { AttachmentContentReader, AttachmentContentRequestError } from "./attachment-content.js";
 
 const SESSION_COOKIE = "life_links_session";
 const MEDIA_UPLOAD_FIELD = "file";
@@ -52,18 +66,36 @@ const mediaUpload = multer({
     files: 1
   }
 });
-const MEDIA_MIME_TYPES = new Map<string, LinkMediaKind>([
-  ["image/jpeg", "image"],
-  ["image/png", "image"],
-  ["image/webp", "image"],
-  ["image/gif", "image"],
-  ["video/mp4", "video"],
-  ["video/webm", "video"],
-  ["video/quicktime", "video"]
-]);
 const MAX_LIFE_LINK_ID_LENGTH = 200;
 const MAX_LIFE_LINK_CURSOR_LENGTH = 4096;
 const MAX_EXPECTED_UPDATED_AT_LENGTH = 64;
+
+function attachmentRequestCancellation(request: Request, response: Response) {
+  const controller = new AbortController();
+  const cancel = () => controller.abort(new DOMException("Attachment request cancelled", "AbortError"));
+  const close = () => { if (!response.writableEnded) cancel(); };
+  request.once("aborted", cancel);
+  response.once("close", close);
+  if (request.aborted || response.destroyed) cancel();
+  return { signal: controller.signal, dispose: () => { request.off("aborted", cancel); response.off("close", close); } };
+}
+
+function parseAttachmentImageQuery(query: Request["query"]): AttachmentImageReadOptions {
+  const allowed = query.mode === "describe" ? ["mode", "page", "frame", "atMs"] : query.mode === "crop" ?
+    ["mode", "page", "frame", "atMs", "sourceRevision", "x", "y", "width", "height", "maxEdge", "encoding"] : ["mode", "page", "frame", "atMs", "sourceRevision", "maxEdge", "encoding"];
+  if (Object.keys(query).some((key) => !allowed.includes(key)) || Object.values(query).some((value) => typeof value !== "string") ||
+      !["describe", "overview", "crop"].includes(String(query.mode))) throw new AttachmentContentRequestError(400, "invalid_attachment_image_request");
+  const integer = (name: string) => /^\d+$/.test(String(query[name])) ? Number(query[name]) : NaN;
+  const page = { ...(query.page === undefined ? {} : { page: integer("page") }),
+    ...(query.frame === undefined ? {} : { frame: integer("frame") }), ...(query.atMs === undefined ? {} : { atMs: integer("atMs") }) };
+  if (query.mode === "describe") return { mode: "describe", ...page };
+  const render = { ...page, sourceRevision: String(query.sourceRevision ?? ""),
+    ...(query.maxEdge === undefined ? {} : { maxEdge: integer("maxEdge") }),
+    ...(query.encoding === undefined ? {} : { encoding: String(query.encoding) as "png" | "jpeg" }) };
+  return query.mode === "crop" ? { mode: "crop", ...render, region: {
+    x: integer("x"), y: integer("y"), width: integer("width"), height: integer("height")
+  } } : { mode: "overview", ...render };
+}
 
 type AppRequest = Request & {
   user?: StoredUser;
@@ -89,6 +121,7 @@ export type LifeLinksAppDeps = {
 
 export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps): Express {
   const app = express();
+  const attachmentReader = new AttachmentContentReader(undefined, config.attachmentRuntime);
   app.disable("x-powered-by");
   app.set("trust proxy", config.trustProxy ? 1 : false);
   app.use(securityHeaders(config));
@@ -279,6 +312,62 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
     response.json({ agentConnection: agentConnectionForUser(user) });
   });
 
+  app.post("/api/life-links/changes/preview", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readObjectBody(request, response, logger);
+    if (!input || !validateObjectFields(request, response, logger, input, ["operation", "lifeLinkIds", "parentId"])) return;
+    if (!["move", "delete"].includes(String(input.operation)) || !Array.isArray(input.lifeLinkIds) || input.lifeLinkIds.length < 1 || input.lifeLinkIds.length > 100 || input.lifeLinkIds.some((id) => typeof id !== "string" || !id.trim() || id.length > MAX_LIFE_LINK_ID_LENGTH)) {
+      sendCanonicalLifeLinkError(response, 400, "invalid_life_link", { reason: "invalid_change_selection" }); return;
+    }
+    if ((input.operation === "move" && !(input.parentId === null || (typeof input.parentId === "string" && input.parentId.trim() && input.parentId.length <= MAX_LIFE_LINK_ID_LENGTH))) || (input.operation === "delete" && input.parentId !== undefined)) {
+      sendCanonicalLifeLinkError(response, 400, "invalid_parent"); return;
+    }
+    const preview = await store.previewLifeLinkChange(request.user!.id, input as PreviewLifeLinkChangeInput);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ preview: { ...preview, nextCursor: null, totalItems: preview.items.length } });
+  });
+
+  app.get("/api/life-links/changes/:previewId", requireAuthenticated, async (request: AppRequest, response) => {
+    const preview = await store.getLifeLinkChangePreview(request.user!.id, paramValue(request.params.previewId));
+    if (!preview) { sendCanonicalLifeLinkNotFound(response); return; }
+    const cursor = request.query.cursor ?? "0";
+    const limit = request.query.limit === undefined ? 100 : Number(request.query.limit);
+    if (typeof cursor !== "string" || !/^\d{1,10}$/.test(cursor) || Number(cursor) > preview.items.length || !Number.isInteger(limit) || limit < 1 || limit > 100) {
+      sendCanonicalLifeLinkError(response, 400, "invalid_life_link", { reason: "invalid_preview_page" }); return;
+    }
+    const offset = Number(cursor);
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ preview: { ...preview, items: preview.items.slice(offset, offset + limit), totalItems: preview.items.length, nextCursor: offset + limit < preview.items.length ? String(offset + limit) : null } });
+  });
+
+  app.post("/api/life-links/changes/apply", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readObjectBody(request, response, logger);
+    if (!input || !validateObjectFields(request, response, logger, input, ["previewId", "commandId"])) return;
+    if (!validChangeCommandField(input.previewId, 200) || !validChangeCommandField(input.commandId, 128)) {
+      sendCanonicalLifeLinkError(response, 400, "invalid_life_link", { reason: "invalid_change_command" }); return;
+    }
+    const result = await store.applyLifeLinkChange(request.user!.id, { previewId: input.previewId, commandId: input.commandId });
+    if (result.operation === "delete") attachmentReader.invalidate(result.affectedIds);
+    logger.info("life_links.change.applied", { msg: "Owner change applied", ...requestLogFields(request), operation: result.operation, affected_count: result.affectedIds.length });
+    response.json(result);
+  });
+
+  app.get("/api/change-history", requireAuthenticated, async (request: AppRequest, response) => {
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json(await store.getChangeHistory(request.user!.id));
+  });
+
+  app.post("/api/change-history/undo", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readObjectBody(request, response, logger);
+    if (!input || !validateObjectFields(request, response, logger, input, ["changeId", "commandId"])) return;
+    if (!validChangeCommandField(input.changeId, 200) || !validChangeCommandField(input.commandId, 128)) {
+      sendCanonicalLifeLinkError(response, 400, "invalid_life_link", { reason: "invalid_change_command" }); return;
+    }
+    const result = await store.undoChange(request.user!.id, { changeId: input.changeId, commandId: input.commandId });
+    attachmentReader.invalidate(result.affectedIds);
+    logger.info("life_links.change.undone", { msg: "Owner change undone", ...requestLogFields(request), affected_count: result.affectedIds.length });
+    response.json(result);
+  });
+
   app.get("/api/life-links", requireAuthenticated, async (request: AppRequest, response) => {
     const parentId = readOptionalLifeLinkIdQuery(request, response, logger, "parentId");
     if (response.headersSent) {
@@ -313,12 +402,16 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
     }
     if (
       !validateObjectFields(request, response, logger, input, [
+        "id",
         "parentId",
         "title",
         "body",
         "bodyDoc",
         "bodyDocVersion",
-        "privacy"
+        "privacy",
+        "browsingRole",
+        "context",
+        "publicFieldKeys"
       ])
     ) {
       return;
@@ -356,8 +449,13 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
     if (response.headersSent) {
       return;
     }
+    const id = input.id === undefined ? `life-link-${randomUUID()}` : input.id;
+    if (typeof id !== "string" || !validateLifeLinkIdParam(request, response, logger, id)) {
+      if (!response.headersSent) rejectValidation(request, response, logger, "id", "life_link_id_invalid");
+      return;
+    }
     const lifeLink = await store.createLifeLink({
-      id: `life-link-${randomUUID()}`,
+      id,
       ownerId: request.user!.id,
       parentId,
       title,
@@ -365,6 +463,9 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       bodyDoc,
       bodyDocVersion,
       privacy,
+      browsingRole: input.browsingRole === undefined ? undefined : normalizeLifeLinkBrowsingRole(input.browsingRole),
+      context: input.context === undefined ? undefined : normalizeLifeLinkContext(input.context),
+      publicFieldKeys: input.publicFieldKeys === undefined ? undefined : normalizePublicFieldKeys(input.publicFieldKeys),
       createdAt: new Date().toISOString()
     });
     logger.info("life_links.life_link.created", {
@@ -437,14 +538,15 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
         sendCanonicalLifeLinkError(response, 400, "invalid_life_link", { reason: "media_file_required" });
         return;
       }
-      const kind = MEDIA_MIME_TYPES.get(file.mimetype);
+      const mimeType = resolveAttachmentMimeType(file.mimetype, file.originalname);
+      const kind = mimeType ? ATTACHMENT_MIME_TYPES[mimeType] : null;
       if (!kind) {
         response.status(415).json({ error: "media_type_not_allowed" });
         return;
       }
       const media = await store.createLifeLinkMedia(request.user!.id, lifeLinkId, {
         kind,
-        mimeType: file.mimetype,
+        mimeType: mimeType!,
         fileName: sanitizeFileName(file.originalname),
         sizeBytes: file.size,
         data: file.buffer
@@ -468,6 +570,88 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   );
 
   app.get(
+    "/api/life-links/:lifeLinkId/media/:mediaId/content",
+    requireAuthenticated,
+    async (request: AppRequest, response) => {
+      const lifeLinkId = paramValue(request.params.lifeLinkId);
+      const mediaId = paramValue(request.params.mediaId);
+      if (!validateLifeLinkIdParam(request, response, logger, lifeLinkId) || !validateMediaIdParam(request, response, logger, mediaId)) return;
+      const file = await store.getLifeLinkMedia(request.user!.id, lifeLinkId, mediaId);
+      if (!file) { sendCanonicalLifeLinkError(response, 404, "life_link_not_found", { reason: "media_not_found_or_forbidden" }); return; }
+      if (Object.keys(request.query).some((key) => !["offset", "limit", "revision", "representation", "startMs", "durationMs", "audioStreamIndex"].includes(key)) ||
+          Object.values(request.query).some((value) => typeof value !== "string")) {
+        response.status(400).json({ error: "invalid_attachment_content_page" }); return;
+      }
+      const cancellation = attachmentRequestCancellation(request, response);
+      try {
+        const page = await attachmentReader.read(file, {
+          ...(request.query.offset === undefined ? {} : { offset: /^\d+$/.test(String(request.query.offset)) ? Number(request.query.offset) : NaN }),
+          ...(request.query.limit === undefined ? {} : { limit: /^\d+$/.test(String(request.query.limit)) ? Number(request.query.limit) : NaN }),
+          ...(request.query.revision === undefined ? {} : { revision: String(request.query.revision) }),
+          ...(request.query.representation === undefined ? {} : { representation: String(request.query.representation) as "transcript" }),
+          ...Object.fromEntries(["startMs", "durationMs", "audioStreamIndex"].filter((key) => request.query[key] !== undefined)
+            .map((key) => [key, /^\d+$/.test(String(request.query[key])) ? Number(request.query[key]) : NaN]))
+        }, cancellation.signal);
+        // Extraction may outlast a deletion, replacement, or session revocation.
+        // Recheck the canonical object and current session before releasing text.
+        const current = await store.getLifeLinkMedia(request.user!.id, lifeLinkId, mediaId);
+        const session = request.sessionTokenHash ? await store.getSessionByTokenHash(request.sessionTokenHash) : null;
+        if (!session || session.user.id !== request.user!.id) {
+          attachmentReader.invalidate([lifeLinkId], mediaId);
+          response.status(401).json({ error: "authentication_required" }); return;
+        }
+        if (!current) {
+          attachmentReader.invalidate([lifeLinkId], mediaId);
+          sendCanonicalLifeLinkError(response, 404, "life_link_not_found", { reason: "media_not_found_or_forbidden" }); return;
+        }
+        if (current.media.mimeType !== file.media.mimeType || !current.data.equals(file.data)) {
+          attachmentReader.invalidate([lifeLinkId], mediaId);
+          response.status(409).json({ error: "attachment_content_changed" }); return;
+        }
+        if (cancellation.signal.aborted) return;
+        response.setHeader("Cache-Control", "private, no-store");
+        response.json(page);
+      } catch (error) {
+        if (cancellation.signal.aborted) return;
+        if (!(error instanceof AttachmentContentRequestError)) throw error;
+        response.status(error.status).json({ error: error.code });
+      } finally { cancellation.dispose(); }
+    }
+  );
+
+  app.get(
+    "/api/life-links/:lifeLinkId/media/:mediaId/image",
+    requireAuthenticated,
+    async (request: AppRequest, response) => {
+      const lifeLinkId = paramValue(request.params.lifeLinkId);
+      const mediaId = paramValue(request.params.mediaId);
+      if (!validateLifeLinkIdParam(request, response, logger, lifeLinkId) || !validateMediaIdParam(request, response, logger, mediaId)) return;
+      const file = await store.getLifeLinkMedia(request.user!.id, lifeLinkId, mediaId);
+      if (!file) { sendCanonicalLifeLinkError(response, 404, "life_link_not_found", { reason: "media_not_found_or_forbidden" }); return; }
+      const cancellation = attachmentRequestCancellation(request, response);
+      try {
+        const image = await attachmentReader.readImage(file, parseAttachmentImageQuery(request.query), cancellation.signal);
+        const current = await store.getLifeLinkMedia(request.user!.id, lifeLinkId, mediaId);
+        const session = request.sessionTokenHash ? await store.getSessionByTokenHash(request.sessionTokenHash) : null;
+        if (cancellation.signal.aborted) return;
+        if (!session || session.user.id !== request.user!.id) {
+          response.status(401).json({ error: "authentication_required" }); return;
+        }
+        if (!current) { sendCanonicalLifeLinkError(response, 404, "life_link_not_found", { reason: "media_not_found_or_forbidden" }); return; }
+        if (current.media.mimeType !== file.media.mimeType || !current.data.equals(file.data)) {
+          response.status(409).json({ error: "attachment_content_changed" }); return;
+        }
+        response.setHeader("Cache-Control", "private, no-store");
+        response.json(image);
+      } catch (error) {
+        if (cancellation.signal.aborted) return;
+        if (!(error instanceof AttachmentContentRequestError)) throw error;
+        response.status(error.status).json({ error: error.code });
+      } finally { cancellation.dispose(); }
+    }
+  );
+
+  app.get(
     "/api/life-links/:lifeLinkId/media/:mediaId",
     requireAuthenticated,
     async (request: AppRequest, response) => {
@@ -487,7 +671,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
         return;
       }
       response.setHeader("Cache-Control", "private, no-store");
-      response.setHeader("Content-Disposition", inlineContentDisposition(mediaFile.media.fileName));
+      response.setHeader("Content-Disposition", mediaContentDisposition(mediaFile.media.fileName, mediaFile.media.kind));
       response.setHeader("Content-Length", String(mediaFile.data.length));
       response.type(mediaFile.media.mimeType).send(mediaFile.data);
     }
@@ -506,6 +690,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
         return;
       }
       const deleted = await store.deleteLifeLinkMedia(request.user!.id, lifeLinkId, mediaId);
+      if (deleted) attachmentReader.invalidate([lifeLinkId], mediaId);
       if (!deleted) {
         sendCanonicalLifeLinkError(response, 404, "life_link_not_found", {
           reason: "media_not_found_or_forbidden"
@@ -582,7 +767,9 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       ancestry_truncated: detail.ancestry.truncated,
       children_truncated: detail.childrenPage.truncated
     });
-    response.json({ detail });
+    const memberships = await store.listLifeLinkCollectionMemberships(request.user!.id, lifeLinkId);
+    response.json({ detail: { ...detail, collectionMemberships: memberships?.items ?? [],
+      collectionMembershipsPage: { nextCursor: memberships?.nextCursor ?? null, truncated: memberships?.truncated ?? false } } });
   });
 
   app.patch("/api/life-links/:lifeLinkId", requireAuthenticated, async (request: AppRequest, response) => {
@@ -601,7 +788,9 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
         "body",
         "bodyDoc",
         "bodyDocVersion",
-        "privacy"
+        "privacy",
+        "context",
+        "publicFieldKeys"
       ])
     ) {
       return;
@@ -610,7 +799,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
     if (expectedUpdatedAt === undefined) {
       return;
     }
-    const mutableFields = ["title", "body", "bodyDoc", "privacy"] as const;
+    const mutableFields = ["title", "body", "bodyDoc", "privacy", "context", "publicFieldKeys"] as const;
     if (!mutableFields.some((field) => Object.prototype.hasOwnProperty.call(input, field))) {
       rejectValidation(request, response, logger, "patch", "life_link_patch_required");
       return;
@@ -652,7 +841,9 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
         body,
         bodyDoc,
         bodyDocVersion,
-        privacy
+        privacy,
+        context: input.context === undefined ? undefined : normalizeLifeLinkContext(input.context),
+        publicFieldKeys: input.publicFieldKeys === undefined ? undefined : normalizePublicFieldKeys(input.publicFieldKeys)
       }
     });
     if (!lifeLink) {
@@ -671,81 +862,156 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
     response.json({ lifeLink });
   });
 
-  app.get("/api/links", requireAuthenticated, async (request: AppRequest, response) => {
-    response.json({ links: await store.listLinks(request.user!.id) });
+  app.get("/api/life-links/:lifeLinkId/collection-memberships", requireAuthenticated, async (request: AppRequest, response) => {
+    const lifeLinkId = paramValue(request.params.lifeLinkId);
+    if (!validateLifeLinkIdParam(request, response, logger, lifeLinkId)) return;
+    const page = readLifeLinkPageQuery(request, response, logger, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
+    if (!page) return;
+    const result = await store.listLifeLinkCollectionMemberships(request.user!.id, lifeLinkId, page);
+    if (!result) { sendCanonicalLifeLinkNotFound(response); return; }
+    response.json({ memberships: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
   });
 
-  app.patch("/api/links/:qrId", requireAuthenticated, async (request: AppRequest, response) => {
-    const patch = request.body as Partial<Pick<LinkRecord, "title" | "body" | "bodyDoc" | "bodyDocVersion" | "privacy" | "projectId">>;
-    const qrId = paramValue(request.params.qrId);
-    if (!validateQrIdParam(request, response, logger, qrId)) {
-      return;
-    }
-    if (patch.privacy && !["public", "private"].includes(patch.privacy)) {
-      logger.warn("life_links.link.update_rejected", {
-        msg: "Link update rejected because privacy was invalid",
-        ...requestLogFields(request),
-        qr_id: qrId,
-        reason: "invalid_privacy"
-      });
-      response.status(400).json({ error: "invalid_privacy" });
-      return;
-    }
-    const title = validateStringField(request, response, logger, patch.title, "title", MAX_TITLE_LENGTH);
-    if (response.headersSent) {
-      return;
-    }
-    const bodyDoc = validateBodyDocField(request, response, logger, patch.bodyDoc);
-    if (response.headersSent) {
-      return;
-    }
-    const body = validateStringField(
-      request,
-      response,
-      logger,
-      patch.bodyDoc === undefined ? patch.body : bodyDoc ? extractPlainTextFromLinkBodyDoc(bodyDoc) : "",
-      "body",
-      MAX_BODY_LENGTH
-    );
-    if (response.headersSent) {
-      return;
-    }
-    const projectId =
-      patch.projectId === undefined || patch.projectId === null || patch.projectId === ""
-        ? patch.projectId
-        : validateStringField(request, response, logger, patch.projectId, "project_id", 160);
-    if (response.headersSent) {
-      return;
-    }
-    const link = await store.updateLink(request.user!.id, qrId, {
-      title,
-      body,
-      bodyDoc: patch.bodyDoc === undefined ? (body === undefined ? undefined : createLinkBodyDocFromPlainText(body)) : bodyDoc,
-      bodyDocVersion: patch.bodyDoc === undefined && body === undefined ? undefined : LINK_BODY_DOC_VERSION,
-      privacy: patch.privacy as PrivacyStatus | undefined,
-      projectId: projectId === undefined ? undefined : projectId || null
-    });
-    if (!link) {
-      logger.warn("life_links.link.update_rejected", {
-        msg: "Link update rejected because link was missing or forbidden",
-        ...requestLogFields(request),
-        qr_id: qrId,
-        reason: "link_not_found_or_forbidden"
-      });
-      response.status(404).json({ error: "link_not_found_or_forbidden" });
-      return;
-    }
-    logger.info("life_links.link.updated", {
-      msg: "Owner link content updated",
-      ...requestLogFields(request),
-      qr_id: qrId,
-      privacy: link.privacy,
-      project_assigned: Boolean(link.projectId),
-      title_length: link.title.length,
-      body_length: link.body.length,
-      body_doc_present: Boolean(link.bodyDoc)
-    });
-    response.json({ link });
+  app.put("/api/life-links/:lifeLinkId/qr-binding", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readObjectBody(request, response, logger);
+    if (!input || !validateObjectFields(request, response, logger, input, ["commandId", "qrId", "expectedUpdatedAt"])) return;
+    const command = normalizeSetLifeLinkQrBindingCommand({ ...input, lifeLinkId: paramValue(request.params.lifeLinkId) });
+    const lifeLink = await store.setLifeLinkQrBinding(request.user!.id, command);
+    if (!lifeLink) { sendCanonicalLifeLinkNotFound(response); return; }
+    logger.info("life_links.life_link.qr_binding_set", { msg: "Owner QR binding set", ...requestLogFields(request), life_link_id: lifeLink.id });
+    response.json({ lifeLink });
+  });
+
+  app.delete("/api/life-links/:lifeLinkId/qr-binding", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readObjectBody(request, response, logger);
+    if (!input || !validateObjectFields(request, response, logger, input, ["commandId", "expectedUpdatedAt"])) return;
+    const command = normalizeClearLifeLinkQrBindingCommand({ ...input, lifeLinkId: paramValue(request.params.lifeLinkId) });
+    const lifeLink = await store.clearLifeLinkQrBinding(request.user!.id, command);
+    if (!lifeLink) { sendCanonicalLifeLinkNotFound(response); return; }
+    logger.info("life_links.life_link.qr_binding_cleared", { msg: "Owner QR binding cleared", ...requestLogFields(request), life_link_id: lifeLink.id });
+    response.json({ lifeLink });
+  });
+
+  app.get("/api/collections", requireAuthenticated, async (request: AppRequest, response) => {
+    const page = readLifeLinkPageQuery(request, response, logger, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
+    if (!page) return;
+    const result = await store.listCollections(request.user!.id, page);
+    response.json({ collections: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
+  });
+
+  app.post("/api/collections", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readObjectBody(request, response, logger);
+    if (!input || !validateObjectFields(request, response, logger, input, ["id", "title", "purpose", "notes"])) return;
+    const { id, ...metadata } = input;
+    const patch = normalizeCollectionPatch(metadata);
+    if (patch.title === undefined) { rejectValidation(request, response, logger, "title", "title_required"); return; }
+    const collection = await store.createCollection({ ...patch, title: patch.title,
+      id: normalizeCollectionId(id === undefined ? `collection-${randomUUID()}` : id),
+      ownerId: request.user!.id, createdAt: new Date().toISOString() });
+    logger.info("life_links.collection.created", { msg: "Owner Collection created", ...requestLogFields(request), collection_id: collection.id });
+    response.status(201).json({ collection });
+  });
+
+  app.get("/api/collections/:collectionId", requireAuthenticated, async (request: AppRequest, response) => {
+    const collectionId = normalizeCollectionId(paramValue(request.params.collectionId));
+    const page = readLifeLinkPageQuery(request, response, logger, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
+    if (!page) return;
+    const collection = await store.getCollection(request.user!.id, collectionId);
+    if (!collection) { sendCanonicalLifeLinkError(response, 404, "collection_not_found"); return; }
+    const sections = await store.listCollectionSections(request.user!.id, collectionId, page);
+    response.json({ collection, sections: sections?.items ?? [],
+      sectionsPage: { nextCursor: sections?.nextCursor ?? null, truncated: sections?.truncated ?? false } });
+  });
+
+  app.patch("/api/collections/:collectionId", requireAuthenticated, async (request: AppRequest, response) => {
+    const collectionId = normalizeCollectionId(paramValue(request.params.collectionId));
+    const input = readRevisionMutation(request, response, logger, ["title", "purpose", "notes"]);
+    if (!input) return;
+    const { expectedUpdatedAt, ...metadata } = input;
+    if (!Object.keys(metadata).length) { rejectValidation(request, response, logger, "patch", "collection_patch_required"); return; }
+    const collection = await store.updateCollection(request.user!.id, { collectionId, expectedUpdatedAt,
+      patch: normalizeCollectionPatch(metadata) });
+    if (!collection) { sendCanonicalLifeLinkError(response, 404, "collection_not_found"); return; }
+    response.json({ collection });
+  });
+
+  app.get("/api/collections/:collectionId/members", requireAuthenticated, async (request: AppRequest, response) => {
+    const collectionId = normalizeCollectionId(paramValue(request.params.collectionId));
+    const page = readLifeLinkPageQuery(request, response, logger, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
+    if (!page) return;
+    const result = await store.listCollectionMembers(request.user!.id, collectionId, page);
+    if (!result) { sendCanonicalLifeLinkError(response, 404, "collection_not_found"); return; }
+    response.json({ lifeLinks: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
+  });
+
+  app.put("/api/collections/:collectionId/members/:lifeLinkId", requireAuthenticated, async (request: AppRequest, response) => {
+    const collectionId = normalizeCollectionId(paramValue(request.params.collectionId));
+    const lifeLinkId = paramValue(request.params.lifeLinkId);
+    if (!validateLifeLinkIdParam(request, response, logger, lifeLinkId)) return;
+    const input = readRevisionMutation(request, response, logger, []);
+    if (!input) return;
+    const collection = await store.addCollectionMember(request.user!.id, { collectionId, lifeLinkId, expectedUpdatedAt: input.expectedUpdatedAt });
+    if (!collection) { sendCanonicalLifeLinkError(response, 404, "collection_membership_not_found"); return; }
+    response.json({ collection });
+  });
+
+  app.delete("/api/collections/:collectionId/members/:lifeLinkId", requireAuthenticated, async (request: AppRequest, response) => {
+    const collectionId = normalizeCollectionId(paramValue(request.params.collectionId));
+    const lifeLinkId = paramValue(request.params.lifeLinkId);
+    if (!validateLifeLinkIdParam(request, response, logger, lifeLinkId)) return;
+    const input = readRevisionMutation(request, response, logger, []);
+    if (!input) return;
+    const collection = await store.removeCollectionMember(request.user!.id, { collectionId, lifeLinkId, expectedUpdatedAt: input.expectedUpdatedAt });
+    if (!collection) { sendCanonicalLifeLinkError(response, 404, "collection_membership_not_found"); return; }
+    response.json({ collection });
+  });
+
+  app.post("/api/collections/:collectionId/sections", requireAuthenticated, async (request: AppRequest, response) => {
+    const collectionId = normalizeCollectionId(paramValue(request.params.collectionId));
+    const input = readRevisionMutation(request, response, logger, ["id", "title"]);
+    if (!input) return;
+    const result = await store.createCollectionSection(request.user!.id, { collectionId,
+      id: normalizeCollectionSectionId(input.id === undefined ? `section-${randomUUID()}` : input.id),
+      title: normalizeCollectionSectionTitle(input.title), expectedUpdatedAt: input.expectedUpdatedAt });
+    if (!result) { sendCanonicalLifeLinkError(response, 404, "collection_not_found"); return; }
+    response.status(201).json(result);
+  });
+
+  app.patch("/api/collections/:collectionId/sections/:sectionId", requireAuthenticated, async (request: AppRequest, response) => {
+    const collectionId = normalizeCollectionId(paramValue(request.params.collectionId));
+    const sectionId = normalizeCollectionSectionId(paramValue(request.params.sectionId));
+    const input = readRevisionMutation(request, response, logger, ["title"]);
+    if (!input) return;
+    const result = await store.updateCollectionSection(request.user!.id, { collectionId, sectionId,
+      title: normalizeCollectionSectionTitle(input.title), expectedUpdatedAt: input.expectedUpdatedAt });
+    if (!result) { sendCanonicalLifeLinkError(response, 404, "section_not_found"); return; }
+    response.json(result);
+  });
+
+  app.delete("/api/collections/:collectionId/sections/:sectionId", requireAuthenticated, async (request: AppRequest, response) => {
+    const collectionId = normalizeCollectionId(paramValue(request.params.collectionId));
+    const sectionId = normalizeCollectionSectionId(paramValue(request.params.sectionId));
+    const input = readRevisionMutation(request, response, logger, []);
+    if (!input) return;
+    const collection = await store.removeCollectionSection(request.user!.id, { collectionId, sectionId, expectedUpdatedAt: input.expectedUpdatedAt });
+    if (!collection) { sendCanonicalLifeLinkError(response, 404, "collection_not_found"); return; }
+    response.json({ collection });
+  });
+
+  app.put("/api/collections/:collectionId/members/:lifeLinkId/sections", requireAuthenticated, async (request: AppRequest, response) => {
+    const collectionId = normalizeCollectionId(paramValue(request.params.collectionId));
+    const lifeLinkId = paramValue(request.params.lifeLinkId);
+    if (!validateLifeLinkIdParam(request, response, logger, lifeLinkId)) return;
+    const input = readRevisionMutation(request, response, logger, ["sectionIds"]);
+    if (!input) return;
+    const collection = await store.replaceCollectionSectionAssignments(request.user!.id, { collectionId, lifeLinkId,
+      sectionIds: normalizeCollectionSectionIds(input.sectionIds), expectedUpdatedAt: input.expectedUpdatedAt });
+    if (!collection) { sendCanonicalLifeLinkError(response, 404, "collection_membership_not_found"); return; }
+    response.json({ collection });
+  });
+
+  app.get("/api/links", requireAuthenticated, async (request: AppRequest, response) => {
+    response.json({ links: await store.listLinks(request.user!.id) });
   });
 
   app.post("/api/links/:qrId/media", requireAuthenticated, async (request: MediaUploadRequest, response) => {
@@ -794,7 +1060,8 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       response.status(400).json({ error: "media_file_required" });
       return;
     }
-    const kind = MEDIA_MIME_TYPES.get(file.mimetype);
+    const mimeType = resolveAttachmentMimeType(file.mimetype, file.originalname);
+    const kind = mimeType ? ATTACHMENT_MIME_TYPES[mimeType] : null;
     if (!kind) {
       logger.warn("life_links.media.upload_rejected", {
         msg: "Media upload rejected because the MIME type is not allowed",
@@ -809,7 +1076,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
     }
     const media = await store.createLinkMedia(request.user!.id, qrId, {
       kind,
-      mimeType: file.mimetype,
+      mimeType: mimeType!,
       fileName: sanitizeFileName(file.originalname),
       sizeBytes: file.size,
       data: file.buffer
@@ -844,6 +1111,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       return;
     }
     const deleted = await store.deleteLinkMedia(request.user!.id, qrId, mediaId);
+    if (deleted) attachmentReader.invalidate([], mediaId);
     if (!deleted) {
       logger.warn("life_links.media.delete_rejected", {
         msg: "Media delete rejected because media was missing or forbidden",
@@ -876,45 +1144,9 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       return;
     }
     response.setHeader("Cache-Control", mediaFile.viewerIsOwner ? "private, no-store" : "public, max-age=300");
-    response.setHeader("Content-Disposition", inlineContentDisposition(mediaFile.media.fileName));
+    response.setHeader("Content-Disposition", mediaContentDisposition(mediaFile.media.fileName, mediaFile.media.kind));
     response.setHeader("Content-Length", String(mediaFile.data.length));
     response.type(mediaFile.media.mimeType).send(mediaFile.data);
-  });
-
-  app.get("/api/projects", requireAuthenticated, async (request: AppRequest, response) => {
-    response.json({ projects: await store.listProjects(request.user!.id) });
-  });
-
-  app.post("/api/projects", requireAuthenticated, async (request: AppRequest, response) => {
-    const name = validateStringField(
-      request,
-      response,
-      logger,
-      (request.body as { name?: unknown }).name,
-      "project_name",
-      MAX_PROJECT_NAME_LENGTH,
-      { required: true, trim: true }
-    );
-    if (response.headersSent) {
-      return;
-    }
-    if (!name) {
-      logger.warn("life_links.project.create_rejected", {
-        msg: "Project creation rejected because the name was empty",
-        ...requestLogFields(request),
-        reason: "project_name_required"
-      });
-      response.status(400).json({ error: "project_name_required" });
-      return;
-    }
-    const project = await store.createProject(request.user!.id, name);
-    logger.info("life_links.project.created", {
-      msg: "Project created",
-      ...requestLogFields(request),
-      project_id: project.id,
-      name_length: project.name.length
-    });
-    response.status(201).json({ project });
   });
 
   app.post("/api/qr-batches", requireAuthenticated, async (request: AppRequest, response) => {
@@ -1133,6 +1365,12 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   });
 
   app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
+    if (error instanceof ClaimIdempotencyConflictError) {
+      logger.warn("life_links.qr.idempotency_conflict", { msg: "QR command identity reused with different arguments",
+        ...requestLogFields(request as AppRequest), status: 409 });
+      response.status(409).json({ error: "idempotency_key_conflict" });
+      return;
+    }
     if (handleLifeLinkDomainError(error, request as AppRequest, response, logger)) {
       return;
     }
@@ -1460,6 +1698,14 @@ function readRequiredNullableLifeLinkIdBody(
   return value;
 }
 
+function readRevisionMutation(request: AppRequest, response: Response, logger: Logger, fields: string[]):
+  (Record<string, unknown> & { expectedUpdatedAt: string }) | undefined {
+  const input = readObjectBody(request, response, logger);
+  if (!input || !validateObjectFields(request, response, logger, input, [...fields, "expectedUpdatedAt"])) return undefined;
+  const expectedUpdatedAt = validateExpectedUpdatedAt(request, response, logger, input.expectedUpdatedAt);
+  return expectedUpdatedAt === undefined ? undefined : { ...input, expectedUpdatedAt };
+}
+
 function readLifeLinkPageQuery(
   request: AppRequest,
   response: Response,
@@ -1694,12 +1940,21 @@ const LIFE_LINK_ERROR_MESSAGES: Record<LifeLinkDomainErrorCode, string> = {
   hierarchy_cycle: "Life Link parent placement would create a cycle.",
   stale_life_link: "Life Link changed after it was read.",
   qr_already_bound: "QR is already bound to a Life Link.",
+  qr_not_found: "QR was not found.",
   life_link_already_tagged: "Life Link already has a QR tag.",
+  invalid_collection: "Collection request is invalid.",
+  collection_not_found: "Collection was not found.",
+  stale_collection: "Collection changed after it was read.",
+  duplicate_collection_id: "Collection identity is already in use.",
+  section_not_found: "Section was not found.",
+  invalid_section: "Section request is invalid.",
+  duplicate_section_id: "Section identity is already in use.",
+  collection_membership_not_found: "Collection membership was not found.",
   output_limit_exceeded: "Life Link result exceeds the supported limit."
 };
 
 function canonicalLifeLinkErrorStatus(code: LifeLinkDomainErrorCode): number {
-  if (code === "life_link_not_found") {
+  if (["life_link_not_found", "qr_not_found", "collection_not_found", "section_not_found", "collection_membership_not_found"].includes(code)) {
     return 404;
   }
   if (
@@ -1708,7 +1963,10 @@ function canonicalLifeLinkErrorStatus(code: LifeLinkDomainErrorCode): number {
     code === "hierarchy_cycle" ||
     code === "stale_life_link" ||
     code === "qr_already_bound" ||
-    code === "life_link_already_tagged"
+    code === "life_link_already_tagged" ||
+    code === "stale_collection" ||
+    code === "duplicate_collection_id" ||
+    code === "duplicate_section_id"
   ) {
     return 409;
   }
@@ -1745,23 +2003,8 @@ function handleLifeLinkDomainError(
     return false;
   }
 
-  if (
-    request.method === "PATCH" &&
-    /^\/api\/links\/[^/]+$/.test(request.path) &&
-    (error.code === "invalid_parent" || error.code === "hierarchy_cycle")
-  ) {
-    logger.warn("life_links.link.hierarchy_conflict", {
-      msg: "Legacy Link placement rejected to preserve canonical hierarchy",
-      ...requestLogFields(request),
-      ...routeLogFields(request.path),
-      reason: error.reason ?? error.code,
-      status: 409
-    });
-    response.status(409).json({ error: "hierarchy_conflict" });
-    return true;
-  }
-
-  const isCanonicalRoute = request.path === "/api/life-links" || request.path.startsWith("/api/life-links/");
+  const isCanonicalRoute = request.path === "/api/life-links" || request.path.startsWith("/api/life-links/") ||
+    request.path === "/api/collections" || request.path.startsWith("/api/collections/");
   const isAttachClaim =
     request.method === "POST" &&
     /^\/api\/qr\/[^/]+\/claim$/.test(request.path) &&
@@ -1801,6 +2044,10 @@ function rejectValidation(request: AppRequest, response: Response, logger: Logge
   });
   if (request.path === "/api/life-links" || request.path.startsWith("/api/life-links/")) {
     sendCanonicalLifeLinkError(response, 400, "invalid_life_link", { reason: error });
+    return;
+  }
+  if (request.path === "/api/collections" || request.path.startsWith("/api/collections/")) {
+    sendCanonicalLifeLinkError(response, 400, "invalid_collection", { reason: error });
     return;
   }
   response.status(400).json({ error });
@@ -1877,6 +2124,10 @@ function cryptoRandomCommandId(): string {
   return `claim-${randomUUID()}`;
 }
 
+function validChangeCommandField(value: unknown, max: number): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= max && value.trim() === value;
+}
+
 function paramValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? "" : value ?? "";
 }
@@ -1891,9 +2142,9 @@ function sanitizeFileName(value: string): string {
   return baseName || "upload";
 }
 
-function inlineContentDisposition(fileName: string): string {
+function mediaContentDisposition(fileName: string, kind: string): string {
   const safeFileName = sanitizeFileName(fileName).replace(/(["\\])/g, "\\$1");
-  return `inline; filename="${safeFileName}"`;
+  return `${kind === "document" ? "attachment" : "inline"}; filename="${safeFileName}"`;
 }
 
 function runtimeFields(config: LifeLinksConfig) {
@@ -1906,6 +2157,7 @@ function runtimeFields(config: LifeLinksConfig) {
     canonical_source_sha: config.canonicalSourceSha,
     source_tree_sha256: config.sourceTreeSha256,
     build_time: config.buildTime,
+    competition_fixture_profile: COMPETITION_FIXTURE_PROFILE,
     store_mode: config.storeMode
   };
 }

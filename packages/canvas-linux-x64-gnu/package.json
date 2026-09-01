@@ -1,0 +1,51 @@
+{
+  "name": "@napi-rs/canvas-linux-x64-gnu",
+  "private": true,
+  "version": "0.1.100",
+  "description": "Life Links-owned, source-built Linux x64 glibc native binding for @napi-rs/canvas 0.1.100.",
+  "license": "MIT",
+  "main": "./skia.linux-x64-gnu.node",
+  "scripts": {
+    "build:native:offline": "bash native-build/build-offline.sh",
+    "run:native:offline": "node native-build/run-offline-build.mjs run",
+    "qualify:native": "node native-build/qualify-native.mjs qualify",
+    "test:qualification": "node --test native-build/qualify-native.test.mjs",
+    "verify:native": "node native-build/verify-package.mjs",
+    "verify:qualification": "node native-build/verify-qualification.mjs"
+  },
+  "files": [
+    "skia.linux-x64-gnu.node",
+    "build-receipt.json",
+    "qualification-receipt.json",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "SOURCE_MATERIALS.json",
+    "SOURCE_MATERIALS.json.sha256",
+    "LICENSES",
+    "native-build.lock.json",
+    "native-build/build-offline.sh",
+    "native-build/builder.Dockerfile",
+    "native-build/canvas-skia-materials.lock.json",
+    "native-build/patches/0001-backport-draw-image-source-napi-3.12.patch",
+    "native-build/qualify-native.mjs",
+    "native-build/run-offline-build.mjs",
+    "native-build/smoke-wrapper.mjs",
+    "native-build/verify-materials.mjs",
+    "native-build/verify-package.mjs",
+    "native-build/verify-qualification.mjs",
+    "native-build/wrapper-smoke/package.json",
+    "native-build/wrapper-smoke/pnpm-lock.yaml"
+  ],
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

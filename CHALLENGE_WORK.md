@@ -53,41 +53,95 @@ the admitted tree and maps to `74017e73046b7eb4901297a4f63c225620c1b1ba`;
 `94855eb34b7ef865d03079de8f4cf6ddd9457499` changes the excluded deployment
 binding and maps to `e674dabc7f058ef0be00b66057c8a8509d4428ad`.
 
-The draft tool, camera fixture, and six-record camping rows above preserve the
-earlier locally and hosted-qualified challenge checkpoints as history; they do
-not describe the current family-adventure release candidate. The current
-implemented WebMCP catalog remains exactly:
+The draft tool, camera fixture, six-record camping, and five-tool
+family-adventure rows above preserve earlier locally and hosted-qualified
+challenge checkpoints as history, including BC-180. They do not describe the
+current Field Ledger successor or qualify its deployment. The current
+implemented WebMCP catalog is exactly:
 `inspect_current_life_link`, `search_my_life_links`, `open_life_link`,
-`update_life_link_content`, and `start_find_mode`. Inspect and search return
-substantive but bounded owner context. The update tool requires the exact base
-revision, changes only title and/or body through the ordinary canonical PATCH,
+`update_life_link_content`, `start_find_mode`, `create_life_link`,
+`move_life_link`, `manage_life_link_qr`, `list_my_collections`,
+`inspect_collection`, `maintain_collection`, `prepare_life_link_change`,
+`apply_life_link_change`, and `read_life_link_attachment`. Inspect and search
+return substantive but bounded owner context. Every output is at most 2,048
+UTF-8 JSON bytes; bounded Collection members, Sections, assignments, bulk-change
+scope, and attachment reads have resumable continuation rather than silently
+omitted edges. The content update tool
+requires the exact base revision and changes title, body, and/or complete
+truth-labelled structured context through the ordinary canonical PATCH,
 may validate up to eight same-owner source Life Link IDs, and rejects open
 editor, saved human draft, stale-revision, owner/surface, or access conflicts.
 The saved Agent connection survives application sessions, but page tools are
 registered only on an eligible authenticated owner workspace. Agent tools never
-bypass the ordinary owner-session boundary. Child creation, privacy, placement,
-QR binding, media, ownership, and purchase operations are outside this catalog.
+bypass the ordinary owner-session boundary. Separate tools now support physical
+creation/movement, explicit QR/public-projection controls, and Collection and
+Section maintenance through those same owner operations. Bulk move/delete uses
+a complete preview plus the shared apply/Undo path, with complete readback and
+one app-observed confirmation before deletion. Attachment reading is private,
+revision-bound, and read-only; upload/change and arbitrary binary transport,
+ownership transfer, and purchase operations remain outside this catalog.
+Together the fourteen tools are the curated logical page-bound WebMCP interface,
+not a remote/server MCP endpoint, background or delegated identity, or named-host
+support guarantee.
 
-The replacement `webmcp-family-adventure-context-v2` fixture contains exactly
-one synthetic owner, 60 meaningful recursive Life Links, eight QR inventory
-rows/bindings, one batch, one Project compatibility marker, and no sessions,
-media, or claims. Six QRs identify labelled basement tubs for shelter, family
+The successor `webmcp-field-ledger-family-v3` fixture contains exactly one
+synthetic owner, 60 physical Life Links, eight QR inventory rows/bindings, one
+batch, one Camping Gear Collection with 48 direct members, five flat Sections,
+and 52 assignments, including four overlapping memberships in Next-year
+upgrades. It has no Project compatibility marker, sessions, media, or claims.
+Hierarchies describe physical placement; private Collections and their
+nonexclusive Sections organize purpose without moving or duplicating Life
+Links. Adding a container references only that exact record, not its
+descendants. Six QRs identify labelled basement tubs for shelter, family
 sleep systems, kitchen/water, safety/lighting, hiking/weather, and cycling/
 repairs. Stable Sleeping Bag and Sleeping Pad QRs `LL-WEBMCP-00001` and
-`LL-WEBMCP-00002` remain bound for compatibility. Public Green Family Sleep
+`LL-WEBMCP-00002` retain their stable bindings. Public Green Family Sleep
 Systems Tub QR `LL-WEBMCP-00004` is the start and Find Mode target; private
 Blue Shelter Tub QR `LL-WEBMCP-00003` is the deterministic decoy.
 
-Inspect and search now return one additive `physicalLocator` object or null,
+The web Field Ledger presents direct physical layers, Collections, shared
+Details with exhaustive memberships, contextual creation, structured context,
+and explicit public-field selection. The next-year pad decision is the sleeping
+pad's Plan context with truth state `planned`, not a separate physically placed
+plan record. The complete local journey exercises all fourteen tool jobs,
+including complete reversible-change preview/apply and private attachment
+reading, reload and login persistence, overlapping Sections, explicit public
+redaction, and deterministic Find Mode target checks, not physical-camera
+acceptance. The decision remains planned, not purchased or owned.
+
+Forward migration `007_remove_project_compat.sql` removes only the obsolete
+Project compatibility marker and guards, preserving canonical records,
+relationships, QRs, media, and saved Agent connection state. Earlier migrations
+remain unchanged and no automatic Project-to-Collection conversion occurs.
+Traced Project routes, DTO/CSV fields, the web compatibility writer, and the
+dependent Expo/iOS source and distribution lane are retired. Browser cookie and
+operator/API bearer authentication remain supported; this is a web-first
+successor, not a new native-client implementation.
+
+Inspect and search retain one `physicalLocator` object or null,
 using the same core derivation as human detail/search. The nearest QR-bound
 ancestor excluding the subject wins, even if the subject retains its own QR;
 the subject is a fallback only when a complete path proves no QR-bound ancestor
-exists. Missing or truncated-ambiguous evidence returns null. This adds no
-sixth tool, HTTP operation, stored locator, agent-only hierarchy, or write
-authority. It lets the family ask where gear is packed, use prior-trip
+exists. Missing or truncated-ambiguous evidence returns null. Locator derivation
+adds no stored location, agent-only hierarchy, or independent write authority.
+It lets the family ask where gear is packed, use prior-trip
 experience and preferences to update a planned-only next-year decision, and
 then reconnect that decision to the physical tub through unchanged human-
 scanned Find Mode.
+
+The successor passes local controlled-host, native-Chrome, and complete v3
+family-journey verification with all fourteen tools and the 2 KB output bound.
+BC-270 qualification is in progress: the clean projected clone's frozen install,
+selected unit/contract/build checks, production dependency audit, browser,
+Postgres, and interface execution pass at their recorded scopes. Exact
+`@napi-rs/canvas` native Rust/Skia source/license closure remains a release
+blocker. Exact Debian corresponding-source retention is complete at its recorded
+image-bound/offline-verified scope. This is local source
+verification, not deployment proof or redistribution clearance. Publication,
+hosted controlled/native qualification, and submission acceptance remain
+separate; BC-280 has not started. Existing BC-180 public and hosted evidence
+retains its exact predecessor meaning and cannot be reused as proof of this
+fourteen-tool, v3-fixture successor.
 
 ## Projection and deployed-source mapping
 
@@ -126,7 +180,7 @@ candidate.
 This standalone release is licensed under the root MIT `LICENSE`, copyright
 (c) 2026 Justin Sublette. The selected public repository owner is
 `Vector-Mosaic`, and the public release identity is
-`Justin Sublette <j.sublette@vmosiac.com>`. Neither
+`Justin Sublette <216620060+Vector-Mosaic@users.noreply.github.com>`. Neither
 the project license nor this projection grants rights to monorepo-only files or
 materials excluded from this standalone release.
 

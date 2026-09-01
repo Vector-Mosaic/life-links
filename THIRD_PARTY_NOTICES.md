@@ -1,5 +1,30 @@
 # Third-Party Notices
 
+## Source successor qualification boundary
+
+The audited JavaScript inventory below belongs to the prior release lockfile,
+not the expanded attachment successor. The API Dockerfile now also builds
+pinned FFmpeg 9.0.1 and whisper.cpp 1.8.6 with a local multilingual base model,
+and installs the specified Debian LibreOffice/font packages. The image retains
+FFmpeg/whisper.cpp license files and corresponding source archives under
+`/opt/life-links`, and Debian package notices under `/usr/share/doc`.
+The Dockerfile records their build configuration and exact source/model hashes.
+BC-270 has regenerated and inspected the successor production dependency
+closure, but this notice body has intentionally not been replaced while exact
+redistribution closure remains unresolved. Before publishing a successor source
+release or redistributing its image, regenerate the notice body from the final
+frozen production lockfile and close the remaining blocker: bind the shipped
+`@napi-rs/canvas` native binary to its exact applicable source/license closure,
+including Rust/Skia inputs. Exact corresponding Debian source packages for the
+image's installed binary-package set are retained in the recorded image-bound
+bundle and pass strict network-free verification. Runtime notices under
+`/usr/share/doc` would not by themselves have constituted that retention.
+BC-270 therefore remains in progress and release-blocked. Neither
+this warning, the prior inventory below, nor a successful local build establishes
+release eligibility or redistribution clearance.
+
+## Previously audited JavaScript closure
+
 This file records the production third-party dependency closure for the
 standalone Life Links release. It was derived from the release-candidate
 `pnpm-lock.yaml` with pnpm 10.14.0 by running

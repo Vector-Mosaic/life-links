@@ -1,6 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
   createLinkBodyDocFromPlainText,
+  summarizeLifeLink,
+  type CollectionRecord,
+  type CollectionSectionRecord,
   type LifeLinkDetail,
   type LifeLinkRecord,
   type LifeLinkSummary,
@@ -27,6 +30,10 @@ const rootLifeLink: LifeLinkRecord = {
   bodyDoc: createLinkBodyDocFromPlainText("The top-level field camera kit."),
   bodyDocVersion: 1,
   privacy: "private",
+  browsingRole: "container",
+  context: { schemaVersion: 1 },
+  publicFieldKeys: [],
+  placementConfirmedAt: null,
   media: [],
   createdAt: "2026-08-26T12:00:00.000Z",
   updatedAt: "2026-08-26T12:00:00.000Z"
@@ -55,6 +62,10 @@ const targetLifeLink: LifeLinkRecord = {
   },
   bodyDocVersion: 1,
   privacy: "public",
+  browsingRole: "item",
+  context: { schemaVersion: 1, experience: { text: "Charged batteries worked throughout the trip.", truthState: "owner_reported" } },
+  publicFieldKeys: ["notes"],
+  placementConfirmedAt: null,
   media: [],
   createdAt: "2026-08-26T12:01:00.000Z",
   updatedAt: "2026-08-26T12:01:00.000Z"
@@ -63,7 +74,7 @@ const targetLifeLink: LifeLinkRecord = {
 const CANONICAL_TOOL_NAMES = [...LIFE_LINKS_PAGE_TOOL_NAMES].sort();
 
 test.describe("local controlled WebMCP host", () => {
-  test("connects once, invokes all five tools, persists, and disconnects only explicitly", async ({
+  test("connects the full catalog once, exercises baseline jobs, persists, and disconnects only explicitly", async ({
     baseURL,
     page
   }) => {
@@ -71,8 +82,9 @@ test.describe("local controlled WebMCP host", () => {
     const state = await mockLifeLinksApi(page, baseURL ?? "http://127.0.0.1:4174");
 
     await page.goto("/");
+    await page.locator(".ll-agent-status").click();
     await expect(page.locator("#agent-access-title")).toHaveText("Agent Connection");
-    const connectButton = page.getByRole("button", { name: "Connect Agent" });
+    const connectButton = page.getByRole("button", { name: "Connect Agent", exact: true });
     await expect(connectButton).toBeVisible();
     await expect.poll(() => controlledHostSnapshot(page)).toMatchObject({
       activeNames: [],
@@ -84,6 +96,7 @@ test.describe("local controlled WebMCP host", () => {
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
     expect((await controlledHostSnapshot(page)).registrationNames.sort()).toEqual(CANONICAL_TOOL_NAMES);
     expect(state.connectRequests).toBe(1);
+    await page.getByRole("dialog").getByRole("button", { name: "Close Agent connection" }).click();
 
     const openResult = await invokeControlledTool(page, "open_life_link", {
       lifeLinkId: targetLifeLink.id
@@ -94,8 +107,7 @@ test.describe("local controlled WebMCP host", () => {
       visibleEffect: "life_link_opened"
     });
     await expect(page).toHaveURL(new RegExp(`/life-links/${targetLifeLink.id}$`));
-    await expect(page.locator(`[data-selected-life-link-id="${targetLifeLink.id}"]`)).toBeVisible();
-    await expect(page.locator(".life-link-owner-detail").getByRole("heading", { name: targetLifeLink.title })).toBeVisible();
+    await expect(page.locator(".ll-details").getByRole("heading", { name: targetLifeLink.title })).toBeVisible();
 
     const inspectResult = await invokeControlledTool(page, "inspect_current_life_link", {});
     expect(inspectResult).toMatchObject({
@@ -107,7 +119,7 @@ test.describe("local controlled WebMCP host", () => {
       },
       visibleEffect: "current_life_link_focused"
     });
-    await expect(page.getByText("Inspected the selected Life Link")).toBeVisible();
+    expect(inspectResult).toMatchObject({ lifeLink: { context: targetLifeLink.context } });
 
     const searchResult = await invokeControlledTool(page, "search_my_life_links", {
       query: "battery",
@@ -120,8 +132,8 @@ test.describe("local controlled WebMCP host", () => {
       totalCount: 1,
       visibleEffect: "search_results_highlighted"
     });
-    await expect(page.getByLabel("Search My Life Links")).toHaveValue("battery");
-    const visibleSearchResult = page.locator(`[data-life-link-search-id="${targetLifeLink.id}"]`);
+    await expect(page.getByLabel("Search records")).toHaveValue("battery");
+    const visibleSearchResult = page.locator(".ll-search-open").filter({ hasText: targetLifeLink.title });
     await expect(visibleSearchResult).toContainText(targetLifeLink.title);
     await expect(visibleSearchResult).toContainText(`${rootLifeLink.title} > ${targetLifeLink.title}`);
 
@@ -161,8 +173,8 @@ test.describe("local controlled WebMCP host", () => {
         title: proposedTitle
       }
     }]);
-    await expect(page.locator(".life-link-owner-detail").getByRole("heading", { name: proposedTitle })).toBeVisible();
-    await expect(page.locator(".life-link-owner-detail")).toContainText("Battery readiness");
+    await expect(page.locator(".ll-details").getByRole("heading", { name: proposedTitle })).toBeVisible();
+    await expect(page.locator(".ll-details")).toContainText("Battery readiness");
 
     const staleResult = await invokeControlledTool(page, "update_life_link_content", {
       lifeLinkId: targetLifeLink.id,
@@ -182,10 +194,10 @@ test.describe("local controlled WebMCP host", () => {
       cameraStarted: false,
       visibleEffect: "find_mode_started"
     });
-    await expect(page.getByRole("heading", { name: "Search And Find" })).toBeVisible();
-    await expect(page.locator(".find-target")).toContainText(targetLifeLink.title);
-    await expect(page.locator(".find-target")).toContainText(targetLifeLink.qrId!);
+    await expect(page.getByRole("heading", { name: "Find Mode" })).toBeVisible();
+    await expect(page.locator(".ll-scan-screen")).toContainText(targetLifeLink.qrId!);
 
+    await page.locator(".ll-agent-status").click();
     const activity = page.locator(".agent-activity-panel");
     await expect(activity.locator(".agent-activity-item")).toHaveCount(7);
     for (const label of [
@@ -200,27 +212,46 @@ test.describe("local controlled WebMCP host", () => {
     await expect(activity).not.toContainText("battery");
     await expect(activity).not.toContainText(targetLifeLink.id);
     expect(state.patchRequests).toHaveLength(1);
+    await page.getByRole("dialog").getByRole("button", { name: "Close Agent connection" }).click();
+
+    const newId = "life-link-agent-created-item";
+    const created = await invokeControlledTool(page, "create_life_link", { id: newId, parentId: rootLifeLink.id, browsingRole: "item", title: "Field notebook" });
+    expect(created).toMatchObject({ ok: true, lifeLinkId: newId, saved: true });
+    await expect(page.locator(".ll-details").getByRole("heading", { name: "Field notebook" })).toBeVisible();
+    expect(await invokeControlledTool(page, "move_life_link", { lifeLinkId: newId, parentId: null, baseUpdatedAt: created.updatedAt })).toMatchObject({ ok: true, parentId: null, saved: true });
+    expect(await invokeControlledTool(page, "manage_life_link_qr", { action: "detach", lifeLinkId: targetLifeLink.id, baseUpdatedAt: updateResult.updatedAt, commandId: "detach-stable" })).toMatchObject({ ok: true, qrId: null });
+    expect(await invokeControlledTool(page, "manage_life_link_qr", { action: "attach", lifeLinkId: targetLifeLink.id, baseUpdatedAt: state.records.get(targetLifeLink.id)!.updatedAt, commandId: "attach-stable", qrId: targetLifeLink.qrId })).toMatchObject({ ok: true, qrId: targetLifeLink.qrId });
+    const collectionId = "collection-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    expect(await invokeControlledTool(page, "maintain_collection", { action: "create_collection", id: collectionId, title: "Field photography", purpose: "Organize the trip kit" })).toMatchObject({ ok: true, collectionId, saved: true });
+    await expect(page.getByRole("heading", { name: "Field photography", exact: true })).toBeVisible();
+    expect(await invokeControlledTool(page, "maintain_collection", { action: "add_member", collectionId, baseUpdatedAt: state.collection!.updatedAt, lifeLinkId: newId })).toMatchObject({ ok: true, saved: true });
+    expect(await invokeControlledTool(page, "list_my_collections", { limit: 10 })).toMatchObject({ ok: true, collections: [{ id: collectionId }] });
+    expect(await invokeControlledTool(page, "inspect_collection", { collectionId })).toMatchObject({ ok: true, collection: { id: collectionId }, members: [{ id: newId }], memberCount: 1 });
+    await expect(page.locator(`[data-life-link-id="${newId}"]`)).toContainText("Field notebook");
 
     await page.reload();
+    await page.locator(".ll-agent-status").click();
     await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
     expect(state.connectRequests).toBe(1);
+    await page.getByRole("dialog").getByRole("button", { name: "Close Agent connection" }).click();
     await expect(invokeControlledTool(page, "open_life_link", {
       lifeLinkId: targetLifeLink.id
     })).resolves.toMatchObject({ ok: true, lifeLinkId: targetLifeLink.id });
-    await expect(page.locator(".life-link-owner-detail")).toContainText(proposedTitle);
-    await page.locator(".life-link-owner-detail").getByRole("button", { name: "Open QR page" }).click();
+    await expect(page.locator(".ll-details")).toContainText(proposedTitle);
+    await page.goto(`/qr/${targetLifeLink.qrId}`);
     await expect(page).toHaveURL(new RegExp(`/qr/${targetLifeLink.qrId}$`));
     await expect(page.getByRole("button", { name: "Open in My Life Links" })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
 
     await page.getByRole("button", { name: "Open in My Life Links" }).click();
     await expect(page).toHaveURL(new RegExp(`/life-links/${targetLifeLink.id}$`));
-    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
+    await expect(page.locator(".ll-agent-status")).toHaveText("Agent connected");
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
 
     state.holdLogout = true;
-    await page.locator(".sidebar-actions").getByRole("button", { name: "Logout" }).click();
+    await page.getByRole("button", { name: "Account", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Logout", exact: true }).click();
     await state.logoutStarted;
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
     state.releaseLogout();
@@ -230,6 +261,7 @@ test.describe("local controlled WebMCP host", () => {
     await page.getByLabel("Email").fill(owner.email);
     await page.getByLabel("Password").fill("durable-agent-connection");
     await page.getByRole("button", { name: "Sign in" }).click();
+    await page.locator(".ll-agent-status").click();
     await expect(page.locator("#agent-access-title")).toHaveText("Agent Connection");
     await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
@@ -237,12 +269,13 @@ test.describe("local controlled WebMCP host", () => {
     expect(state.disconnectRequests).toBe(0);
 
     await page.getByRole("button", { name: "Disconnect Agent" }).click();
-    await expect(page.getByRole("button", { name: "Connect Agent" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Connect Agent", exact: true })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
     expect(state.disconnectRequests).toBe(1);
 
     await page.reload();
-    await expect(page.getByRole("button", { name: "Connect Agent" })).toBeVisible();
+    await page.locator(".ll-agent-status").click();
+    await expect(page.getByRole("button", { name: "Connect Agent", exact: true })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
 
     expect(state.patchRequests).toHaveLength(1);
@@ -250,6 +283,9 @@ test.describe("local controlled WebMCP host", () => {
 });
 
 type MockApiState = {
+  records: Map<string, LifeLinkRecord>;
+  collection: CollectionRecord | null;
+  members: Set<string>;
   patchRequests: Array<{ path: string; body: unknown }>;
   connectRequests: number;
   disconnectRequests: number;
@@ -270,6 +306,8 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
     releaseLogout = resolve;
   });
   const state: MockApiState = {
+    records: new Map([[rootLifeLink.id, structuredClone(rootLifeLink)], [targetLifeLink.id, structuredClone(targetLifeLink)]]),
+    collection: null, members: new Set(),
     patchRequests: [],
     connectRequests: 0,
     disconnectRequests: 0,
@@ -310,11 +348,16 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
           : { body: nextBody, bodyDoc: createLinkBodyDocFromPlainText(nextBody), bodyDocVersion: 1 }),
         updatedAt: "2026-08-26T12:03:00.000Z"
       };
+      state.records.set(currentTarget.id, currentTarget);
       await route.fulfill({ json: { lifeLink: currentTarget } });
       return;
     }
     if (path === "/api/config" && method === "GET") {
       await route.fulfill({ json: { qrBaseUrl: baseURL, maxBatchCount: 10000 } });
+      return;
+    }
+    if (path === "/api/change-history" && method === "GET") {
+      await route.fulfill({ json: { limit: 5, entries: [] } });
       return;
     }
     if (path === "/api/me" && method === "GET") {
@@ -354,15 +397,59 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
       await route.fulfill({ json: { links: [compatibilityLink(currentTarget, baseURL)] } });
       return;
     }
-    if (path === "/api/projects" && method === "GET") {
-      await route.fulfill({ json: { projects: [] } });
+    if (path.endsWith("/collection-memberships") && method === "GET") {
+      const id = path.split("/")[3];
+      await route.fulfill({ json: { memberships: state.collection && state.members.has(id) ? [{ collection: state.collection, sections: [] }] : [], nextCursor: null, truncated: false } });
+      return;
+    }
+    if (path === "/api/collections" && method === "GET") {
+      await route.fulfill({ json: { collections: state.collection ? [state.collection] : [], nextCursor: null, truncated: false } });
+      return;
+    }
+    if (path === "/api/collections" && method === "POST") {
+      state.collection = { ownerId: owner.id, purpose: "", notes: "", createdAt: targetLifeLink.createdAt, updatedAt: targetLifeLink.createdAt, ...request.postDataJSON() };
+      await route.fulfill({ json: { collection: state.collection } });
+      return;
+    }
+    if (state.collection && path === `/api/collections/${state.collection.id}` && method === "GET") {
+      await route.fulfill({ json: { collection: state.collection, sections: [] as CollectionSectionRecord[], sectionsPage: { nextCursor: null, truncated: false } } });
+      return;
+    }
+    if (state.collection && path === `/api/collections/${state.collection.id}/members` && method === "GET") {
+      await route.fulfill({ json: { lifeLinks: [...state.members].map((id) => state.records.get(id)), nextCursor: null, truncated: false } });
+      return;
+    }
+    if (state.collection && path.startsWith(`/api/collections/${state.collection.id}/members/`) && method === "PUT") {
+      state.members.add(path.split("/")[5]);
+      state.collection.updatedAt = "2026-08-26T12:06:00.000Z";
+      await route.fulfill({ json: { collection: state.collection } });
+      return;
+    }
+    if (path === "/api/life-links" && method === "POST") {
+      const input = request.postDataJSON();
+      const record: LifeLinkRecord = { ...targetLifeLink, ...input, qrId: null, privacy: "private", publicFieldKeys: [], context: { schemaVersion: 1 }, body: "", bodyDoc: createLinkBodyDocFromPlainText("") };
+      state.records.set(record.id, record);
+      await route.fulfill({ json: { lifeLink: record } });
+      return;
+    }
+    if (path.endsWith("/parent") && method === "PATCH") {
+      const record = state.records.get(path.split("/")[3])!;
+      Object.assign(record, { parentId: request.postDataJSON().parentId, updatedAt: "2026-08-26T12:04:00.000Z" });
+      await route.fulfill({ json: { lifeLink: record } });
+      return;
+    }
+    if (path.endsWith("/qr-binding") && ["PUT", "DELETE"].includes(method)) {
+      const record = state.records.get(path.split("/")[3])!;
+      Object.assign(record, { qrId: method === "DELETE" ? null : request.postDataJSON().qrId, updatedAt: "2026-08-26T12:05:00.000Z" });
+      currentTarget = record;
+      await route.fulfill({ json: { lifeLink: record } });
       return;
     }
     if (path === "/api/life-links" && method === "GET") {
       const parentId = url.searchParams.get("parentId");
       await route.fulfill({
         json: {
-          lifeLinks: parentId === rootLifeLink.id ? [summary(currentTarget, 0)] : [summary(rootLifeLink, 1)],
+          lifeLinks: [...state.records.values()].filter((record) => record.parentId === parentId).map((record) => summary(record, [...state.records.values()].filter((child) => child.parentId === record.id).length)),
           nextCursor: null,
           truncated: false
         }
@@ -383,12 +470,15 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
     }
     if (path.startsWith("/api/life-links/") && method === "GET") {
       const lifeLinkId = decodeURIComponent(path.slice("/api/life-links/".length));
-      const lifeLink = lifeLinkId === rootLifeLink.id ? rootLifeLink : lifeLinkId === currentTarget.id ? currentTarget : null;
+      const lifeLink = state.records.get(lifeLinkId);
       if (!lifeLink) {
         await route.fulfill({ status: 404, json: { error: { code: "life_link_not_found", message: "Not found." } } });
         return;
       }
-      await route.fulfill({ json: { detail: canonicalDetail(lifeLink, currentTarget) } });
+      const children = [...state.records.values()].filter((child) => child.parentId === lifeLink.id);
+      const ancestors: LifeLinkRecord[] = [];
+      for (let item: LifeLinkRecord | undefined = lifeLink; item; item = item.parentId ? state.records.get(item.parentId) : undefined) ancestors.unshift(item);
+      await route.fulfill({ json: { detail: { lifeLink, ancestry: { items: ancestors.map((item) => summary(item, [...state.records.values()].filter((child) => child.parentId === item.id).length)), truncated: false, omittedCount: 0 }, children: children.map((child) => summary(child, 0)), childrenPage: { nextCursor: null, truncated: false } } } });
       return;
     }
     if (path === `/api/qr/${targetLifeLink.qrId}` && method === "GET") {
@@ -451,7 +541,6 @@ function compatibilityLink(lifeLink: LifeLinkRecord, baseURL: string): LinkRecor
     body: lifeLink.body,
     bodyDoc: lifeLink.bodyDoc,
     bodyDocVersion: lifeLink.bodyDocVersion,
-    projectId: null,
     privacy: lifeLink.privacy,
     media: [],
     createdAt: lifeLink.createdAt,
@@ -460,15 +549,7 @@ function compatibilityLink(lifeLink: LifeLinkRecord, baseURL: string): LinkRecor
 }
 
 function summary(lifeLink: LifeLinkRecord, childCount: number): LifeLinkSummary {
-  return {
-    id: lifeLink.id,
-    parentId: lifeLink.parentId,
-    qrId: lifeLink.qrId,
-    title: lifeLink.title,
-    privacy: lifeLink.privacy,
-    updatedAt: lifeLink.updatedAt,
-    childCount
-  };
+  return summarizeLifeLink(lifeLink, childCount);
 }
 
 function canonicalDetail(lifeLink: LifeLinkRecord, currentTarget = targetLifeLink): LifeLinkDetail {

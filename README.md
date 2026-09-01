@@ -14,17 +14,31 @@ application from work completed for the challenge.
 ## Implemented product surface
 
 - arbitrary-depth owner hierarchy with stable Life Link identity, breadcrumbs,
-  bounded search/path context, and cycle-safe moves;
+  direct physical-layer browsing, bounded search/path context, and cycle-safe
+  moves;
+- private Collections that reference Life Links without moving or copying them,
+  with flat, overlapping Collection-local Sections and exhaustive membership
+  details;
 - optional QR binding at every level, public QR resolution, claim, batch
   export, and Find Mode;
-- rich notes, media, privacy, authentication, and PostgreSQL persistence;
+- rich notes, truth-labelled Summary/Condition/Experience/Plan context, media,
+  explicit public-field selection, authentication, and PostgreSQL persistence;
 - one human/agent physical-locator derivation that selects the nearest
   QR-bound container from canonical ancestry without storing a second location
   field; and
 - deterministic synthetic family-adventure context for a family of four,
   including 60 meaningful Life Links, six QR-labelled basement tubs, retained
-  bag/pad QRs, prior-trip experience, preferences, packing intent, and a
-  planned-only upgrade record.
+  bag/pad QRs, and one Camping Gear Collection with 48 members, five Sections,
+  and 52 Section assignments. Prior-trip experience, preferences, packing
+  intent, and a planned-only pad upgrade remain attached to canonical context.
+
+The web Field Ledger uses fixed-height navigation, independently scrolling
+panels, shared Details, contextual creation controls, and light/dark and mobile
+layouts. The obsolete Project compatibility model and its dependent iOS client
+are retired; this successor is web-first. Forward PostgreSQL migration `007`
+removes only the compatibility marker and guards, preserving canonical records
+and associations. Historical migrations remain unchanged; Projects are not
+automatically converted into Collections.
 
 ## Challenge story: pack -> experience -> improve
 
@@ -48,8 +62,9 @@ failed. The existing bag kept its user warm around 35°F, cold came through the
 low-R sleeping pad, and child bike-light mounts loosened on rough ground. When
 planning next year, the agent combines those facts with the family's warmth-
 over-weight preference, instruction not to replace working gear, and $250
-budget. It uses the ordinary revision-safe Life Links update to record the pad
-as the next planned upgrade. The result remains explicitly planned—not
+budget. It uses the ordinary revision-safe Life Links update to replace the
+sleeping pad's structured Plan context. The result remains explicitly
+planned—not
 purchased, owned, or installed—and survives reload alongside the owner's saved
 Agent connection.
 
@@ -63,7 +78,7 @@ the decision to the right physical tub.
 An authenticated owner selects **Connect Agent** once on the owner workspace.
 Life Links saves that connection for the owner across reloads, browser restarts,
 logout/login, and future visits. Eligible signed-in owner pages then register
-exactly five page tools through `document.modelContext.registerTool` without a
+exactly fourteen page tools through `document.modelContext.registerTool` without a
 second prompt. Only **Disconnect Agent** revokes the saved connection:
 
 - `inspect_current_life_link`
@@ -71,6 +86,15 @@ second prompt. Only **Disconnect Agent** revokes the saved connection:
 - `open_life_link`
 - `update_life_link_content`
 - `start_find_mode`
+- `create_life_link`
+- `move_life_link`
+- `manage_life_link_qr`
+- `list_my_collections`
+- `inspect_collection`
+- `maintain_collection`
+- `prepare_life_link_change`
+- `apply_life_link_change`
+- `read_life_link_attachment`
 
 The tools reuse the ordinary application controller and authorization paths.
 They create visible page effects, reject stale or unauthorized context, and do
@@ -80,12 +104,30 @@ summaries. Both also return the same derived physical locator shown in human
 detail/search: nearest QR-bound ancestor first, QR-bound subject only as a
 complete-path fallback, and null for missing or truncated-ambiguous placement.
 This is recorded placement, not live-location proof.
-`update_life_link_content` immediately saves only a title and/or
-plain-text body through the canonical owner PATCH, using the exact `updatedAt`
-revision obtained from a prior read. It rejects stale state, an open editor, a
+Every result is bounded to 2,048 UTF-8 JSON bytes with explicit truncation;
+Collection members, Sections, and assignments expose resumable continuation.
+`update_life_link_content` immediately saves a title, plain-text body, and/or
+complete structured context replacement through the canonical owner PATCH,
+using the exact `updatedAt` revision obtained from a prior read. It rejects stale
+state, an open editor, a
 saved human draft, unavailable owner source records, and access or owner-
-surface changes. It cannot change privacy, hierarchy, QR bindings, media, or
-purchase state. Find Mode prepares the target; the human performs the scan.
+surface changes. That content tool cannot change privacy, hierarchy, QR
+bindings, media, or purchase state. The separate creation, move, QR/public-field,
+and Collection tools reuse the corresponding ordinary owner operations and
+their revision/retry rules. Sections are flat and nonexclusive; adding a
+container to a Collection references that exact record, not its descendants.
+Bulk move/delete uses a complete paged preview before the shared apply/Undo
+path; deletion requires complete agent readback and one confirmation observed
+by the app. The attachment tool reads exact revision-bound private extracted
+text or explicit source-bound visual/audio representations through bounded
+continuation. It does not upload attachments or provide arbitrary binary
+transport.
+Find Mode prepares the target; the human performs the scan.
+
+Together these fourteen tools are the curated logical page-bound WebMCP
+interface registered by an eligible live owner page. They are not a remote or
+server MCP endpoint, background/delegated identity, or guarantee that any named
+host implements the page registration API.
 
 ## Run locally
 
@@ -116,15 +158,19 @@ The challenge journey starts at public Green Family Sleep Systems Tub QR
 `LL-WEBMCP-00004`, proves public hierarchy redaction, and enters the owner
 workspace. Packing searches cover representative gear in all six tubs and show
 the same exact tub locator in agent and human output. The retained QR-bound pad
-still resolves to the nearer Green tub ancestor. The journey then retrieves the
-working bag, failed pad, family preferences, $250 budget, and prior four-day
-trip before using one four-source `update_life_link_content` call to persist a
-sleeping-pad priority in the private Next-Year Upgrade Plan. It reloads, logs
-out, and signs in again to prove both the new revision and the one-time Agent
-connection persisted without reconnecting. It rejects Blue Shelter Tub QR
+still resolves to the nearer Green tub ancestor. The successor journey exercises
+all fourteen tools: physical folder/item creation and movement, explicit QR and
+public-field changes, Collection and overlapping Section membership, complete
+bulk-change preview/apply with the shared Undo path, private attachment reading,
+and an exact-revision structured Plan update on the sleeping pad. It retrieves the
+working bag, failed pad, family preferences, $250 budget, and prior-trip context
+without creating a separate physical "upgrade plan" item. It reloads, logs out,
+and signs in again to prove persisted context and the one-time Agent connection
+without reconnecting. It rejects Blue Shelter Tub QR
 `LL-WEBMCP-00003`, matches the Green tub in Find Mode, explicitly disconnects
 the agent, and confirms a fresh logged-out context still receives only the
-generic public Green tub. The synthetic plan explicitly remains planned
+allowlisted public Green tub summary without hierarchy or private Collection
+context. The synthetic plan explicitly remains planned
 only—not purchased, owned, or installed.
 
 The PostgreSQL integration suite is opt-in and requires a disposable database:
@@ -166,12 +212,18 @@ Hosted challenge startup is fail-closed: the service requires an exact HTTPS
 `CANONICAL_SOURCE_SHA`, and `SOURCE_TREE_SHA256` values. `/healthz`, `/readyz`,
 and `/version` expose the corresponding safe snake_case release fields for
 qualification.
+`/version.competition_fixture_profile` identifies the exact
+`webmcp-field-ledger-family-v3` fixture; a predecessor runtime identity is not
+successor qualification.
 
 ## Third-party software
 
-The production dependency inventory, selected dual-license options, upstream
-attributions, and license terms are recorded in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The prior production dependency inventory, selected dual-license options,
+upstream attributions, and license terms are recorded in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Its qualification warning is
+current: the notice body has not yet been regenerated for the successor's final
+production lockfile/native closure, so it does not establish redistribution
+eligibility.
 
 ## License
 
@@ -196,3 +248,16 @@ projection, clean-clone qualification, deployed revision, hosted journey,
 competition registration, terms acceptance, judge credentials, and final
 submission remain separately verifiable; this source tree does not infer those
 events merely because the implementation or documentation exists.
+
+The Field Ledger successor passes local controlled-host, native-Chrome, and
+complete v3 family-journey verification with all fourteen tools and the 2 KB
+output bound; it has not been deployed in this workstream. BC-270 qualification
+is in progress: the clean projected clone's frozen install, selected
+unit/contract/build checks, production dependency audit, browser, Postgres, and
+interface execution pass at their recorded scopes. Release qualification is
+still blocked on exact `@napi-rs/canvas` native Rust/Skia source/license closure.
+Exact Debian corresponding-source retention is complete at its recorded
+image-bound/offline-verified scope. The recorded BC-180 public/hosted
+evidence belongs to the preceding five-tool family-adventure release, not this
+fourteen-tool successor. Publication, hosted qualification, and submission
+acceptance remain separate gates; BC-280 has not started.

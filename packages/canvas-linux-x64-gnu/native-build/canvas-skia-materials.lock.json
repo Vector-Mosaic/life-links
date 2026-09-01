@@ -1,0 +1,350 @@
+{
+  "schema_version": "life_links.canvas_skia_materials.v1",
+  "skia_revision": "fe2718df5f53a681087be6f0539045ca1b4b8c09",
+  "skia_deps_sha256": "d65ff929f8a373ea16b21d45d5489557d51389ba6583a5c9959d5487c02ce965",
+  "depot_tools_revision": "8efa575d754b8703d99b0f827528e45aeaa167aa",
+  "git_dependencies": [
+    {
+      "path": "buildtools",
+      "url": "https://chromium.googlesource.com/chromium/src/buildtools.git",
+      "revision": "729495f2ffa69080907780591fa2a630b2556e98",
+      "object_type": "commit",
+      "resolved_commit": "729495f2ffa69080907780591fa2a630b2556e98"
+    },
+    {
+      "path": "third_party/externals/angle2",
+      "url": "https://chromium.googlesource.com/angle/angle.git",
+      "revision": "0fe2ac00168e8116a4d2f909326ab54bf1032ec4",
+      "object_type": "commit",
+      "resolved_commit": "0fe2ac00168e8116a4d2f909326ab54bf1032ec4"
+    },
+    {
+      "path": "third_party/externals/brotli",
+      "url": "https://skia.googlesource.com/external/github.com/google/brotli.git",
+      "revision": "6d03dfbedda1615c4cba1211f8d81735575209c8",
+      "object_type": "commit",
+      "resolved_commit": "6d03dfbedda1615c4cba1211f8d81735575209c8"
+    },
+    {
+      "path": "third_party/externals/d3d12allocator",
+      "url": "https://skia.googlesource.com/external/github.com/GPUOpen-LibrariesAndSDKs/D3D12MemoryAllocator.git",
+      "revision": "169895d529dfce00390a20e69c2f516066fe7a3b",
+      "object_type": "commit",
+      "resolved_commit": "169895d529dfce00390a20e69c2f516066fe7a3b"
+    },
+    {
+      "path": "third_party/externals/dawn",
+      "url": "https://dawn.googlesource.com/dawn.git",
+      "revision": "d641a1d08b2048314c6e245b66614f6deb4aacc7",
+      "object_type": "commit",
+      "resolved_commit": "d641a1d08b2048314c6e245b66614f6deb4aacc7"
+    },
+    {
+      "path": "third_party/externals/abseil-cpp",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/abseil-cpp",
+      "revision": "2a7d49fc392cad55159d68d98aa3648bc89795d3",
+      "object_type": "commit",
+      "resolved_commit": "2a7d49fc392cad55159d68d98aa3648bc89795d3"
+    },
+    {
+      "path": "third_party/externals/jinja2",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/jinja2",
+      "revision": "c3027d884967773057bf74b957e3fea87e5df4d7",
+      "object_type": "commit",
+      "resolved_commit": "c3027d884967773057bf74b957e3fea87e5df4d7"
+    },
+    {
+      "path": "third_party/externals/markupsafe",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/markupsafe",
+      "revision": "4256084ae14175d38a3ff7d739dca83ae49ccec6",
+      "object_type": "commit",
+      "resolved_commit": "4256084ae14175d38a3ff7d739dca83ae49ccec6"
+    },
+    {
+      "path": "third_party/externals/glslang",
+      "url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/glslang",
+      "revision": "1d47ffa8ac4374a19b302021e216a20f22a3de92",
+      "object_type": "commit",
+      "resolved_commit": "1d47ffa8ac4374a19b302021e216a20f22a3de92"
+    },
+    {
+      "path": "third_party/externals/webgpu-headers",
+      "url": "https://chromium.googlesource.com/external/github.com/webgpu-native/webgpu-headers",
+      "revision": "706853a9da45b8e89b7ea005aa267294d115f8ce",
+      "object_type": "commit",
+      "resolved_commit": "706853a9da45b8e89b7ea005aa267294d115f8ce"
+    },
+    {
+      "path": "third_party/externals/delaunator-cpp",
+      "url": "https://skia.googlesource.com/external/github.com/skia-dev/delaunator-cpp.git",
+      "revision": "98305ef6c4e862f7d48df9cc647b690d796fec68",
+      "object_type": "commit",
+      "resolved_commit": "98305ef6c4e862f7d48df9cc647b690d796fec68"
+    },
+    {
+      "path": "third_party/externals/dng_sdk",
+      "url": "https://android.googlesource.com/platform/external/dng_sdk.git",
+      "revision": "dbe0a676450d9b8c71bf00688bb306409b779e90",
+      "object_type": "commit",
+      "resolved_commit": "dbe0a676450d9b8c71bf00688bb306409b779e90"
+    },
+    {
+      "path": "third_party/externals/egl-registry",
+      "url": "https://skia.googlesource.com/external/github.com/KhronosGroup/EGL-Registry",
+      "revision": "b055c9b483e70ecd57b3cf7204db21f5a06f9ffe",
+      "object_type": "commit",
+      "resolved_commit": "b055c9b483e70ecd57b3cf7204db21f5a06f9ffe"
+    },
+    {
+      "path": "third_party/externals/emsdk",
+      "url": "https://skia.googlesource.com/external/github.com/emscripten-core/emsdk.git",
+      "revision": "c69d433d8509c5c64564c2f0d054bf102a5cf67e",
+      "object_type": "commit",
+      "resolved_commit": "c69d433d8509c5c64564c2f0d054bf102a5cf67e"
+    },
+    {
+      "path": "third_party/externals/expat",
+      "url": "https://chromium.googlesource.com/external/github.com/libexpat/libexpat.git",
+      "revision": "6154446fccefbf3ca644894f598969113b0c7bcd",
+      "object_type": "commit",
+      "resolved_commit": "6154446fccefbf3ca644894f598969113b0c7bcd"
+    },
+    {
+      "path": "third_party/externals/freetype",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/freetype2.git",
+      "revision": "264b5fbf5b912b39f98d038bf75d39be0a73f21b",
+      "object_type": "commit",
+      "resolved_commit": "264b5fbf5b912b39f98d038bf75d39be0a73f21b"
+    },
+    {
+      "path": "third_party/externals/harfbuzz",
+      "url": "https://chromium.googlesource.com/external/github.com/harfbuzz/harfbuzz.git",
+      "revision": "9cb1fee51069b206effb4736e443b038d230789d",
+      "object_type": "commit",
+      "resolved_commit": "9cb1fee51069b206effb4736e443b038d230789d"
+    },
+    {
+      "path": "third_party/externals/highway",
+      "url": "https://chromium.googlesource.com/external/github.com/google/highway.git",
+      "revision": "424360251cdcfc314cfc528f53c872ecd63af0f0",
+      "object_type": "commit",
+      "resolved_commit": "424360251cdcfc314cfc528f53c872ecd63af0f0"
+    },
+    {
+      "path": "third_party/externals/icu",
+      "url": "https://chromium.googlesource.com/chromium/deps/icu.git",
+      "revision": "364118a1d9da24bb5b770ac3d762ac144d6da5a4",
+      "object_type": "commit",
+      "resolved_commit": "364118a1d9da24bb5b770ac3d762ac144d6da5a4"
+    },
+    {
+      "path": "third_party/externals/icu4x",
+      "url": "https://chromium.googlesource.com/external/github.com/unicode-org/icu4x.git",
+      "revision": "bcf4f7198d4dc5f3127e84a6ca657c88e7d07a13",
+      "object_type": "commit",
+      "resolved_commit": "bcf4f7198d4dc5f3127e84a6ca657c88e7d07a13"
+    },
+    {
+      "path": "third_party/externals/imgui",
+      "url": "https://skia.googlesource.com/external/github.com/ocornut/imgui.git",
+      "revision": "55d35d8387c15bf0cfd71861df67af8cfbda7456",
+      "object_type": "commit",
+      "resolved_commit": "55d35d8387c15bf0cfd71861df67af8cfbda7456"
+    },
+    {
+      "path": "third_party/externals/libavif",
+      "url": "https://skia.googlesource.com/external/github.com/AOMediaCodec/libavif.git",
+      "revision": "55aab4ac0607ab651055d354d64c4615cf3d8000",
+      "object_type": "commit",
+      "resolved_commit": "55aab4ac0607ab651055d354d64c4615cf3d8000"
+    },
+    {
+      "path": "third_party/externals/libgav1",
+      "url": "https://chromium.googlesource.com/codecs/libgav1.git",
+      "revision": "5cf722e659014ebaf2f573a6dd935116d36eadf1",
+      "object_type": "commit",
+      "resolved_commit": "5cf722e659014ebaf2f573a6dd935116d36eadf1"
+    },
+    {
+      "path": "third_party/externals/libgrapheme",
+      "url": "https://skia.googlesource.com/external/github.com/FRIGN/libgrapheme/",
+      "revision": "c0cab63c5300fa12284194fbef57aa2ed62a94c0",
+      "object_type": "commit",
+      "resolved_commit": "c0cab63c5300fa12284194fbef57aa2ed62a94c0"
+    },
+    {
+      "path": "third_party/externals/libjpeg-turbo",
+      "url": "https://chromium.googlesource.com/chromium/deps/libjpeg_turbo.git",
+      "revision": "e14cbfaa85529d47f9f55b0f104a579c1061f9ad",
+      "object_type": "commit",
+      "resolved_commit": "e14cbfaa85529d47f9f55b0f104a579c1061f9ad"
+    },
+    {
+      "path": "third_party/externals/libjxl",
+      "url": "https://chromium.googlesource.com/external/gitlab.com/wg1/jpeg-xl.git",
+      "revision": "a205468bc5d3a353fb15dae2398a101dff52f2d3",
+      "object_type": "commit",
+      "resolved_commit": "a205468bc5d3a353fb15dae2398a101dff52f2d3"
+    },
+    {
+      "path": "third_party/externals/libpng",
+      "url": "https://skia.googlesource.com/third_party/libpng.git",
+      "revision": "d5515b5b8be3901aac04e5bd8bd5c89f287bcd33",
+      "object_type": "commit",
+      "resolved_commit": "d5515b5b8be3901aac04e5bd8bd5c89f287bcd33"
+    },
+    {
+      "path": "third_party/externals/libwebp",
+      "url": "https://chromium.googlesource.com/webm/libwebp.git",
+      "revision": "845d5476a866141ba35ac133f856fa62f0b7445f",
+      "object_type": "commit",
+      "resolved_commit": "845d5476a866141ba35ac133f856fa62f0b7445f"
+    },
+    {
+      "path": "third_party/externals/libyuv",
+      "url": "https://chromium.googlesource.com/libyuv/libyuv.git",
+      "revision": "d248929c059ff7629a85333699717d7a677d8d96",
+      "object_type": "commit",
+      "resolved_commit": "d248929c059ff7629a85333699717d7a677d8d96"
+    },
+    {
+      "path": "third_party/externals/oboe",
+      "url": "https://chromium.googlesource.com/external/github.com/google/oboe.git",
+      "revision": "b02a12d1dd821118763debec6b83d00a8a0ee419",
+      "object_type": "commit",
+      "resolved_commit": "b02a12d1dd821118763debec6b83d00a8a0ee419"
+    },
+    {
+      "path": "third_party/externals/opengl-registry",
+      "url": "https://skia.googlesource.com/external/github.com/KhronosGroup/OpenGL-Registry",
+      "revision": "14b80ebeab022b2c78f84a573f01028c96075553",
+      "object_type": "commit",
+      "resolved_commit": "14b80ebeab022b2c78f84a573f01028c96075553"
+    },
+    {
+      "path": "third_party/externals/partition_alloc",
+      "url": "https://chromium.googlesource.com/chromium/src/base/allocator/partition_allocator.git",
+      "revision": "b8c0688f577c1bbce6c2c1ce4753cd685ca0f634",
+      "object_type": "commit",
+      "resolved_commit": "b8c0688f577c1bbce6c2c1ce4753cd685ca0f634"
+    },
+    {
+      "path": "third_party/externals/perfetto",
+      "url": "https://android.googlesource.com/platform/external/perfetto",
+      "revision": "93885509be1c9240bc55fa515ceb34811e54a394",
+      "object_type": "tag",
+      "resolved_commit": "8cacafbf6496da31259e2f3802301d36bbf788a9"
+    },
+    {
+      "path": "third_party/externals/piex",
+      "url": "https://android.googlesource.com/platform/external/piex.git",
+      "revision": "bb217acdca1cc0c16b704669dd6f91a1b509c406",
+      "object_type": "commit",
+      "resolved_commit": "bb217acdca1cc0c16b704669dd6f91a1b509c406"
+    },
+    {
+      "path": "third_party/externals/swiftshader",
+      "url": "https://swiftshader.googlesource.com/SwiftShader",
+      "revision": "89556131bf9d48af3c5c9fbb9a3322e706da89a3",
+      "object_type": "commit",
+      "resolved_commit": "89556131bf9d48af3c5c9fbb9a3322e706da89a3"
+    },
+    {
+      "path": "third_party/externals/vulkanmemoryallocator",
+      "url": "https://chromium.googlesource.com/external/github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator",
+      "revision": "a6bfc237255a6bac1513f7c1ebde6d8aed6b5191",
+      "object_type": "commit",
+      "resolved_commit": "a6bfc237255a6bac1513f7c1ebde6d8aed6b5191"
+    },
+    {
+      "path": "third_party/externals/vulkan-deps",
+      "url": "https://chromium.googlesource.com/vulkan-deps",
+      "revision": "8f5de81f5f44c98f0852df6cf3a1f0ebec1742f2",
+      "object_type": "commit",
+      "resolved_commit": "8f5de81f5f44c98f0852df6cf3a1f0ebec1742f2"
+    },
+    {
+      "path": "third_party/externals/spirv-cross",
+      "url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/SPIRV-Cross",
+      "revision": "b8fcf307f1f347089e3c46eb4451d27f32ebc8d3",
+      "object_type": "commit",
+      "resolved_commit": "b8fcf307f1f347089e3c46eb4451d27f32ebc8d3"
+    },
+    {
+      "path": "third_party/externals/spirv-headers",
+      "url": "https://skia.googlesource.com/external/github.com/KhronosGroup/SPIRV-Headers.git",
+      "revision": "6dd7ba990830f7c15ac1345ff3b43ef6ffdad216",
+      "object_type": "commit",
+      "resolved_commit": "6dd7ba990830f7c15ac1345ff3b43ef6ffdad216"
+    },
+    {
+      "path": "third_party/externals/spirv-tools",
+      "url": "https://skia.googlesource.com/external/github.com/KhronosGroup/SPIRV-Tools.git",
+      "revision": "2d14d2e76aa7de72404b17078eda15c20a6a0389",
+      "object_type": "commit",
+      "resolved_commit": "2d14d2e76aa7de72404b17078eda15c20a6a0389"
+    },
+    {
+      "path": "third_party/externals/vello",
+      "url": "https://skia.googlesource.com/external/github.com/linebender/vello.git",
+      "revision": "3ee3bea02164c5a816fe6c16ef4e3a810edb7620",
+      "object_type": "commit",
+      "resolved_commit": "3ee3bea02164c5a816fe6c16ef4e3a810edb7620"
+    },
+    {
+      "path": "third_party/externals/vulkan-headers",
+      "url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/Vulkan-Headers",
+      "revision": "afe9eb980aa928a66d1c9c06f38c55dd59868720",
+      "object_type": "commit",
+      "resolved_commit": "afe9eb980aa928a66d1c9c06f38c55dd59868720"
+    },
+    {
+      "path": "third_party/externals/vulkan-tools",
+      "url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/Vulkan-Tools",
+      "revision": "90bf5bc4fd8bea0d300f6564af256a51a34124b8",
+      "object_type": "commit",
+      "resolved_commit": "90bf5bc4fd8bea0d300f6564af256a51a34124b8"
+    },
+    {
+      "path": "third_party/externals/vulkan-utility-libraries",
+      "url": "https://chromium.googlesource.com/external/github.com/KhronosGroup/Vulkan-Utility-Libraries",
+      "revision": "48b1fd1a65e436bae806cb6180c9338846b9de97",
+      "object_type": "commit",
+      "resolved_commit": "48b1fd1a65e436bae806cb6180c9338846b9de97"
+    },
+    {
+      "path": "third_party/externals/unicodetools",
+      "url": "https://chromium.googlesource.com/external/github.com/unicode-org/unicodetools",
+      "revision": "66a3fa9dbdca3b67053a483d130564eabc5fe095",
+      "object_type": "commit",
+      "resolved_commit": "66a3fa9dbdca3b67053a483d130564eabc5fe095"
+    },
+    {
+      "path": "third_party/externals/wuffs",
+      "url": "https://skia.googlesource.com/external/github.com/google/wuffs-mirror-release-c.git",
+      "revision": "e3f919ccfe3ef542cfc983a82146070258fb57f8",
+      "object_type": "commit",
+      "resolved_commit": "e3f919ccfe3ef542cfc983a82146070258fb57f8"
+    },
+    {
+      "path": "third_party/externals/zlib",
+      "url": "https://chromium.googlesource.com/chromium/src/third_party/zlib",
+      "revision": "646b7f569718921d7d4b5b8e22572ff6c76f2596",
+      "object_type": "commit",
+      "resolved_commit": "646b7f569718921d7d4b5b8e22572ff6c76f2596"
+    }
+  ],
+  "cipd_materials": [
+    {
+      "path": "bin/gn",
+      "package": "gn/gn/linux-amd64",
+      "instance_id": "ajv8U9glvMrF5bS3vcwQzpOWoEpomsaE7DMIylx_PZwC",
+      "sha256": "8fa12442a4d0fc4d754e89ec732aa015cdaf8d4bcbbedf68468c652531ea482c"
+    }
+  ],
+  "verification": {
+    "git_dependency_count": 47,
+    "git_commit_object_count": 46,
+    "git_tag_object_count": 1
+  }
+}

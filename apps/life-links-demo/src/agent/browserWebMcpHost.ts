@@ -9,7 +9,16 @@ export const LIFE_LINKS_PAGE_TOOL_NAMES = [
   "search_my_life_links",
   "open_life_link",
   "update_life_link_content",
-  "start_find_mode"
+  "start_find_mode",
+  "create_life_link",
+  "move_life_link",
+  "manage_life_link_qr",
+  "list_my_collections",
+  "inspect_collection",
+  "maintain_collection",
+  "prepare_life_link_change",
+  "apply_life_link_change",
+  "read_life_link_attachment"
 ] as const;
 
 export type LifeLinksPageToolName = (typeof LIFE_LINKS_PAGE_TOOL_NAMES)[number];
@@ -42,7 +51,7 @@ export type LifeLinksPageToolCatalogValidation =
 
 const INVALID_CATALOG_ERROR = {
   code: "invalid_tool_catalog",
-  message: "The Life Links agent connection requires its complete five-tool physical-context catalog.",
+  message: "The Life Links agent connection requires its complete Field Ledger tool catalog.",
   retryable: false
 } as const;
 

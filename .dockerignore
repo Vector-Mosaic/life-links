@@ -1,0 +1,51 @@
+# Dependency and generated build trees
+node_modules
+**/node_modules
+dist
+**/dist
+.pnpm-store
+**/.pnpm-store
+coverage
+**/coverage
+.cache
+**/.cache
+.vite
+**/.vite
+*.tsbuildinfo
+
+# Runtime and verification output
+artifacts
+**/artifacts
+uploads
+**/uploads
+test-results
+**/test-results
+playwright-report
+**/playwright-report
+*.log
+
+# Local environment and credentials; retain the public example
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Version-control and editor state
+.git
+.git/**
+.gitignore
+.gitattributes
+.vscode
+**/.vscode
+.idea
+**/.idea
+
+# OS and temporary files
+.DS_Store
+Thumbs.db
+tmp
+**/tmp
+temp
+**/temp

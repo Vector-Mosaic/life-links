@@ -7,6 +7,27 @@ import {
 } from "./activity";
 
 describe("redacted agent activity", () => {
+  it("records image metadata/bytes readiness without asserting model vision or retaining pixels", async () => {
+    const activities: ReturnType<typeof createAgentActivityEntry>[] = [];
+    for (const status of ["described", "bytes_ready"]) {
+      const [tool] = instrumentAgentToolCatalog([{ name: "read_life_link_attachment", description: "test", inputSchema: {},
+        execute: async () => ({ ok: true, lifeLinkId: "life-link-1", status, sourceRevision: "PRIVATE-HASH", image: { mimeType: "image/png", data: "PRIVATE-PIXELS" } }) }], (entry) => activities.push(entry));
+      await tool.execute({ representation: "image" });
+    }
+    expect(agentActivityLabel(activities[0])).toBe("Read attachment image metadata");
+    expect(agentActivityLabel(activities[1])).toBe("Prepared attachment image bytes for the agent");
+    expect(JSON.stringify(activities)).not.toMatch(/PRIVATE|model_seen|image\.data/);
+  });
+
+  it("records an attachment read without retaining its filename, text or warnings", async () => {
+    const activities: ReturnType<typeof createAgentActivityEntry>[] = [];
+    const [tool] = instrumentAgentToolCatalog([{ name: "read_life_link_attachment", description: "test", inputSchema: {},
+      execute: async () => ({ ok: true, lifeLinkId: "life-link-1", fileName: "PRIVATE-FILENAME", text: "PRIVATE-CONTENT", warnings: ["PRIVATE-WARNING"] }) }], (entry) => activities.push(entry));
+    await tool.execute({ lifeLinkId: "life-link-1" });
+    expect(activities[0].affectedLifeLinkIds).toEqual(["life-link-1"]);
+    expect(agentActivityLabel(activities[0])).toBe("Read attachment information");
+    expect(JSON.stringify(activities)).not.toContain("PRIVATE");
+  });
   it("retains only bounded stable IDs and enumerated visible effects", () => {
     const entry = createAgentActivityEntry({
       tool: "update_life_link_content",
@@ -65,5 +86,16 @@ describe("redacted agent activity", () => {
     expect(serialized).not.toContain("Private body");
     expect(serialized).not.toContain("Home /");
     expect(serialized).not.toContain("must not be retained");
+  });
+
+  it("records Collection identity without retaining purpose, Sections, assignments, or private notes", async () => {
+    const activities: ReturnType<typeof createAgentActivityEntry>[] = [];
+    const [tool] = instrumentAgentToolCatalog([{
+      name: "inspect_collection", description: "test", inputSchema: { type: "object" },
+      execute: async () => ({ ok: true, collection: { id: "collection-stable", title: "Private trip", purpose: "Sensitive purpose", notes: "Private notes" }, sections: [{ id: "section-1", title: "Private section" }], members: [{ id: "life-link-1", title: "Private item" }], visibleEffect: "collection_opened" })
+    }], (entry) => activities.push(entry));
+    await tool.execute({ collectionId: "collection-stable", privateInput: "secret input" });
+    expect(activities[0]).toMatchObject({ tool: "inspect_collection", affectedCollectionIds: ["collection-stable"], visibleEffect: "collection_opened", outcome: "succeeded" });
+    expect(JSON.stringify(activities[0])).not.toMatch(/Private|Sensitive|secret|purpose|notes|section-1/);
   });
 });

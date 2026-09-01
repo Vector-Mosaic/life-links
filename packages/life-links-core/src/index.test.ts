@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_QR_BASE_URL,
   buildQrUrl,
-  claimLink,
   createUnclaimedLinks,
   escapeCsvFormula,
   generateSequentialQrIds,
@@ -14,8 +13,7 @@ import {
   parseQrId,
   parseLinkBodyBlocks,
   normalizeLinkBodyDoc,
-  normalizeLinkBodyHref,
-  searchOwnedLinks
+  normalizeLinkBodyHref
 } from "./index";
 
 describe("Life Links core", () => {
@@ -46,41 +44,11 @@ describe("Life Links core", () => {
     expect(DEFAULT_QR_BASE_URL).toBe("http://127.0.0.1:3002");
   });
 
-  it("claims an unclaimed QR idempotently for the same owner", () => {
-    const [link] = createUnclaimedLinks(["LL-DEMO-00001"], "https://lifelinks-vmdemo.com", "2026-04-22T00:00:00.000Z");
-    const first = claimLink([link], link.id, "user-1", "2026-04-22T00:00:01.000Z");
-    const replay = claimLink(first.links, link.id, "user-1", "2026-04-22T00:00:02.000Z");
-    const other = claimLink(replay.links, link.id, "user-2", "2026-04-22T00:00:03.000Z");
-
-    expect(first.result).toBe("claimed");
-    expect(replay.result).toBe("already_owned");
-    expect(other.result).toBe("owned_by_other");
-    expect(other.links[0].ownerId).toBe("user-1");
-  });
-
-  it("honors ownership visibility and project-name matching in owner searches", () => {
-    const links = createUnclaimedLinks(["LL-A-00001", "LL-A-00002"], "https://lifelinks-vmdemo.com").map((link, index) => ({
-      ...link,
-      ownerId: index === 0 ? "user-1" : "user-2",
-      status: "claimed" as const,
-      title: index === 0 ? "Camera bag" : "Desk drawer",
-      projectId: index === 0 ? "project-studio" : "project-office"
-    }));
-    const projects = [
-      { id: "project-studio", ownerId: "user-1", name: "Studio Gear", createdAt: "2026-04-22T00:00:00.000Z" },
-      { id: "project-office", ownerId: "user-2", name: "Office", createdAt: "2026-04-22T00:00:00.000Z" }
-    ];
-
-    expect(searchOwnedLinks(links, "user-1", "camera")).toHaveLength(1);
-    expect(searchOwnedLinks(links, "user-1", "desk")).toHaveLength(0);
-    expect(searchOwnedLinks(links, "user-1", "studio", projects)).toHaveLength(1);
-    expect(searchOwnedLinks(links, "user-1", "office", projects)).toHaveLength(0);
-  });
-
   it("exports CSV rows with quoted content when needed", () => {
     const [link] = createUnclaimedLinks(["LL-DEMO-00001"], "https://lifelinks-vmdemo.com", "2026-04-22T00:00:00.000Z");
     const csv = linksToCsv([{ ...link, title: "Box, shelf", ownerId: "user-1", status: "claimed" }]);
     expect(csv).toContain('"Box, shelf"');
+    expect(csv.split("\n")[0]).toBe("qr_id,url,status,owner_id,title,privacy");
     expect(csv.split("\n")).toHaveLength(2);
   });
 

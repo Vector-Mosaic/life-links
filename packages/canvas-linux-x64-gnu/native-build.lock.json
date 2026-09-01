@@ -1,0 +1,187 @@
+{
+  "schema_version": "life_links.canvas_native_build.v3",
+  "package": {
+    "name": "@napi-rs/canvas-linux-x64-gnu",
+    "version": "0.1.100",
+    "binary": "skia.linux-x64-gnu.node",
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "upstream": {
+    "repository": "https://github.com/Brooooooklyn/canvas.git",
+    "commit": "db337893b9b53483050ca7b24c6d306e4da06741",
+    "tree": "7186ab69c2228f109c5cbe21a4d3b406468c2b41",
+    "license_sha256": "8802fecf9da4367bc23bcf20b21cc143785fc6c92b152f3fa7fbe6ce08d344d6"
+  },
+  "source_derivation": {
+    "schema_version": "life_links.canvas_source_derivation.v1",
+    "base_commit": "db337893b9b53483050ca7b24c6d306e4da06741",
+    "base_tree": "7186ab69c2228f109c5cbe21a4d3b406468c2b41",
+    "backports": [
+      {
+        "origin_commit": "6be5aa2c664dd077513aa8c89a93531cc568adef",
+        "source_path": "src/ctx.rs",
+        "patch_path": "native-build/patches/0001-backport-draw-image-source-napi-3.12.patch",
+        "patch_sha256": "60162360c684e27225636031b5727b6bdf8e736d9ef0b615eb23e13917350298"
+      }
+    ],
+    "effective_tree": "a8286ad26dba37e3f18c50665d0b640006f89b85"
+  },
+  "materials": {
+    "skia_commit": "fe2718df5f53a681087be6f0539045ca1b4b8c09",
+    "depot_tools_commit": "8efa575d754b8703d99b0f827528e45aeaa167aa",
+    "cargo_lock_sha256": "621410be18188a59695d4a2d967ef599dfb73d3881e63075bd15de8759176944",
+    "cargo_registry_mode": "vendored-offline",
+    "skia_dependencies_lock": {
+      "schema_version": "life_links.canvas_skia_materials.v1",
+      "required_git_dependencies": 47,
+      "sha256": "fda57a39ea38893e8fc1d4f260a35bf9aa4cc7057565fa9911101529afa84dd1",
+      "skia_deps_sha256": "d65ff929f8a373ea16b21d45d5489557d51389ba6583a5c9959d5487c02ce965",
+      "gn_sha256": "8fa12442a4d0fc4d754e89ec732aa015cdaf8d4bcbbedf68468c652531ea482c",
+      "path": "native-build/canvas-skia-materials.lock.json",
+      "path_env": "LIFE_LINKS_CANVAS_SKIA_DEPS_LOCK",
+      "sha256_env": "LIFE_LINKS_CANVAS_SKIA_DEPS_LOCK_SHA256"
+    },
+    "normalized_source_tar": {
+      "file": "normalized-canvas-materials.tar",
+      "sha256": "410a39ed4f7a9d8b8f63386d144aec969fec35b88206c51c85948c85af2ac5aa",
+      "size_bytes": 7919534080,
+      "sha256_env": "LIFE_LINKS_CANVAS_NORMALIZED_SOURCE_TAR_SHA256",
+      "size_bytes_env": "LIFE_LINKS_CANVAS_NORMALIZED_SOURCE_TAR_SIZE_BYTES"
+    }
+  },
+  "source_closure": {
+    "schema_version": "life_links.canvas_source_closure_binding.v3",
+    "evidence_scope": "engineering-source-and-notice-applicability",
+    "legal_clearance_claimed": false,
+    "source_materials": {
+      "path": "SOURCE_MATERIALS.json",
+      "sha256": "3918bdf3bbe84459166b38079b0cb9c37bbf3a82f61c7e6b59225f0bcc973850",
+      "sidecar_path": "SOURCE_MATERIALS.json.sha256",
+      "sidecar_sha256": "e4521c3db2f7ae6cfcb44cd6828e9791c92354937344211cd9bf27b83268b68e",
+      "schema_version": "life_links.bc270.source_closure.v1",
+      "captured_file_count": 366,
+      "captured_byte_count": 8694731033
+    },
+    "third_party_notices": {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "ff56de7951485023513a8c35c547e9db4c45573dc4b103dc74a31f9aec378b5b"
+    },
+    "licenses": {
+      "path": "LICENSES",
+      "regular_file_count": 242,
+      "byte_count": 1794346,
+      "content_tree_sha256": "90bbdc49f461b8c31db29937b6e8990dc69b2591c0504a21f544661ee8cb815d"
+    },
+    "applicable_binary": {
+      "sha256": "081f48cae55e9527cdac35f4f22a0165f465d27d442f89ea7a8119aade984894",
+      "size_bytes": 33483200
+    },
+    "normalized_source_tar": {
+      "sha256": "410a39ed4f7a9d8b8f63386d144aec969fec35b88206c51c85948c85af2ac5aa",
+      "size_bytes": 7919534080
+    },
+    "exact_sources_unavailable": []
+  },
+  "retained_build": {
+    "assurance": "one exact offline source build retained for release",
+    "receipt": {
+      "path": "build-receipt.json",
+      "schema_version": "life_links.canvas_native_build_receipt.v3",
+      "sha256": "44f004c2ce5d53f38cbec26c36481ef2d860c829a9d1442b0a3d753346aa98fb"
+    },
+    "historical_native_build_lock_sha256": "528a1a78ec7e7989a08ad71f3697b3c9ad7f3687143a5e8b9d07c9cd7a0ddb97",
+    "binary": {
+      "path": "skia.linux-x64-gnu.node",
+      "sha256": "081f48cae55e9527cdac35f4f22a0165f465d27d442f89ea7a8119aade984894",
+      "size_bytes": 33483200
+    }
+  },
+  "recipe": {
+    "build_offline": {
+      "path": "native-build/build-offline.sh",
+      "sha256": "d43b4a27d8cbe85d65dbccb395f06eda6da28f85fbab10c78448222febf75f19"
+    },
+    "verify_materials": {
+      "path": "native-build/verify-materials.mjs",
+      "sha256": "2e3c947417947963c78f3cf2ff46fc0afd0a60ef9131a0aa80581fed9a215426"
+    },
+    "run_offline_build": {
+      "path": "native-build/run-offline-build.mjs",
+      "sha256": "dc5f127297d4403a58fc6d68de034478b757877770ae2c586e70e239161a3df0"
+    },
+    "qualify_native": {
+      "path": "native-build/qualify-native.mjs",
+      "sha256": "5f819d907cfe305a0d625a4b75671e34fdd629d0ab1935f3bd1795e1c602a2a8"
+    },
+    "smoke_wrapper": {
+      "path": "native-build/smoke-wrapper.mjs",
+      "sha256": "cd23e8bafe1c9bc214a60b815aceabb0229293da51245976c2b309b28f287483"
+    },
+    "verify_package": {
+      "path": "native-build/verify-package.mjs",
+      "sha256": "326be3dda3dbffe5d7215ee0e5e4b808cdce7b4b797868c1cbdf07f834099b0b"
+    },
+    "verify_qualification": {
+      "path": "native-build/verify-qualification.mjs",
+      "sha256": "2bd64dd71ef3d7ea344ac82f1b52651ec13643ecedbb7379ef6166580ddae033"
+    },
+    "wrapper_smoke_project": {
+      "package_path": "native-build/wrapper-smoke/package.json",
+      "package_sha256": "e7418a9a9cc2745eb7c52e569f91d25a7dd1e9b61655d53d5656f21dc22f2daa",
+      "lockfile_path": "native-build/wrapper-smoke/pnpm-lock.yaml",
+      "lockfile_sha256": "1d28fcac2c36c160ed4e8f15dc58b8b82f3fb0af834c333a2b6f540627d30fbe",
+      "pnpm_version": "10.14.0"
+    }
+  },
+  "builder": {
+    "dockerfile": "native-build/builder.Dockerfile",
+    "dockerfile_sha256": "87fdf8469f82c28420b3620aaa0e81f6412c47381bcd4738bb0845d1755f039a",
+    "dockerfile_frontend": "docker.io/docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32",
+    "base_image": "ghcr.io/brooooooklyn/canvas/ubuntu-builder@sha256:1388d2ba01f422282a80919aefc1d53e0d70ccab93b9470a70d55c9e6164a5a0",
+    "rust_toolchain": "1.94.1-x86_64-unknown-linux-gnu",
+    "derived_image": "lifelinks-bc270-canvas-builder@sha256:d85f488f02a64cc0c5ebc5d32dfc89309ab0d90709c7f3eacd8697f7de64a7e7",
+    "derived_image_archive": {
+      "file": "lifelinks-bc270-canvas-builder-rust-1.94.1-amd64-sha256-d85f488f02a64cc0.tar",
+      "sha256": "e81954c45b90d74e5e91cff93c5c2a59e04ad2a82c714960c60a1f6e29199ebb",
+      "size_bytes": 1787529728
+    },
+    "derived_image_identity_env": "LIFE_LINKS_CANVAS_BUILDER_IMAGE_IDENTITY",
+    "derived_image_identity_format": "<repository>@sha256:<64 lowercase hex characters>"
+  },
+  "reproducibility": {
+    "source_date_epoch": 1777169498,
+    "network": "none",
+    "required_builds": 2,
+    "required_comparison": "byte-identical native binary and exact ordered Skia static archives",
+    "required_skia_static_archives": [
+      "libbentleyottmann.a",
+      "libbrotli.a",
+      "libcompression_utils_portable.a",
+      "libexpat.a",
+      "libfreetype2.a",
+      "libharfbuzz.a",
+      "libhighway.a",
+      "libicu.a",
+      "libjpeg.a",
+      "libjpeg12.a",
+      "libjpeg16.a",
+      "libjsonreader.a",
+      "libjxl.a",
+      "libpng.a",
+      "libskcms.a",
+      "libskia.a",
+      "libskottie.a",
+      "libskparagraph.a",
+      "libskresources.a",
+      "libsksg.a",
+      "libskshaper.a",
+      "libskunicode_core.a",
+      "libskunicode_icu.a",
+      "libsvg.a",
+      "libwebp.a",
+      "libwebp_sse41.a",
+      "libwuffs.a",
+      "libzlib.a"
+    ]
+  }
+}

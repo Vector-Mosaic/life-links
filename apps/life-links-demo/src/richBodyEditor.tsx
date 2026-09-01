@@ -26,6 +26,7 @@ type RichBodyEditorProps = {
   value: LinkBodyDoc | null | undefined;
   fallbackBody: string;
   disabled?: boolean;
+  label?: string;
   onChange: (next: { body: string; bodyDoc: LinkBodyDoc; bodyDocVersion: number }) => void;
 };
 
@@ -79,7 +80,7 @@ const SlashCommand = Extension.create({
   }
 });
 
-export function RichBodyEditor({ contentKey, value, fallbackBody, disabled = false, onChange }: RichBodyEditorProps) {
+export function RichBodyEditor({ contentKey, value, fallbackBody, disabled = false, label = "Body", onChange }: RichBodyEditorProps) {
   const lastContentKey = useRef(contentKey);
   const initialContent = useMemo(() => value ?? createLinkBodyDocFromPlainText(fallbackBody), [contentKey, fallbackBody, value]);
   const [bodyLength, setBodyLength] = useState(() => plainTextLength(initialContent));
@@ -115,7 +116,7 @@ export function RichBodyEditor({ contentKey, value, fallbackBody, disabled = fal
     editorProps: {
       attributes: {
         class: "rich-body-editor-surface",
-        "aria-label": "Body"
+        "aria-label": label
       },
       transformPastedHTML: cleanPastedHtml,
       transformPastedText: cleanPastedText,

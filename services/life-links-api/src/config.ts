@@ -2,11 +2,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { DEFAULT_QR_BASE_URL } from "@life-links/core";
+import { attachmentRuntime, type AttachmentNativeRuntime } from "./attachment-native-runtime.js";
 
 export type StoreMode = "postgres" | "memory";
 export type SeedProfile = "legacy-demo" | "competition";
 
 export type LifeLinksConfig = {
+  attachmentRuntime?: AttachmentNativeRuntime;
   host: string;
   port: number;
   env: string;
@@ -82,6 +84,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
   }
 
   return {
+    attachmentRuntime: attachmentRuntime(env),
     host: env.HOST ?? "0.0.0.0",
     port: Number(env.PORT ?? "3002"),
     env: runtimeEnv,

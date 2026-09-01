@@ -75,6 +75,7 @@ function node(index: number): LifeLinkSummary {
     qrId: null,
     title: `Level ${index}`,
     privacy: "private",
+    browsingRole: index < 50 ? "container" : "item",
     updatedAt: "2026-08-26T00:00:00.000Z",
     childCount: index < 50 ? 1 : 0
   };

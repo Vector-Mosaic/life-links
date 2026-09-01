@@ -59,7 +59,8 @@ export function AgentAccessPanel({
 
       <div className="agent-access-scope">
         <p className="agent-access-scope-item allowed">
-          <strong>Available now:</strong> inspect, search, navigate, update Life Link content, and start Find Mode.
+          <strong>Your agent can:</strong> find and open Life Links; create, move, and edit folders and items;
+          manage QR codes and public fields; organize Collections and Sections; read supported attachment text; and start Find Mode.
         </p>
         <p className="agent-access-scope-item connection">
           <strong>One connection:</strong> saved to your account until you explicitly disconnect it.

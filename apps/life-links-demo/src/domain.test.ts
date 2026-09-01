@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildQrUrl,
-  claimLink,
   createUnclaimedLinks,
   escapeCsvFormula,
   generateSequentialQrIds,
@@ -33,18 +32,6 @@ describe("Life Links domain", () => {
     const url = buildQrUrl("https://lifelinks-vmdemo.com/", "LL-DEMO-00001");
     expect(url).toBe("https://lifelinks-vmdemo.com/qr/LL-DEMO-00001");
     expect(parseQrId(url)).toBe("LL-DEMO-00001");
-  });
-
-  it("claims an unclaimed QR idempotently for the same owner", () => {
-    const [link] = createUnclaimedLinks(["LL-DEMO-00001"], "https://lifelinks-vmdemo.com", "2026-04-22T00:00:00.000Z");
-    const first = claimLink([link], link.id, "user-1", "2026-04-22T00:00:01.000Z");
-    const replay = claimLink(first.links, link.id, "user-1", "2026-04-22T00:00:02.000Z");
-    const other = claimLink(replay.links, link.id, "user-2", "2026-04-22T00:00:03.000Z");
-
-    expect(first.result).toBe("claimed");
-    expect(replay.result).toBe("already_owned");
-    expect(other.result).toBe("owned_by_other");
-    expect(other.links[0].ownerId).toBe("user-1");
   });
 
   it("exports CSV rows with quoted content when needed", () => {

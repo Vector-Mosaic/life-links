@@ -49,6 +49,7 @@ async function main() {
         profile: COMPETITION_FIXTURE_PROFILE,
         mode: report.mode,
         applied: report.applied,
+        shapeMatchesExpected: report.shapeMatchesExpected,
         environment_ref: shortHash(authorized.environmentId),
         owner_ref: shortHash(authorized.ownerId),
         before: report.before,

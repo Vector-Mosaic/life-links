@@ -5,7 +5,6 @@ import {
   DEFAULT_LIFE_LINK_PRIVACY,
   DEFAULT_LIFE_LINK_SEARCH_LIMIT,
   DEFAULT_LIFE_LINK_TITLE,
-  EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT,
   LEGACY_LIFE_LINK_ID_PREFIX,
   MAX_LIFE_LINK_BODY_SUMMARY_LENGTH,
   MAX_LIFE_LINK_CHILD_PAGE_LIMIT,
@@ -14,7 +13,6 @@ import {
   MAX_LIFE_LINK_SOURCE_REFERENCE_COUNT,
   MAX_LIFE_LINK_TOOL_OUTPUT_BYTES,
   MAX_LIFE_LINK_TOOL_SEARCH_RESULTS,
-  REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT,
   LifeLinkDomainError,
   assertLifeLinkToolOutputWithinBounds,
   assertLifeLinkMediaBytes,
@@ -24,17 +22,13 @@ import {
   createCanonicalLifeLink,
   deriveLifeLinkPhysicalLocator,
   deriveLifeLinkPath,
-  deriveProjectCompatibilityId,
   formatRecordedLifeLinkPath,
   listLifeLinkChildren,
-  mapLegacyLifeLinksSnapshot,
   mapLegacyLinkToLifeLinkId,
-  mapLegacyProjectToLifeLinkId,
   normalizeLifeLinkChildPageLimit,
   normalizeLifeLinkSearchLimit,
   pageLifeLinkChildren,
   projectLifeLinkAsLink,
-  projectLifeLinkAsProject,
   projectPrivateClaimedQrAsLink,
   projectQrInventoryRecord,
   projectUnclaimedQrAsLink,
@@ -66,26 +60,6 @@ function lifeLink(
   };
 }
 
-function hydrateMigratedLifeLinks(): LifeLinkRecord[] {
-  const migrated = mapLegacyLifeLinksSnapshot(REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT);
-  const bindingByLifeLinkId = new Map(migrated.qrBindings.map((binding) => [binding.lifeLinkId, binding]));
-  return migrated.lifeLinks.map((record) => {
-    const binding = bindingByLifeLinkId.get(record.id);
-    return {
-      ...record,
-      qrId: binding?.qrId ?? null,
-      media: migrated.linkMedia
-        .filter((media) => media.lifeLinkId === record.id)
-        .map(({ data: _data, ...media }) => ({
-          ...media,
-          url: binding
-            ? `/api/links/${encodeURIComponent(binding.qrId)}/media/${encodeURIComponent(media.id)}`
-            : `/api/life-links/${encodeURIComponent(record.id)}/media/${encodeURIComponent(media.id)}`
-        }))
-    };
-  });
-}
-
 describe("canonical recursive Life Link contract", () => {
   it("creates an untagged private root with coordinated body defaults", () => {
     const record = createCanonicalLifeLink({ id: "life-link-1", ownerId: "owner-alpha", createdAt: NOW });
@@ -100,6 +74,10 @@ describe("canonical recursive Life Link contract", () => {
       bodyDoc: { type: "doc", content: [] },
       bodyDocVersion: 1,
       privacy: DEFAULT_LIFE_LINK_PRIVACY,
+      browsingRole: "item",
+      context: { schemaVersion: 1 },
+      placementConfirmedAt: null,
+      publicFieldKeys: [],
       media: [],
       createdAt: NOW,
       updatedAt: NOW
@@ -141,7 +119,6 @@ describe("canonical recursive Life Link contract", () => {
   });
 
   it("keeps Life Link identity independent from immutable QR identity", () => {
-    expect(mapLegacyProjectToLifeLinkId("project-studio")).toBe("project-studio");
     expect(mapLegacyLinkToLifeLinkId("LL-MIG-00001")).toBe(`${LEGACY_LIFE_LINK_ID_PREFIX}LL-MIG-00001`);
     expect(mapLegacyLinkToLifeLinkId("LL-MIG-00001")).not.toBe("LL-MIG-00001");
   });
@@ -354,110 +331,18 @@ describe("canonical recursive Life Link contract", () => {
     );
   });
 
-  it("maps the reviewed legacy fixture deterministically without inferred structure", () => {
-    const migrated = mapLegacyLifeLinksSnapshot(REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT);
-
-    expect(migrated).toEqual(EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT);
-    expect(mapLegacyLifeLinksSnapshot(REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT)).toEqual(migrated);
-    expect(migrated.lifeLinks).toHaveLength(
-      REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT.projects.length +
-        REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT.links.length
-    );
-    expect(migrated.qrBindings).toHaveLength(REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT.links.length);
-    expect(migrated.qrBindings.some((binding) => binding.qrId === "LL-MIG-00005")).toBe(false);
-    expect(migrated.lifeLinks.find((item) => item.id === mapLegacyLinkToLifeLinkId("LL-MIG-00001"))?.parentId).toBe(
-      "project-studio"
-    );
-    expect(
-      migrated.lifeLinks.find((item) => item.id === mapLegacyLinkToLifeLinkId("LL-MIG-00003"))?.parentId
-    ).toBeNull();
-    expect(new Set(migrated.lifeLinks.filter((item) => item.title === "Battery Kit").map((item) => item.id)).size).toBe(4);
-  });
-
-  it("derives legacy Project, Link, and QR DTOs from canonical records", () => {
-    const migrated = mapLegacyLifeLinksSnapshot(REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT);
-    const hydrated = hydrateMigratedLifeLinks();
-    const projectRoot = hydrated.find((item) => item.id === "project-studio")!;
-    const marker = migrated.projectCompatibility.find((item) => item.projectId === "project-studio")!;
-    const tagged = hydrated.find((item) => item.qrId === "LL-MIG-00001")!;
-    const qr = migrated.qrInventory.find((item) => item.id === tagged.qrId)!;
-    const binding = migrated.qrBindings.find((item) => item.qrId === qr.id)!;
-
-    expect(projectLifeLinkAsProject(projectRoot, marker)).toEqual({
-      id: "project-studio",
-      ownerId: "owner-alpha",
-      name: "Studio",
-      createdAt: "2026-08-20T10:05:00.000Z"
+  it("projects QR views without exposing hierarchy metadata", () => {
+    const tagged = lifeLink("stored-pad", { qrId: "LL-MIG-00001", body: "Owner notes" });
+    const qr = { id: tagged.qrId!, url: "https://example.test/qr/LL-MIG-00001", batchId: null, createdAt: NOW };
+    const binding = { qrId: qr.id, lifeLinkId: tagged.id, boundAt: NOW };
+    const ownerProjection = projectLifeLinkAsLink(tagged, qr);
+    expect(ownerProjection).toMatchObject({ id: qr.id, ownerId: "owner-alpha", status: "claimed" });
+    expect(ownerProjection).not.toHaveProperty("projectId");
+    expect(redactNonOwnerLinkProjection(ownerProjection)).toMatchObject({ ownerId: null, media: [] });
+    expect(projectQrInventoryRecord(qr, binding)).toMatchObject({ status: "claimed", claimedAt: NOW });
+    expect(projectUnclaimedQrAsLink(qr)).toMatchObject({ status: "unclaimed", ownerId: null, title: "" });
+    expect(projectPrivateClaimedQrAsLink(qr)).toMatchObject({
+      status: "claimed", ownerId: null, privacy: "private", title: "", body: "", media: []
     });
-    expect(deriveProjectCompatibilityId(hydrated, migrated.projectCompatibility, tagged.id)).toBe(
-      "project-studio"
-    );
-    const ownerProjection = projectLifeLinkAsLink(tagged, qr, "project-studio");
-    expect(ownerProjection).toMatchObject({
-      id: "LL-MIG-00001",
-      status: "claimed",
-      ownerId: "owner-alpha",
-      projectId: "project-studio",
-      media: [{ qrId: "LL-MIG-00001" }]
-    });
-    expect(redactNonOwnerLinkProjection(ownerProjection)).toMatchObject({
-      ownerId: null,
-      projectId: null,
-      media: [{ ownerId: null }]
-    });
-    expect(projectQrInventoryRecord(qr, binding)).toMatchObject({ status: "claimed", claimedAt: binding.boundAt });
-
-    const unclaimedQr = migrated.qrInventory.find((item) => item.id === "LL-MIG-00005")!;
-    expect(projectUnclaimedQrAsLink(unclaimedQr)).toMatchObject({
-      id: "LL-MIG-00005",
-      status: "unclaimed",
-      ownerId: null,
-      projectId: null,
-      privacy: "public"
-    });
-    expect(projectPrivateClaimedQrAsLink(unclaimedQr)).toMatchObject({
-      id: "LL-MIG-00005",
-      status: "claimed",
-      ownerId: null,
-      projectId: null,
-      title: "",
-      body: "",
-      privacy: "private",
-      media: []
-    });
-  });
-
-  it("rejects a legacy owner mismatch instead of inferring a different parent", () => {
-    const badFixture = structuredClone(REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT);
-    badFixture.links[0].ownerId = "owner-beta";
-
-    expect(() => mapLegacyLifeLinksSnapshot(badFixture)).toThrowError(
-      expect.objectContaining<Partial<LifeLinkDomainError>>({ code: "invalid_parent", reason: "cross_owner" })
-    );
-  });
-
-  it("rejects malformed legacy QR, media, and deterministic identity state", () => {
-    const mismatchedQr = structuredClone(REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT);
-    mismatchedQr.qrCodes[0].status = "unclaimed";
-    expect(() => mapLegacyLifeLinksSnapshot(mismatchedQr)).toThrowError(
-      expect.objectContaining({ code: "invalid_life_link", reason: "qr_status_mismatch" })
-    );
-
-    const mismatchedMedia = structuredClone(REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT);
-    mismatchedMedia.linkMedia[0].ownerId = "owner-beta";
-    expect(() => mapLegacyLifeLinksSnapshot(mismatchedMedia)).toThrowError(
-      expect.objectContaining({ code: "invalid_life_link", reason: "media_owner_mismatch" })
-    );
-
-    const collision = structuredClone(REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT);
-    collision.projects.push({
-      id: mapLegacyLinkToLifeLinkId("LL-MIG-00001"),
-      ownerId: "owner-alpha",
-      name: "Collision",
-      createdAt: NOW
-    });
-    expect(() => mapLegacyLifeLinksSnapshot(collision)).toThrowError(
-      expect.objectContaining({ code: "duplicate_life_link_id" })
-    );
   });
 });

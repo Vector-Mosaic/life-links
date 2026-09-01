@@ -5,6 +5,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "contract:generate": "pnpm --workspace-root exec vite-node --script apps/life-links-demo/tools/webmcp-contract-snapshot.ts generate",
+    "contract:check": "pnpm --workspace-root exec vite-node --script apps/life-links-demo/tools/webmcp-contract-snapshot.ts check",
     "dev": "pnpm --filter @life-links/core build && vite --host 127.0.0.1 --port 5174",
     "build": "pnpm --filter @life-links/core build && tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4174",
@@ -39,6 +41,7 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^4.5.0",
+    "ajv": "6.12.6",
     "typescript": "~5.8.3",
     "vite": "^6.3.0",
     "vitest": "^3.2.4",

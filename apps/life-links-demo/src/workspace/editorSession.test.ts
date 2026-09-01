@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createLinkBodyDocFromPlainText } from "@life-links/core";
+import { createCanonicalLifeLink, createLinkBodyDocFromPlainText } from "@life-links/core";
 
 import {
   canonicalLifeLinkDraftKey,
+  canonicalLifeLinkEditorPatchIsDirty,
+  canonicalLifeLinkEditorStateFromRecord,
   clearCanonicalLifeLinkDraft,
   linkEditorDraftKey,
   readCanonicalLifeLinkDraft,
-  writeCanonicalLifeLinkDraft,
-  writeLinkEditorDraft
+  writeCanonicalLifeLinkDraft
 } from "./editorSession";
 
 describe("canonical Life Link draft recovery", () => {
@@ -24,13 +25,12 @@ describe("canonical Life Link draft recovery", () => {
 
   it("migrates a compatible QR-keyed draft exactly once under stable Life Link identity", () => {
     const bodyDoc = createLinkBodyDocFromPlainText("Recovered note");
-    writeLinkEditorDraft("LL-DEMO-00001", "2026-08-26T00:00:00.000Z", {
+    seedEarlierDraft("LL-DEMO-00001", "2026-08-26T00:00:00.000Z", {
       title: "Recovered",
       body: "Recovered note",
       bodyDoc,
       bodyDocVersion: 1,
-      privacy: "private",
-      projectId: "project-old"
+      privacy: "private"
     });
 
     expect(
@@ -59,13 +59,12 @@ describe("canonical Life Link draft recovery", () => {
   });
 
   it("ignores a stale legacy draft instead of offering it for canonical restore", () => {
-    writeLinkEditorDraft("LL-DEMO-00001", "2026-08-25T00:00:00.000Z", {
+    seedEarlierDraft("LL-DEMO-00001", "2026-08-25T00:00:00.000Z", {
       title: "Stale legacy draft",
       body: "Old body",
       bodyDoc: createLinkBodyDocFromPlainText("Old body"),
       bodyDocVersion: 1,
-      privacy: "private",
-      projectId: null
+      privacy: "private"
     });
 
     expect(
@@ -76,13 +75,12 @@ describe("canonical Life Link draft recovery", () => {
   });
 
   it("does not migrate a legacy draft without the current QR binding", () => {
-    writeLinkEditorDraft("LL-DEMO-00001", "2026-08-26T00:00:00.000Z", {
+    seedEarlierDraft("LL-DEMO-00001", "2026-08-26T00:00:00.000Z", {
       title: "Bound elsewhere",
       body: "Body",
       bodyDoc: createLinkBodyDocFromPlainText("Body"),
       bodyDocVersion: 1,
-      privacy: "private",
-      projectId: null
+      privacy: "private"
     });
 
     expect(
@@ -100,7 +98,7 @@ describe("canonical Life Link draft recovery", () => {
       privacy: "private" as const
     };
     writeCanonicalLifeLinkDraft("life-link-1", "2026-08-26T00:00:00.000Z", patch);
-    writeLinkEditorDraft("LL-DEMO-00001", "2026-08-26T00:00:00.000Z", { ...patch, projectId: null });
+    seedEarlierDraft("LL-DEMO-00001", "2026-08-26T00:00:00.000Z", patch);
 
     expect(
       readCanonicalLifeLinkDraft("life-link-1", "LL-DEMO-00001", "2026-08-26T01:00:00.000Z")?.patch.title
@@ -109,7 +107,25 @@ describe("canonical Life Link draft recovery", () => {
     expect(storage.getItem(canonicalLifeLinkDraftKey("life-link-1"))).toBeNull();
     expect(storage.getItem(linkEditorDraftKey("LL-DEMO-00001"))).toBeNull();
   });
+
+  it("recovers structured context with the same immutable editor revision and detects context-only edits", () => {
+    const lifeLink = createCanonicalLifeLink({ id: "life-link-1", ownerId: "owner-1", createdAt: "2026-08-26T00:00:00.000Z", title: "Pad" });
+    const initial = canonicalLifeLinkEditorStateFromRecord(lifeLink);
+    expect(canonicalLifeLinkEditorPatchIsDirty(lifeLink, initial)).toBe(false);
+    const patch = { ...initial, context: { schemaVersion: 1 as const, experience: { text: "Cold through the ground", truthState: "owner_reported" as const } }, publicFieldKeys: ["experience" as const] };
+    expect(canonicalLifeLinkEditorPatchIsDirty(lifeLink, patch)).toBe(true);
+    writeCanonicalLifeLinkDraft(lifeLink.id, lifeLink.updatedAt, patch);
+    expect(readCanonicalLifeLinkDraft(lifeLink.id, null, "newer-revision")).toMatchObject({
+      lifeLinkUpdatedAt: lifeLink.updatedAt, patch
+    });
+  });
 });
+
+function seedEarlierDraft(qrId: string, linkUpdatedAt: string, patch: unknown) {
+  window.localStorage.setItem(linkEditorDraftKey(qrId), JSON.stringify({
+    version: 1, qrId, linkUpdatedAt, savedAt: linkUpdatedAt, patch
+  }));
+}
 
 class MemoryStorage {
   private readonly values = new Map<string, string>();

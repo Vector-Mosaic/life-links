@@ -43,7 +43,7 @@ describe("browser WebMCP host", () => {
     expect(getBrowserWebMcpHost({ modelContext: {} })).toEqual({ status: "unsupported" });
   });
 
-  it("accepts exactly the canonical five tools and orders them deterministically", () => {
+  it("accepts exactly the canonical tools and orders them deterministically", () => {
     const validation = validateLifeLinksPageToolCatalog(makeCatalog());
     expect(validation.ok).toBe(true);
     if (!validation.ok) {
@@ -57,6 +57,7 @@ describe("browser WebMCP host", () => {
       ok: false,
       error: { code: "invalid_tool_catalog", retryable: false }
     });
+    expect(validateLifeLinksPageToolCatalog(makeCatalog().filter((tool) => new Set<string>(LIFE_LINKS_PAGE_TOOL_NAMES.slice(0, 5)).has(tool.name)))).toMatchObject({ ok: false, error: { code: "invalid_tool_catalog" } });
     expect(
       validateLifeLinksPageToolCatalog([
         ...makeCatalog().slice(0, 4),
@@ -68,7 +69,7 @@ describe("browser WebMCP host", () => {
     });
   });
 
-  it("registers all five directly with document.modelContext and one lifecycle signal", async () => {
+  it("registers the complete catalog directly with document.modelContext and one lifecycle signal", async () => {
     const modelContext = new RecordingModelContext();
     const resolution = getBrowserWebMcpHost({ modelContext });
     expect(resolution.status).toBe("supported");
@@ -86,7 +87,7 @@ describe("browser WebMCP host", () => {
     expect(modelContext.registrations.map(({ definition }) => definition.name)).toEqual(
       LIFE_LINKS_PAGE_TOOL_NAMES
     );
-    expect(modelContext.registrations).toHaveLength(5);
+    expect(modelContext.registrations).toHaveLength(14);
     expect(
       new Set(modelContext.registrations.map(({ options }) => options?.signal))
     ).toEqual(new Set([controller.signal]));

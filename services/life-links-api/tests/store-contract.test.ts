@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   COMPETITION_CAMPING_KIT_ID,
+  COMPETITION_CAMPING_COLLECTION_ID,
+  COMPETITION_SECTION_IDS,
+  COMPETITION_SLEEPING_PAD_ID,
   COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
   COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_PUBLIC_BODY,
   COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
@@ -12,16 +15,21 @@ import {
   COMPETITION_START_LIFE_LINK_ID,
   COMPETITION_TARGET_QR_ID,
   DEFAULT_QR_BASE_URL,
+  DEMO_GUEST_ID,
   DEMO_OWNER_ID,
   DEMO_PASSWORD,
   LifeLinkDomainError,
-  MAX_PROJECT_NAME_LENGTH
 } from "@life-links/core";
 
 import { ClaimIdempotencyConflictError, InMemoryLifeLinksStore } from "../src/store.js";
+import { fieldLedgerStoreContract } from "./field-ledger-contract.js";
+import { changeHistoryStoreContract } from "./change-history-contract.js";
 
 describe("canonical Life Links store contract", () => {
   let store: InMemoryLifeLinksStore;
+
+  fieldLedgerStoreContract(() => store);
+  changeHistoryStoreContract(() => store);
 
   beforeEach(async () => {
     store = new InMemoryLifeLinksStore();
@@ -78,6 +86,7 @@ describe("canonical Life Links store contract", () => {
       ownerId: COMPETITION_OWNER_ID,
       mode: "dry-run",
       applied: false,
+      shapeMatchesExpected: false,
       before: { users: 0, lifeLinks: 0, sessions: 0 },
       after: { users: 0, lifeLinks: 0, sessions: 0 },
       expected: { users: 1, lifeLinks: 60, qrBindings: 8, qrCodes: 8, batches: 1 }
@@ -87,7 +96,10 @@ describe("canonical Life Links store contract", () => {
       sessions: 0,
       lifeLinks: 60,
       qrBindings: 8,
-      projectCompatibility: 1,
+      collections: 1,
+      collectionSections: 5,
+      collectionMemberships: 48,
+      collectionSectionAssignments: 52,
       media: 0,
       batches: 1,
       qrCodes: 8,
@@ -97,22 +109,32 @@ describe("canonical Life Links store contract", () => {
 
     const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(firstApply.after).toEqual(firstApply.expected);
+    expect(firstApply.shapeMatchesExpected).toBe(true);
+    expect((await store.resetCompetitionFixture(options)).shapeMatchesExpected).toBe(true);
+    expect((await store.resetCompetitionFixture({ ...options, password: "wrong-password" })).shapeMatchesExpected).toBe(false);
+    expect((await store.listCollectionMembers(COMPETITION_OWNER_ID, COMPETITION_CAMPING_COLLECTION_ID, { limit: 100 }))?.items).toHaveLength(48);
+    expect((await store.listCollectionSections(COMPETITION_OWNER_ID, COMPETITION_CAMPING_COLLECTION_ID, { limit: 100 }))?.items.map((item) => item.title)).toEqual([
+      "Family sleep systems", "Shelter", "Camp kitchen", "Cycling kit", "Next-year upgrades"
+    ]);
+    expect((await store.listLifeLinkCollectionMemberships(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_PAD_ID))?.items[0].sections.map((item) => item.id)).toEqual([
+      COMPETITION_SECTION_IDS.familySleepSystems, COMPETITION_SECTION_IDS.nextYearUpgrades
+    ]);
     expect((await store.getUserById(COMPETITION_OWNER_ID))?.agentConnectedAt).toBeNull();
     const connectedAt = (await store.connectAgent(COMPETITION_OWNER_ID))?.agentConnectedAt;
     expect(connectedAt).toEqual(expect.any(String));
     const start = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_START_LIFE_LINK_ID);
     expect(start?.ancestry.items.map((item) => item.title)).toEqual([
       COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
-      "Basement Gear Storage",
+      "Storage wall",
       COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE
     ]);
     expect(start?.lifeLink).toMatchObject({ qrId: COMPETITION_TARGET_QR_ID, privacy: "public" });
     const sleepingBag = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID);
     expect(sleepingBag?.ancestry.items.map((item) => item.title)).toEqual([
       COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
-      "Basement Gear Storage",
+      "Storage wall",
       COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
-      "Adult Two Sleep System",
+      "Adult Two Sleep Bag",
       "Camping Sleeping Bag"
     ]);
     expect(sleepingBag?.lifeLink).toMatchObject({ qrId: COMPETITION_SLEEPING_BAG_QR_ID, privacy: "public" });
@@ -123,9 +145,9 @@ describe("canonical Life Links store contract", () => {
       viewerIsOwner: false,
       link: {
         ownerId: null,
-        projectId: null,
         title: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
-        body: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_PUBLIC_BODY
+        body: "",
+        context: { schemaVersion: 1, summary: { text: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_PUBLIC_BODY, truthState: "owner_reported" } }
       }
     });
     expect(JSON.stringify(publicState)).not.toMatch(/low-R|Adult Two|working bag|cold through|upgrade|\$250/i);
@@ -133,7 +155,7 @@ describe("canonical Life Links store contract", () => {
     expect(ownerState).toMatchObject({
       state: "claimed",
       viewerIsOwner: true,
-      link: { ownerId: COMPETITION_OWNER_ID, projectId: COMPETITION_CAMPING_KIT_ID }
+      link: { ownerId: COMPETITION_OWNER_ID }
     });
 
     await store.createSession(
@@ -157,6 +179,7 @@ describe("canonical Life Links store contract", () => {
 
     const driftDryRun = await store.resetCompetitionFixture(options);
     expect(driftDryRun.applied).toBe(false);
+    expect(driftDryRun.shapeMatchesExpected).toBe(false);
     expect(driftDryRun.after).toEqual(driftDryRun.before);
     expect((await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID))?.lifeLink.title).toBe(
       "Drifted battery kit"
@@ -178,6 +201,18 @@ describe("canonical Life Links store contract", () => {
     expect(replay.after).toEqual(replay.expected);
     expect((await store.getUserById(COMPETITION_OWNER_ID))?.agentConnectedAt).toBe(connectedAt);
 
+    const collection = await store.getCollection(COMPETITION_OWNER_ID, COMPETITION_CAMPING_COLLECTION_ID);
+    await store.updateCollection(COMPETITION_OWNER_ID, {
+      collectionId: COMPETITION_CAMPING_COLLECTION_ID, expectedUpdatedAt: collection!.updatedAt,
+      patch: { title: "Same-count Collection drift" }
+    });
+    const sameCountDrift = await store.resetCompetitionFixture(options);
+    expect(sameCountDrift.before).toEqual(sameCountDrift.expected);
+    expect(sameCountDrift.after).toEqual(sameCountDrift.before);
+    expect(sameCountDrift.shapeMatchesExpected).toBe(false);
+    expect((await store.getCollection(COMPETITION_OWNER_ID, COMPETITION_CAMPING_COLLECTION_ID))?.title).toBe("Same-count Collection drift");
+    expect((await store.resetCompetitionFixture({ ...options, mode: "apply" })).shapeMatchesExpected).toBe(true);
+
     const foreignBatch = await store.createQrBatch(DEMO_OWNER_ID, 1, options.qrBaseUrl);
     const foreignQrId = foreignBatch.qrCodes[0].id;
     const foreignQrTarget = await store.createLifeLink({
@@ -198,7 +233,6 @@ describe("canonical Life Links store contract", () => {
       id: foreignQrId,
       status: "claimed",
       ownerId: null,
-      projectId: null,
       title: "",
       body: "",
       privacy: "private",
@@ -272,9 +306,11 @@ describe("canonical Life Links store contract", () => {
       parentId: child.id,
       createdAt
     });
+    const currentChild = (await store.getLifeLinkDetail(DEMO_OWNER_ID, child.id))!.lifeLink;
+    const currentRoot = (await store.getLifeLinkDetail(DEMO_OWNER_ID, root.id))!.lifeLink;
     const updated = await store.updateLifeLink(DEMO_OWNER_ID, {
       lifeLinkId: child.id,
-      expectedUpdatedAt: child.updatedAt,
+      expectedUpdatedAt: currentChild.updatedAt,
       patch: { title: "Updated" }
     });
     expect(updated?.updatedAt).not.toBe(child.updatedAt);
@@ -296,7 +332,7 @@ describe("canonical Life Links store contract", () => {
       store.moveLifeLink(DEMO_OWNER_ID, {
         lifeLinkId: root.id,
         parentId: child.id,
-        expectedUpdatedAt: root.updatedAt
+        expectedUpdatedAt: currentRoot.updatedAt
       })
     ).rejects.toMatchObject({ code: "hierarchy_cycle" });
     await expect(
@@ -317,7 +353,7 @@ describe("canonical Life Links store contract", () => {
       store.moveLifeLink(DEMO_OWNER_ID, {
         lifeLinkId: root.id,
         parentId: root.id,
-        expectedUpdatedAt: root.updatedAt
+        expectedUpdatedAt: currentRoot.updatedAt
       })
     ).rejects.toMatchObject({ code: "invalid_parent", reason: "self_parent" });
   });
@@ -374,41 +410,29 @@ describe("canonical Life Links store contract", () => {
     ).rejects.toMatchObject({ code: "life_link_already_tagged" });
   });
 
-  it("keeps Projects as bounded compatibility markers and prevents nested flattening", async () => {
-    await expect(store.createProject(DEMO_OWNER_ID, "x".repeat(MAX_PROJECT_NAME_LENGTH + 1))).rejects.toBeInstanceOf(
-      LifeLinkDomainError
-    );
-    const root = await store.createLifeLink({
-      id: "plain-root",
-      ownerId: DEMO_OWNER_ID,
-      title: "Plain root",
-      createdAt: "2026-08-25T12:00:00.000Z"
+  it("treats former marked roots as ordinary movable Life Links", async () => {
+    const root = (await store.getLifeLinkDetail(DEMO_OWNER_ID, "project-studio"))!.lifeLink;
+    const parent = (await store.getLifeLinkDetail(DEMO_OWNER_ID, "project-home"))!.lifeLink;
+    const renamed = await store.updateLifeLink(DEMO_OWNER_ID, {
+      lifeLinkId: root!.id, expectedUpdatedAt: root!.updatedAt, patch: { title: "x".repeat(100) }
     });
-    const nested = await store.createLifeLink({
-      id: "nested",
-      ownerId: DEMO_OWNER_ID,
-      parentId: root.id,
-      title: "Nested",
-      createdAt: "2026-08-25T12:00:00.000Z"
+    expect(renamed?.title).toHaveLength(100);
+    const moved = await store.moveLifeLink(DEMO_OWNER_ID, {
+      lifeLinkId: root!.id, expectedUpdatedAt: renamed!.updatedAt, parentId: parent!.id
     });
-    const batch = await store.createQrBatch(DEMO_OWNER_ID, 1, DEFAULT_QR_BASE_URL);
-    const qrId = batch.qrCodes[0].id;
-    await store.claimQr(qrId, DEMO_OWNER_ID, {
-      commandId: "attach-nested",
-      mode: "attach",
-      lifeLinkId: nested.id
-    });
-    await expect(store.updateLink(DEMO_OWNER_ID, qrId, { projectId: "project-home" })).rejects.toMatchObject({
-      code: "invalid_parent",
-      reason: "legacy_nested"
-    });
+    expect(moved?.parentId).toBe(parent!.id);
+    expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, "legacy-life-link:LL-DEMO-00002"))?.lifeLink.parentId).toBe(root!.id);
   });
 
-  it("uses canonical media ownership while preserving QR media projections", async () => {
+  it.each([
+    { kind: "image" as const, mimeType: "image/png", fileName: "photo.png", data: Buffer.from("photo") },
+    { kind: "document" as const, mimeType: "text/plain", fileName: "gear-notes.txt", data: Buffer.from("Gear\tNotes\r\nSleeping bag\tCafé – warm\r\n", "utf8") }
+  ])("uses canonical $kind attachment ownership, exact bytes and reversible changes while preserving QR projections", async (input) => {
     const target = await store.createLifeLink({
       id: "media-target",
       ownerId: DEMO_OWNER_ID,
       title: "Media target",
+      privacy: "public",
       createdAt: "2026-08-25T12:00:00.000Z"
     });
     const batch = await store.createQrBatch(DEMO_OWNER_ID, 1, DEFAULT_QR_BASE_URL);
@@ -418,17 +442,34 @@ describe("canonical Life Links store contract", () => {
       mode: "attach",
       lifeLinkId: target.id
     });
-    const media = await store.createLinkMedia(DEMO_OWNER_ID, qrId, {
-      kind: "image",
-      mimeType: "image/png",
-      fileName: "photo.png",
-      sizeBytes: 5,
-      data: Buffer.from("photo")
-    });
+    const destination = await store.createLifeLink({ id: "media-destination", ownerId: DEMO_OWNER_ID, title: "Attachment folder", browsingRole: "container", createdAt: target.createdAt });
+    const firstUpload = (await store.createLinkMedia(DEMO_OWNER_ID, qrId, { ...input, sizeBytes: input.data.byteLength }))!;
+    const uploadChange = (await store.getChangeHistory(DEMO_OWNER_ID)).entries[0];
+    await store.undoChange(DEMO_OWNER_ID, { changeId: uploadChange.id, commandId: "undo-attachment-upload" });
+    expect(await store.getLifeLinkMedia(DEMO_OWNER_ID, target.id, firstUpload.id)).toBeNull();
+    expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, target.id))?.lifeLink.media).toEqual([]);
+    const media = (await store.createLinkMedia(DEMO_OWNER_ID, qrId, { ...input, sizeBytes: input.data.byteLength }))!;
     expect(media?.qrId).toBe(qrId);
     expect(media?.url).toContain(`/api/links/${encodeURIComponent(qrId)}/media/`);
     const canonical = await store.getLifeLinkDetail(DEMO_OWNER_ID, target.id);
-    expect(canonical?.lifeLink.media[0]).toMatchObject({ lifeLinkId: target.id, id: media?.id });
+    expect(canonical?.lifeLink.media[0]).toMatchObject({ lifeLinkId: target.id, id: media.id, kind: input.kind, mimeType: input.mimeType, fileName: input.fileName, sizeBytes: input.data.byteLength });
+    const beforeRead = await store.getChangeHistory(DEMO_OWNER_ID);
+    expect((await store.getLifeLinkMedia(DEMO_OWNER_ID, target.id, media.id))?.data).toEqual(input.data);
+    expect(await store.getLifeLinkMedia(DEMO_GUEST_ID, target.id, media.id)).toBeNull();
+    expect(await store.getLinkMedia(qrId, media.id, DEMO_GUEST_ID)).toBe("private");
+    expect(await store.getLinkMedia(qrId, media.id, null)).toBe("private");
+    expect(await store.getQrState(qrId, null)).toMatchObject({ state: "claimed", link: { media: [] } });
+    expect(await store.getChangeHistory(DEMO_OWNER_ID)).toEqual(beforeRead);
+    const preview = await store.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "move", lifeLinkIds: [target.id], parentId: destination.id });
+    await store.applyLifeLinkChange(DEMO_OWNER_ID, { previewId: preview.id, commandId: "move-attachment-item" });
+    expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, target.id))?.lifeLink).toMatchObject({ parentId: destination.id, media: canonical!.lifeLink.media });
+    expect((await store.getLifeLinkMedia(DEMO_OWNER_ID, target.id, media.id))?.data).toEqual(input.data);
+    expect(await store.deleteLifeLinkMedia(DEMO_OWNER_ID, target.id, media.id)).toBe(true);
+    expect(await store.getLifeLinkMedia(DEMO_OWNER_ID, target.id, media.id)).toBeNull();
+    const deletion = (await store.getChangeHistory(DEMO_OWNER_ID)).entries[0];
+    await store.undoChange(DEMO_OWNER_ID, { changeId: deletion.id, commandId: "undo-attachment-delete" });
+    expect((await store.getLifeLinkMedia(DEMO_OWNER_ID, target.id, media.id))?.data).toEqual(input.data);
+    expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, target.id))?.lifeLink.media).toEqual(canonical!.lifeLink.media);
     await expect(
       store.createLifeLinkMedia(DEMO_OWNER_ID, target.id, {
         kind: "image",

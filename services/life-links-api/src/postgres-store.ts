@@ -1,10 +1,23 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { Pool, type PoolClient } from "pg";
 import {
   type ClaimQrCommand,
   type ClaimResult,
   type CompetitionFixtureData,
+  type CollectionRecord,
+  type CollectionSectionRecord,
+  type CollectionSectionMutationResult,
+  type LifeLinkCollectionMembership,
+  type CreateCollectionCommand,
+  type UpdateCollectionCommand,
+  type CollectionMemberCommand,
+  type CreateCollectionSectionCommand,
+  type UpdateCollectionSectionCommand,
+  type RemoveCollectionSectionCommand,
+  type ReplaceCollectionSectionAssignmentsCommand,
+  type SetLifeLinkQrBindingCommand,
+  type ClearLifeLinkQrBindingCommand,
   type CreateLifeLinkCommand,
   type ExportBatchRecord,
   type LifeLinkDetail,
@@ -12,7 +25,6 @@ import {
   type LifeLinkMediaRecord,
   type LifeLinkPage,
   type LifeLinkPageRequest,
-  type LifeLinkProjectCompatibilityRecord,
   type LifeLinkQrBindingRecord,
   type LifeLinkRecord,
   type LifeLinkSearchResult,
@@ -20,41 +32,67 @@ import {
   type LinkMediaRecord,
   type LinkRecord,
   type MoveLifeLinkCommand,
-  type ProjectRecord,
   type QrInventoryRecord,
   type QrViewState,
   type UpdateLifeLinkCommand,
+  type PreviewLifeLinkChangeInput,
+  type LifeLinkChangePreview,
+  type LifeLinkChangeResult,
+  type ApplyLifeLinkChangeInput,
+  type UndoChangeInput,
+  type ChangeHistory,
+  resolveLifeLinkChangeScope,
+  lifeLinkChangePreviewItem,
+  stableChangeFingerprint,
   LINK_BODY_DOC_VERSION,
   MAX_MEDIA_PER_LINK,
-  MAX_PROJECT_NAME_LENGTH,
   assertLifeLinkMediaBytes,
   assertLifeLinkBodyPatchIsCoordinated,
   assertLifeLinkContentWithinBounds,
   assertValidLifeLinkParentPlacement,
+  applyLifeLinkPatch,
   buildQrUrl,
   coordinateLifeLinkBody,
+  compareCollectionTitleOrder as compareTitledRecords,
+  compareCollectionSectionOrder as compareSections,
   createCanonicalLifeLink,
+  createCanonicalCollection,
+  createCanonicalCollectionSection,
   createCompetitionFixtureData,
   createDemoSeedData,
   createLinkBodyDocFromPlainText,
   deriveLifeLinkPath,
-  deriveProjectCompatibilityId,
   generateQrIds,
   mapLegacyLinkToLifeLinkId,
   normalizeBatchCount,
   normalizeLinkBodyDoc,
+  normalizeLifeLinkContext,
+  normalizePublicFieldKeys,
+  normalizeCollectionPatch,
+  normalizeCollectionId,
+  normalizeCollectionSectionId,
+  normalizeCollectionSectionTitle,
+  normalizeCollectionSectionIds,
+  normalizeSetLifeLinkQrBindingCommand,
+  normalizeClearLifeLinkQrBindingCommand,
+  lifeLinkCreatePayloadMatches,
+  pageCollectionRecords,
   pageLifeLinkChildren,
   projectLifeLinkAsLink,
-  projectLifeLinkAsProject,
   projectPrivateClaimedQrAsLink,
   projectUnclaimedQrAsLink,
-  redactNonOwnerLinkProjection,
+  projectPublicLifeLinkAsLink,
   searchCanonicalLifeLinks
 } from "@life-links/core";
 
 import { hashPassword, verifyPassword } from "./password.js";
 import {
+  assertQrNotReservedByOtherOwner, assertUnusedContentId, getPostgresChangeHistory,
+  loadOwnerContentRows, recordOwnerChange, restoreOwnerChange
+} from "./postgres-change-journal.js";
+import {
   ClaimIdempotencyConflictError,
+  CompetitionFixtureShapeMismatchError,
   assertCompetitionFixtureResetMode,
   createCompetitionFixtureResetReport,
   type BatchCreateResult,
@@ -66,7 +104,6 @@ import {
   type LifeLinksStore,
   type LinkMediaFile,
   type LinkMediaInput,
-  type LinkPatch,
   type SessionRecord,
   type StoredUser,
   expectedCompetitionFixtureCounts,
@@ -195,17 +232,20 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     try {
       await client.query("BEGIN");
       await lockKeys(client, [`life-link-id:${candidate.id}`, `owner:${command.ownerId}`]);
+      const before = await loadOwnerContentRows(client, command.ownerId);
       const existingResult = await client.query("SELECT * FROM life_links WHERE id = $1 FOR UPDATE", [candidate.id]);
       if (existingResult.rows[0]) {
         const existing = mapStoredLifeLink(existingResult.rows[0]);
-        if (!sameStoredLifeLink(existing, candidate)) {
+        if (!lifeLinkCreatePayloadMatches(hydrateWithoutRelations(existing), command)) {
           throw new LifeLinkDomainError("duplicate_life_link_id", "Life Link identity is already bound to another record.");
         }
         await client.query("COMMIT");
       } else {
+        await assertUnusedContentId(client, "life_links", candidate.id);
         const ownerLifeLinks = await this.loadOwnerLifeLinks(client, command.ownerId);
         assertValidLifeLinkParentPlacement([...ownerLifeLinks, candidate], candidate.id, candidate.parentId);
         await insertLifeLink(client, withoutRelations(candidate));
+        await recordOwnerChange(client, command.ownerId, "Create Life Link", before);
         await client.query("COMMIT");
       }
     } catch (error) {
@@ -223,6 +263,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     try {
       await client.query("BEGIN");
       await lockKeys(client, [`owner:${userId}`]);
+      const before = await loadOwnerContentRows(client, userId);
       const result = await client.query("SELECT * FROM life_links WHERE id = $1 AND owner_id = $2 FOR UPDATE", [
         command.lifeLinkId,
         userId
@@ -234,40 +275,31 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       found = true;
       const current = mapStoredLifeLink(result.rows[0]);
       assertFresh(current, command.expectedUpdatedAt);
-      assertLifeLinkBodyPatchIsCoordinated(command.patch);
-      const coordinated =
-        command.patch.body === undefined && command.patch.bodyDoc === undefined
-          ? { body: current.body, bodyDoc: current.bodyDoc, bodyDocVersion: current.bodyDocVersion }
-          : coordinateLifeLinkBody({
-              body: command.patch.body,
-              bodyDoc: command.patch.bodyDoc,
-              bodyDocVersion: command.patch.bodyDocVersion
-            });
-      const title = command.patch.title ?? current.title;
-      assertLifeLinkContentWithinBounds(title, coordinated.body, coordinated.bodyDoc);
-      if (title.length > MAX_PROJECT_NAME_LENGTH) {
-        const marker = await client.query("SELECT 1 FROM life_link_project_compat WHERE life_link_id = $1", [current.id]);
-        if (marker.rowCount) {
-          throw new LifeLinkDomainError("invalid_life_link", "Project compatibility title exceeds the supported limit.", {
-            reason: "project_title_too_long"
-          });
-        }
+      const updated = applyLifeLinkPatch(hydrateWithoutRelations(current), command.patch, nextTimestamp(current.updatedAt));
+      if (stableChangeFingerprint({ ...updated, updatedAt: current.updatedAt }) === stableChangeFingerprint(hydrateWithoutRelations(current))) {
+        await client.query("COMMIT");
+        return this.loadLifeLink(this.pool, command.lifeLinkId);
       }
+      const title = updated.title;
       await client.query(
         `UPDATE life_links
-         SET title = $3, body = $4, body_doc = $5::jsonb, body_doc_version = $6, privacy = $7, updated_at = $8
+         SET title = $3, body = $4, body_doc = $5::jsonb, body_doc_version = $6, privacy = $7, updated_at = $8,
+             context = $9::jsonb, public_field_keys = $10
          WHERE id = $1 AND owner_id = $2`,
         [
           current.id,
           userId,
           title,
-          coordinated.body,
-          JSON.stringify(coordinated.bodyDoc),
-          coordinated.bodyDocVersion,
-          command.patch.privacy ?? current.privacy,
-          nextTimestamp(current.updatedAt)
+          updated.body,
+          JSON.stringify(updated.bodyDoc),
+          updated.bodyDocVersion,
+          updated.privacy,
+          updated.updatedAt,
+          JSON.stringify(updated.context),
+          updated.publicFieldKeys
         ]
       );
+      await recordOwnerChange(client, userId, "Edit Life Link", before);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -283,6 +315,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     try {
       await client.query("BEGIN");
       await lockKeys(client, [`owner:${userId}`]);
+      const before = await loadOwnerContentRows(client, userId);
       const result = await client.query("SELECT * FROM life_links WHERE id = $1 AND owner_id = $2 FOR UPDATE", [
         command.lifeLinkId,
         userId
@@ -292,23 +325,20 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         return null;
       }
       const current = mapStoredLifeLink(result.rows[0]);
-      assertFresh(current, command.expectedUpdatedAt);
-      if (command.parentId !== null) {
-        const marker = await client.query("SELECT 1 FROM life_link_project_compat WHERE life_link_id = $1", [current.id]);
-        if (marker.rowCount) {
-          throw new LifeLinkDomainError("invalid_parent", "Project-compatible Life Link must remain a root.", {
-            reason: "project_compatibility_root"
-          });
-        }
+      if (current.parentId === command.parentId) {
+        await client.query("COMMIT");
+        return this.loadLifeLink(this.pool, command.lifeLinkId);
       }
+      assertFresh(current, command.expectedUpdatedAt);
       const ownerLifeLinks = await this.loadOwnerLifeLinks(client, userId);
       assertValidLifeLinkParentPlacement(ownerLifeLinks, current.id, command.parentId);
-      await client.query("UPDATE life_links SET parent_id = $3, updated_at = $4 WHERE id = $1 AND owner_id = $2", [
+      await client.query("UPDATE life_links SET parent_id = $3, updated_at = $4, placement_confirmed_at = $4 WHERE id = $1 AND owner_id = $2", [
         current.id,
         userId,
         command.parentId,
         nextTimestamp(current.updatedAt)
       ]);
+      await recordOwnerChange(client, userId, "Move Life Link", before);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -317,6 +347,369 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       client.release();
     }
     return this.loadLifeLink(this.pool, command.lifeLinkId);
+  }
+
+  async listCollections(userId: string, page: LifeLinkPageRequest = {}): Promise<LifeLinkPage<CollectionRecord>> {
+    const result = await this.pool.query("SELECT * FROM collections WHERE owner_id = $1", [userId]);
+    return pageCollectionRecords(result.rows.map(mapCollection).sort(compareTitledRecords), page);
+  }
+
+  async previewLifeLinkChange(userId: string, input: PreviewLifeLinkChangeInput): Promise<LifeLinkChangePreview> {
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const { preview, fingerprint } = await this.buildLifeLinkChangePreview(client, userId, input);
+      await client.query("DELETE FROM life_link_change_previews WHERE owner_id = $1 AND created_at < now() - interval '15 minutes'", [userId]);
+      await client.query("INSERT INTO life_link_change_previews(id, owner_id, preview, fingerprint) VALUES ($1,$2,$3::jsonb,$4)",
+        [preview.id, userId, JSON.stringify(preview), fingerprint]);
+      await client.query(`DELETE FROM life_link_change_previews WHERE owner_id = $1 AND id NOT IN
+        (SELECT id FROM life_link_change_previews WHERE owner_id = $1 ORDER BY created_at DESC, id DESC LIMIT 5)`, [userId]);
+      return preview;
+    }, null);
+  }
+
+  async getLifeLinkChangePreview(userId: string, previewId: string): Promise<LifeLinkChangePreview | null> {
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      await client.query("DELETE FROM life_link_change_previews WHERE owner_id = $1 AND created_at < now() - interval '15 minutes'", [userId]);
+      const result = await client.query("SELECT preview FROM life_link_change_previews WHERE id = $1 AND owner_id = $2", [previewId, userId]);
+      return result.rows[0]?.preview ?? null;
+    }, null);
+  }
+
+  async applyLifeLinkChange(userId: string, input: ApplyLifeLinkChangeInput): Promise<LifeLinkChangeResult> {
+    assertChangeCommandId(input.commandId);
+    return this.withTransaction([`owner:${userId}`, `claim-command:${input.commandId}`], async (client) => {
+      const replay = await this.readChangeReplay(client, userId, input.commandId, input.previewId, false);
+      if (replay) return replay;
+      const stored = await client.query(`SELECT preview, fingerprint FROM life_link_change_previews
+        WHERE id = $1 AND owner_id = $2 AND created_at >= now() - interval '15 minutes'`, [input.previewId, userId]);
+      if (!stored.rows[0]) throw new LifeLinkDomainError("life_link_not_found", "Change preview is unavailable or expired.");
+      const preview = stored.rows[0].preview as LifeLinkChangePreview;
+      const request: PreviewLifeLinkChangeInput = preview.operation === "move"
+        ? { operation: "move", lifeLinkIds: preview.rootIds, parentId: preview.parentId }
+        : { operation: "delete", lifeLinkIds: preview.rootIds };
+      let current: Awaited<ReturnType<PostgresLifeLinksStore["buildLifeLinkChangePreview"]>>;
+      try { current = await this.buildLifeLinkChangePreview(client, userId, request); }
+      catch (error) {
+        if (!(error instanceof LifeLinkDomainError)) throw error;
+        throw stalePreview();
+      }
+      if (current.fingerprint !== String(stored.rows[0].fingerprint)) throw stalePreview();
+      const before = await loadOwnerContentRows(client, userId);
+      const changed = preview.operation === "delete" || current.preview.items.some((item) =>
+        preview.rootIds.includes(item.id) && item.parentId !== preview.parentId);
+      const affectedIds = changed ? preview.items.map((item) => item.id) : [];
+      if (preview.operation === "move") {
+        for (const rootId of preview.rootIds) {
+          await client.query(`UPDATE life_links SET parent_id = $3,
+            updated_at = GREATEST(now(), updated_at + interval '1 millisecond'),
+            placement_confirmed_at = GREATEST(now(), updated_at + interval '1 millisecond')
+            WHERE id = $1 AND owner_id = $2 AND parent_id IS DISTINCT FROM $3`, [rootId, userId, preview.parentId]);
+        }
+      } else {
+        const collections = await client.query("SELECT DISTINCT collection_id FROM collection_memberships WHERE owner_id = $1 AND life_link_id = ANY($2::text[])", [userId, affectedIds]);
+        await client.query("DELETE FROM life_link_qr_bindings WHERE life_link_id = ANY($1::text[])", [affectedIds]);
+        await client.query("UPDATE life_links SET parent_id = NULL WHERE owner_id = $1 AND id = ANY($2::text[])", [userId, affectedIds]);
+        await client.query("DELETE FROM life_links WHERE owner_id = $1 AND id = ANY($2::text[])", [userId, affectedIds]);
+        await client.query(`UPDATE collections SET updated_at = GREATEST(now(), updated_at + interval '1 millisecond')
+          WHERE owner_id = $1 AND id = ANY($2::text[])`, [userId, collections.rows.map((row) => String(row.collection_id))]);
+      }
+      await recordOwnerChange(client, userId, `${preview.operation === "move" ? "Move" : "Delete"} ${affectedIds.length} Life Link${affectedIds.length === 1 ? "" : "s"}`, before);
+      await this.saveChangeReceipt(client, userId, input.commandId, input.previewId, preview.operation, affectedIds);
+      await client.query("DELETE FROM life_link_change_previews WHERE id = $1 AND owner_id = $2", [input.previewId, userId]);
+      return { operation: preview.operation, affectedIds, history: await getPostgresChangeHistory(client, userId) };
+    }, null);
+  }
+
+  async getChangeHistory(userId: string): Promise<ChangeHistory> { return getPostgresChangeHistory(this.pool, userId); }
+
+  async undoChange(userId: string, input: UndoChangeInput): Promise<LifeLinkChangeResult> {
+    assertChangeCommandId(input.commandId);
+    return this.withTransaction([`owner:${userId}`, `claim-command:${input.commandId}`], async (client) => {
+      const replay = await this.readChangeReplay(client, userId, input.commandId, input.changeId, true);
+      if (replay) return replay;
+      const affectedIds = await restoreOwnerChange(client, userId, input.changeId);
+      await this.saveChangeReceipt(client, userId, input.commandId, input.changeId, "undo", affectedIds);
+      return { operation: "undo", affectedIds, history: await getPostgresChangeHistory(client, userId) };
+    }, null);
+  }
+
+  private async buildLifeLinkChangePreview(client: PoolClient, userId: string, input: PreviewLifeLinkChangeInput): Promise<{ preview: LifeLinkChangePreview; fingerprint: string }> {
+    const records = await this.loadOwnerLifeLinks(client, userId);
+    const scope = resolveLifeLinkChangeScope(records, userId, input);
+    const ids = new Set(scope.items.map((item) => item.id));
+    const state = await loadOwnerContentRows(client, userId);
+    const memberships = state.collection_memberships.filter((row) => ids.has(String(row.life_link_id)));
+    const assignments = state.collection_section_assignments.filter((row) => ids.has(String(row.life_link_id)));
+    const media = state.link_media.filter((row) => ids.has(String(row.life_link_id)));
+    const preview: LifeLinkChangePreview = {
+      id: `preview-${randomUUID()}`, operation: input.operation, rootIds: scope.rootIds,
+      items: scope.items.map(lifeLinkChangePreviewItem), parentId: scope.parentId,
+      target: scope.target ? lifeLinkChangePreviewItem(scope.target) : null, createdAt: new Date().toISOString(),
+      sideEffects: { lifeLinks: scope.items.length, media: media.length,
+        qrBindings: scope.items.filter((item) => item.qrId !== null).length,
+        collectionMemberships: memberships.length, collectionSectionAssignments: assignments.length }
+    };
+    const fingerprint = createHash("sha256").update(stableChangeFingerprint({ operation: input.operation, ...scope, memberships, assignments, media })).digest("hex");
+    return { preview, fingerprint };
+  }
+
+  private async readChangeReplay(client: PoolClient, userId: string, commandId: string, requestId: string, undo: boolean): Promise<LifeLinkChangeResult | null> {
+    const result = await client.query("SELECT * FROM life_link_change_receipts WHERE command_id = $1", [commandId]);
+    const row = result.rows[0];
+    if (!row) return null;
+    if (row.owner_id !== userId || row.request_id !== requestId || (row.operation === "undo") !== undo) throw new ClaimIdempotencyConflictError();
+    return { operation: row.operation, affectedIds: row.affected_ids, history: await getPostgresChangeHistory(client, userId) };
+  }
+
+  private async saveChangeReceipt(client: PoolClient, userId: string, commandId: string, requestId: string, operation: LifeLinkChangeResult["operation"], affectedIds: string[]): Promise<void> {
+    await client.query("INSERT INTO life_link_change_receipts(command_id, owner_id, operation, request_id, affected_ids) VALUES ($1,$2,$3,$4,$5)",
+      [commandId, userId, operation, requestId, affectedIds]);
+  }
+
+  async getCollection(userId: string, collectionId: string): Promise<CollectionRecord | null> {
+    return loadCollection(this.pool, userId, collectionId);
+  }
+
+  async createCollection(command: CreateCollectionCommand): Promise<CollectionRecord> {
+    const candidate = createCanonicalCollection(command);
+    return this.withTransaction([`collection-id:${candidate.id}`, `owner:${candidate.ownerId}`], async (client) => {
+      const owner = await client.query("SELECT 1 FROM users WHERE id = $1", [candidate.ownerId]);
+      if (!owner.rowCount) throw new LifeLinkDomainError("invalid_collection", "Collection owner was not found.");
+      const result = await client.query("SELECT * FROM collections WHERE id = $1 FOR UPDATE", [candidate.id]);
+      if (result.rows[0]) {
+        const current = mapCollection(result.rows[0]);
+        if (current.ownerId !== candidate.ownerId || current.title !== candidate.title ||
+            current.purpose !== candidate.purpose || current.notes !== candidate.notes) {
+          throw new LifeLinkDomainError("duplicate_collection_id", "Collection identity is already bound to another record.");
+        }
+        return current;
+      }
+      await assertUnusedContentId(client, "collections", candidate.id);
+      await client.query(
+        `INSERT INTO collections (id, owner_id, title, purpose, notes, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [candidate.id, candidate.ownerId, candidate.title, candidate.purpose, candidate.notes, candidate.createdAt, candidate.updatedAt]
+      );
+      return candidate;
+    }, "Create Collection");
+  }
+
+  async updateCollection(userId: string, command: UpdateCollectionCommand): Promise<CollectionRecord | null> {
+    const patch = normalizeCollectionPatch(command.patch);
+    return this.withCollectionMutation(userId, command.collectionId, async (client, current) => {
+      const title = patch.title ?? current.title;
+      const purpose = patch.purpose ?? current.purpose;
+      const notes = patch.notes ?? current.notes;
+      if (title === current.title && purpose === current.purpose && notes === current.notes) return current;
+      assertCollectionFresh(current, command.expectedUpdatedAt);
+      const updated = { ...current, title, purpose, notes, updatedAt: nextTimestamp(current.updatedAt) };
+      await client.query(
+        "UPDATE collections SET title = $3, purpose = $4, notes = $5, updated_at = $6 WHERE id = $1 AND owner_id = $2",
+        [current.id, userId, title, purpose, notes, updated.updatedAt]
+      );
+      return updated;
+    }, "Edit Collection");
+  }
+
+  async listCollectionMembers(
+    userId: string, collectionId: string, page: LifeLinkPageRequest = {}
+  ): Promise<LifeLinkPage<LifeLinkRecord> | null> {
+    collectionId = normalizeCollectionId(collectionId);
+    if (!(await loadCollection(this.pool, userId, collectionId))) return null;
+    const result = await this.pool.query(
+      `SELECT ll.*, b.qr_id FROM collection_memberships m
+       JOIN life_links ll ON ll.id = m.life_link_id AND ll.owner_id = m.owner_id
+       LEFT JOIN life_link_qr_bindings b ON b.life_link_id = ll.id
+       WHERE m.owner_id = $1 AND m.collection_id = $2`, [userId, collectionId]
+    );
+    const members = await this.attachLifeLinkMedia(this.pool, result.rows.map(mapLifeLinkRow));
+    return pageCollectionRecords(members.sort(compareTitledRecords), page);
+  }
+
+  async addCollectionMember(userId: string, command: CollectionMemberCommand): Promise<CollectionRecord | null> {
+    return this.withCollectionMutation(userId, command.collectionId, async (client, current) => {
+      if (!(await ownerHasLifeLink(client, userId, command.lifeLinkId))) return null;
+      const existing = await client.query(
+        "SELECT 1 FROM collection_memberships WHERE owner_id = $1 AND collection_id = $2 AND life_link_id = $3",
+        [userId, current.id, command.lifeLinkId]
+      );
+      if (existing.rowCount) return current;
+      assertCollectionFresh(current, command.expectedUpdatedAt);
+      const updated = await touchCollection(client, current);
+      await client.query(
+        "INSERT INTO collection_memberships (owner_id, collection_id, life_link_id, created_at) VALUES ($1, $2, $3, $4)",
+        [userId, current.id, command.lifeLinkId, updated.updatedAt]
+      );
+      return updated;
+    }, "Add Collection member");
+  }
+
+  async removeCollectionMember(userId: string, command: CollectionMemberCommand): Promise<CollectionRecord | null> {
+    return this.withCollectionMutation(userId, command.collectionId, async (client, current) => {
+      if (!(await ownerHasLifeLink(client, userId, command.lifeLinkId))) return null;
+      const existing = await client.query(
+        "SELECT 1 FROM collection_memberships WHERE owner_id = $1 AND collection_id = $2 AND life_link_id = $3",
+        [userId, current.id, command.lifeLinkId]
+      );
+      if (!existing.rowCount) return current;
+      assertCollectionFresh(current, command.expectedUpdatedAt);
+      await client.query(
+        "DELETE FROM collection_memberships WHERE owner_id = $1 AND collection_id = $2 AND life_link_id = $3",
+        [userId, current.id, command.lifeLinkId]
+      );
+      return touchCollection(client, current);
+    }, "Remove Collection member");
+  }
+
+  async listCollectionSections(
+    userId: string, collectionId: string, page: LifeLinkPageRequest = {}
+  ): Promise<LifeLinkPage<CollectionSectionRecord> | null> {
+    collectionId = normalizeCollectionId(collectionId);
+    if (!(await loadCollection(this.pool, userId, collectionId))) return null;
+    const result = await this.pool.query("SELECT * FROM collection_sections WHERE owner_id = $1 AND collection_id = $2", [userId, collectionId]);
+    return pageCollectionRecords(result.rows.map(mapCollectionSection).sort(compareSections), page);
+  }
+
+  async createCollectionSection(
+    userId: string, command: CreateCollectionSectionCommand
+  ): Promise<CollectionSectionMutationResult | null> {
+    command = { ...command, id: normalizeCollectionSectionId(command.id) };
+    return this.withTransaction([`owner:${userId}`, `section-id:${command.id}`], async (client) => {
+      const current = await loadCollection(client, userId, command.collectionId, true);
+      if (!current) return null;
+      const positions = await client.query(
+        "SELECT COALESCE(max(position), -1) + 1 AS position FROM collection_sections WHERE owner_id = $1 AND collection_id = $2",
+        [userId, current.id]
+      );
+      const candidate = createCanonicalCollectionSection({
+        id: command.id, ownerId: userId, collectionId: current.id, title: command.title,
+        position: Number(positions.rows[0].position), createdAt: nextTimestamp(current.updatedAt)
+      });
+      const existing = await client.query("SELECT * FROM collection_sections WHERE id = $1 FOR UPDATE", [candidate.id]);
+      if (existing.rows[0]) {
+        const section = mapCollectionSection(existing.rows[0]);
+        if (section.ownerId !== userId || section.collectionId !== current.id || section.title !== candidate.title) {
+          throw new LifeLinkDomainError("duplicate_section_id", "Section identity is already bound to another record.");
+        }
+        return { collection: current, section };
+      }
+      await assertUnusedContentId(client, "collection_sections", candidate.id);
+      assertCollectionFresh(current, command.expectedUpdatedAt);
+      await client.query(
+        `INSERT INTO collection_sections (id, owner_id, collection_id, title, position, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [candidate.id, userId, current.id, candidate.title, candidate.position, candidate.createdAt, candidate.updatedAt]
+      );
+      const collection = await touchCollection(client, current, candidate.updatedAt);
+      return { collection, section: candidate };
+    }, "Create Section");
+  }
+
+  async updateCollectionSection(
+    userId: string, command: UpdateCollectionSectionCommand
+  ): Promise<CollectionSectionMutationResult | null> {
+    command = { ...command, sectionId: normalizeCollectionSectionId(command.sectionId) };
+    const title = normalizeCollectionSectionTitle(command.title);
+    return this.withCollectionMutation(userId, command.collectionId, async (client, current) => {
+      const result = await client.query(
+        "SELECT * FROM collection_sections WHERE id = $1 AND owner_id = $2 AND collection_id = $3 FOR UPDATE",
+        [command.sectionId, userId, current.id]
+      );
+      if (!result.rows[0]) return null;
+      const section = mapCollectionSection(result.rows[0]);
+      if (section.title === title) return { collection: current, section };
+      assertCollectionFresh(current, command.expectedUpdatedAt);
+      const collection = await touchCollection(client, current);
+      const updated = { ...section, title, updatedAt: collection.updatedAt };
+      await client.query("UPDATE collection_sections SET title = $2, updated_at = $3 WHERE id = $1", [section.id, title, updated.updatedAt]);
+      return { collection, section: updated };
+    }, "Edit Section");
+  }
+
+  async removeCollectionSection(userId: string, command: RemoveCollectionSectionCommand): Promise<CollectionRecord | null> {
+    command = { ...command, sectionId: normalizeCollectionSectionId(command.sectionId) };
+    return this.withCollectionMutation(userId, command.collectionId, async (client, current) => {
+      const existing = await client.query(
+        "SELECT 1 FROM collection_sections WHERE id = $1 AND owner_id = $2 AND collection_id = $3",
+        [command.sectionId, userId, current.id]
+      );
+      if (!existing.rowCount) return current;
+      assertCollectionFresh(current, command.expectedUpdatedAt);
+      await client.query("DELETE FROM collection_sections WHERE id = $1 AND owner_id = $2 AND collection_id = $3", [command.sectionId, userId, current.id]);
+      return touchCollection(client, current);
+    }, "Remove Section");
+  }
+
+  async replaceCollectionSectionAssignments(
+    userId: string, command: ReplaceCollectionSectionAssignmentsCommand
+  ): Promise<CollectionRecord | null> {
+    const sectionIds = normalizeCollectionSectionIds(command.sectionIds);
+    return this.withCollectionMutation(userId, command.collectionId, async (client, current) => {
+      if (!(await ownerHasLifeLink(client, userId, command.lifeLinkId))) return null;
+      const membership = await client.query(
+        "SELECT 1 FROM collection_memberships WHERE owner_id = $1 AND collection_id = $2 AND life_link_id = $3",
+        [userId, current.id, command.lifeLinkId]
+      );
+      if (!membership.rowCount) {
+        throw new LifeLinkDomainError("collection_membership_not_found", "Life Link must be a direct Collection member.");
+      }
+      const sections = await client.query(
+        "SELECT id FROM collection_sections WHERE owner_id = $1 AND collection_id = $2 AND id = ANY($3::text[])",
+        [userId, current.id, sectionIds]
+      );
+      if (sections.rows.length !== sectionIds.length) {
+        throw new LifeLinkDomainError("section_not_found", "A requested Section was not found in this Collection.");
+      }
+      const previous = await client.query(
+        "SELECT section_id FROM collection_section_assignments WHERE owner_id = $1 AND collection_id = $2 AND life_link_id = $3",
+        [userId, current.id, command.lifeLinkId]
+      );
+      const existingIds = previous.rows.map((row) => String(row.section_id)).sort();
+      if (JSON.stringify(existingIds) === JSON.stringify([...sectionIds].sort())) return current;
+      assertCollectionFresh(current, command.expectedUpdatedAt);
+      const updated = await touchCollection(client, current);
+      await client.query(
+        `DELETE FROM collection_section_assignments WHERE owner_id = $1 AND collection_id = $2
+         AND life_link_id = $3 AND NOT (section_id = ANY($4::text[]))`,
+        [userId, current.id, command.lifeLinkId, sectionIds]
+      );
+      for (const sectionId of sectionIds) {
+        await client.query(
+          `INSERT INTO collection_section_assignments (owner_id, collection_id, life_link_id, section_id, created_at)
+           VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`,
+          [userId, current.id, command.lifeLinkId, sectionId, updated.updatedAt]
+        );
+      }
+      return updated;
+    }, "Change Section assignments");
+  }
+
+  async listLifeLinkCollectionMemberships(
+    userId: string, lifeLinkId: string, page: LifeLinkPageRequest = {}
+  ): Promise<LifeLinkPage<LifeLinkCollectionMembership> | null> {
+    if (!(await ownerHasLifeLink(this.pool, userId, lifeLinkId))) return null;
+    const result = await this.pool.query(
+      `SELECT c.* FROM collections c JOIN collection_memberships m ON m.collection_id = c.id AND m.owner_id = c.owner_id
+       WHERE m.owner_id = $1 AND m.life_link_id = $2`, [userId, lifeLinkId]
+    );
+    const collections = pageCollectionRecords(result.rows.map(mapCollection).sort(compareTitledRecords), page);
+    const assignments = await this.pool.query(
+      `SELECT s.* FROM collection_sections s JOIN collection_section_assignments a
+       ON a.section_id = s.id AND a.owner_id = s.owner_id AND a.collection_id = s.collection_id
+       WHERE a.owner_id = $1 AND a.life_link_id = $2 AND a.collection_id = ANY($3::text[])`,
+      [userId, lifeLinkId, collections.items.map((item) => item.id)]
+    );
+    const sections = assignments.rows.map(mapCollectionSection).sort(compareSections);
+    return { ...collections, items: collections.items.map((collection) => ({
+      collection, sections: sections.filter((section) => section.collectionId === collection.id)
+    })) };
+  }
+
+  async setLifeLinkQrBinding(userId: string, command: SetLifeLinkQrBindingCommand): Promise<LifeLinkRecord | null> {
+    return this.mutateQrBinding(userId, normalizeSetLifeLinkQrBindingCommand(command), "set");
+  }
+
+  async clearLifeLinkQrBinding(userId: string, command: ClearLifeLinkQrBindingCommand): Promise<LifeLinkRecord | null> {
+    return this.mutateQrBinding(userId, normalizeClearLifeLinkQrBindingCommand(command), "clear");
   }
 
   async createLifeLinkMedia(
@@ -329,6 +722,8 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     let created: Omit<LifeLinkMediaRecord, "url"> | null = null;
     try {
       await client.query("BEGIN");
+      await lockKeys(client, [`owner:${userId}`]);
+      const before = await loadOwnerContentRows(client, userId);
       const lifeLink = await client.query("SELECT id FROM life_links WHERE id = $1 AND owner_id = $2 FOR UPDATE", [
         lifeLinkId,
         userId
@@ -349,6 +744,8 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [id, lifeLinkId, userId, input.kind, input.mimeType, input.fileName, input.sizeBytes, input.data, createdAt]
       );
+      await client.query("UPDATE life_links SET updated_at = GREATEST(now(), updated_at + interval '1 millisecond') WHERE id = $1", [lifeLinkId]);
+      await recordOwnerChange(client, userId, "Add attachment", before);
       await client.query("COMMIT");
       created = {
         id,
@@ -370,11 +767,14 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
   }
 
   async deleteLifeLinkMedia(userId: string, lifeLinkId: string, mediaId: string): Promise<boolean> {
-    const result = await this.pool.query(
-      "DELETE FROM link_media WHERE id = $1 AND life_link_id = $2 AND owner_id = $3 RETURNING id",
-      [mediaId, lifeLinkId, userId]
-    );
-    return Boolean(result.rowCount);
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const result = await client.query(
+        "DELETE FROM link_media WHERE id = $1 AND life_link_id = $2 AND owner_id = $3 RETURNING id",
+        [mediaId, lifeLinkId, userId]
+      );
+      if (result.rowCount) await client.query("UPDATE life_links SET updated_at = GREATEST(now(), updated_at + interval '1 millisecond') WHERE id = $1 AND owner_id = $2", [lifeLinkId, userId]);
+      return Boolean(result.rowCount);
+    }, "Remove attachment");
   }
 
   async getLifeLinkMedia(userId: string, lifeLinkId: string, mediaId: string): Promise<LifeLinkMediaFile | null> {
@@ -394,7 +794,6 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
 
   async listLinks(userId: string): Promise<LinkRecord[]> {
     const lifeLinks = await this.loadOwnerLifeLinks(this.pool, userId);
-    const markers = await this.loadProjectCompatibility(this.pool);
     const taggedQrIds = lifeLinks.flatMap((lifeLink) => (lifeLink.qrId ? [lifeLink.qrId] : []));
     const qrResult = taggedQrIds.length
       ? await this.pool.query("SELECT * FROM qr_codes WHERE id = ANY($1::text[])", [taggedQrIds])
@@ -407,67 +806,28 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         if (!qr) {
           throw new LifeLinkDomainError("invalid_life_link", "QR binding references missing inventory.");
         }
-        return projectLifeLinkAsLink(lifeLink, qr, deriveProjectCompatibilityId(lifeLinks, markers, lifeLink.id));
+        return projectLifeLinkAsLink(lifeLink, qr);
       });
     const unclaimed = await this.pool.query(
-      `SELECT q.*
+      `SELECT q.*, EXISTS (SELECT 1 FROM saved_changes s
+         WHERE s.owner_id <> $1 AND s.reserved_qr_ids @> ARRAY[q.id]::text[]) AS retained_by_other
        FROM qr_codes q
        JOIN export_batches eb ON eb.id = q.batch_id
        LEFT JOIN life_link_qr_bindings b ON b.qr_id = q.id
        WHERE eb.created_by = $1 AND b.qr_id IS NULL`,
       [userId]
     );
-    return [...claimed, ...unclaimed.rows.map((row) => projectUnclaimedQrAsLink(mapQrInventory(row)))].sort((left, right) =>
+    return [...claimed, ...unclaimed.rows.map((row) => row.retained_by_other
+      ? projectPrivateClaimedQrAsLink(mapQrInventory(row)) : projectUnclaimedQrAsLink(mapQrInventory(row)))].sort((left, right) =>
       right.updatedAt.localeCompare(left.updatedAt)
     );
-  }
-
-  async listProjects(userId: string): Promise<ProjectRecord[]> {
-    const result = await this.pool.query(
-      `SELECT c.project_id, c.life_link_id, ll.*
-       FROM life_link_project_compat c
-       JOIN life_links ll ON ll.id = c.life_link_id
-       WHERE ll.owner_id = $1
-       ORDER BY ll.title ASC`,
-      [userId]
-    );
-    return result.rows.map((row) =>
-      projectLifeLinkAsProject(hydrateWithoutRelations(mapStoredLifeLink(row)), {
-        projectId: String(row.project_id),
-        lifeLinkId: String(row.life_link_id)
-      })
-    );
-  }
-
-  async createProject(userId: string, name: string): Promise<ProjectRecord> {
-    if (name.length > MAX_PROJECT_NAME_LENGTH) {
-      throw new LifeLinkDomainError("invalid_life_link", "Project compatibility title exceeds the supported limit.", {
-        reason: "project_title_too_long"
-      });
-    }
-    const id = `project-${randomUUID()}`;
-    const createdAt = new Date().toISOString();
-    const candidate = createCanonicalLifeLink({ id, ownerId: userId, title: name, body: "", privacy: "private", createdAt });
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      await lockKeys(client, [`owner:${userId}`]);
-      await insertLifeLink(client, withoutRelations(candidate));
-      await client.query("INSERT INTO life_link_project_compat (project_id, life_link_id) VALUES ($1, $2)", [id, id]);
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
-    return projectLifeLinkAsProject(candidate, { projectId: id, lifeLinkId: id });
   }
 
   async createQrBatch(userId: string, count: number, qrBaseUrl: string): Promise<BatchCreateResult> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await lockKeys(client, [`owner:${userId}`]);
       const now = new Date().toISOString();
       const safeCount = normalizeBatchCount(count);
       const batchKey = randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
@@ -495,7 +855,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       await client.query("COMMIT");
       return {
         batch,
-        qrCodes: ids.map((id) => projectUnclaimedQrAsLink({ id, url: buildQrUrl(qrBaseUrl, id), batchId: batch.id, createdAt: now }))
+        qrCodes: ids.map((id) => projectUnclaimedQrAsLink({ id, url: buildQrUrl(qrBaseUrl, id), createdAt: now }))
       };
     } catch (error) {
       await client.query("ROLLBACK");
@@ -511,35 +871,30 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       return [];
     }
     const qrResult = await this.pool.query(
-      `SELECT q.*, b.life_link_id
+      `SELECT q.*, b.life_link_id, EXISTS (SELECT 1 FROM saved_changes s
+         WHERE s.owner_id <> $2 AND s.reserved_qr_ids @> ARRAY[q.id]::text[]) AS retained_by_other
        FROM qr_codes q
        LEFT JOIN life_link_qr_bindings b ON b.qr_id = q.id
        WHERE q.batch_id = $1
        ORDER BY q.id ASC`,
-      [batchId]
+      [batchId, userId]
     );
     const projected: LinkRecord[] = [];
     for (const row of qrResult.rows) {
       const qr = mapQrInventory(row);
       if (!row.life_link_id) {
-        projected.push(projectUnclaimedQrAsLink(qr));
+        projected.push(row.retained_by_other ? projectPrivateClaimedQrAsLink(qr) : projectUnclaimedQrAsLink(qr));
         continue;
       }
       const lifeLink = await this.loadLifeLink(this.pool, String(row.life_link_id));
       if (!lifeLink) {
         throw new LifeLinkDomainError("invalid_life_link", "QR binding references missing Life Link.");
       }
-      const ownerLifeLinks = await this.loadOwnerLifeLinks(this.pool, lifeLink.ownerId);
-      const markers = await this.loadProjectCompatibility(this.pool);
-      const ownerProjection = projectLifeLinkAsLink(
-        lifeLink,
-        qr,
-        deriveProjectCompatibilityId(ownerLifeLinks, markers, lifeLink.id)
-      );
+      const ownerProjection = projectLifeLinkAsLink(lifeLink, qr);
       if (lifeLink.ownerId === userId) {
         projected.push(ownerProjection);
       } else if (lifeLink.privacy === "public") {
-        projected.push(redactNonOwnerLinkProjection(ownerProjection));
+        projected.push(projectPublicLifeLinkAsLink(lifeLink, qr));
       } else {
         projected.push(projectPrivateClaimedQrAsLink(qr));
       }
@@ -549,11 +904,12 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
 
   async getQrState(qrId: string, viewerUserId: string | null): Promise<QrViewState> {
     const result = await this.pool.query(
-      `SELECT q.*, b.life_link_id
+      `SELECT q.*, b.life_link_id, EXISTS (SELECT 1 FROM saved_changes s
+         WHERE s.owner_id IS DISTINCT FROM $2 AND s.reserved_qr_ids @> ARRAY[q.id]::text[]) AS retained_by_other
        FROM qr_codes q
        LEFT JOIN life_link_qr_bindings b ON b.qr_id = q.id
        WHERE q.id = $1`,
-      [qrId]
+      [qrId, viewerUserId]
     );
     const row = result.rows[0];
     if (!row) {
@@ -561,6 +917,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     }
     const qr = mapQrInventory(row);
     if (!row.life_link_id) {
+      if (row.retained_by_other) return { state: "private", qrId };
       return { state: "unclaimed", qr: projectUnclaimedQrAsLink(qr) };
     }
     const lifeLink = await this.loadLifeLink(this.pool, String(row.life_link_id));
@@ -571,16 +928,10 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     if (lifeLink.privacy === "private" && !viewerIsOwner) {
       return { state: "private", qrId };
     }
-    const ownerLifeLinks = await this.loadOwnerLifeLinks(this.pool, lifeLink.ownerId);
-    const markers = await this.loadProjectCompatibility(this.pool);
-    const projected = projectLifeLinkAsLink(
-      lifeLink,
-      qr,
-      deriveProjectCompatibilityId(ownerLifeLinks, markers, lifeLink.id)
-    );
+    const projected = projectLifeLinkAsLink(lifeLink, qr);
     return {
       state: "claimed",
-      link: viewerIsOwner ? projected : redactNonOwnerLinkProjection(projected),
+      link: viewerIsOwner ? projected : projectPublicLifeLinkAsLink(lifeLink, qr),
       viewerIsOwner
     };
   }
@@ -595,6 +946,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     try {
       await client.query("BEGIN");
       await lockKeys(client, [`claim-command:${command.commandId}`, `claim-qr:${qrId}`, `owner:${userId}`]);
+      const before = await loadOwnerContentRows(client, userId);
       const existingEvent = await client.query("SELECT * FROM claim_events WHERE command_id = $1", [command.commandId]);
       if (existingEvent.rows[0]) {
         const event = existingEvent.rows[0];
@@ -620,12 +972,13 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         }
         const qrResult = await client.query("SELECT * FROM qr_codes WHERE id = $1 FOR UPDATE", [qrId]);
         if (qrResult.rows[0]) {
+          await assertQrNotReservedByOtherOwner(client, userId, qrId);
           const bindingResult = await client.query(
             `SELECT b.*, ll.owner_id
              FROM life_link_qr_bindings b
              JOIN life_links ll ON ll.id = b.life_link_id
              WHERE b.qr_id = $1
-             FOR UPDATE OF b, ll`,
+             FOR UPDATE OF b`,
             [qrId]
           );
           if (bindingResult.rows[0]) {
@@ -682,6 +1035,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
           ]
         );
       }
+      await recordOwnerChange(client, userId, "Claim QR", before);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -690,83 +1044,6 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       client.release();
     }
     return { result, state: await this.getQrState(qrId, userId), replayed };
-  }
-
-  async updateLink(userId: string, qrId: string, patch: LinkPatch): Promise<LinkRecord | null> {
-    const client = await this.pool.connect();
-    let lifeLinkId: string | null = null;
-    try {
-      await client.query("BEGIN");
-      await lockKeys(client, [`owner:${userId}`]);
-      const result = await client.query(
-        `SELECT ll.*
-         FROM life_link_qr_bindings b
-         JOIN life_links ll ON ll.id = b.life_link_id
-         WHERE b.qr_id = $1 AND ll.owner_id = $2
-         FOR UPDATE OF ll`,
-        [qrId, userId]
-      );
-      if (!result.rows[0]) {
-        await client.query("COMMIT");
-        return null;
-      }
-      const current = mapStoredLifeLink(result.rows[0]);
-      lifeLinkId = current.id;
-      assertLifeLinkBodyPatchIsCoordinated(patch);
-      let parentId = current.parentId;
-      const ownerLifeLinks = await this.loadOwnerLifeLinks(client, userId);
-      const markers = await this.loadProjectCompatibility(client);
-      if (patch.projectId !== undefined) {
-        const currentProjectId = deriveProjectCompatibilityId(ownerLifeLinks, markers, current.id);
-        if (patch.projectId !== currentProjectId) {
-          assertLegacyPlacementChangeAllowed(current, ownerLifeLinks, markers);
-          const marker = patch.projectId ? markers.find((item) => item.projectId === patch.projectId) : null;
-          if (patch.projectId) {
-            const target = marker ? ownerLifeLinks.find((item) => item.id === marker.lifeLinkId) : null;
-            if (!target) {
-              await client.query("COMMIT");
-              return null;
-            }
-          }
-          parentId = marker?.lifeLinkId ?? null;
-          assertValidLifeLinkParentPlacement(ownerLifeLinks, current.id, parentId);
-        }
-      }
-      const legacyCoordinated =
-        patch.body === undefined && patch.bodyDoc === undefined
-          ? { body: current.body, bodyDoc: current.bodyDoc, bodyDocVersion: current.bodyDocVersion }
-          : coordinateLifeLinkBody({
-              body: patch.body ?? (patch.bodyDoc === null ? current.body : undefined),
-              bodyDoc: patch.bodyDoc === null ? undefined : patch.bodyDoc,
-              bodyDocVersion: patch.bodyDocVersion
-            });
-      const title = patch.title ?? current.title;
-      assertLifeLinkContentWithinBounds(title, legacyCoordinated.body, legacyCoordinated.bodyDoc);
-      await client.query(
-        `UPDATE life_links
-         SET parent_id = $3, title = $4, body = $5, body_doc = $6::jsonb, body_doc_version = $7,
-             privacy = $8, updated_at = $9
-         WHERE id = $1 AND owner_id = $2`,
-        [
-          current.id,
-          userId,
-          parentId,
-          title,
-          legacyCoordinated.body,
-          JSON.stringify(legacyCoordinated.bodyDoc),
-          legacyCoordinated.bodyDocVersion,
-          patch.privacy ?? current.privacy,
-          nextTimestamp(current.updatedAt)
-        ]
-      );
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
-    return lifeLinkId ? this.projectLifeLinkByIdForLegacy(lifeLinkId) : null;
   }
 
   async createLinkMedia(userId: string, qrId: string, input: LinkMediaInput): Promise<LinkMediaRecord | null> {
@@ -779,14 +1056,15 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
   }
 
   async deleteLinkMedia(userId: string, qrId: string, mediaId: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `DELETE FROM link_media lm
-       USING life_link_qr_bindings b
-       WHERE lm.id = $1 AND lm.owner_id = $2 AND lm.life_link_id = b.life_link_id AND b.qr_id = $3
-       RETURNING lm.id`,
-      [mediaId, userId, qrId]
-    );
-    return Boolean(result.rowCount);
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const result = await client.query(
+        `DELETE FROM link_media lm USING life_link_qr_bindings b
+         WHERE lm.id = $1 AND lm.owner_id = $2 AND lm.life_link_id = b.life_link_id AND b.qr_id = $3
+         RETURNING lm.life_link_id`, [mediaId, userId, qrId]
+      );
+      if (result.rows[0]) await client.query("UPDATE life_links SET updated_at = GREATEST(now(), updated_at + interval '1 millisecond') WHERE id = $1 AND owner_id = $2", [result.rows[0].life_link_id, userId]);
+      return Boolean(result.rowCount);
+    }, "Remove attachment");
   }
 
   async getLinkMedia(
@@ -807,7 +1085,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       return null;
     }
     const viewerIsOwner = Boolean(viewerUserId && viewerUserId === String(row.life_link_owner_id));
-    if (row.privacy === "private" && !viewerIsOwner) {
+    if (!viewerIsOwner) {
       return "private";
     }
     return {
@@ -822,6 +1100,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await lockKeys(client, data.users.map((user) => `owner:${user.id}`));
       for (const user of data.users) {
         const passwordHash = await hashPassword(password);
         await client.query(
@@ -831,19 +1110,14 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
           [user.id, user.email, user.displayName, passwordHash, user.createdAt]
         );
       }
-      for (const project of data.projects) {
+      for (const root of data.roots) {
+        if ((await client.query("SELECT 1 FROM used_content_ids WHERE entity_kind = 'life_links' AND id = $1", [root.id])).rowCount) continue;
         await client.query(
           `INSERT INTO life_links
-             (id, owner_id, parent_id, title, body, body_doc, body_doc_version, privacy, created_at, updated_at)
-           VALUES ($1, $2, NULL, $3, '', $4::jsonb, $5, 'private', $6, $6)
+             (id, owner_id, parent_id, title, body, body_doc, body_doc_version, privacy, created_at, updated_at, browsing_role)
+           VALUES ($1, $2, NULL, $3, '', $4::jsonb, $5, 'private', $6, $6, 'container')
            ON CONFLICT (id) DO NOTHING`,
-          [project.id, project.ownerId, project.name, JSON.stringify(createLinkBodyDocFromPlainText("")), LINK_BODY_DOC_VERSION, project.createdAt]
-        );
-        await client.query(
-          `INSERT INTO life_link_project_compat (project_id, life_link_id)
-           VALUES ($1, $1)
-           ON CONFLICT (project_id) DO NOTHING`,
-          [project.id]
+          [root.id, root.ownerId, root.title, JSON.stringify(root.bodyDoc), root.bodyDocVersion, root.createdAt]
         );
       }
       await client.query(
@@ -861,22 +1135,26 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         );
         if (link.status === "claimed") {
           const lifeLinkId = mapLegacyLinkToLifeLinkId(link.id);
+          // Ordinary startup seed never resurrects deleted content or reattaches
+          // a QR the owner intentionally detached. Explicit reset owns restore.
+          if ((await client.query("SELECT 1 FROM used_content_ids WHERE entity_kind = 'life_links' AND id = $1", [lifeLinkId])).rowCount) continue;
           await client.query(
             `INSERT INTO life_links
-               (id, owner_id, parent_id, title, body, body_doc, body_doc_version, privacy, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)
+               (id, owner_id, parent_id, title, body, body_doc, body_doc_version, privacy, created_at, updated_at, public_field_keys)
+             VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
              ON CONFLICT (id) DO NOTHING`,
             [
               lifeLinkId,
               link.ownerId,
-              link.projectId,
+              link.parentId,
               link.title,
               link.body,
               JSON.stringify(link.bodyDoc ?? createLinkBodyDocFromPlainText(link.body)),
               link.bodyDocVersion ?? LINK_BODY_DOC_VERSION,
               link.privacy,
               link.createdAt,
-              link.updatedAt
+              link.updatedAt,
+              link.privacy === "public" ? ["notes"] : []
             ]
           );
           await client.query(
@@ -911,11 +1189,19 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
         `life-links-competition-fixture:${fixture.profile}`
       ]);
+      await lockKeys(client, [`owner:${fixture.owner.id}`]);
       await assertPostgresCompetitionFixturePreflight(client, fixture);
       const before = await postgresCompetitionFixtureCounts(client, fixture.owner.id);
       if (mode === "dry-run") {
+        let shapeMatchesExpected = false;
+        try {
+          await assertPostgresCompetitionFixturePostcondition(client, fixture, options.password, before, expected);
+          shapeMatchesExpected = true;
+        } catch (error) {
+          if (!(error instanceof CompetitionFixtureShapeMismatchError)) throw error;
+        }
         await client.query("ROLLBACK");
-        return createCompetitionFixtureResetReport(mode, before, before, expected);
+        return createCompetitionFixtureResetReport(mode, before, before, expected, shapeMatchesExpected);
       }
 
       const passwordHash = await hashPassword(options.password);
@@ -923,7 +1209,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       const after = await postgresCompetitionFixtureCounts(client, fixture.owner.id);
       await assertPostgresCompetitionFixturePostcondition(client, fixture, options.password, after, expected);
       await client.query("COMMIT");
-      return createCompetitionFixtureResetReport(mode, before, after, expected);
+      return createCompetitionFixtureResetReport(mode, before, after, expected, true);
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -938,6 +1224,86 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
 
   async close(): Promise<void> {
     await this.pool.end();
+  }
+
+  private async withTransaction<T>(keys: string[], work: (client: PoolClient) => Promise<T>, label: string | null): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await lockKeys(client, keys);
+      const ownerId = keys.find((key) => key.startsWith("owner:"))?.slice(6);
+      const before = ownerId && label ? await loadOwnerContentRows(client, ownerId) : null;
+      const value = await work(client);
+      if (before && ownerId && label) await recordOwnerChange(client, ownerId, label, before);
+      await client.query("COMMIT");
+      return value;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async withCollectionMutation<T>(
+    userId: string, collectionId: string,
+    work: (client: PoolClient, collection: CollectionRecord) => Promise<T>, label: string
+  ): Promise<T | null> {
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const current = await loadCollection(client, userId, collectionId, true);
+      return current ? work(client, current) : null;
+    }, label);
+  }
+
+  private async mutateQrBinding(
+    userId: string, command: SetLifeLinkQrBindingCommand | ClearLifeLinkQrBindingCommand, mode: "set" | "clear"
+  ): Promise<LifeLinkRecord | null> {
+    const qrId = mode === "set" ? (command as SetLifeLinkQrBindingCommand).qrId : null;
+    const keys = [`claim-command:${command.commandId}`, `owner:${userId}`];
+    if (qrId !== null) keys.push(`claim-qr:${qrId}`);
+    return this.withTransaction(keys, async (client) => {
+      const receipt = await client.query("SELECT * FROM claim_events WHERE command_id = $1", [command.commandId]);
+      if (receipt.rows[0]) {
+        const event = receipt.rows[0];
+        if (String(event.owner_id) !== userId || String(event.mode) !== mode ||
+            nullableString(event.qr_id) !== qrId || nullableString(event.requested_life_link_id) !== command.lifeLinkId ||
+            nullableString(event.expected_updated_at) !== command.expectedUpdatedAt) {
+          throw new ClaimIdempotencyConflictError();
+        }
+        const current = await this.loadLifeLink(client, command.lifeLinkId);
+        return current?.ownerId === userId ? current : null;
+      }
+      const result = await client.query("SELECT * FROM life_links WHERE id = $1 AND owner_id = $2 FOR UPDATE", [command.lifeLinkId, userId]);
+      if (!result.rows[0]) return null;
+      const current = mapStoredLifeLink(result.rows[0]);
+      if (qrId !== null) {
+        const qr = await client.query("SELECT 1 FROM qr_codes WHERE id = $1 FOR UPDATE", [qrId]);
+        if (!qr.rowCount) throw new LifeLinkDomainError("qr_not_found", "QR was not found.");
+        await assertQrNotReservedByOtherOwner(client, userId, qrId);
+        const occupied = await client.query("SELECT life_link_id FROM life_link_qr_bindings WHERE qr_id = $1 FOR UPDATE", [qrId]);
+        if (occupied.rows[0] && String(occupied.rows[0].life_link_id) !== current.id) {
+          throw new LifeLinkDomainError("qr_already_bound", "QR is already bound to another Life Link.");
+        }
+      }
+      const previous = await client.query("SELECT qr_id FROM life_link_qr_bindings WHERE life_link_id = $1 FOR UPDATE", [current.id]);
+      const previousQrId = nullableString(previous.rows[0]?.qr_id);
+      if (previousQrId !== qrId) {
+        assertFresh(current, command.expectedUpdatedAt);
+        const changedAt = nextTimestamp(current.updatedAt);
+        await client.query("DELETE FROM life_link_qr_bindings WHERE life_link_id = $1", [current.id]);
+        if (qrId !== null) {
+          await client.query("INSERT INTO life_link_qr_bindings (qr_id, life_link_id, bound_at) VALUES ($1, $2, $3)", [qrId, current.id, changedAt]);
+        }
+        await client.query("UPDATE life_links SET updated_at = $2 WHERE id = $1", [current.id, changedAt]);
+      }
+      await client.query(
+        `INSERT INTO claim_events
+           (command_id, qr_id, owner_id, mode, requested_life_link_id, resolved_life_link_id, result, created_at, expected_updated_at)
+         VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)`,
+        [command.commandId, qrId, userId, mode, current.id, mode === "set" ? "bound" : "unbound", new Date().toISOString(), command.expectedUpdatedAt]
+      );
+      return this.loadLifeLink(client, current.id);
+    }, mode === "set" ? "Change QR binding" : "Detach QR");
   }
 
   private async loadOwnerLifeLinks(queryable: Queryable, userId: string): Promise<LifeLinkRecord[]> {
@@ -988,29 +1354,6 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     return lifeLinks.map((lifeLink) => ({ ...lifeLink, media: byLifeLink.get(lifeLink.id) ?? [] }));
   }
 
-  private async loadProjectCompatibility(queryable: Queryable): Promise<LifeLinkProjectCompatibilityRecord[]> {
-    const result = await queryable.query("SELECT project_id, life_link_id FROM life_link_project_compat");
-    return result.rows.map((row) => ({ projectId: String(row.project_id), lifeLinkId: String(row.life_link_id) }));
-  }
-
-  private async projectLifeLinkByIdForLegacy(lifeLinkId: string): Promise<LinkRecord | null> {
-    const lifeLink = await this.loadLifeLink(this.pool, lifeLinkId);
-    if (!lifeLink?.qrId) {
-      return null;
-    }
-    const qrResult = await this.pool.query("SELECT * FROM qr_codes WHERE id = $1", [lifeLink.qrId]);
-    if (!qrResult.rows[0]) {
-      return null;
-    }
-    const ownerLifeLinks = await this.loadOwnerLifeLinks(this.pool, lifeLink.ownerId);
-    const markers = await this.loadProjectCompatibility(this.pool);
-    return projectLifeLinkAsLink(
-      lifeLink,
-      mapQrInventory(qrResult.rows[0]),
-      deriveProjectCompatibilityId(ownerLifeLinks, markers, lifeLink.id)
-    );
-  }
-
   private async mediaUrlForLifeLink(queryable: Queryable, lifeLinkId: string, mediaId: string): Promise<string> {
     const result = await queryable.query("SELECT qr_id FROM life_link_qr_bindings WHERE life_link_id = $1", [lifeLinkId]);
     const qrId = nullableString(result.rows[0]?.qr_id);
@@ -1041,7 +1384,10 @@ async function postgresCompetitionFixtureCounts(
        (SELECT count(*)::int FROM sessions WHERE user_id = $1) AS sessions,
        (SELECT count(*)::int FROM owner_life_links) AS life_links,
        (SELECT count(*)::int FROM life_link_qr_bindings WHERE life_link_id IN (SELECT id FROM owner_life_links)) AS qr_bindings,
-       (SELECT count(*)::int FROM life_link_project_compat WHERE life_link_id IN (SELECT id FROM owner_life_links)) AS project_compatibility,
+       (SELECT count(*)::int FROM collections WHERE owner_id = $1) AS collections,
+       (SELECT count(*)::int FROM collection_sections WHERE owner_id = $1) AS collection_sections,
+       (SELECT count(*)::int FROM collection_memberships WHERE owner_id = $1) AS collection_memberships,
+       (SELECT count(*)::int FROM collection_section_assignments WHERE owner_id = $1) AS collection_section_assignments,
        (SELECT count(*)::int FROM link_media WHERE owner_id = $1) AS media,
        (SELECT count(*)::int FROM owner_batches) AS batches,
        (SELECT count(*)::int FROM qr_codes WHERE batch_id IN (SELECT id FROM owner_batches)) AS qr_codes,
@@ -1054,7 +1400,10 @@ async function postgresCompetitionFixtureCounts(
     sessions: Number(row.sessions),
     lifeLinks: Number(row.life_links),
     qrBindings: Number(row.qr_bindings),
-    projectCompatibility: Number(row.project_compatibility),
+    collections: Number(row.collections),
+    collectionSections: Number(row.collection_sections),
+    collectionMemberships: Number(row.collection_memberships),
+    collectionSectionAssignments: Number(row.collection_section_assignments),
     media: Number(row.media),
     batches: Number(row.batches),
     qrCodes: Number(row.qr_codes),
@@ -1069,7 +1418,6 @@ async function assertPostgresCompetitionFixturePreflight(
   const ownerId = fixture.owner.id;
   const lifeLinkIds = fixture.lifeLinks.map((item) => item.id);
   const qrIds = fixture.qrInventory.map((item) => item.id);
-  const projectIds = fixture.projectCompatibility.map((item) => item.projectId);
   const emailConflict = await client.query(
     "SELECT 1 FROM users WHERE lower(email) = lower($1) AND id <> $2 LIMIT 1",
     [fixture.owner.email, ownerId]
@@ -1084,6 +1432,12 @@ async function assertPostgresCompetitionFixturePreflight(
   if (lifeLinkCollision.rowCount) {
     throw new Error("Competition fixture Life Link identity collides with another owner.");
   }
+  const retiredIdentityCollision = await client.query(`SELECT 1 FROM used_content_ids WHERE owner_id <> $1 AND
+    ((entity_kind = 'life_links' AND id = ANY($2::text[])) OR
+     (entity_kind = 'collections' AND id = ANY($3::text[])) OR
+     (entity_kind = 'collection_sections' AND id = ANY($4::text[]))) LIMIT 1`,
+    [ownerId, lifeLinkIds, fixture.collections.map((item) => item.id), fixture.collectionSections.map((item) => item.id)]);
+  if (retiredIdentityCollision.rowCount) throw new Error("Competition fixture identity was previously used by another owner.");
   const batchCollision = await client.query(
     `SELECT 1 FROM export_batches
      WHERE (id = $1 OR batch_key = $2) AND created_by <> $3
@@ -1115,16 +1469,20 @@ async function assertPostgresCompetitionFixturePreflight(
   if (qrBindingCollision.rowCount) {
     throw new Error("Competition fixture QR binding collides with another owner.");
   }
-  const projectCollision = await client.query(
-    `SELECT 1
-     FROM life_link_project_compat c
-     JOIN life_links ll ON ll.id = c.life_link_id
-     WHERE c.project_id = ANY($1::text[]) AND ll.owner_id <> $2
-     LIMIT 1`,
-    [projectIds, ownerId]
-  );
-  if (projectCollision.rowCount) {
-    throw new Error("Competition fixture project identity collides with another owner.");
+  const retainedQrCollision = await client.query(`SELECT 1 FROM saved_changes s
+    WHERE s.owner_id <> $1 AND EXISTS (SELECT 1 FROM unnest(s.reserved_qr_ids) id
+      WHERE id = ANY($2::text[]) OR id IN (SELECT q.id FROM qr_codes q JOIN export_batches b ON b.id = q.batch_id WHERE b.created_by = $1)) LIMIT 1`, [ownerId, qrIds]);
+  if (retainedQrCollision.rowCount) throw new Error("Competition fixture QR inventory is retained by another owner's saved change.");
+  for (const [table, ids] of [
+    ["collections", fixture.collections.map((item) => item.id)],
+    ["collection_sections", fixture.collectionSections.map((item) => item.id)]
+  ] as const) {
+    const collision = await client.query(
+      `SELECT 1 FROM ${table} WHERE id = ANY($1::text[]) AND owner_id <> $2 LIMIT 1`, [ids, ownerId]
+    );
+    if (collision.rowCount) {
+      throw new Error("Competition fixture Collection or Section identity collides with another owner.");
+    }
   }
   const ownerBatchBindingToOther = await client.query(
     `SELECT 1
@@ -1184,19 +1542,17 @@ async function replacePostgresCompetitionFixture(
   passwordHash: string
 ): Promise<void> {
   const ownerId = fixture.owner.id;
+  await client.query("DELETE FROM life_link_change_previews WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM saved_changes WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM life_link_change_receipts WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM sessions WHERE user_id = $1", [ownerId]);
   await client.query("DELETE FROM claim_events WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM collections WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM link_media WHERE owner_id = $1", [ownerId]);
   await client.query(
     `DELETE FROM life_link_qr_bindings b
      USING life_links ll
      WHERE b.life_link_id = ll.id AND ll.owner_id = $1`,
-    [ownerId]
-  );
-  await client.query(
-    `DELETE FROM life_link_project_compat c
-     USING life_links ll
-     WHERE c.life_link_id = ll.id AND ll.owner_id = $1`,
     [ownerId]
   );
   await client.query("UPDATE life_links SET parent_id = NULL WHERE owner_id = $1", [ownerId]);
@@ -1245,10 +1601,31 @@ async function replacePostgresCompetitionFixture(
       [binding.qrId, binding.lifeLinkId, binding.boundAt]
     );
   }
-  for (const marker of fixture.projectCompatibility) {
+  for (const item of fixture.collections) {
     await client.query(
-      "INSERT INTO life_link_project_compat (project_id, life_link_id) VALUES ($1, $2)",
-      [marker.projectId, marker.lifeLinkId]
+      `INSERT INTO collections (id, owner_id, title, purpose, notes, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [item.id, item.ownerId, item.title, item.purpose, item.notes, item.createdAt, item.updatedAt]
+    );
+  }
+  for (const item of fixture.collectionSections) {
+    await client.query(
+      `INSERT INTO collection_sections (id, owner_id, collection_id, title, position, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [item.id, item.ownerId, item.collectionId, item.title, item.position, item.createdAt, item.updatedAt]
+    );
+  }
+  for (const item of fixture.collectionMemberships) {
+    await client.query(
+      `INSERT INTO collection_memberships (owner_id, collection_id, life_link_id, created_at) VALUES ($1, $2, $3, $4)`,
+      [item.ownerId, item.collectionId, item.lifeLinkId, item.createdAt]
+    );
+  }
+  for (const item of fixture.collectionSectionAssignments) {
+    await client.query(
+      `INSERT INTO collection_section_assignments (owner_id, collection_id, life_link_id, section_id, created_at)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [item.ownerId, item.collectionId, item.lifeLinkId, item.sectionId, item.createdAt]
     );
   }
 }
@@ -1261,7 +1638,7 @@ async function assertPostgresCompetitionFixturePostcondition(
   expected: CompetitionFixtureCounts
 ): Promise<void> {
   if (!sameCompetitionFixtureCounts(actual, expected)) {
-    throw new Error("Competition fixture reset produced unexpected account-local counts.");
+    throw new CompetitionFixtureShapeMismatchError("Competition fixture reset produced unexpected account-local counts.");
   }
   const userResult = await client.query("SELECT * FROM users WHERE id = $1", [fixture.owner.id]);
   const user = userResult.rows[0];
@@ -1272,7 +1649,7 @@ async function assertPostgresCompetitionFixturePostcondition(
     toIso(user.created_at) !== fixture.owner.createdAt ||
     !(await verifyPassword(password, String(user.password_hash)))
   ) {
-    throw new Error("Competition fixture owner postcondition failed.");
+    throw new CompetitionFixtureShapeMismatchError("Competition fixture owner postcondition failed.");
   }
   const batch = await client.query(
     `SELECT 1 FROM export_batches
@@ -1288,7 +1665,7 @@ async function assertPostgresCompetitionFixturePostcondition(
     ]
   );
   if (batch.rowCount !== 1) {
-    throw new Error("Competition fixture batch postcondition failed.");
+    throw new CompetitionFixtureShapeMismatchError("Competition fixture batch postcondition failed.");
   }
   for (const qr of fixture.qrInventory) {
     const qrResult = await client.query(
@@ -1296,7 +1673,7 @@ async function assertPostgresCompetitionFixturePostcondition(
       [qr.id, qr.url, qr.batchId, qr.createdAt]
     );
     if (qrResult.rowCount !== 1) {
-      throw new Error("Competition fixture QR postcondition failed.");
+      throw new CompetitionFixtureShapeMismatchError("Competition fixture QR postcondition failed.");
     }
   }
   for (const lifeLink of fixture.lifeLinks) {
@@ -1304,7 +1681,9 @@ async function assertPostgresCompetitionFixturePostcondition(
       `SELECT 1 FROM life_links
        WHERE id = $1 AND owner_id = $2 AND parent_id IS NOT DISTINCT FROM $3
          AND title = $4 AND body = $5 AND body_doc = $6::jsonb AND body_doc_version = $7
-         AND privacy = $8 AND created_at = $9 AND updated_at = $10`,
+         AND privacy = $8 AND created_at = $9 AND updated_at = $10
+         AND browsing_role = $11 AND context = $12::jsonb
+         AND placement_confirmed_at IS NOT DISTINCT FROM $13::timestamptz AND public_field_keys = $14::text[]`,
       [
         lifeLink.id,
         lifeLink.ownerId,
@@ -1315,11 +1694,15 @@ async function assertPostgresCompetitionFixturePostcondition(
         lifeLink.bodyDocVersion,
         lifeLink.privacy,
         lifeLink.createdAt,
-        lifeLink.updatedAt
+        lifeLink.updatedAt,
+        lifeLink.browsingRole,
+        JSON.stringify(lifeLink.context),
+        lifeLink.placementConfirmedAt,
+        lifeLink.publicFieldKeys
       ]
     );
     if (lifeLinkResult.rowCount !== 1) {
-      throw new Error("Competition fixture Life Link postcondition failed.");
+      throw new CompetitionFixtureShapeMismatchError("Competition fixture Life Link postcondition failed.");
     }
   }
   for (const binding of fixture.qrBindings) {
@@ -1328,25 +1711,48 @@ async function assertPostgresCompetitionFixturePostcondition(
       [binding.qrId, binding.lifeLinkId, binding.boundAt]
     );
     if (bindingResult.rowCount !== 1) {
-      throw new Error("Competition fixture binding postcondition failed.");
+      throw new CompetitionFixtureShapeMismatchError("Competition fixture binding postcondition failed.");
     }
   }
-  for (const marker of fixture.projectCompatibility) {
-    const markerResult = await client.query(
-      "SELECT 1 FROM life_link_project_compat WHERE project_id = $1 AND life_link_id = $2",
-      [marker.projectId, marker.lifeLinkId]
+  for (const item of fixture.collections) {
+    const result = await client.query(
+      `SELECT 1 FROM collections WHERE id = $1 AND owner_id = $2 AND title = $3
+       AND purpose = $4 AND notes = $5 AND created_at = $6 AND updated_at = $7`,
+      [item.id, item.ownerId, item.title, item.purpose, item.notes, item.createdAt, item.updatedAt]
     );
-    if (markerResult.rowCount !== 1) {
-      throw new Error("Competition fixture project postcondition failed.");
-    }
+    if (result.rowCount !== 1) throw new CompetitionFixtureShapeMismatchError("Competition fixture Collection postcondition failed.");
+  }
+  for (const item of fixture.collectionSections) {
+    const result = await client.query(
+      `SELECT 1 FROM collection_sections WHERE id = $1 AND owner_id = $2 AND collection_id = $3
+       AND title = $4 AND position = $5 AND created_at = $6 AND updated_at = $7`,
+      [item.id, item.ownerId, item.collectionId, item.title, item.position, item.createdAt, item.updatedAt]
+    );
+    if (result.rowCount !== 1) throw new CompetitionFixtureShapeMismatchError("Competition fixture Section postcondition failed.");
+  }
+  for (const item of fixture.collectionMemberships) {
+    const result = await client.query(
+      `SELECT 1 FROM collection_memberships WHERE owner_id = $1 AND collection_id = $2 AND life_link_id = $3 AND created_at = $4`,
+      [item.ownerId, item.collectionId, item.lifeLinkId, item.createdAt]
+    );
+    if (result.rowCount !== 1) throw new CompetitionFixtureShapeMismatchError("Competition fixture membership postcondition failed.");
+  }
+  for (const item of fixture.collectionSectionAssignments) {
+    const result = await client.query(
+      `SELECT 1 FROM collection_section_assignments WHERE owner_id = $1 AND collection_id = $2
+       AND life_link_id = $3 AND section_id = $4 AND created_at = $5`,
+      [item.ownerId, item.collectionId, item.lifeLinkId, item.sectionId, item.createdAt]
+    );
+    if (result.rowCount !== 1) throw new CompetitionFixtureShapeMismatchError("Competition fixture Section assignment postcondition failed.");
   }
 }
 
 async function insertLifeLink(queryable: Queryable, lifeLink: StoredLifeLink): Promise<void> {
   await queryable.query(
     `INSERT INTO life_links
-       (id, owner_id, parent_id, title, body, body_doc, body_doc_version, privacy, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)`,
+       (id, owner_id, parent_id, title, body, body_doc, body_doc_version, privacy, created_at, updated_at,
+        browsing_role, context, placement_confirmed_at, public_field_keys)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb, $13, $14)`,
     [
       lifeLink.id,
       lifeLink.ownerId,
@@ -1357,14 +1763,79 @@ async function insertLifeLink(queryable: Queryable, lifeLink: StoredLifeLink): P
       lifeLink.bodyDocVersion,
       lifeLink.privacy,
       lifeLink.createdAt,
-      lifeLink.updatedAt
+      lifeLink.updatedAt,
+      lifeLink.browsingRole,
+      JSON.stringify(lifeLink.context),
+      lifeLink.placementConfirmedAt,
+      lifeLink.publicFieldKeys
     ]
   );
 }
 
 async function lockKeys(client: PoolClient, keys: string[]): Promise<void> {
-  for (const key of [...new Set(keys)].sort()) {
+  const owners = [...new Set(keys.filter((key) => key.startsWith("owner:")))].sort();
+  for (const key of owners) await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
+  const expanded = new Set(keys.filter((key) => !key.startsWith("owner:")));
+  // All writers take owner locks before globally ordered live/retained/target QR
+  // locks. A detach/delete cannot expose a claimable gap before its inverse is saved.
+  for (const owner of owners) {
+    const result = await client.query(`SELECT b.qr_id FROM life_link_qr_bindings b JOIN life_links ll ON ll.id = b.life_link_id WHERE ll.owner_id = $1
+      UNION SELECT unnest(reserved_qr_ids) AS qr_id FROM saved_changes WHERE owner_id = $1`, [owner.slice(6)]);
+    for (const row of result.rows) expanded.add(`claim-qr:${row.qr_id}`);
+  }
+  for (const key of [...expanded].sort()) {
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [key]);
+  }
+}
+
+function assertChangeCommandId(commandId: string): void {
+  if (typeof commandId !== "string" || !commandId.trim() || commandId.length > 128) throw new LifeLinkDomainError("invalid_life_link", "A stable change command ID is required.");
+}
+function stalePreview(): LifeLinkDomainError {
+  return new LifeLinkDomainError("stale_life_link", "The preview is stale. Review a fresh preview before applying.", { reason: "stale_preview" });
+}
+
+async function loadCollection(
+  queryable: Queryable, ownerId: string, collectionId: string, forUpdate = false
+): Promise<CollectionRecord | null> {
+  const result = await queryable.query(
+    `SELECT * FROM collections WHERE id = $1 AND owner_id = $2${forUpdate ? " FOR UPDATE" : ""}`,
+    [normalizeCollectionId(collectionId), ownerId]
+  );
+  return result.rows[0] ? mapCollection(result.rows[0]) : null;
+}
+
+async function ownerHasLifeLink(queryable: Queryable, ownerId: string, lifeLinkId: string): Promise<boolean> {
+  const result = await queryable.query("SELECT 1 FROM life_links WHERE id = $1 AND owner_id = $2", [lifeLinkId, ownerId]);
+  return Boolean(result.rowCount);
+}
+
+async function touchCollection(
+  queryable: Queryable, current: CollectionRecord, updatedAt = nextTimestamp(current.updatedAt)
+): Promise<CollectionRecord> {
+  await queryable.query("UPDATE collections SET updated_at = $3 WHERE id = $1 AND owner_id = $2", [current.id, current.ownerId, updatedAt]);
+  return { ...current, updatedAt };
+}
+
+function mapCollection(row: Record<string, unknown>): CollectionRecord {
+  return {
+    id: String(row.id), ownerId: String(row.owner_id), title: String(row.title),
+    purpose: String(row.purpose), notes: String(row.notes),
+    createdAt: toIso(row.created_at), updatedAt: toIso(row.updated_at)
+  };
+}
+
+function mapCollectionSection(row: Record<string, unknown>): CollectionSectionRecord {
+  return {
+    id: String(row.id), ownerId: String(row.owner_id), collectionId: String(row.collection_id),
+    title: String(row.title), position: Number(row.position),
+    createdAt: toIso(row.created_at), updatedAt: toIso(row.updated_at)
+  };
+}
+
+function assertCollectionFresh(collection: CollectionRecord, expectedUpdatedAt: string): void {
+  if (collection.updatedAt !== expectedUpdatedAt) {
+    throw new LifeLinkDomainError("stale_collection", "Collection changed after it was read.", { retryable: true });
   }
 }
 
@@ -1390,6 +1861,10 @@ function mapStoredLifeLink(row: Record<string, unknown>): StoredLifeLink {
     bodyDoc: normalizeLinkBodyDoc(row.body_doc) ?? createLinkBodyDocFromPlainText(body),
     bodyDocVersion: Number(row.body_doc_version ?? LINK_BODY_DOC_VERSION),
     privacy: row.privacy as StoredLifeLink["privacy"],
+    browsingRole: row.browsing_role as StoredLifeLink["browsingRole"],
+    context: normalizeLifeLinkContext(row.context),
+    placementConfirmedAt: nullableIso(row.placement_confirmed_at),
+    publicFieldKeys: normalizePublicFieldKeys(row.public_field_keys),
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at)
   };
@@ -1434,30 +1909,9 @@ function withoutRelations(lifeLink: LifeLinkRecord): StoredLifeLink {
   return stored;
 }
 
-function sameStoredLifeLink(existing: StoredLifeLink, candidate: LifeLinkRecord): boolean {
-  return JSON.stringify(existing) === JSON.stringify(withoutRelations(candidate));
-}
-
 function assertFresh(lifeLink: StoredLifeLink, expectedUpdatedAt: string): void {
   if (lifeLink.updatedAt !== expectedUpdatedAt) {
     throw new LifeLinkDomainError("stale_life_link", "Life Link changed after it was read.", { retryable: true });
-  }
-}
-
-function assertLegacyPlacementChangeAllowed(
-  lifeLink: StoredLifeLink,
-  ownerLifeLinks: readonly LifeLinkRecord[],
-  markers: readonly LifeLinkProjectCompatibilityRecord[]
-): void {
-  if (ownerLifeLinks.some((candidate) => candidate.parentId === lifeLink.id)) {
-    throw new LifeLinkDomainError("invalid_parent", "Legacy placement cannot move a Life Link with children.", {
-      reason: "legacy_non_leaf"
-    });
-  }
-  if (lifeLink.parentId && !markers.some((item) => item.lifeLinkId === lifeLink.parentId)) {
-    throw new LifeLinkDomainError("invalid_parent", "Legacy placement cannot flatten a nested Life Link.", {
-      reason: "legacy_nested"
-    });
   }
 }
 

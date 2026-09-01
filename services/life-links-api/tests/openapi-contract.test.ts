@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { ATTACHMENT_MIME_TYPES, ATTACHMENT_IMAGE_MAX_BYTES, ATTACHMENT_IMAGE_MAX_BASE64_CHARS,
+  ATTACHMENT_IMAGE_MAX_OUTPUT_EDGE, createCanonicalLifeLink, summarizeLifeLink } from "@life-links/core";
 import * as ts from "typescript";
 import { describe, expect, it } from "vitest";
 
@@ -18,6 +20,27 @@ const webClientPath = path.resolve(testDirectory, "../../../apps/life-links-demo
 const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/workspace/controller.ts");
 
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
+  "GET /api/life-links/{lifeLinkId}/media/{mediaId}/image",
+  "GET /api/life-links/{lifeLinkId}/media/{mediaId}/content",
+  "POST /api/life-links/changes/preview",
+  "GET /api/life-links/changes/{previewId}",
+  "POST /api/life-links/changes/apply",
+  "GET /api/change-history",
+  "POST /api/change-history/undo",
+  "DELETE /api/collections/{collectionId}/members/{lifeLinkId}",
+  "DELETE /api/collections/{collectionId}/sections/{sectionId}",
+  "DELETE /api/life-links/{lifeLinkId}/qr-binding",
+  "GET /api/collections",
+  "GET /api/collections/{collectionId}",
+  "GET /api/collections/{collectionId}/members",
+  "GET /api/life-links/{lifeLinkId}/collection-memberships",
+  "PATCH /api/collections/{collectionId}",
+  "PATCH /api/collections/{collectionId}/sections/{sectionId}",
+  "POST /api/collections",
+  "POST /api/collections/{collectionId}/sections",
+  "PUT /api/collections/{collectionId}/members/{lifeLinkId}",
+  "PUT /api/collections/{collectionId}/members/{lifeLinkId}/sections",
+  "PUT /api/life-links/{lifeLinkId}/qr-binding",
   "DELETE /api/life-links/{lifeLinkId}/media/{mediaId}",
   "DELETE /api/links/{qrId}/media/{mediaId}",
   "DELETE /api/agent-connection",
@@ -27,18 +50,15 @@ const EXPECTED_WEB_CLIENT_OPERATIONS = [
   "GET /api/life-links/{lifeLinkId}",
   "GET /api/links",
   "GET /api/me",
-  "GET /api/projects",
   "GET /api/qr/{qrId}",
   "PATCH /api/life-links/{lifeLinkId}",
   "PATCH /api/life-links/{lifeLinkId}/parent",
-  "PATCH /api/links/{qrId}",
   "POST /api/auth/login",
   "POST /api/auth/logout",
   "POST /api/find/scan",
   "POST /api/life-links",
   "POST /api/life-links/{lifeLinkId}/media",
   "POST /api/links/{qrId}/media",
-  "POST /api/projects",
   "POST /api/qr-batches",
   "POST /api/qr/{qrId}/claim",
   "PUT /api/agent-connection"
@@ -244,6 +264,8 @@ function operationPathFromExpression(expression: ts.Expression): string | null {
   for (const span of expression.templateSpans) {
     if (
       (ts.isIdentifier(span.expression) && span.expression.text === "suffix") ||
+      (ts.isCallExpression(span.expression) && ts.isIdentifier(span.expression.expression) &&
+        span.expression.expression.text === "pageSuffix") ||
       (ts.isCallExpression(span.expression) &&
         ts.isPropertyAccessExpression(span.expression.expression) &&
         span.expression.expression.name.text === "toString")
@@ -389,10 +411,14 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(32);
+    expect(published).toHaveLength(50);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
+    expect(document.tags).not.toContainEqual({ name: "projects" });
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    expect(schemas).not.toHaveProperty("Project");
+    expect(objectValue(objectValue(schemas.Link, "Link").properties, "Link properties")).not.toHaveProperty("projectId");
     const operationIds = [...contractOperations(document).values()].map((operation) => operation.operationId);
-    expect(new Set(operationIds).size).toBe(32);
+    expect(new Set(operationIds).size).toBe(50);
     expect(operationIds.every((operationId) => typeof operationId === "string" && operationId.length > 0)).toBe(true);
   });
 
@@ -410,10 +436,12 @@ describe("Life Links OpenAPI v1", () => {
       "canonical_source_sha",
       "source_tree_sha256",
       "build_time",
+      "competition_fixture_profile",
       "store_mode"
     ]);
     const properties = objectValue(runtimeFields.properties, "RuntimeFields properties");
     expect(objectValue(properties.system, "runtime system").const).toBe("life_links");
+    expect(objectValue(properties.competition_fixture_profile, "runtime fixture profile").const).toBe("webmcp-field-ledger-family-v3");
     expect(objectValue(properties.store_mode, "runtime store mode").enum).toEqual(["memory", "postgres"]);
     for (const field of ["build_sha", "canonical_source_sha", "source_tree_sha256"]) {
       expect(objectValue(properties[field], field)).toMatchObject({ type: "string", minLength: 1 });
@@ -435,7 +463,7 @@ describe("Life Links OpenAPI v1", () => {
     });
   });
 
-  it("keeps the included web application client inside the published operation surface", () => {
+  it("keeps the supported web client inside the published operation surface", () => {
     const operations = contractOperations(parseStrictJson(readSource(contractPath)));
     const publishedShapes = new Set([...operations.keys()].map(operationShape));
     const webOperations = clientOperations(webClientPath, "apiFetch");
@@ -508,11 +536,8 @@ describe("Life Links OpenAPI v1", () => {
       "getCanonicalLifeLinkMedia",
       "deleteCanonicalLifeLinkMedia",
       "listOwnedLifeLinks",
-      "updateOwnedLifeLink",
       "uploadLifeLinkMedia",
       "deleteLifeLinkMedia",
-      "listLifeLinkProjects",
-      "createLifeLinkProject",
       "createLifeLinkQrBatch",
       "downloadLifeLinkQrBatchCsv",
       "downloadLifeLinkQrBatchZip",
@@ -679,18 +704,90 @@ describe("Life Links OpenAPI v1", () => {
       "hierarchy_cycle",
       "stale_life_link",
       "qr_already_bound",
+      "qr_not_found",
       "life_link_already_tagged",
+      "invalid_collection",
+      "collection_not_found",
+      "stale_collection",
+      "duplicate_collection_id",
+      "section_not_found",
+      "invalid_section",
+      "duplicate_section_id",
+      "collection_membership_not_found",
       "output_limit_exceeded"
     ]);
 
     const publicQr = operationById(operations, "resolveLifeLinkQr");
-    expect(String(publicQr.description)).toContain("projectId to null");
+    expect(String(publicQr.description)).toContain("ownerId to null");
     expect(String(publicQr.description)).toContain("never expose canonical Life Link identity");
     const publicLinkProperties = objectValue(objectValue(schemas.Link, "legacy Link").properties, "legacy Link properties");
     for (const field of ["lifeLinkId", "parentId", "ancestry", "children", "path", "hierarchy", "rootId", "descendants"]) {
       expect(publicLinkProperties, `public compatibility Link must omit ${field}`).not.toHaveProperty(field);
     }
     expect(objectValue(schemas.QrPrivateState, "private QR state").required).toEqual(["state", "qrId"]);
+  });
+
+  it("describes canonical role, context and public-field inputs with server-owned placement", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    const lifeLink = createCanonicalLifeLink({
+      id: "life-link-schema-fixture",
+      ownerId: "owner-schema-fixture",
+      createdAt: "2026-08-29T12:00:00.000Z",
+      browsingRole: "container",
+      context: { schemaVersion: 1, condition: { text: "Ready", truthState: "owner_reported" } },
+      publicFieldKeys: ["condition"]
+    });
+    for (const [name, value] of [["LifeLink", lifeLink], ["LifeLinkSummary", summarizeLifeLink(lifeLink, 0)]] as const) {
+      const schema = objectValue(schemas[name], name);
+      expect(schema.additionalProperties).toBe(false);
+      expect([...(schema.required as string[])].sort()).toEqual(Object.keys(value).sort());
+      expect(Object.keys(objectValue(schema.properties, `${name} properties`)).sort()).toEqual(Object.keys(value).sort());
+    }
+    const properties = objectValue(objectValue(schemas.LifeLink, "LifeLink").properties, "LifeLink properties");
+    expect(properties.browsingRole).toEqual({ $ref: "#/components/schemas/LifeLinkBrowsingRole" });
+    expect(properties.context).toEqual({ $ref: "#/components/schemas/LifeLinkContext" });
+    expect(properties.placementConfirmedAt).toMatchObject({ oneOf: [{ type: "string", format: "date-time" }, { type: "null" }] });
+    expect(properties.publicFieldKeys).toMatchObject({
+      type: "array", maxItems: 5, uniqueItems: true, items: { $ref: "#/components/schemas/LifeLinkPublicFieldKey" }
+    });
+    expect(objectValue(schemas.LifeLinkContext, "LifeLinkContext")).toMatchObject({
+      additionalProperties: false, required: ["schemaVersion"], properties: { schemaVersion: { const: 1 } }
+    });
+    const create = objectValue(objectValue(schemas.LifeLinkCreateRequest, "create").properties, "create properties");
+    expect(create).toHaveProperty("id");
+    expect(create).toHaveProperty("browsingRole");
+    expect(create).toHaveProperty("context");
+    expect(create).toHaveProperty("publicFieldKeys");
+    expect(create).not.toHaveProperty("placementConfirmedAt");
+    const patch = objectValue(objectValue(schemas.LifeLinkPatchRequest, "patch").properties, "patch properties");
+    expect(patch).toHaveProperty("context");
+    expect(patch).toHaveProperty("publicFieldKeys");
+    expect(patch).not.toHaveProperty("browsingRole");
+    expect(patch).not.toHaveProperty("placementConfirmedAt");
+    const link = objectValue(objectValue(schemas.Link, "Link").properties, "Link properties");
+    expect(link).toHaveProperty("context");
+    expect(link).not.toHaveProperty("publicFieldKeys");
+  });
+
+  it("publishes Collection revisions, bounded Sections, exhaustive assignments and QR command identity", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    const operations = contractOperations(document);
+    for (const key of EXPECTED_WEB_CLIENT_OPERATIONS.filter((key) => key.includes("/collections") || key.includes("/qr-binding") || key.includes("/collection-memberships"))) {
+      expect(operations.has(key), key).toBe(true);
+      expect(operations.get(key)?.security).toBeUndefined();
+      expect(objectValue(operations.get(key)?.responses, `${key} responses`)).toHaveProperty("401");
+    }
+    expect(operations.has("GET /api/collections/{collectionId}/sections")).toBe(false);
+    const detail = objectValue(schemas.CollectionDetailResponse, "CollectionDetailResponse");
+    expect(detail.required).toEqual(["collection", "sections", "sectionsPage"]);
+    const membership = objectValue(objectValue(schemas.LifeLinkCollectionMembership, "membership").properties, "membership properties");
+    expect(objectValue(membership.sections, "membership sections")).not.toHaveProperty("maxItems");
+    const assignments = objectValue(schemas.CollectionSectionAssignmentsRequest, "assignment command");
+    expect(assignments.required).toEqual(["sectionIds", "expectedUpdatedAt"]);
+    expect(objectValue(schemas.QrBindingSetRequest, "set QR").required).toEqual(["commandId", "qrId", "expectedUpdatedAt"]);
+    expect(objectValue(schemas.QrBindingClearRequest, "clear QR").required).toEqual(["commandId", "expectedUpdatedAt"]);
   });
 
   it("binds claim retries to command identity, authenticated owner, and QR without logging raw command ids", () => {
@@ -764,15 +861,8 @@ describe("Life Links OpenAPI v1", () => {
     expect(objectValue(patchProperties.body, "body").maxLength).toBe(4000);
     const mediaProperties = objectValue(objectValue(schemas.LinkMedia, "LinkMedia").properties, "media properties");
     expect(objectValue(mediaProperties.sizeBytes, "sizeBytes").maximum).toBe(25 * 1024 * 1024);
-    expect(objectValue(mediaProperties.mimeType, "mimeType").enum).toEqual([
-      "image/jpeg",
-      "image/png",
-      "image/webp",
-      "image/gif",
-      "video/mp4",
-      "video/webm",
-      "video/quicktime"
-    ]);
+    expect(objectValue(mediaProperties.mimeType, "mimeType").enum).toEqual(Object.keys(ATTACHMENT_MIME_TYPES));
+    expect(objectValue(mediaProperties.kind, "kind").enum).toEqual(["image", "video", "document"]);
     const linkProperties = objectValue(objectValue(schemas.Link, "Link").properties, "link properties");
     expect(objectValue(linkProperties.media, "media").maxItems).toBe(8);
     const loginProperties = objectValue(objectValue(schemas.LoginResponse, "LoginResponse").properties, "login properties");
@@ -786,5 +876,46 @@ describe("Life Links OpenAPI v1", () => {
     const scannedAlternatives = objectValue(findProperties.scannedQrId, "scannedQrId").oneOf as JsonObject[];
     expect(scannedAlternatives[0]).toMatchObject({ type: "string", minLength: 1, maxLength: 2048 });
     expect(scannedAlternatives[0]).not.toHaveProperty("$ref");
+  });
+
+  it("publishes source-bound image query modes and a separately bounded visual payload", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operation = operationById(contractOperations(document), "getLifeLinkAttachmentImage");
+    expect(operation.security).toBeUndefined();
+    const parameters = operation.parameters as JsonObject[];
+    expect(parameters.find((parameter) => parameter.name === "mode")).toMatchObject({ required: true, schema: { enum: ["describe", "overview", "crop"] } });
+    expect(parameters.find((parameter) => parameter.name === "sourceRevision")).toMatchObject({ schema: { pattern: "^[a-f0-9]{64}$" } });
+    expect(parameters.find((parameter) => parameter.name === "page")).toMatchObject({ required: false, schema: { type: "integer", minimum: 1, maximum: 512 } });
+    expect(parameters.find((parameter) => parameter.name === "maxEdge")).toMatchObject({ schema: { maximum: ATTACHMENT_IMAGE_MAX_OUTPUT_EDGE } });
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    const properties = objectValue(objectValue(schemas.AttachmentImageResult, "AttachmentImageResult").properties, "image properties");
+    const source = ((properties.source as JsonObject).anyOf as JsonObject[])[0];
+    const sourceProperties = objectValue(source.properties, "source properties");
+    expect(sourceProperties.pdf).toMatchObject({ additionalProperties: false, required: ["pageNumber", "pageCount", "rotation", "pixelsPerPoint"],
+      properties: { pixelsPerPoint: { const: 4 }, pageCount: { maximum: 512 } } });
+    expect(source.allOf).toMatchObject([
+      { then: { required: ["pdf"] }, else: { not: { required: ["pdf"] } } },
+      { then: { required: ["office"] }, else: { not: { required: ["office"] } } },
+      { then: { required: ["video"] }, else: { not: { required: ["video"] } } },
+      { if: { required: ["animation"] }, else: { properties: { frameCount: { const: 1 } } } }
+    ]);
+    expect((properties.reason as JsonObject).enum).toContain("encrypted");
+    const image = objectValue(((properties.image as JsonObject).anyOf as JsonObject[])[0].properties, "image payload properties");
+    expect(image.data).toMatchObject({ contentEncoding: "base64", maxLength: ATTACHMENT_IMAGE_MAX_BASE64_CHARS });
+    const rendition = objectValue(((properties.rendition as JsonObject).anyOf as JsonObject[])[0].properties, "rendition properties");
+    expect(rendition.sizeBytes).toMatchObject({ maximum: ATTACHMENT_IMAGE_MAX_BYTES });
+    expect(rendition).toHaveProperty("sha256"); expect(rendition).toHaveProperty("region"); expect(rendition).toHaveProperty("processorVersion");
+    expect(properties.status).toMatchObject({ enum: ["described", "bytes_ready", "unreadable"] });
+    expect(parameters.find((p) => p.name === "frame")).toMatchObject({ schema: { minimum: 1, maximum: 512 } });
+    expect(parameters.find((p) => p.name === "atMs")).toMatchObject({ schema: { minimum: 0, maximum: 300000 } });
+    expect(sourceProperties.office).toMatchObject({ properties: { conversionProfile: { const: "cached-print-v1" } } });
+    expect(sourceProperties.video).toMatchObject({ required: expect.arrayContaining(["framePts", "timeBase", "frameTimeMs", "requestedTimeMs"]) });
+    expect(sourceProperties.animation).toMatchObject({ required: expect.arrayContaining(["frameNumber", "frameCount", "startMs", "durationMs", "loopCount"]) });
+    expect((properties.reason as JsonObject).enum).toContain("runtime_unavailable");
+    const text = operationById(contractOperations(document), "getLifeLinkAttachmentContent");
+    expect((text.parameters as JsonObject[]).find((p) => p.name === "representation")).toMatchObject({ schema: { const: "transcript" } });
+    expect((text.parameters as JsonObject[]).find((p) => p.name === "durationMs")).toMatchObject({ schema: { minimum: 1, maximum: 30000 } });
+    const textProperties = objectValue(objectValue(schemas.AttachmentContentPage, "AttachmentContentPage").properties, "content properties");
+    expect(textProperties.transcript).toMatchObject({ required: expect.arrayContaining(["nextStartMs", "audioStreamIndex", "modelSha256", "processorVersion"]) });
   });
 });

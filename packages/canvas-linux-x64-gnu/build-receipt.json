@@ -1,0 +1,240 @@
+{
+  "schema_version": "life_links.canvas_native_build_receipt.v3",
+  "package": {
+    "name": "@napi-rs/canvas-linux-x64-gnu",
+    "version": "0.1.100",
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "run": {
+    "run_id": "df793706-fffd-4ed8-b639-d655edef9765",
+    "run_label": "bootstrap",
+    "container_name": "lifelinks-bc270-bootstrap-df793706fffd4ed8b639d655edef9765",
+    "source_volume_name": "lifelinks-bc270-bootstrap-df793706fffd4ed8b639d655edef9765-source",
+    "output_volume_name": "lifelinks-bc270-bootstrap-df793706fffd4ed8b639d655edef9765-output",
+    "output_id": "94faf5f7-d406-44fe-8669-eea4ab0a549c",
+    "builder_image": "lifelinks-bc270-canvas-builder@sha256:d85f488f02a64cc0c5ebc5d32dfc89309ab0d90709c7f3eacd8697f7de64a7e7",
+    "network_mode": "none",
+    "normalized_source_tar": {
+      "sha256": "410a39ed4f7a9d8b8f63386d144aec969fec35b88206c51c85948c85af2ac5aa",
+      "size_bytes": 7919534080
+    },
+    "correlation_source": "life_links.canvas_offline_build_runner.v1"
+  },
+  "committed_inputs": {
+    "build_offline_sha256": "d43b4a27d8cbe85d65dbccb395f06eda6da28f85fbab10c78448222febf75f19",
+    "verify_materials_sha256": "2e3c947417947963c78f3cf2ff46fc0afd0a60ef9131a0aa80581fed9a215426",
+    "run_offline_build_sha256": "dc5f127297d4403a58fc6d68de034478b757877770ae2c586e70e239161a3df0",
+    "native_build_lock_sha256": "528a1a78ec7e7989a08ad71f3697b3c9ad7f3687143a5e8b9d07c9cd7a0ddb97",
+    "builder_dockerfile_sha256": "87fdf8469f82c28420b3620aaa0e81f6412c47381bcd4738bb0845d1755f039a",
+    "skia_materials_lock_sha256": "fda57a39ea38893e8fc1d4f260a35bf9aa4cc7057565fa9911101529afa84dd1",
+    "backport_patch_sha256": "60162360c684e27225636031b5727b6bdf8e736d9ef0b615eb23e13917350298",
+    "normalized_source_tar_sha256": "410a39ed4f7a9d8b8f63386d144aec969fec35b88206c51c85948c85af2ac5aa",
+    "normalized_source_tar_size_bytes": 7919534080
+  },
+  "source": {
+    "canvas": {
+      "base_commit": "db337893b9b53483050ca7b24c6d306e4da06741",
+      "base_tree": "7186ab69c2228f109c5cbe21a4d3b406468c2b41",
+      "effective_tree": "a8286ad26dba37e3f18c50665d0b640006f89b85",
+      "backports": [
+        {
+          "origin_commit": "6be5aa2c664dd077513aa8c89a93531cc568adef",
+          "source_path": "src/ctx.rs",
+          "patch_path": "native-build/patches/0001-backport-draw-image-source-napi-3.12.patch",
+          "patch_sha256": "60162360c684e27225636031b5727b6bdf8e736d9ef0b615eb23e13917350298"
+        }
+      ]
+    },
+    "skia_commit": "fe2718df5f53a681087be6f0539045ca1b4b8c09",
+    "depot_tools_commit": "8efa575d754b8703d99b0f827528e45aeaa167aa",
+    "cargo_lock_sha256": "621410be18188a59695d4a2d967ef599dfb73d3881e63075bd15de8759176944",
+    "native_build_lock_sha256": "528a1a78ec7e7989a08ad71f3697b3c9ad7f3687143a5e8b9d07c9cd7a0ddb97",
+    "skia_dependencies": {
+      "manifest_sha256": "fda57a39ea38893e8fc1d4f260a35bf9aa4cc7057565fa9911101529afa84dd1",
+      "skia_deps_sha256": "d65ff929f8a373ea16b21d45d5489557d51389ba6583a5c9959d5487c02ce965",
+      "git_dependency_count": 47,
+      "cipd_material_count": 1,
+      "gn": {
+        "path": "bin/gn",
+        "package": "gn/gn/linux-amd64",
+        "instance_id": "ajv8U9glvMrF5bS3vcwQzpOWoEpomsaE7DMIylx_PZwC",
+        "sha256": "8fa12442a4d0fc4d754e89ec732aa015cdaf8d4bcbbedf68468c652531ea482c"
+      }
+    }
+  },
+  "builder": {
+    "image": "lifelinks-bc270-canvas-builder@sha256:d85f488f02a64cc0c5ebc5d32dfc89309ab0d90709c7f3eacd8697f7de64a7e7",
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)\nbinary: rustc\ncommit-hash: e408947bfd200af42db322daf0fadfe7e26d3bd1\ncommit-date: 2026-03-25\nhost: x86_64-unknown-linux-gnu\nrelease: 1.94.1\nLLVM version: 21.1.8",
+    "cargo": "cargo 1.94.1 (29ea6fb6a 2026-03-24)\nrelease: 1.94.1\ncommit-hash: 29ea6fb6a5db279426f4cc4e17aa385f05a0cfbc\ncommit-date: 2026-03-24\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.2 (sys:0.20.3 vendored)\nlibcurl: 8.15.0-DEV (sys:0.4.83+curl-8.15.0 vendored ssl:OpenSSL/3.5.4)\nssl: OpenSSL 3.5.4 30 Sep 2025\nos: Ubuntu 22.4.0 (jammy) [64-bit]",
+    "node": "v22.18.0",
+    "clang": {
+      "path": "/usr/bin/clang",
+      "sha256": "7969846391c1fe04f816c26bd7d6a09171e9330378c9ec8fd6c841dafec66faa",
+      "version": "Ubuntu clang version 19.1.7 (++20250114103320+cd708029e0b2-1~exp1~20250114103432.75)\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/lib/llvm-19/bin"
+    },
+    "ld": {
+      "path": "/usr/bin/ld",
+      "sha256": "4265cc1179af9bd5e858d622b6855248f56b2de3dec3e5f7ba9220f34b78dbfc",
+      "version": "GNU ld (GNU Binutils for Ubuntu) 2.38\nCopyright (C) 2022 Free Software Foundation, Inc.\nThis program is free software; you may redistribute it under the terms of\nthe GNU General Public License version 3 or (at your option) a later version.\nThis program has absolutely no warranty."
+    },
+    "ninja": {
+      "path": "/usr/bin/ninja",
+      "sha256": "a9ddfbf7e365a2e5026ed44f9173e498e37d8b71ec5e259b2c2a684f16cfa862",
+      "version": "1.10.1"
+    },
+    "gn": {
+      "path": "/work/canvas/skia/bin/gn",
+      "sha256": "8fa12442a4d0fc4d754e89ec732aa015cdaf8d4bcbbedf68468c652531ea482c",
+      "version": "2175 (b2afae122eeb)"
+    }
+  },
+  "outputs": {
+    "binary": {
+      "path": "skia.linux-x64-gnu.node",
+      "sha256": "081f48cae55e9527cdac35f4f22a0165f465d27d442f89ea7a8119aade984894",
+      "size_bytes": 33483200
+    },
+    "skia_static_archives": [
+      {
+        "path": "libbentleyottmann.a",
+        "sha256": "6821959e5f091284cb1d3e38fca71734f8413041e85e85fba84f889d55bc51b8",
+        "size_bytes": 135028
+      },
+      {
+        "path": "libbrotli.a",
+        "sha256": "df9827433a50d59ef334c1b4365c96e46f0ccbf3bf855a77fcaa5745b1ffc015",
+        "size_bytes": 209428
+      },
+      {
+        "path": "libcompression_utils_portable.a",
+        "sha256": "cce3e9beb64943dc396278842ae785939f84a68b7edc994263268a02a13db437",
+        "size_bytes": 6152
+      },
+      {
+        "path": "libexpat.a",
+        "sha256": "43d9c40a52b5a7b42237bc238c3cc1d4bab00818544e0605effb923e4b2c336b",
+        "size_bytes": 394804
+      },
+      {
+        "path": "libfreetype2.a",
+        "sha256": "5801c921fe639076ee18c621f7dc140e7d4a44c2d102eb0ee4daa7ad39b685ea",
+        "size_bytes": 1184964
+      },
+      {
+        "path": "libharfbuzz.a",
+        "sha256": "2a3d2ec297f61b653b6e6c317b7a1b0d181b618bf4ce4a6cb2125132374c91a6",
+        "size_bytes": 8679970
+      },
+      {
+        "path": "libhighway.a",
+        "sha256": "1e57ff72296900080f2d03a16e111ce31ab44cabe95a9923eb94998bc8b1fdcb",
+        "size_bytes": 7784
+      },
+      {
+        "path": "libicu.a",
+        "sha256": "2643004a3b866ccadba41b6d4ae859142d7a33f2561baf9e0d40573f25a233c6",
+        "size_bytes": 22647136
+      },
+      {
+        "path": "libjpeg.a",
+        "sha256": "b15616423f02aa7e91fa2666398875994f9123e7aac183f1685426960cc6010c",
+        "size_bytes": 579514
+      },
+      {
+        "path": "libjpeg12.a",
+        "sha256": "6d59f2277daf0f3aa9c50cd44aa3c5ce292145168ef5719c6c3c08b0b943549f",
+        "size_bytes": 243328
+      },
+      {
+        "path": "libjpeg16.a",
+        "sha256": "6122abd80c7d34e14ddd0d331c5f1edf2b475f28491a0452a55f88b24b0c05bd",
+        "size_bytes": 102586
+      },
+      {
+        "path": "libjsonreader.a",
+        "sha256": "62547e5b8687970b030d59d100301d944cb36f052cb3edf6f99777b6e889a32e",
+        "size_bytes": 38796
+      },
+      {
+        "path": "libjxl.a",
+        "sha256": "9bded67794a12f5bc5247a9f9ce13127d85c244d502d508c364e246cdbf7b887",
+        "size_bytes": 3200098
+      },
+      {
+        "path": "libpng.a",
+        "sha256": "cdbe4b6ac79363fe69d62192bde82ee0d96123fa10bb606e08fd828ef6b236b1",
+        "size_bytes": 453156
+      },
+      {
+        "path": "libskcms.a",
+        "sha256": "ee908d470c57c5adda8012cfd34dfd049740defae967f848d67c2ac546437f27",
+        "size_bytes": 193966
+      },
+      {
+        "path": "libskia.a",
+        "sha256": "255ce90523b148032b61ea689cc4f03f71673e94c0cc95ac3cc3fbd30b8e0891",
+        "size_bytes": 29060392
+      },
+      {
+        "path": "libskottie.a",
+        "sha256": "2d5ea927b194bd398bd9bc7cf30db828be6d58be9bb128a4fbe4d21c6a49128e",
+        "size_bytes": 9722234
+      },
+      {
+        "path": "libskparagraph.a",
+        "sha256": "5e83fde5ed97a756220f4eb96ffdee7b96c93aed2051fee422a5bb0e83a8bc0c",
+        "size_bytes": 771518
+      },
+      {
+        "path": "libskresources.a",
+        "sha256": "dfc41fffcff3e97393d910a70dd6f81bf9020baeb2b7fa8fbcfd72fadaa1d0af",
+        "size_bytes": 48468
+      },
+      {
+        "path": "libsksg.a",
+        "sha256": "67b82ec8fcf8967ed7f5ac42142f59777a60c8e60b2b9bbb2b333b18d715c61b",
+        "size_bytes": 8509224
+      },
+      {
+        "path": "libskshaper.a",
+        "sha256": "4f6b747bd71653703a3163ebdc0cd0e34b6b0f04644bd968b3abde87f488d07d",
+        "size_bytes": 8802332
+      },
+      {
+        "path": "libskunicode_core.a",
+        "sha256": "abba385ee7fea719150161a86da043bf1764d9337e095a4c4f3eaf7478479c2e",
+        "size_bytes": 13458
+      },
+      {
+        "path": "libskunicode_icu.a",
+        "sha256": "7df753725ae15f459d4dff1a98b34483036c85d729cc9d8b72107dc33bc3354c",
+        "size_bytes": 22747842
+      },
+      {
+        "path": "libsvg.a",
+        "sha256": "f1f70f7917a8c7dbb2fcd7530e5e75bd298d1a06b74c92e4a5695e059fe58dd5",
+        "size_bytes": 9046942
+      },
+      {
+        "path": "libwebp.a",
+        "sha256": "c7f96bb52381c40836e0accfe739c6e7378394632e06427c99dc6ff2d6a2c275",
+        "size_bytes": 1218104
+      },
+      {
+        "path": "libwebp_sse41.a",
+        "sha256": "138f4571f71f8031ccd1f0d1262fdac7811d2dc376272774c3689d27f83e9567",
+        "size_bytes": 58396
+      },
+      {
+        "path": "libwuffs.a",
+        "sha256": "dcca751914e85b1bd1137969c13d56a2331e7f1beaa491bdf4b04a243e622c25",
+        "size_bytes": 186736
+      },
+      {
+        "path": "libzlib.a",
+        "sha256": "4a6329d5912107138042dcb7cb7a90cb6773fd50e74b4a398b501005a862129a",
+        "size_bytes": 137160
+      }
+    ]
+  }
+}

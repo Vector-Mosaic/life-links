@@ -1,0 +1,15 @@
+{
+  "name": "@life-links/canvas-wrapper-smoke",
+  "private": true,
+  "version": "0.0.0",
+  "packageManager": "pnpm@10.14.0",
+  "pnpm": {
+    "overrides": {
+      "@napi-rs/canvas-linux-x64-gnu": "link:../.."
+    }
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "0.1.100",
+    "@napi-rs/canvas-linux-x64-gnu": "link:../.."
+  }
+}

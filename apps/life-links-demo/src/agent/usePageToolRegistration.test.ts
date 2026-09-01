@@ -152,7 +152,7 @@ describe("page tool registration lifecycle", () => {
     });
   });
 
-  it("registers exactly five together and dispatches through the current definitions", async () => {
+  it("registers the complete catalog together and dispatches through the current definitions", async () => {
     const modelContext = new ControlledModelContext();
     const lifecycle = new PageToolRegistrationLifecycle();
     const documentLike = { modelContext };
@@ -166,7 +166,7 @@ describe("page tool registration lifecycle", () => {
     ).resolves.toMatchObject({ status: "registered" });
 
     expect([...modelContext.tools.keys()]).toEqual(LIFE_LINKS_PAGE_TOOL_NAMES);
-    expect(modelContext.registrations).toHaveLength(5);
+    expect(modelContext.registrations).toHaveLength(14);
     const signals = modelContext.registrations.map(({ options }) => options?.signal);
     expect(signals.every((signal) => signal === signals[0])).toBe(true);
 
@@ -181,13 +181,13 @@ describe("page tool registration lifecycle", () => {
       eligibility: ELIGIBLE,
       definitions: makeCatalog("current")
     });
-    expect(modelContext.registrations).toHaveLength(5);
+    expect(modelContext.registrations).toHaveLength(14);
     await expect(registeredInspect!.execute({}, {})).resolves.toMatchObject({
       version: "current"
     });
   });
 
-  it("does not execute a partially registered catalog before all five tools activate", async () => {
+  it("does not execute a partially registered catalog before every tool activates", async () => {
     const modelContext = new FirstRegistrationPauseModelContext();
     const lifecycle = new PageToolRegistrationLifecycle();
     const documentLike = { modelContext };
@@ -209,14 +209,14 @@ describe("page tool registration lifecycle", () => {
 
     modelContext.releaseCatalogRegistration();
     await expect(registration).resolves.toMatchObject({ status: "registered" });
-    expect(modelContext.tools.size).toBe(5);
+    expect(modelContext.tools.size).toBe(14);
     await expect(registeredInspect!.execute({}, {})).resolves.toMatchObject({
       ok: true,
       version: "atomic"
     });
   });
 
-  it("uses one abort signal to clean up all five on every eligibility boundary", async () => {
+  it("uses one abort signal to clean up the whole catalog on every eligibility boundary", async () => {
     const modelContext = new ControlledModelContext();
     const lifecycle = new PageToolRegistrationLifecycle();
     const documentLike = { modelContext };
@@ -224,7 +224,7 @@ describe("page tool registration lifecycle", () => {
 
     await lifecycle.synchronize({ documentLike, eligibility: ELIGIBLE, definitions: catalog });
     const firstSignal = modelContext.registrations[0].options?.signal;
-    expect(modelContext.tools.size).toBe(5);
+    expect(modelContext.tools.size).toBe(14);
 
     await lifecycle.synchronize({
       documentLike,
@@ -235,14 +235,14 @@ describe("page tool registration lifecycle", () => {
     expect(modelContext.tools.size).toBe(0);
 
     await lifecycle.synchronize({ documentLike, eligibility: ELIGIBLE, definitions: catalog });
-    const ownerOneSignal = modelContext.registrations[5].options?.signal;
+    const ownerOneSignal = modelContext.registrations[11].options?.signal;
     await lifecycle.synchronize({
       documentLike,
       eligibility: { ...ELIGIBLE, authenticatedOwnerId: "owner-two" },
       definitions: catalog
     });
     expect(ownerOneSignal?.aborted).toBe(true);
-    expect(modelContext.tools.size).toBe(5);
+    expect(modelContext.tools.size).toBe(14);
 
     await lifecycle.synchronize({
       documentLike,

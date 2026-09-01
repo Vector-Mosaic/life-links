@@ -1,18 +1,17 @@
+import type { LifeLinkBrowsingRole, LifeLinkContext, PublicFieldKey } from "./fieldLedger.js";
+import { normalizeLifeLinkBrowsingRole, normalizeLifeLinkContext, normalizePublicFieldKeys } from "./fieldLedger.js";
+
+export * from "./fieldLedger.js";
+export * from "./changeHistory.js";
+
 export type PrivacyStatus = "public" | "private";
 export type LinkStatus = "unclaimed" | "claimed";
-export type LinkMediaKind = "image" | "video";
+export type LinkMediaKind = "image" | "video" | "document";
 
 export type UserRecord = {
   id: string;
   email: string;
   displayName: string;
-  createdAt: string;
-};
-
-export type ProjectRecord = {
-  id: string;
-  ownerId: string;
-  name: string;
   createdAt: string;
 };
 
@@ -34,7 +33,7 @@ export type LinkRecord = {
   body: string;
   bodyDoc?: LinkBodyDoc | null;
   bodyDocVersion?: number | null;
-  projectId: string | null;
+  context?: LifeLinkContext;
   privacy: PrivacyStatus;
   media: LinkMediaRecord[];
   createdAt: string;
@@ -72,8 +71,8 @@ export type QrViewState =
 
 export type DemoSeedData = {
   users: Array<UserRecord & { password: string }>;
-  projects: ProjectRecord[];
-  links: LinkRecord[];
+  roots: LifeLinkRecord[];
+  links: Array<LinkRecord & { parentId: string | null }>;
 };
 
 export type LinkBodyInlineSegment =
@@ -114,7 +113,6 @@ export const MAX_BATCH_COUNT = 10000;
 export const MAX_TITLE_LENGTH = 120;
 export const MAX_BODY_LENGTH = 4000;
 export const MAX_BODY_DOC_BYTES = 128 * 1024;
-export const MAX_PROJECT_NAME_LENGTH = 80;
 export const MAX_QR_ID_LENGTH = 128;
 export const MAX_SCAN_TEXT_LENGTH = 2048;
 export const MAX_MEDIA_BYTES = 25 * 1024 * 1024;
@@ -406,81 +404,11 @@ export function createUnclaimedLinks(ids: string[], baseUrl: string, now = new D
     body: "",
     bodyDoc: createLinkBodyDocFromPlainText(""),
     bodyDocVersion: LINK_BODY_DOC_VERSION,
-    projectId: null,
     privacy: "public",
     media: [],
     createdAt: now,
     updatedAt: now
   }));
-}
-
-export function claimLink(
-  links: LinkRecord[],
-  qrId: string,
-  userId: string,
-  now = new Date().toISOString()
-): { links: LinkRecord[]; result: ClaimResult } {
-  let result: ClaimResult = "not_found";
-  const nextLinks = links.map((link) => {
-    if (link.id !== qrId) {
-      return link;
-    }
-    if (link.ownerId === userId) {
-      result = "already_owned";
-      return link;
-    }
-    if (link.ownerId && link.ownerId !== userId) {
-      result = "owned_by_other";
-      return link;
-    }
-    result = "claimed";
-    return {
-      ...link,
-      status: "claimed" as const,
-      ownerId: userId,
-      title: link.title || "Untitled link",
-      updatedAt: now
-    };
-  });
-  return { links: nextLinks, result };
-}
-
-export function updateLinkContent(
-  links: LinkRecord[],
-  qrId: string,
-  patch: Pick<LinkRecord, "title" | "body" | "privacy" | "projectId"> &
-    Partial<Pick<LinkRecord, "bodyDoc" | "bodyDocVersion">>,
-  now = new Date().toISOString()
-): LinkRecord[] {
-  return links.map((link) =>
-    link.id === qrId
-      ? {
-          ...link,
-          ...patch,
-          updatedAt: now
-        }
-      : link
-  );
-}
-
-export function searchOwnedLinks(
-  links: LinkRecord[],
-  userId: string,
-  query: string,
-  projects: ProjectRecord[] = []
-): LinkRecord[] {
-  const needle = query.trim().toLowerCase();
-  const projectNamesById = new Map(projects.map((project) => [project.id, project.name]));
-  return links
-    .filter((link) => link.ownerId === userId)
-    .filter((link) => {
-      if (!needle) {
-        return true;
-      }
-      const projectName = link.projectId ? projectNamesById.get(link.projectId) ?? "" : "";
-      return `${link.title} ${link.body} ${link.id} ${projectName}`.toLowerCase().includes(needle);
-    })
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
 export function createDemoSeedData(now = new Date().toISOString(), baseUrl = DEFAULT_QR_BASE_URL): DemoSeedData {
@@ -501,11 +429,13 @@ export function createDemoSeedData(now = new Date().toISOString(), baseUrl = DEF
     }
   ];
 
-  const projects: ProjectRecord[] = [
-    { id: "project-home", ownerId: DEMO_OWNER_ID, name: "Home archive", createdAt: now },
-    { id: "project-studio", ownerId: DEMO_OWNER_ID, name: "Studio gear", createdAt: now },
-    { id: "project-inventory", ownerId: DEMO_OWNER_ID, name: "Inventory shelf", createdAt: now }
-  ];
+  const roots = [
+    { id: "project-home", title: "Home archive" },
+    { id: "project-studio", title: "Studio gear" },
+    { id: "project-inventory", title: "Inventory shelf" }
+  ].map(({ id, title }) => createCanonicalLifeLink({
+    id, title, ownerId: DEMO_OWNER_ID, browsingRole: "container", createdAt: now
+  }));
 
   const ids = generateSequentialQrIds(18, "DEMO");
   const unclaimed = createUnclaimedLinks(ids.slice(9), baseUrl, now);
@@ -549,28 +479,27 @@ export function createDemoSeedData(now = new Date().toISOString(), baseUrl = DEF
       ][index]
     ),
     bodyDocVersion: LINK_BODY_DOC_VERSION,
-    projectId: [projects[0].id, projects[1].id, projects[0].id, projects[0].id, projects[2].id][index % 5] ?? null,
+    parentId: [roots[0].id, roots[1].id, roots[0].id, roots[0].id, roots[2].id][index % 5] ?? null,
     privacy: (index === 0 || index === 4 || index === 7 ? "private" : "public") as PrivacyStatus,
     updatedAt: now
   }));
 
   return {
     users,
-    projects,
-    links: [...claimed, ...unclaimed]
+    roots,
+    links: [...claimed, ...unclaimed.map((link) => ({ ...link, parentId: null }))]
   };
 }
 
 export function linksToCsv(links: LinkRecord[]): string {
   const rows = [
-    ["qr_id", "url", "status", "owner_id", "title", "project_id", "privacy"],
+    ["qr_id", "url", "status", "owner_id", "title", "privacy"],
     ...links.map((link) => [
       link.id,
       link.url,
       link.status,
       link.ownerId ?? "",
       link.title,
-      link.projectId ?? "",
       link.privacy
     ])
   ];
@@ -752,7 +681,7 @@ function randomBytes(length: number): Uint8Array {
   return bytes;
 }
 
-// Canonical recursive Life Link contract. Existing ProjectRecord, LinkRecord,
+// Canonical recursive Life Link contract. QR-keyed LinkRecord and
 // QrRecord, and QrViewState exports above remain compatibility/public DTOs.
 
 export const LEGACY_LIFE_LINK_ID_PREFIX = "legacy-life-link:";
@@ -766,7 +695,7 @@ export const MAX_LIFE_LINK_TOOL_SEARCH_RESULTS = 10;
 export const MAX_LIFE_LINK_PATH_ITEMS = 12;
 export const MAX_LIFE_LINK_BODY_SUMMARY_LENGTH = 240;
 export const MAX_LIFE_LINK_SOURCE_REFERENCE_COUNT = 8;
-export const MAX_LIFE_LINK_TOOL_OUTPUT_BYTES = 1536;
+export const MAX_LIFE_LINK_TOOL_OUTPUT_BYTES = 2048;
 
 export type QrInventoryRecord = Omit<QrRecord, "status" | "claimedAt">;
 
@@ -785,6 +714,10 @@ export type LifeLinkRecord = {
   bodyDoc: LinkBodyDoc;
   bodyDocVersion: number;
   privacy: PrivacyStatus;
+  browsingRole: LifeLinkBrowsingRole;
+  context: LifeLinkContext;
+  placementConfirmedAt: string | null;
+  publicFieldKeys: PublicFieldKey[];
   media: LifeLinkMediaRecord[];
   createdAt: string;
   updatedAt: string;
@@ -792,7 +725,7 @@ export type LifeLinkRecord = {
 
 export type LifeLinkSummary = Pick<
   LifeLinkRecord,
-  "id" | "parentId" | "qrId" | "title" | "privacy" | "updatedAt"
+  "id" | "parentId" | "qrId" | "title" | "privacy" | "updatedAt" | "browsingRole"
 > & {
   childCount: number;
 };
@@ -820,11 +753,6 @@ export type LifeLinkDetail = {
   };
 };
 
-export type LifeLinkProjectCompatibilityRecord = {
-  projectId: string;
-  lifeLinkId: string;
-};
-
 export type LifeLinkQrBindingRecord = {
   qrId: string;
   lifeLinkId: string;
@@ -838,7 +766,8 @@ export type LifeLinkSearchMatchClass =
   | "title_prefix"
   | "title"
   | "recorded_path"
-  | "body";
+  | "body"
+  | "context";
 
 export type LifeLinkSearchItem = {
   lifeLink: LifeLinkSummary;
@@ -873,6 +802,9 @@ export type CreateLifeLinkInput = {
   bodyDoc?: LinkBodyDoc | null;
   bodyDocVersion?: number | null;
   privacy?: PrivacyStatus;
+  browsingRole?: LifeLinkBrowsingRole;
+  context?: LifeLinkContext;
+  publicFieldKeys?: PublicFieldKey[];
 };
 
 export type CreateLifeLinkCommand = CreateLifeLinkInput & {
@@ -882,7 +814,7 @@ export type CreateLifeLinkCommand = CreateLifeLinkInput & {
 };
 
 export type UpdateLifeLinkPatch = Partial<
-  Pick<LifeLinkRecord, "title" | "body" | "bodyDoc" | "bodyDocVersion" | "privacy">
+  Pick<LifeLinkRecord, "title" | "body" | "bodyDoc" | "bodyDocVersion" | "privacy" | "context" | "publicFieldKeys">
 >;
 
 export type UpdateLifeLinkCommand = {
@@ -909,7 +841,16 @@ export const LIFE_LINK_DOMAIN_ERROR_CODES = [
   "hierarchy_cycle",
   "stale_life_link",
   "qr_already_bound",
+  "qr_not_found",
   "life_link_already_tagged",
+  "invalid_collection",
+  "collection_not_found",
+  "stale_collection",
+  "duplicate_collection_id",
+  "section_not_found",
+  "invalid_section",
+  "duplicate_section_id",
+  "collection_membership_not_found",
   "output_limit_exceeded"
 ] as const;
 
@@ -944,61 +885,6 @@ export class LifeLinkDomainError extends Error {
   }
 }
 
-export type LegacyLifeLinkMigrationRecord = {
-  qrId: string;
-  ownerId: string;
-  title: string;
-  body: string;
-  bodyDoc: LinkBodyDoc;
-  bodyDocVersion: number;
-  projectId: string | null;
-  privacy: PrivacyStatus;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type LegacyLinkMediaMigrationRecord = Omit<LinkMediaRecord, "url" | "ownerId"> & {
-  ownerId: string;
-  data: Uint8Array;
-};
-
-export type CanonicalLifeLinkMigrationRecord = Omit<LifeLinkRecord, "qrId" | "media">;
-
-export type CanonicalLinkMediaMigrationRecord = Omit<LifeLinkMediaRecord, "url"> & {
-  data: Uint8Array;
-};
-
-export type LegacyClaimEventRecord = {
-  commandId: string;
-  qrId: string;
-  ownerId: string;
-  result: ClaimResult;
-  createdAt: string;
-};
-
-export type CanonicalClaimEventRecord = LegacyClaimEventRecord & {
-  mode: "create";
-  requestedLifeLinkId: null;
-  resolvedLifeLinkId: string | null;
-};
-
-export type LegacyLifeLinksSnapshot = {
-  projects: ProjectRecord[];
-  qrCodes: QrRecord[];
-  links: LegacyLifeLinkMigrationRecord[];
-  linkMedia: LegacyLinkMediaMigrationRecord[];
-  claimEvents: LegacyClaimEventRecord[];
-};
-
-export type CanonicalLifeLinksSnapshot = {
-  lifeLinks: CanonicalLifeLinkMigrationRecord[];
-  qrInventory: QrInventoryRecord[];
-  qrBindings: LifeLinkQrBindingRecord[];
-  projectCompatibility: LifeLinkProjectCompatibilityRecord[];
-  linkMedia: CanonicalLinkMediaMigrationRecord[];
-  claimEvents: CanonicalClaimEventRecord[];
-};
-
 export function normalizeLifeLinkChildPageLimit(value: number | string | undefined): number {
   return normalizeBoundedPositiveInteger(value, DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
 }
@@ -1014,14 +900,6 @@ export function normalizeLifeLinkSearchLimit(
   return normalizeBoundedPositiveInteger(value, Math.min(DEFAULT_LIFE_LINK_SEARCH_LIMIT, boundedMax), boundedMax);
 }
 
-export function mapLegacyProjectToLifeLinkId(projectId: string): string {
-  const value = projectId.trim();
-  if (!value) {
-    throw new LifeLinkDomainError("invalid_life_link", "Legacy Project identity must not be empty.");
-  }
-  return value;
-}
-
 export function mapLegacyLinkToLifeLinkId(qrId: string): string {
   const value = qrId.trim();
   if (!isValidQrId(value)) {
@@ -1031,6 +909,9 @@ export function mapLegacyLinkToLifeLinkId(qrId: string): string {
 }
 
 export function createCanonicalLifeLink(command: CreateLifeLinkCommand): LifeLinkRecord {
+  if (command.privacy !== undefined && command.privacy !== "private" && command.privacy !== "public") {
+    throw new LifeLinkDomainError("invalid_life_link", "Life Link privacy is invalid.", { reason: "invalid_privacy" });
+  }
   const title = command.title ?? DEFAULT_LIFE_LINK_TITLE;
   const body = coordinateLifeLinkBody({
     body: command.body,
@@ -1048,6 +929,10 @@ export function createCanonicalLifeLink(command: CreateLifeLinkCommand): LifeLin
     bodyDoc: body.bodyDoc,
     bodyDocVersion: body.bodyDocVersion,
     privacy: command.privacy ?? DEFAULT_LIFE_LINK_PRIVACY,
+    browsingRole: normalizeLifeLinkBrowsingRole(command.browsingRole ?? "item"),
+    context: normalizeLifeLinkContext(command.context ?? { schemaVersion: 1 }),
+    placementConfirmedAt: command.parentId ? command.createdAt : null,
+    publicFieldKeys: normalizePublicFieldKeys(command.publicFieldKeys ?? []),
     media: [],
     createdAt: command.createdAt,
     updatedAt: command.createdAt
@@ -1196,6 +1081,7 @@ export function summarizeLifeLink(lifeLink: LifeLinkRecord, childCount: number):
     title: lifeLink.title,
     privacy: lifeLink.privacy,
     updatedAt: lifeLink.updatedAt,
+    browsingRole: lifeLink.browsingRole,
     childCount
   };
 }
@@ -1336,7 +1222,10 @@ export function searchCanonicalLifeLinks(
         fullPath.map((item) => summarizeLifeLink(item, childCounts.get(item.id) ?? 0)),
         MAX_LIFE_LINK_PATH_ITEMS
       ),
-      bodySummary: summarizeLifeLinkBody(lifeLink.body),
+      bodySummary: summarizeLifeLinkBody(matchClass === "context"
+        ? [lifeLink.context.summary, lifeLink.context.condition, lifeLink.context.experience, lifeLink.context.plan]
+          .find((value) => value && normalizeLifeLinkSearchText(value.text).includes(needle))?.text ?? lifeLink.body
+        : lifeLink.body),
       matchClass,
       fullPath
     });
@@ -1409,40 +1298,9 @@ export function assertLifeLinkToolOutputWithinBounds(value: unknown): void {
   }
 }
 
-export function deriveProjectCompatibilityId(
-  lifeLinks: readonly LifeLinkRecord[],
-  projectCompatibility: readonly LifeLinkProjectCompatibilityRecord[],
-  lifeLinkId: string
-): string | null {
-  const path = deriveLifeLinkPath(lifeLinks, lifeLinkId, Number.MAX_SAFE_INTEGER);
-  const root = path.items[0];
-  return root ? projectCompatibility.find((item) => item.lifeLinkId === root.id)?.projectId ?? null : null;
-}
-
-export function projectLifeLinkAsProject(
-  lifeLink: LifeLinkRecord,
-  compatibility: LifeLinkProjectCompatibilityRecord
-): ProjectRecord {
-  if (compatibility.lifeLinkId !== lifeLink.id || lifeLink.parentId !== null) {
-    throw new LifeLinkDomainError("invalid_parent", "Project compatibility must reference a root Life Link.");
-  }
-  if (lifeLink.title.length > MAX_PROJECT_NAME_LENGTH) {
-    throw new LifeLinkDomainError("invalid_life_link", "Project compatibility title exceeds the supported limit.", {
-      reason: "project_title_too_long"
-    });
-  }
-  return {
-    id: compatibility.projectId,
-    ownerId: lifeLink.ownerId,
-    name: lifeLink.title,
-    createdAt: lifeLink.createdAt
-  };
-}
-
 export function projectLifeLinkAsLink(
   lifeLink: LifeLinkRecord,
-  qr: QrInventoryRecord,
-  projectId: string | null
+  qr: Pick<QrInventoryRecord, "id" | "url">
 ): LinkRecord {
   if (lifeLink.qrId !== qr.id) {
     throw new LifeLinkDomainError("invalid_life_link", "Life Link and QR compatibility projection do not match.", {
@@ -1458,7 +1316,7 @@ export function projectLifeLinkAsLink(
     body: lifeLink.body,
     bodyDoc: lifeLink.bodyDoc,
     bodyDocVersion: lifeLink.bodyDocVersion,
-    projectId,
+    context: structuredClone(lifeLink.context),
     privacy: lifeLink.privacy,
     media: lifeLink.media.map(({ lifeLinkId: _lifeLinkId, ...media }) => ({ ...media, qrId: qr.id })),
     createdAt: lifeLink.createdAt,
@@ -1466,7 +1324,7 @@ export function projectLifeLinkAsLink(
   };
 }
 
-export function projectUnclaimedQrAsLink(qr: QrInventoryRecord): LinkRecord {
+export function projectUnclaimedQrAsLink(qr: Pick<QrInventoryRecord, "id" | "url" | "createdAt">): LinkRecord {
   return {
     id: qr.id,
     url: qr.url,
@@ -1476,7 +1334,6 @@ export function projectUnclaimedQrAsLink(qr: QrInventoryRecord): LinkRecord {
     body: "",
     bodyDoc: createLinkBodyDocFromPlainText(""),
     bodyDocVersion: LINK_BODY_DOC_VERSION,
-    projectId: null,
     privacy: "public",
     media: [],
     createdAt: qr.createdAt,
@@ -1484,7 +1341,7 @@ export function projectUnclaimedQrAsLink(qr: QrInventoryRecord): LinkRecord {
   };
 }
 
-export function projectPrivateClaimedQrAsLink(qr: QrInventoryRecord): LinkRecord {
+export function projectPrivateClaimedQrAsLink(qr: Pick<QrInventoryRecord, "id" | "url" | "createdAt">): LinkRecord {
   return {
     ...projectUnclaimedQrAsLink(qr),
     status: "claimed",
@@ -1496,8 +1353,27 @@ export function redactNonOwnerLinkProjection(link: LinkRecord): LinkRecord {
   return {
     ...link,
     ownerId: null,
-    projectId: null,
-    media: link.media.map((item) => ({ ...item, ownerId: null }))
+    media: []
+  };
+}
+
+/** One public content projection shared by QR resolution, export, and owner preview. */
+export function projectPublicLifeLinkAsLink(lifeLink: LifeLinkRecord, qr: Pick<QrInventoryRecord, "id" | "url" | "createdAt">): LinkRecord {
+  if (lifeLink.privacy !== "public") {
+    return projectPrivateClaimedQrAsLink(qr);
+  }
+  const projection = redactNonOwnerLinkProjection(projectLifeLinkAsLink(lifeLink, qr));
+  const context: LifeLinkContext = { schemaVersion: 1 };
+  for (const key of lifeLink.publicFieldKeys) {
+    if (key !== "notes" && lifeLink.context[key]) {
+      context[key] = { ...lifeLink.context[key]! };
+    }
+  }
+  return {
+    ...projection,
+    body: lifeLink.publicFieldKeys.includes("notes") ? projection.body : "",
+    bodyDoc: lifeLink.publicFieldKeys.includes("notes") ? projection.bodyDoc : createLinkBodyDocFromPlainText(""),
+    context
   };
 }
 
@@ -1514,150 +1390,6 @@ export function projectQrInventoryRecord(
     ...qr,
     status: binding ? "claimed" : "unclaimed",
     claimedAt: binding?.boundAt ?? null
-  };
-}
-
-export function mapLegacyLifeLinksSnapshot(snapshot: LegacyLifeLinksSnapshot): CanonicalLifeLinksSnapshot {
-  const projectIds = new Set<string>();
-  const targetIds = new Set<string>();
-  const projectsById = new Map<string, ProjectRecord>();
-  for (const project of snapshot.projects) {
-    const lifeLinkId = mapLegacyProjectToLifeLinkId(project.id);
-    assertUniqueLifeLinkId(projectIds, project.id, "Project");
-    assertUniqueLifeLinkId(targetIds, lifeLinkId, "canonical");
-    projectsById.set(project.id, project);
-  }
-
-  const qrById = new Map<string, QrRecord>();
-  for (const qr of snapshot.qrCodes) {
-    if (qrById.has(qr.id)) {
-      throw new LifeLinkDomainError("duplicate_life_link_id", "Legacy QR identities must be unique.", {
-        reason: "duplicate_qr_id"
-      });
-    }
-    qrById.set(qr.id, qr);
-  }
-
-  const linksByQrId = new Map<string, LegacyLifeLinkMigrationRecord>();
-  for (const link of snapshot.links) {
-    if (linksByQrId.has(link.qrId)) {
-      throw new LifeLinkDomainError("duplicate_life_link_id", "Legacy Link identities must be unique.", {
-        reason: "duplicate_link_qr_id"
-      });
-    }
-    if (!link.ownerId) {
-      throw new LifeLinkDomainError("invalid_life_link", "Only owner Links can migrate to canonical Life Links.");
-    }
-    const qr = qrById.get(link.qrId);
-    if (!qr) {
-      throw new LifeLinkDomainError("invalid_life_link", "Legacy Link must reference known QR inventory.", {
-        reason: "missing_qr"
-      });
-    }
-    if (qr.status !== "claimed") {
-      throw new LifeLinkDomainError("invalid_life_link", "Legacy claimed Link must reference claimed QR inventory.", {
-        reason: "qr_status_mismatch"
-      });
-    }
-    if (link.projectId) {
-      const project = projectsById.get(link.projectId);
-      if (!project) {
-        throw new LifeLinkDomainError("invalid_parent", "Legacy Link references a missing Project.", {
-          reason: "parent_not_found"
-        });
-      }
-      if (project.ownerId !== link.ownerId) {
-        throw new LifeLinkDomainError("invalid_parent", "Legacy Project and Link owners must match.", {
-          reason: "cross_owner"
-        });
-      }
-    }
-    const targetId = mapLegacyLinkToLifeLinkId(link.qrId);
-    assertUniqueLifeLinkId(targetIds, targetId, "canonical");
-    linksByQrId.set(link.qrId, link);
-  }
-
-  for (const qr of snapshot.qrCodes) {
-    const hasLink = linksByQrId.has(qr.id);
-    if ((qr.status === "claimed") !== hasLink) {
-      throw new LifeLinkDomainError("invalid_life_link", "Legacy QR status and Link ownership must agree.", {
-        reason: "qr_status_mismatch"
-      });
-    }
-  }
-
-  const lifeLinks: CanonicalLifeLinkMigrationRecord[] = snapshot.projects.map((project) => ({
-    id: mapLegacyProjectToLifeLinkId(project.id),
-    ownerId: project.ownerId,
-    parentId: null,
-    title: project.name,
-    body: "",
-    bodyDoc: createLinkBodyDocFromPlainText(""),
-    bodyDocVersion: LINK_BODY_DOC_VERSION,
-    privacy: "private",
-    createdAt: project.createdAt,
-    updatedAt: project.createdAt
-  }));
-
-  for (const link of snapshot.links) {
-    lifeLinks.push({
-      id: mapLegacyLinkToLifeLinkId(link.qrId),
-      ownerId: link.ownerId,
-      parentId: link.projectId,
-      title: link.title,
-      body: link.body,
-      bodyDoc: link.bodyDoc,
-      bodyDocVersion: link.bodyDocVersion,
-      privacy: link.privacy,
-      createdAt: link.createdAt,
-      updatedAt: link.updatedAt
-    });
-  }
-
-  const linkMedia = snapshot.linkMedia.map((media): CanonicalLinkMediaMigrationRecord => {
-    const link = linksByQrId.get(media.qrId);
-    if (!link || link.ownerId !== media.ownerId) {
-      throw new LifeLinkDomainError("invalid_life_link", "Legacy media must reference an owner-matched Link.", {
-        reason: "media_owner_mismatch"
-      });
-    }
-    if (media.data.byteLength !== media.sizeBytes) {
-      throw new LifeLinkDomainError("invalid_life_link", "Legacy media byte length must match its recorded size.", {
-        reason: "media_size_mismatch"
-      });
-    }
-    const { qrId, ...rest } = media;
-    return { ...rest, lifeLinkId: mapLegacyLinkToLifeLinkId(qrId) };
-  });
-
-  const qrBindings = snapshot.links.map((link) => {
-    const qr = qrById.get(link.qrId)!;
-    return {
-      qrId: link.qrId,
-      lifeLinkId: mapLegacyLinkToLifeLinkId(link.qrId),
-      boundAt: qr.claimedAt ?? link.createdAt
-    };
-  });
-  const resolvedLifeLinkIdByQr = new Map(qrBindings.map((binding) => [binding.qrId, binding.lifeLinkId]));
-
-  return {
-    lifeLinks: lifeLinks.sort(compareStableId),
-    qrInventory: snapshot.qrCodes
-      .map(({ status: _status, claimedAt: _claimedAt, ...qr }) => qr)
-      .sort(compareStableId),
-    qrBindings: qrBindings.sort((left, right) => compareCanonicalText(left.qrId, right.qrId)),
-    projectCompatibility: snapshot.projects
-      .map((project) => ({ projectId: project.id, lifeLinkId: mapLegacyProjectToLifeLinkId(project.id) }))
-      .sort((left, right) => compareCanonicalText(left.projectId, right.projectId)),
-    linkMedia: linkMedia.sort(compareStableId),
-    claimEvents: snapshot.claimEvents
-      .map((event) => ({
-        ...event,
-        mode: "create" as const,
-        requestedLifeLinkId: null,
-        resolvedLifeLinkId: event.result === "not_found" ? null : resolvedLifeLinkIdByQr.get(event.qrId) ?? null
-      }))
-      .sort((left, right) => compareCanonicalText(left.commandId, right.commandId))
   };
 }
 
@@ -1836,11 +1568,15 @@ function classifyLifeLinkSearchMatch(
   if (normalizeLifeLinkSearchText(lifeLink.body).includes(needle)) {
     return "body";
   }
+  if ([lifeLink.context.summary, lifeLink.context.condition, lifeLink.context.experience, lifeLink.context.plan]
+    .some((value) => value && normalizeLifeLinkSearchText(value.text).includes(needle))) {
+    return "context";
+  }
   return null;
 }
 
 function lifeLinkSearchMatchRank(matchClass: LifeLinkSearchMatchClass): number {
-  return ["exact_qr", "exact_title", "title_prefix", "title", "recorded_path", "body", "all"].indexOf(matchClass);
+  return ["exact_qr", "exact_title", "title_prefix", "title", "recorded_path", "body", "context", "all"].indexOf(matchClass);
 }
 
 function compareLifeLinkSearchTuple(
@@ -1925,24 +1661,9 @@ function invalidLifeLinkCursor(): LifeLinkDomainError {
   return new LifeLinkDomainError("invalid_life_link", "Life Link cursor is invalid.", { reason: "invalid_cursor" });
 }
 
-function assertUniqueLifeLinkId(ids: Set<string>, id: string, kind: string): void {
-  if (ids.has(id)) {
-    throw new LifeLinkDomainError("duplicate_life_link_id", `${kind} Life Link identities must be unique.`);
-  }
-  ids.add(id);
-}
-
-function compareStableId(left: { id: string }, right: { id: string }): number {
-  return compareCanonicalText(left.id, right.id);
-}
-
 function compareCanonicalText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
 }
 
-export {
-  EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT,
-  REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT
-} from "./legacyMigration.fixture.js";
-
 export * from "./competitionFixture.js";
+export * from "./attachments.js";

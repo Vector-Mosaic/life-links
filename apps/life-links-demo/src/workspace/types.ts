@@ -1,16 +1,27 @@
 import type {
+  AttachmentContentPage,
+  AttachmentImageReadOptions,
+  AttachmentImageResult,
+  LifeLinkMediaRecord,
+  ChangeHistory,
+  LifeLinkChangePreview,
+  CollectionRecord,
+  CollectionSectionRecord,
+  LifeLinkCollectionMembership,
+  LifeLinkContext,
   LifeLinkDetail,
+  LifeLinkRecord,
   LifeLinkSearchItem,
   LifeLinkSummary,
+  PublicFieldKey,
   LinkRecord,
-  ProjectRecord,
   QrViewState,
   UpdateLifeLinkPatch
 } from "@life-links/core";
 
 import type { ApiAgentConnection, ApiUser } from "../api";
 
-export type WorkspaceView = "home" | "factory" | "scan" | "projects" | "search";
+export type WorkspaceView = "home" | "factory" | "scan" | "workspace" | "search";
 export type InventoryFilter = "all" | "claimed" | "unclaimed";
 export type ScanTone = "neutral" | "success" | "warning";
 export type ThemeMode = "light" | "dark";
@@ -40,7 +51,11 @@ export type AgentToolControllerActionResult =
         | "life_link_unavailable"
         | "stale_life_link"
         | "source_life_link_unavailable"
-        | "qr_not_attached";
+        | "qr_not_attached"
+        | "stale_collection"
+        | "collection_unavailable"
+        | "invalid_operation"
+        | "effect_not_applied";
     };
 
 export type AgentLifeLinkSearchPayload = {
@@ -56,20 +71,93 @@ export type AgentSearchLifeLinksControllerResult =
   | { ok: true; search: AgentLifeLinkSearchPayload }
   | Exclude<AgentToolControllerActionResult, { ok: true }>;
 
+export type AgentReadAttachmentInput = {
+  lifeLinkId: string;
+  mediaId?: string;
+  representation?: never;
+  offset?: number;
+  revision?: string;
+} | { lifeLinkId: string; mediaId: string; representation: "transcript"; offset?: number; revision?: string;
+  startMs?: number; durationMs?: number; audioStreamIndex?: number }
+  | ({ lifeLinkId: string; mediaId: string; representation: "image"; offset?: never; revision?: never } & AttachmentImageReadOptions);
+
+export type AgentReadAttachmentResult =
+  | { ok: true; kind: "list"; attachments: LifeLinkMediaRecord[]; revision: string }
+  | { ok: true; kind: "content"; page: AttachmentContentPage }
+  | { ok: true; kind: "image"; result: AttachmentImageResult }
+  | Exclude<AgentToolControllerActionResult, { ok: true }>;
+
 export type AgentUpdateLifeLinkContentInput = {
   lifeLinkId: string;
   baseUpdatedAt: string;
   title?: string;
   body?: string;
+  context?: LifeLinkContext;
   sourceLifeLinkIds: readonly string[];
 };
 
+export type WorkspaceCommandOptions = {
+  signal?: AbortSignal;
+  throwOnError?: boolean;
+  assertActive?: () => void;
+};
+export type AgentCreateLifeLinkInput = {
+  id: string; parentId: string | null; browsingRole: "container" | "item";
+  title: string; body?: string; context?: LifeLinkContext;
+};
+export type AgentMoveLifeLinkInput = { lifeLinkId: string; baseUpdatedAt: string; parentId: string | null };
+export type AgentManageLifeLinkQrInput = { lifeLinkId: string; baseUpdatedAt: string } & (
+  | { action: "attach" | "change"; commandId: string; qrId: string }
+  | { action: "detach"; commandId: string }
+  | { action: "set_public_projection"; privacy: "private" | "public"; publicFieldKeys: PublicFieldKey[] }
+);
+export type AgentListCollectionsInput = { limit: number; cursor?: string };
+export type AgentInspectCollectionInput = {
+  collectionId: string; limit?: number;
+  part?: "members" | "sections" | "assignments"; cursor?: string;
+};
+export type AgentMaintainCollectionInput =
+  | { action: "create_collection"; id: string; title: string; purpose?: string; notes?: string }
+  | ({ collectionId: string; baseUpdatedAt: string } & (
+    | { action: "update_collection"; title?: string; purpose?: string; notes?: string }
+    | { action: "add_member" | "remove_member"; lifeLinkId: string }
+    | { action: "create_section"; id: string; title: string }
+    | { action: "update_section"; sectionId: string; title: string }
+    | { action: "remove_section"; sectionId: string }
+    | { action: "replace_sections"; lifeLinkId: string; sectionIds: string[] }
+  ));
+export type AgentCollectionListResult =
+  | { ok: true; collections: CollectionRecord[]; nextCursor: string | null; truncated: boolean }
+  | Exclude<AgentToolControllerActionResult, { ok: true }>;
+
 export type LifeLinksWorkspaceSnapshot = {
+  changeHistory: ChangeHistory;
+  agentChangeConfirmation: LifeLinkChangePreview | null;
+  workspaceMode: "hierarchies" | "collections";
+  hierarchyParentId: string | null;
+  hierarchyParentDetail: LifeLinkDetail | null;
+  detailsOpen: boolean;
+  collections: CollectionRecord[];
+  collectionsLoading: boolean;
+  collectionsComplete: boolean;
+  selectedCollection: CollectionRecord | null;
+  collectionMembers: LifeLinkRecord[];
+  collectionSections: CollectionSectionRecord[];
+  collectionMemberMemberships: Record<string, LifeLinkCollectionMembership[]>;
+  collectionMemberDetails: Record<string, LifeLinkDetail>;
+  collectionLoading: boolean;
+  collectionComplete: boolean;
+  selectedLifeLinkMemberships: LifeLinkCollectionMembership[];
+  membershipsLoading: boolean;
+  membershipsComplete: boolean;
+  lifeLinkMemberships: Record<string, LifeLinkCollectionMembership[]>;
+  lifeLinkMembershipsComplete: Record<string, boolean>;
+  collectionSearchResults: Array<{ collection: CollectionRecord; sections: CollectionSectionRecord[]; members: LifeLinkRecord[] }>;
+  collectionSearchComplete: boolean;
   currentUser: ApiUser | null;
   agentConnection: ApiAgentConnection;
   qrBaseUrl: string;
   links: LinkRecord[];
-  projects: ProjectRecord[];
   activeView: WorkspaceView;
   batchCount: number;
   lastBatchId: string | null;
@@ -83,7 +171,6 @@ export type LifeLinksWorkspaceSnapshot = {
   findTargetId: string | null;
   query: string;
   guestView: boolean;
-  newProjectName: string;
   scanMessage: ScanMessage;
   loading: boolean;
   busy: boolean;
@@ -107,11 +194,6 @@ export type LifeLinksWorkspaceSnapshot = {
   lifeLinkSearchLoading: boolean;
 };
 
-export type LinkEditorPatch = Pick<
-  LinkRecord,
-  "title" | "body" | "bodyDoc" | "bodyDocVersion" | "privacy" | "projectId"
->;
-
 export type CanonicalLifeLinkEditorPatch = Required<
   Pick<UpdateLifeLinkPatch, "title" | "body" | "bodyDoc" | "bodyDocVersion" | "privacy">
->;
+> & Pick<UpdateLifeLinkPatch, "context" | "publicFieldKeys">;

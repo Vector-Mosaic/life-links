@@ -1,6 +1,10 @@
 import type {
   ExportBatchRecord,
-  LifeLinkProjectCompatibilityRecord,
+  CollectionRecord,
+  CollectionSectionRecord,
+  CollectionMembershipRecord,
+  CollectionSectionAssignmentRecord,
+  LifeLinkContext,
   LifeLinkQrBindingRecord,
   LifeLinkRecord,
   LinkBodyDoc,
@@ -8,8 +12,8 @@ import type {
   UserRecord
 } from "./index.js";
 
-export const COMPETITION_FIXTURE_PROFILE = "webmcp-family-adventure-context-v2";
-export const COMPETITION_FIXTURE_TIMESTAMP = "2026-08-26T12:00:00.000Z";
+export const COMPETITION_FIXTURE_PROFILE = "webmcp-field-ledger-family-v3";
+export const COMPETITION_FIXTURE_TIMESTAMP = "2026-08-29T12:00:00.000Z";
 
 export const COMPETITION_OWNER_ID = "competition-owner";
 export const COMPETITION_OWNER_EMAIL = "judge@life-links.test";
@@ -60,23 +64,42 @@ export const COMPETITION_NEXT_TRIP_PACKING_PLAN_ID = "competition-next-trip-pack
 export const COMPETITION_UPGRADE_PLAN_ID = "competition-upgrade-plan";
 export const COMPETITION_NEXT_YEAR_UPGRADE_PLAN_ID = COMPETITION_UPGRADE_PLAN_ID;
 
+// Existing opaque record identities survive the physical-model migration.
+export const COMPETITION_BASEMENT_ID = COMPETITION_CAMPING_KIT_ID;
+export const COMPETITION_STORAGE_WALL_ID = COMPETITION_BASEMENT_GEAR_STORAGE_ID;
+export const COMPETITION_MUDROOM_ID = COMPETITION_FAMILY_PREFERENCES_ID;
+export const COMPETITION_GARAGE_ID = COMPETITION_PREVIOUS_TRIP_EXPERIENCES_ID;
+export const COMPETITION_SHOE_BENCH_ID = COMPETITION_FOUR_DAY_FAMILY_TRIP_ID;
+export const COMPETITION_BIKE_RACK_ID = COMPETITION_NEXT_TRIP_PACKING_PLAN_ID;
+export const COMPETITION_PAD_REPAIR_POUCH_ID = COMPETITION_UPGRADE_PLAN_ID;
+export const COMPETITION_UPGRADE_TARGET_LIFE_LINK_ID = COMPETITION_SLEEPING_PAD_ID;
+export const COMPETITION_CAMPING_COLLECTION_ID = "collection-00000000-0000-4000-8000-000000000001";
+export const COMPETITION_CAMPING_COLLECTION_TITLE = "Camping Gear";
+export const COMPETITION_SECTION_IDS = {
+  familySleepSystems: "section-00000000-0000-4000-8000-000000000001",
+  shelter: "section-00000000-0000-4000-8000-000000000002",
+  campKitchen: "section-00000000-0000-4000-8000-000000000003",
+  cyclingKit: "section-00000000-0000-4000-8000-000000000004",
+  nextYearUpgrades: "section-00000000-0000-4000-8000-000000000005"
+} as const;
+
 export const COMPETITION_START_LIFE_LINK_ID = COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID;
 export const COMPETITION_FIND_TARGET_LIFE_LINK_ID = COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_ID;
 export const COMPETITION_FIND_DECOY_LIFE_LINK_ID = COMPETITION_SHELTER_TUB_ID;
 
-export const COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE = "Family Adventure Gear";
-export const COMPETITION_BASEMENT_GEAR_STORAGE_TITLE = "Basement Gear Storage";
+export const COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE = "Basement";
+export const COMPETITION_BASEMENT_GEAR_STORAGE_TITLE = "Storage wall";
 export const COMPETITION_SHELTER_TUB_TITLE = "Blue Tub 01 / Shelter";
 export const COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE = "Green Tub 02 / Family Sleep Systems";
 export const COMPETITION_KITCHEN_WATER_TUB_TITLE = "Gray Tub 03 / Kitchen and Water";
 export const COMPETITION_SAFETY_LIGHTING_TUB_TITLE = "Red Tub 04 / Safety and Lighting";
 export const COMPETITION_HIKING_WEATHER_TUB_TITLE = "Yellow Tub 05 / Hiking and Weather";
 export const COMPETITION_CYCLING_REPAIRS_TUB_TITLE = "Black Tub 06 / Cycling and Repairs";
-export const COMPETITION_FAMILY_PREFERENCES_TITLE = "Family Preferences and Fit";
-export const COMPETITION_PREVIOUS_TRIP_EXPERIENCES_TITLE = "Previous Trip Experiences";
-export const COMPETITION_FOUR_DAY_FAMILY_TRIP_TITLE = "Four-Day Family Camping, Hiking and Cycling Trip";
-export const COMPETITION_NEXT_TRIP_PACKING_PLAN_TITLE = "Next Trip Packing Plan";
-export const COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE = "Next-Year Upgrade Plan";
+export const COMPETITION_FAMILY_PREFERENCES_TITLE = "Mudroom";
+export const COMPETITION_PREVIOUS_TRIP_EXPERIENCES_TITLE = "Garage";
+export const COMPETITION_FOUR_DAY_FAMILY_TRIP_TITLE = "Shoe bench";
+export const COMPETITION_NEXT_TRIP_PACKING_PLAN_TITLE = "Bike rack";
+export const COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE = "Sleeping Pad Repair Pouch";
 export const COMPETITION_SLEEPING_BAG_TITLE = "Camping Sleeping Bag";
 export const COMPETITION_SLEEPING_PAD_TITLE = "Camping Sleeping Pad";
 export const COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_PUBLIC_BODY =
@@ -168,7 +191,10 @@ export type CompetitionFixtureData = {
   qrInventory: QrInventoryRecord[];
   lifeLinks: LifeLinkRecord[];
   qrBindings: LifeLinkQrBindingRecord[];
-  projectCompatibility: LifeLinkProjectCompatibilityRecord[];
+  collections: CollectionRecord[];
+  collectionSections: CollectionSectionRecord[];
+  collectionMemberships: CollectionMembershipRecord[];
+  collectionSectionAssignments: CollectionSectionAssignmentRecord[];
 };
 
 type FixtureLifeLinkDefinition = {
@@ -187,7 +213,7 @@ const COMPETITION_LIFE_LINK_DEFINITIONS: readonly FixtureLifeLinkDefinition[] = 
     id.familyAdventureGear,
     null,
     COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
-    "Synthetic recorded current: this family of four—two adults and two children—uses the recorded gear for multi-day camping trips with day hikes and family cycling."
+    "Basement below the family home. Adventure equipment is stored on the west storage wall."
   ),
   definition(
     id.basementGearStorage,
@@ -239,38 +265,38 @@ const COMPETITION_LIFE_LINK_DEFINITIONS: readonly FixtureLifeLinkDefinition[] = 
   ),
   definition(
     id.familyPreferences,
-    id.familyAdventureGear,
+    null,
     COMPETITION_FAMILY_PREFERENCES_TITLE,
-    "Owner preference: warmth matters more than minimum weight. Budget for the next camping upgrade: $250. Family fit: two adults, one 10-year-old, and one 7-year-old. Do not replace working gear."
+    "Entry room beside the back door; shoes dry on the bench before returning to storage."
   ),
   definition(
     id.previousTripExperiences,
-    id.familyAdventureGear,
+    null,
     COMPETITION_PREVIOUS_TRIP_EXPERIENCES_TITLE,
-    "Owner-reported trip history is grouped here so recommendations can use prior results without treating plans as completed facts."
+    "Detached garage with a wall-mounted bicycle rack."
   ),
   definition(
     id.fourDayFamilyTrip,
-    id.previousTripExperiences,
+    id.familyPreferences,
     COMPETITION_FOUR_DAY_FAMILY_TRIP_TITLE,
-    "Owner report: two adults and two children camped for four days around 35°F, completed a three-mile hike, and rode campground paths. The existing sleeping bag stayed warm, cold came through the low-R sleeping pad, and child bike-light mounts loosened on rough ground."
+    "Wooden shoe bench in the mudroom; the lower shelf is empty after the last cleanup."
   ),
   definition(
     id.nextTripPackingPlan,
-    id.familyAdventureGear,
+    id.previousTripExperiences,
     COMPETITION_NEXT_TRIP_PACKING_PLAN_TITLE,
-    "Planned only: four-day state-park trip for two adults and two children with car camping, two day hikes, and family cycling. Check all four helmets and lights, pack rain shells and first aid, and resolve the cold Adult Two sleeping pad."
+    "Four-position wall rack in the garage; hooks and wall fasteners were checked."
   ),
   definition(
     id.nextYearUpgradePlan,
-    id.familyAdventureGear,
+    id.familySleepSystemsTub,
     COMPETITION_NEXT_YEAR_UPGRADE_PLAN_TITLE,
-    COMPETITION_INITIAL_UPGRADE_PLAN_BODY
+    "Small zip pouch containing the current sleeping pad's valve tool, repair patches, and adhesive. No replacement pad has been purchased."
   ),
   definition(
     id.adultOneSleepSystem,
     id.familySleepSystemsTub,
-    "Adult One Sleep System",
+    "Adult One Sleep Bag",
     "Recorded configuration: Adult One uses the 20°F bag and insulated R-4.2 pad stored beneath this Life Link."
   ),
   definition(
@@ -288,7 +314,7 @@ const COMPETITION_LIFE_LINK_DEFINITIONS: readonly FixtureLifeLinkDefinition[] = 
   definition(
     id.adultTwoSleepSystem,
     id.familySleepSystemsTub,
-    "Adult Two Sleep System",
+    "Adult Two Sleep Bag",
     "Recorded configuration: Adult Two uses the existing Camping Sleeping Bag and Camping Sleeping Pad; their prior-trip results drive the upgrade decision."
   ),
   definition(
@@ -308,7 +334,7 @@ const COMPETITION_LIFE_LINK_DEFINITIONS: readonly FixtureLifeLinkDefinition[] = 
   definition(
     id.kidsSleepGear,
     id.familySleepSystemsTub,
-    "Kids Sleep Gear",
+    "Kids Sleep Duffel",
     "Recorded configuration: separate labeled bag and pad sets for Child One, age 10, and Child Two, age 7."
   ),
   definition(
@@ -338,7 +364,7 @@ const COMPETITION_LIFE_LINK_DEFINITIONS: readonly FixtureLifeLinkDefinition[] = 
   definition(
     id.familyPillowsLiners,
     id.familySleepSystemsTub,
-    "Family Pillows and Liners",
+    "Pillow and Liner Bag",
     "Recorded current: four compressible pillows and four washable liners are labeled by family member."
   ),
   definition(
@@ -404,7 +430,7 @@ const COMPETITION_LIFE_LINK_DEFINITIONS: readonly FixtureLifeLinkDefinition[] = 
   definition(
     id.waterSystem,
     id.kitchenWaterTub,
-    "Family Water System",
+    "Water Gear Crate",
     "Recorded configuration: bulk water, filtration, and cooler storage support four people at camp and on hikes."
   ),
   definition(
@@ -470,7 +496,7 @@ const COMPETITION_LIFE_LINK_DEFINITIONS: readonly FixtureLifeLinkDefinition[] = 
   definition(
     id.dayHikePacks,
     id.hikingWeatherTub,
-    "Day Hike Packs",
+    "Hiking Pack Duffel",
     "Recorded configuration: two adult and two child packs are fitted and color-coded for family hikes."
   ),
   definition(
@@ -488,7 +514,7 @@ const COMPETITION_LIFE_LINK_DEFINITIONS: readonly FixtureLifeLinkDefinition[] = 
   definition(
     id.weatherLayers,
     id.hikingWeatherTub,
-    "Family Weather Layers",
+    "Weather Clothing Bag",
     "Recorded configuration: rain shells and warm midlayers are grouped by adult and child sizes."
   ),
   definition(
@@ -512,7 +538,7 @@ const COMPETITION_LIFE_LINK_DEFINITIONS: readonly FixtureLifeLinkDefinition[] = 
   definition(
     id.familyCyclingGear,
     id.cyclingRepairsTub,
-    "Family Cycling Gear",
+    "Helmet and Light Bag",
     "Recorded configuration: helmet and visibility gear supports two adult and two child bikes on campground paths."
   ),
   definition(
@@ -553,6 +579,82 @@ const COMPETITION_LIFE_LINK_DEFINITIONS: readonly FixtureLifeLinkDefinition[] = 
   )
 ];
 
+export const COMPETITION_SECTION_MEMBER_IDS = {
+  familySleepSystems: [id.adultOneSleepSystem, id.adultOneSleepingBag, id.adultOneSleepingPad,
+    id.adultTwoSleepSystem, id.sleepingBag, id.sleepingPad, id.kidsSleepGear,
+    id.childOneSleepingBag, id.childOneSleepingPad, id.childTwoSleepingBag,
+    id.childTwoSleepingPad, id.familyPillowsLiners, id.nextYearUpgradePlan],
+  shelter: [id.familyTent, id.tentPoleBag, id.tentStakeKit, id.footprintRainfly,
+    id.screenShelter, id.campsiteGroundTarp, id.shelterRepairKit, id.dayHikePacks,
+    id.adultDaypacks, id.childDaypacks, id.weatherLayers, id.adultRainShells,
+    id.kidsShellsMidlayers, id.trailNavigationKit],
+  campKitchen: [id.campKitchenCrate, id.twoBurnerStove, id.cooksetMessKit, id.waterSystem,
+    id.waterCube, id.familyWaterFilter, id.coolerIcePacks, id.familyFirstAidKit,
+    id.adultMedicationsPouch, id.kidsCarePouch, id.lightingKit, id.fourHeadlamps,
+    id.lanternsBatteries, id.emergencyVisibilityKit],
+  cyclingKit: [id.familyCyclingGear, id.adultHelmets, id.kidsHelmets, id.childBikeLights,
+    id.bikeRepairKit, id.miniPumpPatchKit, id.multiToolSpareTubes],
+  nextYearUpgrades: [id.sleepingPad, id.childBikeLights, id.adultRainShells, id.nextYearUpgradePlan]
+} as const;
+
+export const COMPETITION_CAMPING_MEMBER_IDS = [
+  ...COMPETITION_SECTION_MEMBER_IDS.familySleepSystems,
+  ...COMPETITION_SECTION_MEMBER_IDS.shelter,
+  ...COMPETITION_SECTION_MEMBER_IDS.campKitchen,
+  ...COMPETITION_SECTION_MEMBER_IDS.cyclingKit
+] as const;
+
+const SECTION_TITLES: Record<keyof typeof COMPETITION_SECTION_IDS, string> = {
+  familySleepSystems: "Family sleep systems", shelter: "Shelter", campKitchen: "Camp kitchen",
+  cyclingKit: "Cycling kit", nextYearUpgrades: "Next-year upgrades"
+};
+
+export const COMPETITION_COLLECTION_PURPOSE =
+  "Equipment for two adults and two children on a four-day camping trip with day hikes and family cycling.";
+export const COMPETITION_COLLECTION_NOTES = [
+  "Family fit: two adults, one 10-year-old, and one 7-year-old. Gear is stored across six tubs on the basement storage wall.",
+  "Owner preference: warmth matters more than minimum weight. Budget for the next camping upgrade: $250. Do not replace working gear.",
+  "Owner report: the last four-day trip reached about 35°F, included a three-mile hike and campground cycling. The sleeping bag stayed warm; cold came through the low-R sleeping pad. Child bike-light mounts loosened on rough ground.",
+  "Next trip, planned only: four days of camping, two day hikes, and family cycling. Check four helmets and lights, rain shells, and first aid. The replacement sleeping pad is not purchased, owned, or installed."
+].join("\n\n");
+
+const FIXTURE_CONTEXT: Record<string, LifeLinkContext> = {
+  [id.familySleepSystemsTub]: {
+    schemaVersion: 1,
+    summary: { text: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_PUBLIC_BODY, truthState: "owner_reported" },
+    condition: { text: "The sleeping bag works. The low-R sleeping pad needs a warmth review before next year.", truthState: "owner_reported" }
+  },
+  [id.sleepingBag]: {
+    schemaVersion: 1,
+    condition: { text: "Clean, dry, and working.", truthState: "owner_reported" },
+    experience: { text: "This sleeping bag kept me warm around 35°F on the four-day family trip.", truthState: "owner_reported" },
+    plan: { text: "Keep the working sleeping bag. Do not replace gear that works.", truthState: "planned" }
+  },
+  [id.sleepingPad]: {
+    schemaVersion: 1,
+    condition: { text: "Current low-R sleeping pad; no replacement is owned.", truthState: "owner_reported" },
+    experience: { text: "Cold came through the ground on the last trip, while the existing sleeping bag stayed warm around 35°F.", truthState: "owner_reported" },
+    summary: { text: "Prioritize warmth over minimum weight, keep the working sleeping bag, and stay within the $250 upgrade budget.", truthState: "owner_reported" },
+    plan: { text: COMPETITION_INITIAL_UPGRADE_PLAN_BODY, truthState: "planned" }
+  },
+  [id.childBikeLights]: {
+    schemaVersion: 1,
+    experience: { text: "The mounts loosened on rough campground paths during the previous trip.", truthState: "owner_reported" },
+    condition: { text: "Both mounts have been retightened; the existing lights work.", truthState: "owner_reported" },
+    plan: { text: "Recheck the existing mounts before next year's family cycling. No replacement lights are planned or purchased.", truthState: "planned" }
+  },
+  [id.adultRainShells]: {
+    schemaVersion: 1,
+    condition: { text: "Both existing rain shells fit.", truthState: "owner_reported" },
+    plan: { text: "Renew water repellency before next year's wet hikes; keep the existing shells.", truthState: "planned" }
+  },
+  [id.nextYearUpgradePlan]: {
+    schemaVersion: 1,
+    condition: { text: "The existing pad repair pouch contains a valve tool, patches, and adhesive.", truthState: "owner_reported" },
+    plan: { text: "Check repair-patch compatibility when choosing next year's sleeping pad. A replacement pad is planned only, not purchased, owned, or installed.", truthState: "planned" }
+  }
+};
+
 export function createCompetitionFixtureData(password: string, qrBaseUrl: string): CompetitionFixtureData {
   if (!password) {
     throw new Error("Competition fixture password is required.");
@@ -592,6 +694,22 @@ export function createCompetitionFixtureData(password: string, qrBaseUrl: string
     binding(COMPETITION_HIKING_WEATHER_TUB_QR_ID, id.hikingWeatherTub),
     binding(COMPETITION_CYCLING_REPAIRS_TUB_QR_ID, id.cyclingRepairsTub)
   ];
+  const collection: CollectionRecord = {
+    id: COMPETITION_CAMPING_COLLECTION_ID, ownerId: owner.id,
+    title: COMPETITION_CAMPING_COLLECTION_TITLE, purpose: COMPETITION_COLLECTION_PURPOSE,
+    notes: COMPETITION_COLLECTION_NOTES, createdAt: timestamp, updatedAt: timestamp
+  };
+  const collectionSections: CollectionSectionRecord[] = Object.entries(COMPETITION_SECTION_IDS).map(([key, sectionId], position) => ({
+    id: sectionId, ownerId: owner.id, collectionId: collection.id,
+    title: SECTION_TITLES[key as keyof typeof SECTION_TITLES], position, createdAt: timestamp, updatedAt: timestamp
+  }));
+  const collectionMemberships = COMPETITION_CAMPING_MEMBER_IDS.map((lifeLinkId) => ({
+    ownerId: owner.id, collectionId: collection.id, lifeLinkId, createdAt: timestamp
+  }));
+  const collectionSectionAssignments = Object.entries(COMPETITION_SECTION_MEMBER_IDS).flatMap(([key, memberIds]) =>
+    memberIds.map((lifeLinkId) => ({ ownerId: owner.id, collectionId: collection.id, lifeLinkId,
+      sectionId: COMPETITION_SECTION_IDS[key as keyof typeof COMPETITION_SECTION_IDS], createdAt: timestamp }))
+  );
   return {
     profile: COMPETITION_FIXTURE_PROFILE,
     owner,
@@ -599,12 +717,7 @@ export function createCompetitionFixtureData(password: string, qrBaseUrl: string
     qrInventory,
     lifeLinks,
     qrBindings,
-    projectCompatibility: [
-      {
-        projectId: COMPETITION_FAMILY_ADVENTURE_GEAR_ID,
-        lifeLinkId: COMPETITION_FAMILY_ADVENTURE_GEAR_ID
-      }
-    ]
+    collections: [collection], collectionSections, collectionMemberships, collectionSectionAssignments
   };
 
   function binding(qrId: string, lifeLinkId: string): LifeLinkQrBindingRecord {
@@ -644,6 +757,11 @@ function materializeLifeLink(
     bodyDoc: plainBodyDoc(item.body),
     bodyDocVersion: 1,
     privacy: item.privacy,
+    browsingRole: item.id === id.fourDayFamilyTrip || item.id === id.nextTripPackingPlan ||
+      COMPETITION_LIFE_LINK_DEFINITIONS.some((child) => child.parentId === item.id) ? "container" : "item",
+    context: structuredClone(FIXTURE_CONTEXT[item.id] ?? { schemaVersion: 1 }),
+    placementConfirmedAt: item.parentId ? timestamp : null,
+    publicFieldKeys: item.id === id.familySleepSystemsTub ? ["summary"] : item.id === id.sleepingBag ? ["condition"] : [],
     media: [],
     createdAt: timestamp,
     updatedAt: timestamp

@@ -1,0 +1,12 @@
+# This package binds exact evidence and recipe bytes. Never let checkout
+# line-ending conversion change the committed package inputs.
+LICENSE -text
+LICENSES/** -text whitespace=-trailing-space,-blank-at-eof
+SOURCE_MATERIALS.json -text
+SOURCE_MATERIALS.json.sha256 -text
+THIRD_PARTY_NOTICES.md -text
+native-build.lock.json -text
+native-build/** -text
+package.json -text
+package.manifest.json -text
+.gitignore -text

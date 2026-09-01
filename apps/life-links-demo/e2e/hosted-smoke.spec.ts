@@ -22,7 +22,7 @@ test("hosted Life Links supports login plus public and private QR reads", async 
   });
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Life Links" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "LifeLinks" }).first()).toBeVisible();
   await page.getByLabel("Email").fill(demoEmail);
   await page.getByLabel("Password").fill(demoPassword);
   await page.getByRole("button", { name: /sign in/i }).click();

@@ -1,17 +1,66 @@
 import type {
+  AttachmentContentPage,
+  AttachmentContentReadOptions,
+  AttachmentImageReadOptions,
+  AttachmentImageResult,
+  ChangeHistory,
+  LifeLinkChangePreview,
+  LifeLinkChangeResult,
+  PreviewLifeLinkChangeInput,
+  CollectionPatch,
+  CollectionRecord,
+  CollectionSectionMutationResult,
+  CollectionSectionRecord,
+  CreateCollectionCommand,
   CreateLifeLinkInput,
   ExportBatchRecord,
   LifeLinkDetail,
+  LifeLinkCollectionMembership,
   LifeLinkMediaRecord,
   LifeLinkRecord,
   LifeLinkSearchItem,
   LifeLinkSummary,
   LinkRecord,
-  ProjectRecord,
   QrViewState,
   UpdateLifeLinkPatch,
   UserRecord
 } from "@life-links/core";
+import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, MAX_LIFE_LINK_TOOL_OUTPUT_BYTES } from "@life-links/core";
+import { validateAttachmentImageResult } from "./attachmentImage";
+import { validateAttachmentTranscript } from "./attachmentTranscript";
+
+export async function previewLifeLinkChange(input: PreviewLifeLinkChangeInput, signal?: AbortSignal): Promise<LifeLinkChangePreview> {
+  const { preview } = await apiFetch<{ preview: LifeLinkChangePreview }>("/api/life-links/changes/preview", { method: "POST", body: JSON.stringify(input), signal });
+  return preview;
+}
+
+export async function getLifeLinkChangePreview(previewId: string, signal?: AbortSignal): Promise<LifeLinkChangePreview> {
+  let cursor: string | null = null;
+  let result: LifeLinkChangePreview | null = null;
+  const seen = new Set<string>();
+  do {
+    const query: string = cursor ? `cursor=${encodeURIComponent(cursor)}` : "";
+    const page: { preview: LifeLinkChangePreview & { nextCursor: string | null } } = await apiFetch(`/api/life-links/changes/${encodeURIComponent(previewId)}?${query}`, { signal });
+    if (result === null) result = page.preview;
+    else result.items.push(...page.preview.items);
+    cursor = page.preview.nextCursor;
+    if (cursor && seen.has(cursor)) throw new Error("Incomplete change preview: repeated continuation.");
+    if (cursor) seen.add(cursor);
+  } while (cursor);
+  return result!;
+}
+
+export function applyLifeLinkChange(previewId: string, commandId: string, signal?: AbortSignal): Promise<LifeLinkChangeResult> {
+  return apiFetch("/api/life-links/changes/apply", { method: "POST", body: JSON.stringify({ previewId, commandId }), signal });
+}
+
+export function getChangeHistory(signal?: AbortSignal): Promise<ChangeHistory> {
+  return apiFetch("/api/change-history", { signal });
+}
+
+export function undoChange(changeId: string, commandId: string, signal?: AbortSignal): Promise<LifeLinkChangeResult> {
+  return apiFetch("/api/change-history/undo", { method: "POST", body: JSON.stringify({ changeId, commandId }), signal });
+}
 
 export type ApiUser = Pick<UserRecord, "id" | "email" | "displayName" | "createdAt">;
 
@@ -28,7 +77,7 @@ export type ApiSession = {
 
 export type AuthenticatedApiSession = Omit<ApiSession, "user"> & { user: ApiUser };
 
-async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function apiFetch<T>(path: string, init: RequestInit = {}, maxResponseBytes?: number): Promise<T> {
   const bodyIsFormData = init.body instanceof FormData;
   const response = await fetch(path, {
     credentials: "include",
@@ -47,6 +96,28 @@ async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   if (response.status === 204) {
     return undefined as T;
+  }
+  if (maxResponseBytes !== undefined) {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Missing attachment image response.");
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxResponseBytes) throw new Error("Attachment image response exceeded its limit.");
+        chunks.push(value);
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => undefined);
+      throw error;
+    } finally { reader.releaseLock(); }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as T;
   }
   return (await response.json()) as T;
 }
@@ -170,7 +241,7 @@ export type LifeLinkSearchResponse = {
   nextCursor: string | null;
 };
 
-export async function listLifeLinks(options: { parentId?: string | null; cursor?: string | null; limit?: number } = {}) {
+export async function listLifeLinks(options: { parentId?: string | null; cursor?: string | null; limit?: number; signal?: AbortSignal } = {}) {
   const query = new URLSearchParams();
   if (options.parentId) {
     query.set("parentId", options.parentId);
@@ -182,13 +253,105 @@ export async function listLifeLinks(options: { parentId?: string | null; cursor?
     query.set("limit", String(options.limit));
   }
   const suffix = query.size ? `?${query.toString()}` : "";
-  return apiFetch<LifeLinkPageResponse>(`/api/life-links${suffix}`);
+  return apiFetch<LifeLinkPageResponse>(`/api/life-links${suffix}`, { signal: options.signal });
 }
 
-export async function createLifeLink(input: CreateLifeLinkInput) {
+export async function createLifeLink(input: CreateLifeLinkInput & { id?: string }, options: { signal?: AbortSignal } = {}) {
   return apiFetch<{ lifeLink: LifeLinkRecord }>("/api/life-links", {
     method: "POST",
-    body: JSON.stringify(input)
+    body: JSON.stringify(input), signal: options.signal
+  });
+}
+
+export type PageOptions = { cursor?: string | null; limit?: number; signal?: AbortSignal };
+export type CollectionCreateInput = Pick<CreateCollectionCommand, "title" | "purpose" | "notes"> & { id?: string };
+export type CollectionPageResponse = { collections: CollectionRecord[]; nextCursor: string | null; truncated: boolean };
+export type CollectionDetailResponse = {
+  collection: CollectionRecord;
+  sections: CollectionSectionRecord[];
+  sectionsPage: { nextCursor: string | null; truncated: boolean };
+};
+export type CollectionMembersResponse = { lifeLinks: LifeLinkRecord[]; nextCursor: string | null; truncated: boolean };
+export type LifeLinkMembershipsResponse = { memberships: LifeLinkCollectionMembership[]; nextCursor: string | null; truncated: boolean };
+
+function pageSuffix(options: PageOptions): string {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set("cursor", options.cursor);
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  return query.size ? `?${query.toString()}` : "";
+}
+
+export async function listCollections(options: PageOptions = {}) {
+  return apiFetch<CollectionPageResponse>(`/api/collections${pageSuffix(options)}`, { signal: options.signal });
+}
+
+export async function getCollection(collectionId: string, options: PageOptions = {}) {
+  return apiFetch<CollectionDetailResponse>(`/api/collections/${encodeURIComponent(collectionId)}${pageSuffix(options)}`, { signal: options.signal });
+}
+
+export async function createCollection(input: CollectionCreateInput, options: { signal?: AbortSignal } = {}) {
+  return apiFetch<{ collection: CollectionRecord }>("/api/collections", { method: "POST", body: JSON.stringify(input), signal: options.signal });
+}
+
+export async function updateCollection(collectionId: string, expectedUpdatedAt: string, patch: CollectionPatch, options: { signal?: AbortSignal } = {}) {
+  return apiFetch<{ collection: CollectionRecord }>(`/api/collections/${encodeURIComponent(collectionId)}`, {
+    method: "PATCH", body: JSON.stringify({ ...patch, expectedUpdatedAt }), signal: options.signal
+  });
+}
+
+export async function listCollectionMembers(collectionId: string, options: PageOptions = {}) {
+  return apiFetch<CollectionMembersResponse>(`/api/collections/${encodeURIComponent(collectionId)}/members${pageSuffix(options)}`, { signal: options.signal });
+}
+
+export async function listLifeLinkCollectionMemberships(lifeLinkId: string, options: PageOptions = {}) {
+  return apiFetch<LifeLinkMembershipsResponse>(`/api/life-links/${encodeURIComponent(lifeLinkId)}/collection-memberships${pageSuffix(options)}`, { signal: options.signal });
+}
+
+export async function addCollectionMember(collectionId: string, lifeLinkId: string, expectedUpdatedAt: string, options: { signal?: AbortSignal } = {}) {
+  return apiFetch<{ collection: CollectionRecord }>(`/api/collections/${encodeURIComponent(collectionId)}/members/${encodeURIComponent(lifeLinkId)}`, {
+    method: "PUT", body: JSON.stringify({ expectedUpdatedAt }), signal: options.signal
+  });
+}
+
+export async function removeCollectionMember(collectionId: string, lifeLinkId: string, expectedUpdatedAt: string, options: { signal?: AbortSignal } = {}) {
+  return apiFetch<{ collection: CollectionRecord }>(`/api/collections/${encodeURIComponent(collectionId)}/members/${encodeURIComponent(lifeLinkId)}`, {
+    method: "DELETE", body: JSON.stringify({ expectedUpdatedAt }), signal: options.signal
+  });
+}
+
+export async function createCollectionSection(collectionId: string, expectedUpdatedAt: string, input: { id?: string; title: string }, options: { signal?: AbortSignal } = {}) {
+  return apiFetch<CollectionSectionMutationResult>(`/api/collections/${encodeURIComponent(collectionId)}/sections`, {
+    method: "POST", body: JSON.stringify({ ...input, expectedUpdatedAt }), signal: options.signal
+  });
+}
+
+export async function updateCollectionSection(collectionId: string, sectionId: string, expectedUpdatedAt: string, title: string, options: { signal?: AbortSignal } = {}) {
+  return apiFetch<CollectionSectionMutationResult>(`/api/collections/${encodeURIComponent(collectionId)}/sections/${encodeURIComponent(sectionId)}`, {
+    method: "PATCH", body: JSON.stringify({ title, expectedUpdatedAt }), signal: options.signal
+  });
+}
+
+export async function removeCollectionSection(collectionId: string, sectionId: string, expectedUpdatedAt: string, options: { signal?: AbortSignal } = {}) {
+  return apiFetch<{ collection: CollectionRecord }>(`/api/collections/${encodeURIComponent(collectionId)}/sections/${encodeURIComponent(sectionId)}`, {
+    method: "DELETE", body: JSON.stringify({ expectedUpdatedAt }), signal: options.signal
+  });
+}
+
+export async function replaceCollectionSectionAssignments(collectionId: string, lifeLinkId: string, expectedUpdatedAt: string, sectionIds: string[], options: { signal?: AbortSignal } = {}) {
+  return apiFetch<{ collection: CollectionRecord }>(`/api/collections/${encodeURIComponent(collectionId)}/members/${encodeURIComponent(lifeLinkId)}/sections`, {
+    method: "PUT", body: JSON.stringify({ sectionIds, expectedUpdatedAt }), signal: options.signal
+  });
+}
+
+export async function setLifeLinkQrBinding(lifeLinkId: string, qrId: string, expectedUpdatedAt: string, commandId: string, options: { signal?: AbortSignal } = {}) {
+  return apiFetch<{ lifeLink: LifeLinkRecord }>(`/api/life-links/${encodeURIComponent(lifeLinkId)}/qr-binding`, {
+    method: "PUT", body: JSON.stringify({ commandId, qrId, expectedUpdatedAt }), signal: options.signal
+  });
+}
+
+export async function clearLifeLinkQrBinding(lifeLinkId: string, expectedUpdatedAt: string, commandId: string, options: { signal?: AbortSignal } = {}) {
+  return apiFetch<{ lifeLink: LifeLinkRecord }>(`/api/life-links/${encodeURIComponent(lifeLinkId)}/qr-binding`, {
+    method: "DELETE", body: JSON.stringify({ commandId, expectedUpdatedAt }), signal: options.signal
   });
 }
 
@@ -239,12 +402,12 @@ export async function updateLifeLink(
   });
 }
 
-export async function moveLifeLink(lifeLinkId: string, parentId: string | null, expectedUpdatedAt: string) {
+export async function moveLifeLink(lifeLinkId: string, parentId: string | null, expectedUpdatedAt: string, options: { signal?: AbortSignal } = {}) {
   return apiFetch<{ lifeLink: LifeLinkRecord }>(
     `/api/life-links/${encodeURIComponent(lifeLinkId)}/parent`,
     {
       method: "PATCH",
-      body: JSON.stringify({ parentId, expectedUpdatedAt })
+      body: JSON.stringify({ parentId, expectedUpdatedAt }), signal: options.signal
     }
   );
 }
@@ -258,6 +421,51 @@ export async function uploadLifeLinkMedia(lifeLinkId: string, file: File) {
   );
 }
 
+export async function getLifeLinkAttachmentContent(
+  lifeLinkId: string,
+  mediaId: string,
+  options: AttachmentContentReadOptions & { signal?: AbortSignal } = {}
+): Promise<AttachmentContentPage> {
+  const query = new URLSearchParams();
+  if (options.offset !== undefined) query.set("offset", String(options.offset));
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.revision !== undefined) query.set("revision", options.revision);
+  for (const key of ["representation", "startMs", "durationMs", "audioStreamIndex"] as const) {
+    if (options[key] !== undefined) query.set(key, String(options[key]));
+  }
+  const result = await apiFetch<AttachmentContentPage>(
+    `/api/life-links/${encodeURIComponent(lifeLinkId)}/media/${encodeURIComponent(mediaId)}/content?${query}`,
+    { signal: options.signal }
+  );
+  const validated = options.representation === "transcript" ? validateAttachmentTranscript(result, mediaId, options) : result;
+  options.signal?.throwIfAborted();
+  return validated;
+}
+
+export async function getLifeLinkAttachmentImage(
+  lifeLinkId: string, mediaId: string, options: AttachmentImageReadOptions, signal?: AbortSignal
+): Promise<AttachmentImageResult> {
+  const query = new URLSearchParams({ mode: options.mode });
+  if (options.page !== undefined) query.set("page", String(options.page));
+  if (options.frame !== undefined) query.set("frame", String(options.frame));
+  if (options.atMs !== undefined) query.set("atMs", String(options.atMs));
+  if (options.mode !== "describe") {
+    query.set("sourceRevision", options.sourceRevision);
+    if (options.maxEdge !== undefined) query.set("maxEdge", String(options.maxEdge));
+    if (options.encoding !== undefined) query.set("encoding", options.encoding);
+    if (options.mode === "crop") {
+      for (const [key, value] of Object.entries(options.region)) query.set(key, String(value));
+    }
+  }
+  const result = await apiFetch<unknown>(
+    `/api/life-links/${encodeURIComponent(lifeLinkId)}/media/${encodeURIComponent(mediaId)}/image?${query}`,
+    { signal }, ATTACHMENT_IMAGE_MAX_BASE64_CHARS + MAX_LIFE_LINK_TOOL_OUTPUT_BYTES
+  );
+  const validated = await validateAttachmentImageResult(result, mediaId, options);
+  signal?.throwIfAborted();
+  return validated;
+}
+
 export async function deleteLifeLinkMedia(lifeLinkId: string, mediaId: string) {
   return apiFetch<void>(
     `/api/life-links/${encodeURIComponent(lifeLinkId)}/media/${encodeURIComponent(mediaId)}`,
@@ -267,16 +475,6 @@ export async function deleteLifeLinkMedia(lifeLinkId: string, mediaId: string) {
 
 export async function listLinks() {
   return apiFetch<{ links: LinkRecord[] }>("/api/links");
-}
-
-export async function updateLink(
-  qrId: string,
-  patch: Pick<LinkRecord, "title" | "body" | "bodyDoc" | "bodyDocVersion" | "privacy" | "projectId">
-) {
-  return apiFetch<{ link: LinkRecord }>(`/api/links/${encodeURIComponent(qrId)}`, {
-    method: "PATCH",
-    body: JSON.stringify(patch)
-  });
 }
 
 export async function uploadLinkMedia(qrId: string, file: File) {
@@ -291,17 +489,6 @@ export async function uploadLinkMedia(qrId: string, file: File) {
 export async function deleteLinkMedia(qrId: string, mediaId: string) {
   return apiFetch<void>(`/api/links/${encodeURIComponent(qrId)}/media/${encodeURIComponent(mediaId)}`, {
     method: "DELETE"
-  });
-}
-
-export async function listProjects() {
-  return apiFetch<{ projects: ProjectRecord[] }>("/api/projects");
-}
-
-export async function createProject(name: string) {
-  return apiFetch<{ project: ProjectRecord }>("/api/projects", {
-    method: "POST",
-    body: JSON.stringify({ name })
   });
 }
 

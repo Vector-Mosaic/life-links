@@ -1,193 +1,83 @@
-import { Camera, CornerUpLeft, Move, Pencil, Plus, QrCode } from "lucide-react";
-import {
-  deriveLifeLinkPhysicalLocator,
-  type LifeLinkDetail as LifeLinkDetailRecord,
-  type LifeLinkMediaRecord
-} from "@life-links/core";
-
+import { Paperclip, MapPin, Move, Pencil, Plus, QrCode, Boxes, ExternalLink } from "lucide-react";
+import { LIFE_LINK_CONTEXT_FIELDS, deriveLifeLinkPhysicalLocator, type LifeLinkDetail as DetailRecord, type LifeLinkCollectionMembership, type LifeLinkContext } from "@life-links/core";
 import { RichBodyRenderer } from "../richBody";
-import { Tooltip } from "../ui/Tooltip";
-import { LifeLinkBreadcrumbs } from "./LifeLinkBreadcrumbs";
+import { ActionMenu } from "./FieldLedgerPrimitives";
+import { PathBreadcrumbs } from "./PathBreadcrumbs";
+import { AttachmentList } from "./AttachmentList";
 
-export function LifeLinkDetail({
-  detail,
-  busy,
-  onSelect,
-  onEdit,
-  onCreateChild,
-  onMove,
-  onDetach,
-  onAttachQr,
-  onOpenQr,
-  onFind
-}: {
-  detail: LifeLinkDetailRecord | null;
-  busy: boolean;
-  onSelect(lifeLinkId: string): void;
-  onEdit(lifeLinkId: string): void;
-  onCreateChild(parentId: string): void;
-  onMove(lifeLinkId: string): void;
-  onDetach(lifeLinkId: string): void;
-  onAttachQr(lifeLinkId: string): void;
-  onOpenQr(qrId: string): void;
-  onFind(qrId: string): void;
-}) {
-  if (!detail) {
-    return (
-      <div className="empty-state hierarchy-detail-empty">
-        Select a Life Link to see its content, children, and physical QR binding.
-      </div>
-    );
-  }
+export const contextLabels = { summary: "Summary", condition: "Condition", experience: "Experience", plan: "Plan" } as const;
+export const truthLabels = { owner_reported: "Owner reported", agent_inference: "Agent inference", planned: "Planned", unknown: "Unknown" } as const;
 
-  const { lifeLink } = detail;
-  const physicalLocator = deriveLifeLinkPhysicalLocator(detail.ancestry);
-  return (
-    <article className="life-link-owner-detail" data-selected-life-link-id={lifeLink.id}>
-      <section className="life-link-detail-path" aria-label="Recorded path context">
-        <p className="eyebrow">Recorded path</p>
-        <LifeLinkBreadcrumbs ancestry={detail.ancestry} onSelect={onSelect} />
-        {detail.ancestry.truncated ? (
-          <p className="hierarchy-bound-note">
-            {detail.ancestry.omittedCount} middle path level{detail.ancestry.omittedCount === 1 ? " is" : "s are"} hidden here.
-          </p>
-        ) : null}
-      </section>
-      <header className="life-link-detail-header">
-        <div className="life-link-detail-identity">
-          <p className="eyebrow">Selected Life Link</p>
-          <h3>{lifeLink.title || "Untitled Life Link"}</h3>
-          <code>{lifeLink.id}</code>
-        </div>
-        <div className="life-link-detail-badges">
-          <span className={`privacy-badge ${lifeLink.privacy}`}>{lifeLink.privacy}</span>
-          <span className={lifeLink.qrId ? "qr-binding-badge attached" : "qr-binding-badge"}>
-            <QrCode size={14} />
-            {lifeLink.qrId ? lifeLink.qrId : "No QR attached"}
-          </span>
-        </div>
-      </header>
-
-      <section
-        className="physical-locator-card"
-        aria-label="Recorded QR locator"
-        data-physical-locator-id={physicalLocator?.lifeLinkId}
-        data-physical-locator-relation={physicalLocator?.relation}
-      >
-        <div className="physical-locator-heading">
-          <div>
-            <p className="eyebrow">Recorded QR locator</p>
-            <strong>
-              {physicalLocator
-                ? physicalLocator.title || "Untitled Life Link"
-                : "No reliable QR-bound locator"}
-            </strong>
-          </div>
-          {physicalLocator ? (
-            <span className="qr-binding-badge attached">
-              <QrCode size={14} />
-              {physicalLocator.qrId}
-            </span>
-          ) : null}
-        </div>
-        <p className="physical-locator-copy">
-          {physicalLocator?.relation === "ancestor"
-            ? "This Life Link is recorded inside this QR-bound ancestor. Recorded placement does not confirm current physical location."
-            : physicalLocator?.relation === "self"
-              ? "This Life Link's own QR is its recorded physical return point. Recorded placement does not confirm current physical location."
-              : detail.ancestry.truncated
-                ? "No reliable QR locator can be derived because the bounded recorded path omits possible ancestors."
-                : "No QR-bound locator is recorded for this Life Link or its ancestors."}
-        </p>
-        {physicalLocator?.relation === "ancestor" ? (
-          <div className="physical-locator-actions">
-            <button className="secondary-button" onClick={() => onSelect(physicalLocator.lifeLinkId)} disabled={busy}>
-              <QrCode size={17} />
-              <span>Open recorded container</span>
-            </button>
-            <button className="secondary-button" onClick={() => onFind(physicalLocator.qrId)} disabled={busy}>
-              <Camera size={17} />
-              <span>Find recorded container</span>
-            </button>
-          </div>
-        ) : null}
-      </section>
-
-      <section className="life-link-detail-content" aria-labelledby="life-link-recorded-context-heading">
-        <header className="life-link-detail-content-heading">
-          <p className="eyebrow">Recorded context</p>
-          <h4 id="life-link-recorded-context-heading">What this Life Link remembers</h4>
-        </header>
-        <div className="life-link-detail-body">
-          {lifeLink.body ? (
-            <RichBodyRenderer body={lifeLink.body} bodyDoc={lifeLink.bodyDoc} />
-          ) : (
-            <p className="inline-note">No note yet. Add details that help you or an assistant understand this place or object.</p>
-          )}
-          <CanonicalMediaGallery media={lifeLink.media} title={lifeLink.title || lifeLink.id} />
-        </div>
-      </section>
-
-      <div className="life-link-detail-actions">
-        <button className="primary-button" onClick={() => onEdit(lifeLink.id)} disabled={busy}>
-          <Pencil size={17} />
-          <span>Edit</span>
-        </button>
-        <button className="secondary-button" onClick={() => onCreateChild(lifeLink.id)} disabled={busy}>
-          <Plus size={17} />
-          <span>Add inside</span>
-        </button>
-        <button className="secondary-button" onClick={() => onMove(lifeLink.id)} disabled={busy}>
-          <Move size={17} />
-          <span>Move</span>
-        </button>
-        <button
-          className="secondary-button"
-          onClick={() => onDetach(lifeLink.id)}
-          disabled={busy || lifeLink.parentId === null}
-          data-tooltip={lifeLink.parentId ? "Move this Life Link and its subtree to the top level." : "This Life Link is already top-level."}
-        >
-          <CornerUpLeft size={17} />
-          <span>Move to top level</span>
-          <Tooltip text={lifeLink.parentId ? "Move this Life Link and its subtree to the top level." : "This Life Link is already top-level."} />
-        </button>
-        {lifeLink.qrId ? (
-          <>
-            <button className="secondary-button" onClick={() => onOpenQr(lifeLink.qrId!)}>
-              <QrCode size={17} />
-              <span>Open QR page</span>
-            </button>
-            <button className="secondary-button" onClick={() => onFind(lifeLink.qrId!)}>
-              <Camera size={17} />
-              <span>Find Mode</span>
-            </button>
-          </>
-        ) : (
-          <button className="secondary-button" onClick={() => onAttachQr(lifeLink.id)} disabled={busy}>
-            <QrCode size={17} />
-            <span>Attach QR</span>
-          </button>
-        )}
-      </div>
-    </article>
-  );
+export function ContextFields({ context }: { context?: LifeLinkContext }) {
+  return <>{LIFE_LINK_CONTEXT_FIELDS.map((key) => {
+    const value = context?.[key];
+    return value?.text ? <section className="ll-context-field" key={key}>
+      <header><h3>{contextLabels[key]}</h3><span className={`ll-chip ll-truth-${value.truthState}`}>{truthLabels[value.truthState]}</span></header>
+      <p>{value.text}</p>
+    </section> : null;
+  })}</>;
 }
 
-function CanonicalMediaGallery({ media, title }: { media: LifeLinkMediaRecord[]; title: string }) {
-  if (!media.length) {
-    return null;
-  }
-  return (
-    <div className="media-gallery life-link-media-gallery">
-      {media.map((item) => (
-        <figure key={item.id} className="media-frame">
-          {item.kind === "image" ? (
-            <img src={item.url} alt={`${title} attachment`} loading="lazy" />
-          ) : (
-            <video src={item.url} controls preload="metadata" />
-          )}
-        </figure>
-      ))}
+export function LifeLinkDetail({ detail, busy, memberships, membershipsLoading, membershipsComplete, onNavigate, onEdit, onCreateChild, onMove, onQr, onMedia, onCollection, onMemberships, collectionMode }: {
+  detail: DetailRecord | null;
+  busy: boolean;
+  memberships: LifeLinkCollectionMembership[];
+  membershipsLoading: boolean;
+  membershipsComplete: boolean;
+  collectionMode: boolean;
+  onNavigate(id: string | null): void;
+  onEdit(id: string): void;
+  onCreateChild(id: string): void;
+  onMove(id: string): void;
+  onQr(id: string): void;
+  onMedia(id: string): void;
+  onCollection(id: string, lifeLinkId: string, sectionId?: string): void;
+  onMemberships(id: string): void;
+}) {
+  if (!detail) return <div className="ll-empty">Select an item to see its details.</div>;
+  const { lifeLink } = detail;
+  const locator = deriveLifeLinkPhysicalLocator(detail.ancestry);
+  const ancestors = detail.ancestry.items.filter((item) => item.id !== lifeLink.id);
+  return <article className="ll-detail-content" data-selected-life-link-id={lifeLink.id}>
+    <PathBreadcrumbs label="Item location" truncated={detail.ancestry.truncated} compactItems={ancestors.map((item) => ({ id: item.id, title: item.title, onSelect: () => onNavigate(item.id) }))} items={[
+      { id: "__root", title: "My Life Links", onSelect: () => onNavigate(null) },
+      ...detail.ancestry.items.map((item) => ({ id: item.id, title: item.title, current: item.id === lifeLink.id, onSelect: () => onNavigate(item.id) }))
+    ]} />
+    <div className="ll-title-row ll-detail-title-row"><h2>{lifeLink.title || "Untitled Life Link"}</h2>
+      <ActionMenu label={`Actions for ${lifeLink.title}`} className="ll-icon-button ll-primary ll-detail-plus" items={[
+        { label: "Edit", icon: <Pencil size={17} />, onClick: () => onEdit(lifeLink.id), disabled: busy },
+        { label: "Add under this", icon: <Plus size={17} />, onClick: () => onCreateChild(lifeLink.id), disabled: busy },
+        { label: "Add attachment", icon: <Paperclip size={17} />, onClick: () => onMedia(lifeLink.id), disabled: busy },
+        { label: "QR code", icon: <QrCode size={17} />, onClick: () => onQr(lifeLink.id), disabled: busy },
+        { label: "Move…", icon: <Move size={17} />, onClick: () => onMove(lifeLink.id), disabled: busy }
+      ]}><Plus size={21} /></ActionMenu>
     </div>
-  );
+    <div className="ll-detail-badges"><span className="ll-chip ll-neutral">{lifeLink.privacy === "private" ? "Private record" : "Public record"}</span>
+      {lifeLink.qrId && <button className="ll-chip ll-qr-chip" onClick={() => onQr(lifeLink.id)}><QrCode size={16} />QR attached · preview public view</button>}
+    </div>
+    {collectionMode && <button className="ll-text-button ll-hierarchy-return" onClick={() => onNavigate(lifeLink.id)}><ExternalLink size={15} />Show in hierarchy</button>}
+    <section className="ll-location" aria-label="Recorded location" data-physical-locator-id={locator?.lifeLinkId}>
+      <h3>Recorded location</h3>
+      <strong>{locator?.title || (ancestors.at(-1)?.title ?? "No recorded physical location")}</strong>
+      <p>{ancestors.filter((item) => item.id !== locator?.lifeLinkId).map((item) => item.title).join(" · ") || (lifeLink.parentId ? "Recorded placement" : "Top level")}</p>
+      <p className="ll-location-date">{lifeLink.placementConfirmedAt ? `Placement confirmed ${new Date(lifeLink.placementConfirmedAt).toLocaleDateString()}` : "No placement confirmation recorded"}</p>
+      {locator && <button className="ll-text-button" onClick={() => onNavigate(locator.lifeLinkId)}><MapPin size={18} />Show recorded location</button>}
+      {detail.ancestry.truncated && <small>The recorded path is incomplete.</small>}
+    </section>
+    <ContextFields context={lifeLink.context} />
+    <section className="ll-detail-section" aria-labelledby="ll-memberships-heading">
+      <header><h3 id="ll-memberships-heading">Collections & sections</h3><button className="ll-text-button" onClick={() => onMemberships(lifeLink.id)}>Manage</button></header>
+      {membershipsLoading ? <p className="ll-muted">Loading memberships…</p> : !membershipsComplete ? <p role="status" className="ll-inline-warning">Memberships could not be fully loaded.</p> : !memberships.length ? <p className="ll-muted">No collections</p> : null}
+      {memberships.map(({ collection, sections }) => <div className="ll-membership" key={collection.id}>
+        <button onClick={() => onCollection(collection.id, lifeLink.id)}><Boxes size={17} />{collection.title}</button>
+        <div className="ll-section-tags">{sections.length ? sections.map((section) => <button className="ll-chip ll-blue" key={section.id} onClick={() => onCollection(collection.id, lifeLink.id, section.id)}>{section.title}</button>) : <button className="ll-text-button ll-muted" onClick={() => onCollection(collection.id, lifeLink.id, "__unsectioned")}>Unsectioned</button>}</div>
+      </div>)}
+    </section>
+    {lifeLink.body && <section className="ll-detail-section"><h3>Notes</h3><RichBodyRenderer body={lifeLink.body} bodyDoc={lifeLink.bodyDoc} /></section>}
+    <section className="ll-detail-section" aria-labelledby="ll-attachments-heading"><h3 id="ll-attachments-heading">Attachments</h3>
+      <p className="ll-muted ll-attachment-privacy">Attachments stay private. Your connected agent can read supported document text.</p>
+      {lifeLink.media.length ? <AttachmentList attachments={lifeLink.media} lifeLinkId={lifeLink.id} /> : <p className="ll-muted">No attachments</p>}
+    </section>
+    <details className="ll-record-meta"><summary>Record details</summary><dl><dt>Life Link ID</dt><dd>{lifeLink.id}</dd><dt>Updated</dt><dd>{new Date(lifeLink.updatedAt).toLocaleString()}</dd>{lifeLink.qrId && <><dt>QR code</dt><dd>{lifeLink.qrId}</dd></>}</dl></details>
+  </article>;
 }

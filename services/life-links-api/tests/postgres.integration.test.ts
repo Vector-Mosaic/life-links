@@ -6,10 +6,13 @@ import { fileURLToPath } from "node:url";
 
 import { Pool } from "pg";
 import request from "supertest";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   COMPETITION_CAMPING_KIT_ID,
+  COMPETITION_CAMPING_COLLECTION_ID,
+  COMPETITION_SECTION_IDS,
+  COMPETITION_SLEEPING_PAD_ID,
   COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
   COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_PUBLIC_BODY,
   COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
@@ -20,11 +23,12 @@ import {
   COMPETITION_START_LIFE_LINK_ID,
   COMPETITION_TARGET_QR_ID,
   DEFAULT_QR_BASE_URL,
+  DEMO_GUEST_ID,
   DEMO_OWNER_ID,
-  DEMO_PASSWORD,
-  EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT,
-  REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT
+  DEMO_PASSWORD
 } from "@life-links/core";
+
+import { EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT, REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT } from "./legacyMigration.fixture.js";
 
 import { readConfig } from "../src/config.js";
 import { createLogger } from "../src/logger.js";
@@ -32,6 +36,8 @@ import { runMigrations } from "../src/migrations.js";
 import { createPostgresStore, type PostgresLifeLinksStore } from "../src/postgres-store.js";
 import { createLifeLinksApp } from "../src/server.js";
 import { ClaimIdempotencyConflictError } from "../src/store.js";
+import { fieldLedgerStoreContract } from "./field-ledger-contract.js";
+import { changeHistoryStoreContract } from "./change-history-contract.js";
 
 const databaseUrl = process.env.LIFE_LINKS_TEST_DATABASE_URL;
 const allowSchemaMutation = process.env.LIFE_LINKS_ALLOW_TEST_DB_SCHEMA === "1";
@@ -67,6 +73,90 @@ describe("Life Links Postgres integration", () => {
   let schemaName: string;
   let store: PostgresLifeLinksStore;
   let app: ReturnType<typeof createLifeLinksApp>;
+
+  fieldLedgerStoreContract(() => store);
+
+  describe("isolated saved-change parity", () => {
+    let parityStore: PostgresLifeLinksStore;
+    let parityPool: Pool;
+    let paritySchema: string;
+    beforeEach(async () => {
+      paritySchema = createSchemaName();
+      await adminPool.query(`CREATE SCHEMA ${quoteIdentifier(paritySchema)}`);
+      const instance = createPostgresStore(requireTestDatabaseUrl(), paritySchema);
+      parityStore = instance.store;
+      parityPool = instance.pool;
+      await runMigrations(instance.pool, migrationDir, logger);
+      await parityStore.seedDemo(DEMO_PASSWORD, DEFAULT_QR_BASE_URL);
+    });
+    afterEach(async () => {
+      await parityStore?.close();
+      if (paritySchema) await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(paritySchema)} CASCADE`);
+    });
+    changeHistoryStoreContract(() => parityStore);
+
+    it("keeps saved deletions and detached QRs unchanged through ordinary startup seed", async () => {
+      const deletedId = "legacy-life-link:LL-DEMO-00001";
+      const detachedId = "legacy-life-link:LL-DEMO-00002";
+      const detached = (await parityStore.getLifeLinkDetail(DEMO_OWNER_ID, detachedId))!.lifeLink;
+      await parityStore.clearLifeLinkQrBinding(DEMO_OWNER_ID, { lifeLinkId: detachedId, expectedUpdatedAt: detached.updatedAt, commandId: "startup-clear" });
+      const preview = await parityStore.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "delete", lifeLinkIds: [deletedId] });
+      await parityStore.applyLifeLinkChange(DEMO_OWNER_ID, { previewId: preview.id, commandId: "startup-delete" });
+      const history = await parityStore.getChangeHistory(DEMO_OWNER_ID);
+      await parityStore.seedDemo(DEMO_PASSWORD, DEFAULT_QR_BASE_URL);
+      expect(await parityStore.getLifeLinkDetail(DEMO_OWNER_ID, deletedId)).toBeNull();
+      expect((await parityStore.getLifeLinkDetail(DEMO_OWNER_ID, detachedId))!.lifeLink.qrId).toBeNull();
+      expect(await parityStore.getChangeHistory(DEMO_OWNER_ID)).toEqual(history);
+      expect(await parityStore.getQrState("LL-DEMO-00001", null)).toEqual({ state: "private", qrId: "LL-DEMO-00001" });
+    });
+
+    it("fingerprints media bytes and closes the concurrent delete/foreign-claim gap", async () => {
+      const id = "history-race";
+      await parityStore.createLifeLink({ id, ownerId: DEMO_OWNER_ID, title: "Race fixture", createdAt: "2026-08-30T00:00:00.000Z" });
+      const media = (await parityStore.createLifeLinkMedia(DEMO_OWNER_ID, id, { kind: "image", mimeType: "image/png", fileName: "bytes.png", sizeBytes: 4, data: Buffer.from("data") }))!;
+      const qrId = (await parityStore.createQrBatch(DEMO_OWNER_ID, 1, DEFAULT_QR_BASE_URL)).qrCodes[0].id;
+      await parityStore.claimQr(qrId, DEMO_OWNER_ID, { mode: "attach", lifeLinkId: id, commandId: "race-owner-claim" });
+      const stale = await parityStore.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "delete", lifeLinkIds: [id] });
+      await parityPool.query("UPDATE link_media SET data = $1 WHERE id = $2", [Buffer.from("edit"), media.id]);
+      await expect(parityStore.applyLifeLinkChange(DEMO_OWNER_ID, { previewId: stale.id, commandId: "stale-bytes" })).rejects.toMatchObject({ code: "stale_life_link" });
+      const preview = await parityStore.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "delete", lifeLinkIds: [id] });
+      const [deleted, claimed] = await Promise.allSettled([
+        parityStore.applyLifeLinkChange(DEMO_OWNER_ID, { previewId: preview.id, commandId: "race-delete" }),
+        parityStore.claimQr(qrId, DEMO_GUEST_ID, { mode: "create", commandId: "race-guest-claim" })
+      ]);
+      expect(deleted.status).toBe("fulfilled");
+      if (claimed.status === "fulfilled") expect(claimed.value.result).toBe("owned_by_other");
+      else expect(claimed.reason).toMatchObject({ code: "qr_already_bound" });
+      expect(await parityStore.getQrState(qrId, null)).toEqual({ state: "private", qrId });
+      const history = await parityStore.getChangeHistory(DEMO_OWNER_ID);
+      await parityStore.undoChange(DEMO_OWNER_ID, { changeId: history.entries[0].id, commandId: "race-undo" });
+      expect((await parityStore.getLifeLinkMedia(DEMO_OWNER_ID, id, media.id))?.data).toEqual(Buffer.from("edit"));
+      expect((await parityStore.getLifeLinkDetail(DEMO_OWNER_ID, id))?.lifeLink.qrId).toBe(qrId);
+    });
+
+    it("never truncates the saved descendant closure and expires bounded owner previews", async () => {
+      const id = "history-large-root";
+      await parityStore.createLifeLink({ id, ownerId: DEMO_OWNER_ID, title: "Large folder", browsingRole: "container", createdAt: "2026-08-30T00:00:00.000Z" });
+      await parityPool.query(`INSERT INTO life_links (id, owner_id, parent_id, title, body, body_doc, body_doc_version, privacy, created_at, updated_at)
+        SELECT 'history-large-' || n, $1, $2, 'Child ' || n, '', '{"type":"doc","content":[]}'::jsonb, 1, 'private', now(), now() FROM generate_series(1, 105) n`, [DEMO_OWNER_ID, id]);
+      const history = await parityStore.getChangeHistory(DEMO_OWNER_ID);
+      const previews = [];
+      for (let index = 0; index < 6; index++) previews.push(await parityStore.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "delete", lifeLinkIds: [id] }));
+      expect(previews[5].items).toHaveLength(106);
+      expect(await parityStore.getLifeLinkChangePreview(DEMO_OWNER_ID, previews[0].id)).toBeNull();
+      expect((await parityPool.query("SELECT count(*)::int AS count FROM life_link_change_previews WHERE owner_id = $1", [DEMO_OWNER_ID])).rows[0].count).toBe(5);
+      await parityPool.query("UPDATE life_link_change_previews SET created_at = now() - interval '16 minutes' WHERE id = $1", [previews[5].id]);
+      expect(await parityStore.getLifeLinkChangePreview(DEMO_OWNER_ID, previews[5].id)).toBeNull();
+      expect(await parityStore.getChangeHistory(DEMO_OWNER_ID)).toEqual(history);
+      const lastChild = (await parityStore.getLifeLinkDetail(DEMO_OWNER_ID, "history-large-105"))!.lifeLink;
+      await parityStore.updateLifeLink(DEMO_OWNER_ID, { lifeLinkId: lastChild.id, expectedUpdatedAt: lastChild.updatedAt, patch: { title: "Last descendant changed" } });
+      await expect(parityStore.applyLifeLinkChange(DEMO_OWNER_ID, { previewId: previews[4].id, commandId: "large-stale" })).rejects.toMatchObject({ code: "stale_life_link" });
+      const journal = (await parityPool.query("SELECT inverse_rows FROM saved_changes WHERE owner_id = $1 ORDER BY sequence DESC LIMIT 1", [DEMO_OWNER_ID])).rows[0].inverse_rows;
+      expect(journal).toHaveLength(1);
+      expect(journal[0].key.id).toBe(lastChild.id);
+      expect(journal[0]).not.toHaveProperty("after");
+    });
+  });
 
   beforeAll(async () => {
     const url = requireTestDatabaseUrl();
@@ -117,7 +207,7 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(5);
+    expect(migrations.rows[0].count).toBe(9);
     const agentConnectionColumn = await adminPool.query(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -125,6 +215,181 @@ describe("Life Links Postgres integration", () => {
       [schemaName]
     );
     expect(agentConnectionColumn.rows).toEqual([{ is_nullable: "YES", data_type: "timestamp with time zone" }]);
+  });
+
+  it("enforces Field Ledger relational invariants in PostgreSQL itself", async () => {
+    const suffix = randomUUID();
+    const createdAt = "2026-08-29T00:00:00.000Z";
+    const parent = await store.createLifeLink({ id: `life-link-parent-${suffix}`, ownerId: DEMO_OWNER_ID,
+      title: "Container", browsingRole: "container", createdAt });
+    const child = await store.createLifeLink({ id: `life-link-child-${suffix}`, ownerId: DEMO_OWNER_ID,
+      title: "Child", parentId: parent.id, createdAt });
+    const foreign = await store.createLifeLink({ id: `life-link-foreign-${suffix}`, ownerId: DEMO_GUEST_ID,
+      title: "Foreign", createdAt });
+    const collection = await store.createCollection({ id: `collection-${randomUUID()}`, ownerId: DEMO_OWNER_ID,
+      title: "Test", createdAt });
+    await expect(postgresPool.query("UPDATE life_links SET browsing_role = 'item' WHERE id = $1", [parent.id]))
+      .rejects.toThrow();
+    await expect(postgresPool.query(
+      "INSERT INTO collection_memberships(owner_id, collection_id, life_link_id, created_at) VALUES ($1,$2,$3,$4)",
+      [DEMO_OWNER_ID, collection.id, foreign.id, createdAt])).rejects.toMatchObject({ code: "23503" });
+    const section = (await store.createCollectionSection(DEMO_OWNER_ID, { id: `section-${randomUUID()}`,
+      collectionId: collection.id, title: "Empty section", expectedUpdatedAt: collection.updatedAt }))!;
+    await expect(postgresPool.query(
+      "INSERT INTO collection_section_assignments(owner_id, collection_id, life_link_id, section_id, created_at) VALUES ($1,$2,$3,$4,$5)",
+      [DEMO_OWNER_ID, collection.id, child.id, section.section.id, createdAt])).rejects.toMatchObject({ code: "23503" });
+    await expect(postgresPool.query("UPDATE life_links SET context = $2::jsonb WHERE id = $1",
+      [child.id, JSON.stringify({ schemaVersion: 1, invented: { text: "not admitted", truthState: "planned" } })]))
+      .rejects.toMatchObject({ code: "23514" });
+    await expect(postgresPool.query("UPDATE life_links SET public_field_keys = ARRAY['ownerId'] WHERE id = $1", [child.id]))
+      .rejects.toMatchObject({ code: "23514" });
+    for (const invalidContext of [null, { schemaVersion: 1, plan: { text: "planned" } },
+      { schemaVersion: 1, plan: { text: "\t\n", truthState: "planned" } }]) {
+      await expect(postgresPool.query("UPDATE life_links SET context = $2::jsonb WHERE id = $1",
+        [child.id, JSON.stringify(invalidContext)])).rejects.toMatchObject({ code: "23514" });
+    }
+    expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, child.id))?.lifeLink).toEqual(child);
+  });
+
+  it.each([
+    { kind: "image" as const, mimeType: "image/png", fileName: "synthetic.png", data: Buffer.from([0, 1, 127, 255]) },
+    { kind: "document" as const, mimeType: "text/plain", fileName: "travel-notes.txt", data: Buffer.from("Document notes\r\nCafé – Québec\tpack list\r\n", "utf8") }
+  ])("atomically deletes the full descendant closure and restores identities, $kind attachment bytes, memberships, QR and receipt meaning", async (input) => {
+    const suffix = randomUUID();
+    const createdAt = "2026-08-30T00:00:00.000Z";
+    const parent = await store.createLifeLink({ id: `undo-parent-${suffix}`, ownerId: DEMO_OWNER_ID, title: "Travel folder", browsingRole: "container", createdAt });
+    const child = await store.createLifeLink({ id: `undo-child-${suffix}`, ownerId: DEMO_OWNER_ID, title: "Passport pouch", parentId: parent.id, createdAt });
+    const uploaded = (await store.createLifeLinkMedia(DEMO_OWNER_ID, child.id, { ...input, sizeBytes: input.data.byteLength }))!;
+    const uploadChange = (await store.getChangeHistory(DEMO_OWNER_ID)).entries[0];
+    await store.undoChange(DEMO_OWNER_ID, { changeId: uploadChange.id, commandId: `undo-upload-${suffix}` });
+    expect(await store.getLifeLinkMedia(DEMO_OWNER_ID, child.id, uploaded.id)).toBeNull();
+    const media = (await store.createLifeLinkMedia(DEMO_OWNER_ID, child.id, { ...input, sizeBytes: input.data.byteLength }))!;
+    expect(await store.deleteLifeLinkMedia(DEMO_OWNER_ID, child.id, media.id)).toBe(true);
+    const removeChange = (await store.getChangeHistory(DEMO_OWNER_ID)).entries[0];
+    await store.undoChange(DEMO_OWNER_ID, { changeId: removeChange.id, commandId: `undo-remove-${suffix}` });
+    expect((await store.getLifeLinkMedia(DEMO_OWNER_ID, child.id, media.id))?.data).toEqual(input.data);
+    const batch = await store.createQrBatch(DEMO_OWNER_ID, 1, DEFAULT_QR_BASE_URL);
+    const qrId = batch.qrCodes[0].id;
+    const claimCommand = { commandId: `undo-claim-${suffix}`, mode: "attach" as const, lifeLinkId: child.id };
+    await store.claimQr(qrId, DEMO_OWNER_ID, claimCommand);
+    let collection = await store.createCollection({ id: `collection-${suffix}`, ownerId: DEMO_OWNER_ID, title: "Travel", purpose: "Synthetic", createdAt });
+    collection = (await store.addCollectionMember(DEMO_OWNER_ID, { collectionId: collection.id, lifeLinkId: child.id, expectedUpdatedAt: collection.updatedAt }))!;
+    const section = (await store.createCollectionSection(DEMO_OWNER_ID, { id: `section-${suffix}`, collectionId: collection.id, title: "Documents", expectedUpdatedAt: collection.updatedAt }))!;
+    await store.replaceCollectionSectionAssignments(DEMO_OWNER_ID, { collectionId: collection.id, lifeLinkId: child.id, sectionIds: [section.section.id], expectedUpdatedAt: section.collection.updatedAt });
+    const destination = await store.createLifeLink({ id: `undo-destination-${suffix}`, ownerId: DEMO_OWNER_ID, title: "Destination", browsingRole: "container", createdAt });
+    const beforeMove = (await store.getLifeLinkDetail(DEMO_OWNER_ID, child.id))!.lifeLink.media;
+    const movePreview = await store.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "move", lifeLinkIds: [parent.id], parentId: destination.id });
+    await store.applyLifeLinkChange(DEMO_OWNER_ID, { previewId: movePreview.id, commandId: `move-attachments-${suffix}` });
+    expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, child.id))!.lifeLink.media).toEqual(beforeMove);
+    expect((await store.getLifeLinkMedia(DEMO_OWNER_ID, child.id, media.id))?.data).toEqual(input.data);
+    const beforeChild = (await store.getLifeLinkDetail(DEMO_OWNER_ID, child.id))!.lifeLink;
+    const historyBefore = await store.getChangeHistory(DEMO_OWNER_ID);
+    const preview = await store.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "delete", lifeLinkIds: [parent.id, child.id] });
+    expect(preview.rootIds).toEqual([parent.id]);
+    expect(preview.items.map((item) => item.id)).toEqual([parent.id, child.id]);
+    expect(preview.sideEffects).toEqual({ lifeLinks: 2, media: 1, qrBindings: 1, collectionMemberships: 1, collectionSectionAssignments: 1 });
+    expect(await store.getChangeHistory(DEMO_OWNER_ID)).toEqual(historyBefore);
+    const applied = await store.applyLifeLinkChange(DEMO_OWNER_ID, { previewId: preview.id, commandId: `undo-delete-${suffix}` });
+    expect(await store.getLifeLinkDetail(DEMO_OWNER_ID, parent.id)).toBeNull();
+    expect(await store.getLifeLinkDetail(DEMO_OWNER_ID, child.id)).toBeNull();
+    expect(await store.getQrState(qrId, null)).toEqual({ state: "private", qrId });
+    expect(await store.getQrState(qrId, DEMO_OWNER_ID)).toMatchObject({ state: "unclaimed" });
+    expect((await store.listCollectionMembers(DEMO_OWNER_ID, collection.id))?.items).toHaveLength(0);
+    expect((await postgresPool.query("SELECT 1 FROM claim_events WHERE command_id = $1", [claimCommand.commandId])).rowCount).toBe(1);
+    await expect(store.claimQr(qrId, DEMO_GUEST_ID, { commandId: `foreign-reserved-${suffix}`, mode: "create" })).rejects.toMatchObject({ code: "qr_already_bound" });
+    await expect(store.createLifeLink({ id: child.id, ownerId: DEMO_GUEST_ID, title: "Identity collision", createdAt })).rejects.toMatchObject({ code: "duplicate_life_link_id" });
+    const undoCommand = { changeId: applied.history.entries[0].id, commandId: `undo-restore-${suffix}` };
+    const restored = await store.undoChange(DEMO_OWNER_ID, undoCommand);
+    expect(restored.history.entries).toEqual(historyBefore.entries.slice(0, 4));
+    const afterChild = (await store.getLifeLinkDetail(DEMO_OWNER_ID, child.id))!.lifeLink;
+    expect(afterChild).toEqual({ ...beforeChild, updatedAt: afterChild.updatedAt });
+    expect(Date.parse(afterChild.updatedAt)).toBeGreaterThan(Date.parse(beforeChild.updatedAt));
+    expect((await store.getLifeLinkMedia(DEMO_OWNER_ID, child.id, media.id))?.data).toEqual(input.data);
+    expect((await store.listLifeLinkCollectionMemberships(DEMO_OWNER_ID, child.id))?.items[0].sections.map((item) => item.id)).toEqual([section.section.id]);
+    expect(await store.claimQr(qrId, DEMO_OWNER_ID, claimCommand)).toMatchObject({ result: "claimed", replayed: true });
+    expect(await store.undoChange(DEMO_OWNER_ID, undoCommand)).toEqual(restored);
+    expect((await store.applyLifeLinkChange(DEMO_OWNER_ID, { previewId: preview.id, commandId: `undo-delete-${suffix}` })).history).toEqual(restored.history);
+    expect(await store.getLifeLinkDetail(DEMO_OWNER_ID, child.id)).not.toBeNull();
+    const anotherStore = createPostgresStore(requireTestDatabaseUrl(), schemaName);
+    try { expect(await anotherStore.store.getChangeHistory(DEMO_OWNER_ID)).toEqual(restored.history); }
+    finally { await anotherStore.store.close(); }
+  });
+
+  it("revalidates unseen descendants and serializes concurrent bulk apply without duplicating history", async () => {
+    const suffix = randomUUID();
+    const createdAt = "2026-08-30T00:00:00.000Z";
+    const parent = await store.createLifeLink({ id: `bulk-parent-${suffix}`, ownerId: DEMO_OWNER_ID, title: "Source", browsingRole: "container", createdAt });
+    const target = await store.createLifeLink({ id: `bulk-target-${suffix}`, ownerId: DEMO_OWNER_ID, title: "Destination", browsingRole: "container", createdAt });
+    const child = await store.createLifeLink({ id: `bulk-child-${suffix}`, ownerId: DEMO_OWNER_ID, title: "Deep child", parentId: parent.id, createdAt });
+    const stale = await store.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "delete", lifeLinkIds: [parent.id] });
+    await store.updateLifeLink(DEMO_OWNER_ID, { lifeLinkId: child.id, expectedUpdatedAt: child.updatedAt, patch: { title: "Changed descendant" } });
+    await expect(store.applyLifeLinkChange(DEMO_OWNER_ID, { previewId: stale.id, commandId: `stale-${suffix}` })).rejects.toMatchObject({ code: "stale_life_link" });
+    expect(await store.getLifeLinkDetail(DEMO_OWNER_ID, parent.id)).not.toBeNull();
+    const preview = await store.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "move", lifeLinkIds: [parent.id, child.id], parentId: target.id });
+    const command = { previewId: preview.id, commandId: `bulk-apply-${suffix}` };
+    const [first, replay] = await Promise.all([store.applyLifeLinkChange(DEMO_OWNER_ID, command), store.applyLifeLinkChange(DEMO_OWNER_ID, command)]);
+    expect(replay).toEqual(first);
+    expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, parent.id))?.lifeLink.parentId).toBe(target.id);
+    expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, child.id))?.lifeLink.parentId).toBe(parent.id);
+    expect((await postgresPool.query("SELECT count(*)::int AS count FROM life_link_change_receipts WHERE command_id = $1", [command.commandId])).rows[0].count).toBe(1);
+    const noOp = await store.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "move", lifeLinkIds: [parent.id], parentId: target.id });
+    expect((await store.applyLifeLinkChange(DEMO_OWNER_ID, { previewId: noOp.id, commandId: `no-op-${suffix}` })).history).toEqual(first.history);
+    await expect(store.applyLifeLinkChange(DEMO_GUEST_ID, command)).rejects.toBeInstanceOf(ClaimIdempotencyConflictError);
+    await expect(store.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "move", lifeLinkIds: [parent.id], parentId: child.id })).rejects.toMatchObject({ code: "invalid_parent" });
+    expect(await store.getLifeLinkChangePreview(DEMO_GUEST_ID, stale.id)).toBeNull();
+  });
+
+  it("bounds saved history to five real mutations, supports sequential Undo, and releases only evicted QR reservations", async () => {
+    const suffix = randomUUID();
+    let item = await store.createLifeLink({ id: `history-item-${suffix}`, ownerId: DEMO_OWNER_ID, title: "Version zero", createdAt: "2026-08-30T00:00:00.000Z" });
+    const batch = await store.createQrBatch(DEMO_OWNER_ID, 1, DEFAULT_QR_BASE_URL);
+    const qrId = batch.qrCodes[0].id;
+    await store.claimQr(qrId, DEMO_OWNER_ID, { mode: "attach", lifeLinkId: item.id, commandId: `history-claim-${suffix}` });
+    item = (await store.getLifeLinkDetail(DEMO_OWNER_ID, item.id))!.lifeLink;
+    await store.clearLifeLinkQrBinding(DEMO_OWNER_ID, { lifeLinkId: item.id, expectedUpdatedAt: item.updatedAt, commandId: `history-clear-${suffix}` });
+    for (let index = 1; index <= 5; index++) {
+      item = (await store.getLifeLinkDetail(DEMO_OWNER_ID, item.id))!.lifeLink;
+      item = (await store.updateLifeLink(DEMO_OWNER_ID, { lifeLinkId: item.id, expectedUpdatedAt: item.updatedAt, patch: { title: `Version ${index}` } }))!;
+    }
+    let history = await store.getChangeHistory(DEMO_OWNER_ID);
+    expect(history.entries).toHaveLength(5);
+    const frozen = history;
+    await store.updateLifeLink(DEMO_OWNER_ID, { lifeLinkId: item.id, expectedUpdatedAt: item.updatedAt, patch: { title: item.title } });
+    await store.createQrBatch(DEMO_OWNER_ID, 1, DEFAULT_QR_BASE_URL);
+    await store.connectAgent(DEMO_OWNER_ID);
+    expect(await store.getChangeHistory(DEMO_OWNER_ID)).toEqual(frozen);
+    await store.disconnectAgent(DEMO_OWNER_ID);
+    await expect(store.undoChange(DEMO_OWNER_ID, { changeId: history.entries[1].id, commandId: `out-of-order-${suffix}` })).rejects.toMatchObject({ code: "stale_life_link" });
+    expect(await store.claimQr(qrId, DEMO_GUEST_ID, { mode: "create", commandId: `evicted-claim-${suffix}` })).toMatchObject({ result: "claimed" });
+    for (let index = 4; index >= 0; index--) {
+      const result = await store.undoChange(DEMO_OWNER_ID, { changeId: history.entries[0].id, commandId: `history-undo-${suffix}-${index}` });
+      expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, item.id))?.lifeLink.title).toBe(index ? `Version ${index}` : "Version zero");
+      history = result.history;
+    }
+    expect(history.entries).toHaveLength(0);
+  });
+
+  it("rolls back a partially executed bulk deletion and rejects conflicting inverse state without partial restoration", async () => {
+    const suffix = randomUUID();
+    const item = await store.createLifeLink({ id: `rollback-item-${suffix}`, ownerId: DEMO_OWNER_ID, title: "Before", createdAt: "2026-08-30T00:00:00.000Z" });
+    const preview = await store.previewLifeLinkChange(DEMO_OWNER_ID, { operation: "delete", lifeLinkIds: [item.id] });
+    const history = await store.getChangeHistory(DEMO_OWNER_ID);
+    await postgresPool.query("CREATE FUNCTION reject_test_history() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced journal failure'; END $$");
+    await postgresPool.query("CREATE TRIGGER reject_test_history_trigger BEFORE INSERT ON saved_changes FOR EACH ROW EXECUTE FUNCTION reject_test_history()");
+    try { await expect(store.applyLifeLinkChange(DEMO_OWNER_ID, { previewId: preview.id, commandId: `rollback-${suffix}` })).rejects.toThrow("forced journal failure"); }
+    finally {
+      await postgresPool.query("DROP TRIGGER reject_test_history_trigger ON saved_changes");
+      await postgresPool.query("DROP FUNCTION reject_test_history()");
+    }
+    expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, item.id))?.lifeLink).toEqual(item);
+    expect(await store.getChangeHistory(DEMO_OWNER_ID)).toEqual(history);
+    const changed = (await store.updateLifeLink(DEMO_OWNER_ID, { lifeLinkId: item.id, expectedUpdatedAt: item.updatedAt, patch: { title: "After" } }))!;
+    const changedHistory = await store.getChangeHistory(DEMO_OWNER_ID);
+    await postgresPool.query("UPDATE life_links SET title = 'External conflicting write' WHERE id = $1", [item.id]);
+    await expect(store.undoChange(DEMO_OWNER_ID, { changeId: changedHistory.entries[0].id, commandId: `conflict-${suffix}` })).rejects.toMatchObject({ code: "stale_life_link" });
+    expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, item.id))?.lifeLink.title).toBe("External conflicting write");
+    expect(await store.getChangeHistory(DEMO_OWNER_ID)).toEqual(changedHistory);
+    expect(changed.title).toBe("After");
   });
 
   it("dry-runs and atomically restores the isolated competition fixture without touching another owner", async () => {
@@ -139,6 +404,7 @@ describe("Life Links Postgres integration", () => {
       ownerId: COMPETITION_OWNER_ID,
       mode: "dry-run",
       applied: false,
+      shapeMatchesExpected: false,
       before: { users: 0, sessions: 0, lifeLinks: 0 },
       after: { users: 0, sessions: 0, lifeLinks: 0 },
       expected: { users: 1, sessions: 0, lifeLinks: 60, qrBindings: 8, batches: 1, qrCodes: 8 }
@@ -148,7 +414,10 @@ describe("Life Links Postgres integration", () => {
       sessions: 0,
       lifeLinks: 60,
       qrBindings: 8,
-      projectCompatibility: 1,
+      collections: 1,
+      collectionSections: 5,
+      collectionMemberships: 48,
+      collectionSectionAssignments: 52,
       media: 0,
       batches: 1,
       qrCodes: 8,
@@ -158,22 +427,32 @@ describe("Life Links Postgres integration", () => {
 
     const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(firstApply.after).toEqual(firstApply.expected);
+    expect(firstApply.shapeMatchesExpected).toBe(true);
+    expect((await store.resetCompetitionFixture(options)).shapeMatchesExpected).toBe(true);
+    expect((await store.resetCompetitionFixture({ ...options, password: "wrong-password" })).shapeMatchesExpected).toBe(false);
+    expect((await store.listCollectionMembers(COMPETITION_OWNER_ID, COMPETITION_CAMPING_COLLECTION_ID, { limit: 100 }))?.items).toHaveLength(48);
+    expect((await store.listCollectionSections(COMPETITION_OWNER_ID, COMPETITION_CAMPING_COLLECTION_ID, { limit: 100 }))?.items.map((item) => item.title)).toEqual([
+      "Family sleep systems", "Shelter", "Camp kitchen", "Cycling kit", "Next-year upgrades"
+    ]);
+    expect((await store.listLifeLinkCollectionMemberships(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_PAD_ID))?.items[0].sections.map((item) => item.id)).toEqual([
+      COMPETITION_SECTION_IDS.familySleepSystems, COMPETITION_SECTION_IDS.nextYearUpgrades
+    ]);
     expect((await store.getUserById(COMPETITION_OWNER_ID))?.agentConnectedAt).toBeNull();
     const connectedAt = (await store.connectAgent(COMPETITION_OWNER_ID))?.agentConnectedAt;
     expect(connectedAt).toEqual(expect.any(String));
     const start = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_START_LIFE_LINK_ID);
     expect(start?.ancestry.items.map((item) => item.title)).toEqual([
       COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
-      "Basement Gear Storage",
+      "Storage wall",
       COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE
     ]);
     expect(start?.lifeLink).toMatchObject({ qrId: COMPETITION_TARGET_QR_ID, privacy: "public" });
     const sleepingBag = await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID);
     expect(sleepingBag?.ancestry.items.map((item) => item.title)).toEqual([
       COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE,
-      "Basement Gear Storage",
+      "Storage wall",
       COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
-      "Adult Two Sleep System",
+      "Adult Two Sleep Bag",
       "Camping Sleeping Bag"
     ]);
     expect(sleepingBag?.lifeLink).toMatchObject({ qrId: COMPETITION_SLEEPING_BAG_QR_ID, privacy: "public" });
@@ -183,9 +462,9 @@ describe("Life Links Postgres integration", () => {
       viewerIsOwner: false,
       link: {
         ownerId: null,
-        projectId: null,
         title: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_TITLE,
-        body: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_PUBLIC_BODY
+        body: "",
+        context: { schemaVersion: 1, summary: { text: COMPETITION_FAMILY_SLEEP_SYSTEMS_TUB_PUBLIC_BODY, truthState: "owner_reported" } }
       }
     });
     expect(JSON.stringify(await store.getQrState(COMPETITION_TARGET_QR_ID, null))).not.toMatch(
@@ -194,7 +473,7 @@ describe("Life Links Postgres integration", () => {
     expect(await store.getQrState(COMPETITION_TARGET_QR_ID, COMPETITION_OWNER_ID)).toMatchObject({
       state: "claimed",
       viewerIsOwner: true,
-      link: { ownerId: COMPETITION_OWNER_ID, projectId: COMPETITION_CAMPING_KIT_ID }
+      link: { ownerId: COMPETITION_OWNER_ID }
     });
 
     await store.createSession(
@@ -215,9 +494,12 @@ describe("Life Links Postgres integration", () => {
       createdAt: "2026-08-26T13:00:00.000Z"
     });
     await store.createQrBatch(COMPETITION_OWNER_ID, 1, options.qrBaseUrl);
+    const retainedPreview = await store.previewLifeLinkChange(COMPETITION_OWNER_ID, { operation: "delete", lifeLinkIds: [COMPETITION_SLEEPING_BAG_ID] });
+    expect((await store.getChangeHistory(COMPETITION_OWNER_ID)).entries.length).toBeGreaterThan(0);
 
     const driftDryRun = await store.resetCompetitionFixture(options);
     expect(driftDryRun.applied).toBe(false);
+    expect(driftDryRun.shapeMatchesExpected).toBe(false);
     expect(driftDryRun.after).toEqual(driftDryRun.before);
     expect(
       (await store.getLifeLinkDetail(COMPETITION_OWNER_ID, COMPETITION_SLEEPING_BAG_ID))?.lifeLink.title
@@ -226,6 +508,8 @@ describe("Life Links Postgres integration", () => {
 
     const restored = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(restored.after).toEqual(restored.expected);
+    expect((await store.getChangeHistory(COMPETITION_OWNER_ID)).entries).toEqual([]);
+    expect(await store.getLifeLinkChangePreview(COMPETITION_OWNER_ID, retainedPreview.id)).toBeNull();
     expect(await store.getSessionByTokenHash("competition-postgres-session-hash")).toBeNull();
     expect((await store.getUserById(COMPETITION_OWNER_ID))?.agentConnectedAt).toBe(connectedAt);
     expect(await store.getLifeLinkDetail(COMPETITION_OWNER_ID, "competition-postgres-extra-life-link")).toBeNull();
@@ -238,6 +522,18 @@ describe("Life Links Postgres integration", () => {
     expect(replay.before).toEqual(replay.expected);
     expect(replay.after).toEqual(replay.expected);
     expect((await store.getUserById(COMPETITION_OWNER_ID))?.agentConnectedAt).toBe(connectedAt);
+
+    const collection = await store.getCollection(COMPETITION_OWNER_ID, COMPETITION_CAMPING_COLLECTION_ID);
+    await store.updateCollection(COMPETITION_OWNER_ID, {
+      collectionId: COMPETITION_CAMPING_COLLECTION_ID, expectedUpdatedAt: collection!.updatedAt,
+      patch: { title: "Same-count Collection drift" }
+    });
+    const sameCountDrift = await store.resetCompetitionFixture(options);
+    expect(sameCountDrift.before).toEqual(sameCountDrift.expected);
+    expect(sameCountDrift.after).toEqual(sameCountDrift.before);
+    expect(sameCountDrift.shapeMatchesExpected).toBe(false);
+    expect((await store.getCollection(COMPETITION_OWNER_ID, COMPETITION_CAMPING_COLLECTION_ID))?.title).toBe("Same-count Collection drift");
+    expect((await store.resetCompetitionFixture({ ...options, mode: "apply" })).shapeMatchesExpected).toBe(true);
 
     const foreignBatch = await store.createQrBatch(DEMO_OWNER_ID, 1, options.qrBaseUrl);
     const foreignQrId = foreignBatch.qrCodes[0].id;
@@ -261,7 +557,6 @@ describe("Life Links Postgres integration", () => {
         id: foreignQrId,
         status: "claimed",
         ownerId: null,
-        projectId: null,
         title: "",
         body: "",
         privacy: "private",
@@ -427,9 +722,11 @@ describe("Life Links Postgres integration", () => {
     expect(secondPage.items).toHaveLength(1);
     expect(new Set([firstPage.items[0].id, secondPage.items[0].id])).toEqual(new Set([child.id, sibling.id]));
 
+    const currentChild = (await store.getLifeLinkDetail("demo-owner", child.id))!.lifeLink;
+    const currentRoot = (await store.getLifeLinkDetail("demo-owner", root.id))!.lifeLink;
     const updated = await store.updateLifeLink("demo-owner", {
       lifeLinkId: child.id,
-      expectedUpdatedAt: child.updatedAt,
+      expectedUpdatedAt: currentChild!.updatedAt,
       patch: { title: "Updated child" }
     });
     expect(updated?.updatedAt).not.toBe(child.updatedAt);
@@ -451,7 +748,7 @@ describe("Life Links Postgres integration", () => {
       store.moveLifeLink("demo-owner", {
         lifeLinkId: root.id,
         parentId: child.id,
-        expectedUpdatedAt: root.updatedAt
+        expectedUpdatedAt: currentRoot!.updatedAt
       })
     ).rejects.toMatchObject({ code: "hierarchy_cycle" });
     await expect(
@@ -549,21 +846,34 @@ describe("Life Links Postgres integration", () => {
     expect(publicQr.body.state).toBe("claimed");
     expect(publicQr.body.link.url).toBe(`${DEFAULT_QR_BASE_URL}/qr/LL-DEMO-00002`);
 
-    const upload = await agent
-      .post("/api/links/LL-DEMO-00002/media")
-      .attach("file", Buffer.from("pg-image"), { filename: "postgres.png", contentType: "image/png" });
-    expect(upload.status).toBe(201);
-    expect(upload.body.media.kind).toBe("image");
+    for (const input of [
+      { kind: "image", filename: "postgres.png", contentType: "image/png", data: Buffer.from("pg-image") },
+      { kind: "document", filename: "postgres-notes.txt", contentType: "text/plain", data: Buffer.from("Private document\r\nCafé – Québec\r\n", "utf8") }
+    ]) {
+      const upload = await agent
+        .post("/api/links/LL-DEMO-00002/media")
+        .attach("file", input.data, { filename: input.filename, contentType: input.contentType });
+      expect(upload.status).toBe(201);
+      expect(upload.body.media).toMatchObject({ kind: input.kind, mimeType: input.contentType, fileName: input.filename, sizeBytes: input.data.byteLength });
 
-    const qrWithMedia = await request(app).get("/api/qr/LL-DEMO-00002");
-    expect(qrWithMedia.status).toBe(200);
-    expect(qrWithMedia.body.link.media).toHaveLength(1);
-    expect(qrWithMedia.body.link.media[0]).toMatchObject({ ownerId: null });
-    expect(JSON.stringify(qrWithMedia.body)).not.toContain(DEMO_OWNER_ID);
+      const qrWithMedia = await request(app).get("/api/qr/LL-DEMO-00002");
+      expect(qrWithMedia.status).toBe(200);
+      expect(qrWithMedia.body.link.media).toEqual([]);
+      expect(JSON.stringify(qrWithMedia.body)).not.toContain(DEMO_OWNER_ID);
+      expect(JSON.stringify(qrWithMedia.body)).not.toContain(input.filename);
 
-    const mediaFile = await request(app).get(upload.body.media.url);
-    expect(mediaFile.status).toBe(200);
-    expect(mediaFile.headers["content-type"]).toContain("image/png");
+      const mediaFile = await request(app).get(upload.body.media.url);
+      expect(mediaFile.status).toBe(404);
+      const historyBeforeRead = await store.getChangeHistory(DEMO_OWNER_ID);
+      const ownerMedia = await agent.get(upload.body.media.url);
+      expect(ownerMedia.status).toBe(200);
+      expect(ownerMedia.headers["content-type"]).toContain(input.contentType);
+      if (input.kind === "document") {
+        expect(ownerMedia.headers["content-disposition"]).toContain("attachment");
+        expect(ownerMedia.text).toBe(input.data.toString("utf8"));
+      } else expect(ownerMedia.body).toEqual(input.data);
+      expect(await store.getChangeHistory(DEMO_OWNER_ID)).toEqual(historyBeforeRead);
+    }
   });
 
   it("migrates the reviewed flat legacy fixture without identity, content, QR, media, or claim drift", async () => {
@@ -659,7 +969,9 @@ describe("Life Links Postgres integration", () => {
           createdAt: row.created_at.toISOString(),
           updatedAt: row.updated_at.toISOString()
         }))
-      ).toEqual(EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT.lifeLinks);
+      ).toEqual(EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT.lifeLinks.map(
+        ({ browsingRole: _role, context: _context, placementConfirmedAt: _placement, publicFieldKeys: _public, ...record }) => record
+      ));
 
       const inventory = await fixturePostgres.pool.query("SELECT * FROM qr_codes ORDER BY id");
       expect(
@@ -680,12 +992,6 @@ describe("Life Links Postgres integration", () => {
         }))
       ).toEqual(EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT.qrBindings);
 
-      const compatibility = await fixturePostgres.pool.query(
-        "SELECT * FROM life_link_project_compat ORDER BY project_id"
-      );
-      expect(
-        compatibility.rows.map((row) => ({ projectId: String(row.project_id), lifeLinkId: String(row.life_link_id) }))
-      ).toEqual(EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT.projectCompatibility);
 
       const media = await fixturePostgres.pool.query("SELECT * FROM link_media ORDER BY id");
       expect(
@@ -727,9 +1033,45 @@ describe("Life Links Postgres integration", () => {
       expect(legacyTables.rows).toEqual([]);
       expect(legacyQrColumns.rows).toEqual([]);
 
+      await applyMigrationFile(fixturePostgres.pool, "005_agent_connection.sql");
+      await applyMigrationFile(fixturePostgres.pool, "006_field_ledger_collections.sql");
+      await fixturePostgres.pool.query(
+        "INSERT INTO collections (id, owner_id, title, created_at, updated_at) VALUES ('collection-upgrade', 'owner-alpha', 'Camera gear', now(), now())"
+      );
+      await fixturePostgres.pool.query(
+        "INSERT INTO collection_memberships (owner_id, collection_id, life_link_id, created_at) VALUES ('owner-alpha', 'collection-upgrade', 'legacy-life-link:LL-MIG-00001', now())"
+      );
+      await fixturePostgres.pool.query(
+        "INSERT INTO collection_sections (id, owner_id, collection_id, title, position, created_at, updated_at) VALUES ('section-upgrade', 'owner-alpha', 'collection-upgrade', 'Batteries', 0, now(), now())"
+      );
+      await fixturePostgres.pool.query(
+        "INSERT INTO collection_section_assignments (owner_id, collection_id, life_link_id, section_id, created_at) VALUES ('owner-alpha', 'collection-upgrade', 'legacy-life-link:LL-MIG-00001', 'section-upgrade', now())"
+      );
+      const preservedTables = ["life_links", "qr_codes", "life_link_qr_bindings", "link_media", "claim_events",
+        "collections", "collection_memberships", "collection_sections", "collection_section_assignments"];
+      const beforeContraction = await Promise.all(preservedTables.map(async (table) =>
+        (await fixturePostgres.pool.query(`SELECT * FROM ${table} ORDER BY 1, 2`)).rows
+      ));
       await runMigrations(fixturePostgres.pool, migrationDir, logger);
+      for (const [index, table] of preservedTables.entries()) {
+        expect((await fixturePostgres.pool.query(`SELECT * FROM ${table} ORDER BY 1, 2`)).rows).toEqual(beforeContraction[index]);
+      }
+      expect((await fixturePostgres.pool.query("SELECT to_regclass('life_link_project_compat') AS marker")).rows[0].marker).toBeNull();
+      const upgraded = await fixturePostgres.pool.query("SELECT * FROM life_links ORDER BY id");
+      for (const row of upgraded.rows) {
+        const hasChildren = upgraded.rows.some((child) => child.parent_id === row.id);
+        expect(row.browsing_role).toBe(hasChildren ? "container" : "item");
+        expect(row.context).toEqual({ schemaVersion: 1 });
+        expect(row.placement_confirmed_at).toBeNull();
+        expect(row.public_field_keys).toEqual(row.privacy === "public" ? ["notes"] : []);
+        const original = EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT.lifeLinks.find((item) => item.id === row.id)!;
+        expect({ body: row.body, bodyDoc: row.body_doc, title: row.title, parentId: row.parent_id,
+          createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString() })
+          .toEqual({ body: original.body, bodyDoc: original.bodyDoc, title: original.title, parentId: original.parentId,
+            createdAt: original.createdAt, updatedAt: original.updatedAt });
+      }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(5);
+      expect(receiptCount.rows[0].count).toBe(9);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -751,7 +1093,11 @@ describe("Life Links Postgres integration", () => {
         "002_link_media.sql",
         "003_link_body_doc.sql",
         "004_recursive_life_links.sql",
-        "005_agent_connection.sql"
+        "005_agent_connection.sql",
+        "006_field_ledger_collections.sql",
+        "007_remove_project_compat.sql",
+        "008_saved_change_history.sql",
+        "009_document_attachments.sql"
       ]);
     } finally {
       await concurrent.store.close();

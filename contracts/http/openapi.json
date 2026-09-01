@@ -4,7 +4,7 @@
   "info": {
     "title": "Life Links Application HTTP API",
     "version": "1.0.0",
-    "description": "Published v1 contract for the implemented Life Links HTTP surface. It covers operational release identity, web and native application workflows, the canonical owner reads and revision-safe writes reused by page-bound WebMCP tools, and the stable QR browser entry point. Generic SPA fallback routes remain implementation details outside this contract."
+    "description": "Published v1 contract for the implemented Life Links HTTP surface. It covers operational release identity, web application and retained bearer API workflows, the canonical owner reads and revision-safe writes reused by page-bound WebMCP tools, and the stable QR browser entry point. Generic SPA fallback routes remain implementation details outside this contract."
   },
   "servers": [
     {
@@ -43,9 +43,6 @@
       "name": "media"
     },
     {
-      "name": "projects"
-    },
-    {
       "name": "qr-batches"
     },
     {
@@ -59,6 +56,333 @@
     }
   ],
   "paths": {
+    "/api/life-links/changes/preview": {
+      "post": {
+        "operationId": "previewLifeLinkChange",
+        "summary": "Prepare an immutable full owner subtree preview; no saved mutation",
+        "tags": [
+          "life-links"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewLifeLinkChangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated owner result; inverse data is never returned.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LifeLinkChangePreviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/life-links/changes/{previewId}": {
+      "get": {
+        "operationId": "getLifeLinkChangePreview",
+        "summary": "Read lossless pages of one owner-bound preview",
+        "tags": [
+          "life-links"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "previewId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^\\d{1,10}$"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated owner result; inverse data is never returned.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LifeLinkChangePreviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/life-links/changes/apply": {
+      "post": {
+        "operationId": "applyLifeLinkChange",
+        "summary": "Atomically apply exactly the reviewed preview using a stable command identity",
+        "tags": [
+          "life-links"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyLifeLinkChangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated owner result; inverse data is never returned.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LifeLinkChangeResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/change-history": {
+      "get": {
+        "operationId": "getLifeLinksChangeHistory",
+        "summary": "List metadata for the latest five reversible owner changes",
+        "tags": [
+          "life-links"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authenticated owner result; inverse data is never returned.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangeHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/change-history/undo": {
+      "post": {
+        "operationId": "undoLifeLinksChange",
+        "summary": "Undo only the newest change atomically without creating a new history entry",
+        "tags": [
+          "life-links"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UndoChangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated owner result; inverse data is never returned.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LifeLinkChangeResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "operationId": "getLifeLinksHealth",
@@ -359,65 +683,11 @@
         }
       }
     },
-    "/api/links/{qrId}": {
-      "patch": {
-        "operationId": "updateOwnedLifeLink",
-        "summary": "Update an owned link",
-        "description": "Only the authenticated owner can update a link. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
-        "tags": [
-          "links"
-        ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/XRequestId"
-          },
-          {
-            "$ref": "#/components/parameters/QrId"
-          },
-          {
-            "$ref": "#/components/parameters/BrowserOrigin"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LinkPatchRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "$ref": "#/components/responses/LinkOk"
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalError"
-          }
-        }
-      }
-    },
     "/api/links/{qrId}/media": {
       "post": {
         "operationId": "uploadLifeLinkMedia",
-        "summary": "Upload one image or video to an owned link",
-        "description": "The multipart field name is `file`. One file of at most 25 MiB is accepted, with at most eight media records per link. Supported MIME types are image/jpeg, image/png, image/webp, image/gif, video/mp4, video/webm, and video/quicktime. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "summary": "Upload one image, video, or document to an owned link",
+        "description": "The multipart field name is `file`. One file of at most 25 MiB is accepted, with at most eight media records per link. Supported MIME types are image/jpeg, image/png, image/webp, image/gif, video/mp4, video/webm, and video/quicktime. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers. Document types include PDF, DOCX, XLSX, TXT, CSV, Markdown, and JSON. Known extensions may resolve an empty or generic browser MIME; arbitrary binary and active HTML/script types are rejected. Attachments retain media IDs, owner privacy, the shared eight-file limit, and Undo.",
         "tags": [
           "media"
         ],
@@ -476,7 +746,7 @@
     "/api/links/{qrId}/media/{mediaId}": {
       "get": {
         "operationId": "getLifeLinkMedia",
-        "summary": "Read public media or owner-authorized private media",
+        "summary": "Read owner-authorized QR-keyed media",
         "tags": [
           "media"
         ],
@@ -561,6 +831,957 @@
         }
       }
     },
+    "/api/life-links/{lifeLinkId}/collection-memberships": {
+      "get": {
+        "operationId": "listLifeLinkCollectionMemberships",
+        "summary": "Read all Collection memberships and assigned Sections through bounded pages",
+        "description": "Pages Collections for this owned item. Each returned membership includes every assigned Section in deterministic order, without truncating Sections. The next cursor continues Collections.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkCursor"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkPageLimit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionMembershipListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/life-links/{lifeLinkId}/qr-binding": {
+      "put": {
+        "operationId": "setLifeLinkQrBinding",
+        "summary": "Set or replace a Life Link QR binding atomically",
+        "description": "Requires the exact Life Link revision and a stable commandId. New QR eligibility is checked before releasing the prior binding. Exact command replay returns current subject state without reapplying historical effects. Reused command identity with different arguments returns idempotency_key_conflict.",
+        "tags": [
+          "life-links"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QrBindingSetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LifeLinkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "description": "Revision, binding, or command identity conflict.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/LifeLinkErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "clearLifeLinkQrBinding",
+        "summary": "Clear a Life Link QR binding",
+        "description": "Requires the exact Life Link revision and a stable commandId. The Life Link and all its content survive. Exact command replay returns current subject state without undoing a subsequent binding.",
+        "tags": [
+          "life-links"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QrBindingClearRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LifeLinkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "description": "Revision, binding, or command identity conflict.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/LifeLinkErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/collections": {
+      "get": {
+        "operationId": "listCollections",
+        "summary": "List the owner's Collections",
+        "description": "Owner-scoped canonical operation. Missing and other-owner targets are indistinguishable. Collection mutations require the Collection revision; exact target-state retries return current state without reapplying effects.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkCursor"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkPageLimit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createCollection",
+        "summary": "Create a purpose-based Collection",
+        "description": "Optional stable prefixed UUID makes a retry converge on the same owner and normalized metadata; different metadata under the same ID conflicts. The server generates an ID if omitted. Collections do not change item placement or public visibility.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/collections/{collectionId}": {
+      "get": {
+        "operationId": "getCollection",
+        "summary": "Read Collection metadata and a page of Sections",
+        "description": "Returns Collection metadata and Sections ordered by position then identity. cursor/limit apply only to Sections; sectionsPage explicitly advertises continuation. Fetch members through the member endpoint.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/CollectionId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkCursor"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkPageLimit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionDetailResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateCollection",
+        "summary": "Update Collection metadata with an exact revision",
+        "description": "Owner-scoped canonical operation. Missing and other-owner targets are indistinguishable. Collection mutations require the Collection revision; exact target-state retries return current state without reapplying effects.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/CollectionId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionPatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/collections/{collectionId}/members": {
+      "get": {
+        "operationId": "listCollectionMembers",
+        "summary": "Read a page of canonical Collection member items",
+        "description": "Owner-scoped canonical operation. Missing and other-owner targets are indistinguishable. Collection mutations require the Collection revision; exact target-state retries return current state without reapplying effects.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/CollectionId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkCursor"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkPageLimit"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LifeLinkListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/collections/{collectionId}/members/{lifeLinkId}": {
+      "put": {
+        "operationId": "addCollectionMember",
+        "summary": "Add an owned item to a Collection",
+        "description": "Owner-scoped canonical operation. Missing and other-owner targets are indistinguishable. Collection mutations require the Collection revision; exact target-state retries return current state without reapplying effects.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/CollectionId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionRevisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeCollectionMember",
+        "summary": "Remove membership and its Section assignments, preserving the item",
+        "description": "Owner-scoped canonical operation. Missing and other-owner targets are indistinguishable. Collection mutations require the Collection revision; exact target-state retries return current state without reapplying effects.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/CollectionId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionRevisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/collections/{collectionId}/sections": {
+      "post": {
+        "operationId": "createCollectionSection",
+        "summary": "Create an organizational Section within a Collection",
+        "description": "Appends a Section within this Collection. A stable optional section-prefixed UUID supports create replay. Sections have no physical parent edges and are not independently nested Collections.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/CollectionId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionSectionCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionSectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/collections/{collectionId}/sections/{sectionId}": {
+      "patch": {
+        "operationId": "updateCollectionSection",
+        "summary": "Rename a Section",
+        "description": "Owner-scoped canonical operation. Missing and other-owner targets are indistinguishable. Collection mutations require the Collection revision; exact target-state retries return current state without reapplying effects.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/CollectionId"
+          },
+          {
+            "$ref": "#/components/parameters/SectionId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionSectionPatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionSectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeCollectionSection",
+        "summary": "Remove a Section and its assignments, preserving memberships and items",
+        "description": "Owner-scoped canonical operation. Missing and other-owner targets are indistinguishable. Collection mutations require the Collection revision; exact target-state retries return current state without reapplying effects.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/CollectionId"
+          },
+          {
+            "$ref": "#/components/parameters/SectionId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionRevisionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/collections/{collectionId}/members/{lifeLinkId}/sections": {
+      "put": {
+        "operationId": "replaceCollectionSectionAssignments",
+        "summary": "Replace all Section assignments for one direct member",
+        "description": "Requires an existing same-owner direct item membership. Every Section must belong to this Collection. sectionIds is an exact target set; duplicates normalize away and an empty set clears assignments without removing membership. Exact target-state replay succeeds without a fresh revision.",
+        "tags": [
+          "collections"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/CollectionId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectionSectionAssignmentsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner-scoped canonical result with current revision.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/LifeLinkBadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/LifeLinkConflict"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
     "/api/life-links": {
       "get": {
         "operationId": "listCanonicalLifeLinks",
@@ -607,7 +1828,7 @@
       "post": {
         "operationId": "createCanonicalLifeLink",
         "summary": "Create a private top-level or child Life Link",
-        "description": "Creates one Life Link with title, body, structured-body, and privacy defaults when omitted. An optional parent must belong to the authenticated owner. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "description": "Creates one Life Link with an optional stable caller ID, item/container browsing role, structured context and public-field selection. Defaults are item, private, schemaVersion 1 context and no public fields. Matching stable-ID create retries converge; changed payloads conflict. A parent must belong to the owner and parented creation confirms placement. Adding the first child promotes an item parent to container. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
         "tags": [
           "life-links"
         ],
@@ -699,7 +1920,7 @@
       "get": {
         "operationId": "getCanonicalLifeLink",
         "summary": "Read one owned Life Link with bounded hierarchy context",
-        "description": "Returns the exact canonical Life Link, a bounded ancestry path, and a bounded page of immediate children. Truncation and continuation metadata is explicit; no public QR response exposes this hierarchy.",
+        "description": "Returns the exact canonical Life Link, bounded ancestry, immediate children and an initial Collection-membership page. The cursor/limit query applies to children; continue memberships through the dedicated collection-memberships route. Every returned membership includes all its assigned Sections. Explicit continuation metadata prevents partial pages from implying complete absence. No public QR response exposes hierarchy or membership.",
         "tags": [
           "life-links"
         ],
@@ -741,7 +1962,7 @@
       "patch": {
         "operationId": "updateCanonicalLifeLink",
         "summary": "Update one owned Life Link's content or privacy",
-        "description": "Requires the exact `expectedUpdatedAt` revision returned by a prior owner read. Stale writes fail with `409 stale_life_link`; the server never silently overwrites newer canonical owner state. The page-bound `update_life_link_content` tool reuses this operation for title/body-only writes after its additional live-page, editor, saved-human-draft, owner-source, and access checks. Parent placement and QR binding are not accepted here. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "description": "Requires the exact `expectedUpdatedAt` revision returned by a prior owner read. Stale writes fail with `409 stale_life_link`; the server never silently overwrites newer canonical owner state. Supports title/body, privacy, full structured-context replacement and exact public-field selection. Omitted context preserves existing values. Browsing role, placement, and QR binding are not accepted here. The page-bound content tool uses title/body/context; explicit public-projection maintenance uses privacy/publicFieldKeys through its own discriminated tool action. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
         "tags": [
           "life-links"
         ],
@@ -854,8 +2075,8 @@
     "/api/life-links/{lifeLinkId}/media": {
       "post": {
         "operationId": "uploadCanonicalLifeLinkMedia",
-        "summary": "Upload one image or video to any owned Life Link",
-        "description": "The multipart field name is `file`. One file of at most 25 MiB is accepted, with at most eight media records per Life Link. Supported MIME types are image/jpeg, image/png, image/webp, image/gif, video/mp4, video/webm, and video/quicktime. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "summary": "Upload one image, video, or document to any owned Life Link",
+        "description": "The multipart field name is `file`. One file of at most 25 MiB is accepted, with at most eight media records per Life Link. Supported MIME types are image/jpeg, image/png, image/webp, image/gif, video/mp4, video/webm, and video/quicktime. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers. Document types include PDF, DOCX, XLSX, TXT, CSV, Markdown, and JSON. Known extensions may resolve an empty or generic browser MIME; arbitrary binary and active HTML/script types are rejected. Attachments retain media IDs, owner privacy, the shared eight-file limit, and Undo.",
         "tags": [
           "life-links",
           "media"
@@ -916,7 +2137,7 @@
       "get": {
         "operationId": "getCanonicalLifeLinkMedia",
         "summary": "Read media from one owned Life Link",
-        "description": "This canonical route is owner-only, including for public Life Links. Public media remains reachable only through the existing QR-keyed media boundary.",
+        "description": "This canonical route is owner-only, including for public Life Links. Media bytes are not included in the public-field allowlist; QR-keyed media also requires the owner.",
         "tags": [
           "life-links",
           "media"
@@ -990,77 +2211,6 @@
           },
           "404": {
             "$ref": "#/components/responses/LifeLinkNotFound"
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalError"
-          }
-        }
-      }
-    },
-    "/api/projects": {
-      "get": {
-        "operationId": "listLifeLinkProjects",
-        "summary": "List projects owned by the authenticated user",
-        "tags": [
-          "projects"
-        ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/XRequestId"
-          }
-        ],
-        "responses": {
-          "200": {
-            "$ref": "#/components/responses/ProjectListOk"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalError"
-          }
-        }
-      },
-      "post": {
-        "operationId": "createLifeLinkProject",
-        "summary": "Create a project for the authenticated user",
-        "description": "Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
-        "tags": [
-          "projects"
-        ],
-        "parameters": [
-          {
-            "$ref": "#/components/parameters/XRequestId"
-          },
-          {
-            "$ref": "#/components/parameters/BrowserOrigin"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ProjectCreateRequest"
-              }
-            }
-          }
-        },
-        "responses": {
-          "201": {
-            "$ref": "#/components/responses/ProjectCreated"
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
@@ -1188,7 +2338,7 @@
       "get": {
         "operationId": "resolveLifeLinkQr",
         "summary": "Resolve the viewer-filtered state of a QR link",
-        "description": "Authentication is optional. Owners receive their private content; unauthenticated or non-owner viewers receive the public, private-placeholder, unclaimed, or not-found state allowed by the canonical store policy. Non-owner claimed responses force ownerId and compatibility projectId to null, force any projected media ownerId to null, and never expose canonical Life Link identity, parent, ancestry, children, path, root, descendant, or hierarchy fields.",
+        "description": "Authentication is optional. Owners receive their private content; other viewers receive the public, private-placeholder, unclaimed, or not-found state. Non-owner claimed responses force ownerId to null and media to an empty array. Body and bodyDoc are empty unless notes is explicitly selected; context contains only selected summary/condition/experience/plan values. They never expose canonical Life Link identity, parent, ancestry, children, path, root, descendant, hierarchy fields, placement, Collection membership, or Section assignments.",
         "tags": [
           "qr"
         ],
@@ -1370,6 +2520,279 @@
           }
         }
       }
+    },
+    "/api/life-links/{lifeLinkId}/media/{mediaId}/image": {
+      "get": {
+        "operationId": "getLifeLinkAttachmentImage",
+        "summary": "Describe or render an exact owned attachment page or frame",
+        "description": "Owner-authenticated derived image delivery from canonical bytes. Describe returns byte/MIME SHA-256 sourceRevision; overview/crop require it. Static images use oriented original pixels. PDF/DOCX/XLSX use one-based page (default 1) and a rotated 288-DPI grid in source.pdf/source.office. Office is a nonexecuting cached-value print projection: stored formula/field/chart display, no recalculation/external refresh; warnings disclose conversion/hidden/print limitations. Animation uses one-based frame (default 1), composited pixels and declared frame timing/count/loops. Video uses atMs (default 0); source.video identifies actual decoded presentation time/PTS. Selectors are mutually exclusive and repeated for describe/overview/crop. Other pages, frames, audio, hidden content and embedded files are not inspected. No OCR transcript or whole-file comprehension claim. Bounds: 512 pages or animation frames, five-minute videos, eight streams, 25 MiB source, 32 million pixels/16384 edge, 2048 output edge/2 MiB PNG or JPEG. No upscaling. Overview can reduce further with warnings; crop never silently reduces for byte cap. Shared two-unit/eight-queued admission: ordinary JS reads cost one/15 seconds, native Office/temporal reads cost both/90 seconds. Parent-owned process-tree cancellation and temporary cleanup; qualified native runtime is Linux, missing/unsupported runtime returns runtime_unavailable. No OS sandbox, persistent derivative, public URL, external provider upload or model-seen claim. Authorization/session/source are rechecked before release. Invalid selectors/regions return 400; malformed/encrypted/resource limits are explicit unreadable results.",
+        "tags": [
+          "life-links",
+          "media"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkId"
+          },
+          {
+            "$ref": "#/components/parameters/MediaId"
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": true,
+            "description": "Describe source metadata; render overview or exact crop.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "describe",
+                "overview",
+                "crop"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "PDF/DOCX/XLSX one-based page, default 1. Exclusive with frame/atMs. Repeat for overview/crop.",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 512 }
+          },
+          { "name": "frame", "in": "query", "description": "Animation-only one-based frame, default 1; exclusive with page/atMs.", "schema": { "type": "integer", "minimum": 1, "maximum": 512 } },
+          { "name": "atMs", "in": "query", "description": "Video-only requested time in milliseconds, default zero; actual decoded time is returned. Exclusive with page/frame.", "schema": { "type": "integer", "minimum": 0, "maximum": 300000 } },
+          {
+            "name": "sourceRevision",
+            "in": "query",
+            "required": false,
+            "description": "Required for overview/crop; forbidden for describe.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          {
+            "name": "x",
+            "in": "query",
+            "required": false,
+            "description": "Required only for crop; integer oriented-image pixels or rotated PDF page-grid pixels at source.pdf.pixelsPerPoint.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "y",
+            "in": "query",
+            "required": false,
+            "description": "Required only for crop; integer oriented-image pixels or rotated PDF page-grid pixels at source.pdf.pixelsPerPoint.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "width",
+            "in": "query",
+            "required": false,
+            "description": "Required only for crop; integer oriented-image pixels or rotated PDF page-grid pixels at source.pdf.pixelsPerPoint.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "height",
+            "in": "query",
+            "required": false,
+            "description": "Required only for crop; integer oriented-image pixels or rotated PDF page-grid pixels at source.pdf.pixelsPerPoint.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "maxEdge",
+            "in": "query",
+            "required": false,
+            "description": "Optional overview/crop maximum output edge; no upscaling.",
+            "schema": {
+              "type": "integer",
+              "minimum": 256,
+              "maximum": 2048,
+              "default": 2048
+            }
+          },
+          {
+            "name": "encoding",
+            "in": "query",
+            "required": false,
+            "description": "Optional overview/crop encoding; explicit JPEG is lossy.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "png",
+                "jpeg"
+              ],
+              "default": "png"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Private source description, bounded encoded image, or explicit unreadable reason. Image bytes do not establish model-facing delivery.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentImageResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "description": "Source revision, exact source bytes or MIME changed; no substituted image.",
+            "headers": {
+              "X-Request-Id": { "$ref": "#/components/headers/RequestId" }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/life-links/{lifeLinkId}/media/{mediaId}/content": {
+      "get": {
+        "operationId": "getLifeLinkAttachmentContent",
+        "summary": "Read paginated extracted text or an explicit video speech window",
+        "description": "Owner-authenticated, read-only derived text from canonical attachment bytes. Default extraction supports PDF, DOCX, XLSX and UTF-8 TXT/CSV/Markdown/JSON; images/video and encrypted/scanned/malformed or resource-limited documents return explicit unreadable results. DOCX includes source-labelled body, related headers/footers, footnotes/endnotes and comments with IDs/reference markers; orphan ZIP parts are excluded. Ready means pageable extracted text, not complete visual interpretation. Explicit representation=transcript instead selects a video-audio window (startMs default 0, durationMs default 30000, maximum 30000) and optional global audioStreamIndex; local pinned whisper.cpp/base recognition is inferred, never owner-reported or a complete audiovisual interpretation. Transcript metadata identifies actual window end, source duration, stream, processor/model hash and nextStartMs; nextOffset pages text within that same window. Five-minute/eight-stream source bounds and a 150-second native job deadline apply. Offsets count UTF-16 code units and never split surrogate pairs. Continuations require the returned revision (bytes/MIME/extraction version, plus requested window/stream/model for speech). DOCX retains life-links-attachment-text-docx-v2. No summaries, external provider uploads, document execution or DB writes. Default extraction bounds: 15-second job, 128 MiB V8 heap, 2048 ZIP entries, 64 MiB total/16 MiB individual inflated bytes, 8 MiB extracted UTF-8 text, 512 PDF pages, 128 sheets and 100000 populated cells. Shared two-unit/eight-queued admission: ordinary reads cost one, native jobs both. Output-limit failure never returns successful partial content. Owner/session/source are rechecked before release; missing/unsupported native runtime returns runtime_unavailable.",
+        "tags": [
+          "life-links",
+          "media"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/LifeLinkId"
+          },
+          {
+            "$ref": "#/components/parameters/MediaId"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4000,
+              "default": 1000
+            }
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          { "name": "representation", "in": "query", "description": "Omit for original text extraction. transcript explicitly enables local inferred speech on video; no external provider. Finish nextOffset text pages for the same window, then continue at transcript.nextStartMs with offset zero and no prior revision. Native Linux runtime, max150 seconds, reserves both shared admission units. Missing runtime/no audio are explicit unreadable results.", "schema": { "type": "string", "const": "transcript" } },
+          { "name": "startMs", "in": "query", "description": "Transcript-only start on the source timeline. Window/model/source/profile are revision-bound.", "schema": { "type": "integer", "minimum": 0, "maximum": 300000, "default": 0 } },
+          { "name": "durationMs", "in": "query", "description": "Transcript-only duration, clamped to source end; changing window requires a new revision.", "schema": { "type": "integer", "minimum": 1, "maximum": 30000, "default": 30000 } },
+          { "name": "audioStreamIndex", "in": "query", "description": "Transcript-only global stream index, defaults to first audio stream. Others are uninspected.", "schema": { "type": "integer", "minimum": 0, "maximum": 7 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Private extracted-text page or explicit unreadable status. Documents remain untrusted data.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentContentPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/LifeLinkNotFound"
+          },
+          "409": {
+            "description": "Attachment content revision differs from the continuation.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1443,6 +2866,22 @@
           "minimum": 1,
           "maximum": 100,
           "default": 25
+        }
+      },
+      "CollectionId": {
+        "name": "collectionId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/CollectionId"
+        }
+      },
+      "SectionId": {
+        "name": "sectionId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/CollectionSectionId"
         }
       },
       "LifeLinkSearchQuery": {
@@ -1527,7 +2966,7 @@
         }
       },
       "CacheControl": {
-        "description": "Owner media uses `private, no-store`; public media uses `public, max-age=300`.",
+        "description": "Owner media uses `private, no-store`; media is never served as a public field.",
         "required": true,
         "schema": {
           "type": "string"
@@ -1535,6 +2974,337 @@
       }
     },
     "schemas": {
+      "LifeLinkChangePreviewItem": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "title",
+          "parentId",
+          "browsingRole",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "browsingRole": {
+            "enum": [
+              "container",
+              "item"
+            ]
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "LifeLinkChangeSideEffects": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lifeLinks",
+          "media",
+          "qrBindings",
+          "collectionMemberships",
+          "collectionSectionAssignments"
+        ],
+        "properties": {
+          "lifeLinks": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "media": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "qrBindings": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "collectionMemberships": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "collectionSectionAssignments": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "LifeLinkChangePreview": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "operation",
+          "rootIds",
+          "items",
+          "parentId",
+          "target",
+          "sideEffects",
+          "createdAt",
+          "nextCursor",
+          "totalItems"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "operation": {
+            "enum": [
+              "move",
+              "delete"
+            ]
+          },
+          "rootIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LifeLinkChangePreviewItem"
+            }
+          },
+          "parentId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "target": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LifeLinkChangePreviewItem"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sideEffects": {
+            "$ref": "#/components/schemas/LifeLinkChangeSideEffects"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "totalItems": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "LifeLinkChangePreviewResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "preview"
+        ],
+        "properties": {
+          "preview": {
+            "$ref": "#/components/schemas/LifeLinkChangePreview"
+          }
+        }
+      },
+      "PreviewLifeLinkChangeRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "operation",
+              "lifeLinkIds",
+              "parentId"
+            ],
+            "properties": {
+              "operation": {
+                "const": "move"
+              },
+              "lifeLinkIds": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 100,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              },
+              "parentId": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 200
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "operation",
+              "lifeLinkIds"
+            ],
+            "properties": {
+              "operation": {
+                "const": "delete"
+              },
+              "lifeLinkIds": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 100,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                }
+              }
+            }
+          }
+        ]
+      },
+      "ApplyLifeLinkChangeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "previewId",
+          "commandId"
+        ],
+        "properties": {
+          "previewId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "commandId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "UndoChangeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "changeId",
+          "commandId"
+        ],
+        "properties": {
+          "changeId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "commandId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "ChangeHistoryEntry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "label",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "label": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ChangeHistory": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "limit",
+          "entries"
+        ],
+        "properties": {
+          "limit": {
+            "const": 5
+          },
+          "entries": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/components/schemas/ChangeHistoryEntry"
+            }
+          }
+        }
+      },
+      "LifeLinkChangeResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "affectedIds",
+          "history"
+        ],
+        "properties": {
+          "operation": {
+            "enum": [
+              "move",
+              "delete",
+              "undo"
+            ]
+          },
+          "affectedIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            }
+          },
+          "history": {
+            "$ref": "#/components/schemas/ChangeHistory"
+          }
+        }
+      },
       "RequestId": {
         "type": "string",
         "minLength": 1,
@@ -1555,6 +3325,7 @@
           "canonical_source_sha",
           "source_tree_sha256",
           "build_time",
+          "competition_fixture_profile",
           "store_mode"
         ],
         "properties": {
@@ -1591,6 +3362,10 @@
           "build_time": {
             "type": "string",
             "minLength": 1
+          },
+          "competition_fixture_profile": {
+            "const": "webmcp-field-ledger-family-v3",
+            "description": "Competition fixture implemented by this binary. The fixed reset operator requires this successor profile in addition to exact qualified release identity before mutation."
           },
           "store_mode": {
             "type": "string",
@@ -1753,32 +3528,6 @@
           }
         }
       },
-      "Project": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "id",
-          "ownerId",
-          "name",
-          "createdAt"
-        ],
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "ownerId": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string",
-            "maxLength": 80
-          },
-          "createdAt": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
       "JsonValue": {
         "oneOf": [
           {
@@ -1914,7 +3663,8 @@
             "type": "string",
             "enum": [
               "image",
-              "video"
+              "video",
+              "document"
             ]
           },
           "mimeType": {
@@ -1926,7 +3676,14 @@
               "image/gif",
               "video/mp4",
               "video/webm",
-              "video/quicktime"
+              "video/quicktime",
+              "application/pdf",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "text/plain",
+              "text/csv",
+              "text/markdown",
+              "application/json"
             ]
           },
           "fileName": {
@@ -1957,13 +3714,16 @@
           "ownerId",
           "title",
           "body",
-          "projectId",
           "privacy",
           "media",
           "createdAt",
           "updatedAt"
         ],
         "properties": {
+          "context": {
+            "$ref": "#/components/schemas/LifeLinkContext",
+            "description": "Owner context, or only explicitly selected public context values for a non-owner. Public projections omit unselected values, ancestry, placement, membership, and media."
+          },
           "id": {
             "$ref": "#/components/schemas/QrId"
           },
@@ -2008,13 +3768,6 @@
               "integer",
               "null"
             ]
-          },
-          "projectId": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Compatibility Project placement for an authorized owner projection; null in a non-owner public claimed projection."
           },
           "privacy": {
             "type": "string",
@@ -2072,7 +3825,8 @@
             "type": "string",
             "enum": [
               "image",
-              "video"
+              "video",
+              "document"
             ]
           },
           "mimeType": {
@@ -2084,7 +3838,14 @@
               "image/gif",
               "video/mp4",
               "video/webm",
-              "video/quicktime"
+              "video/quicktime",
+              "application/pdf",
+              "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+              "text/plain",
+              "text/csv",
+              "text/markdown",
+              "application/json"
             ]
           },
           "fileName": {
@@ -2107,6 +3868,73 @@
           }
         }
       },
+      "LifeLinkBrowsingRole": {
+        "type": "string",
+        "enum": [
+          "container",
+          "item"
+        ],
+        "description": "Browsing role on the canonical Life Link. An empty container remains a folder; adding a first child promotes an item without changing its identity."
+      },
+      "LifeLinkContextValue": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "text",
+          "truthState"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "truthState": {
+            "type": "string",
+            "enum": [
+              "owner_reported",
+              "agent_inference",
+              "planned",
+              "unknown"
+            ]
+          }
+        }
+      },
+      "LifeLinkContext": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schemaVersion"
+        ],
+        "description": "Owner context with a shared 4000-character budget across all supplied text values. Notes remain owned by body/bodyDoc. These fields are readback only in the current HTTP input contract.",
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          },
+          "summary": {
+            "$ref": "#/components/schemas/LifeLinkContextValue"
+          },
+          "condition": {
+            "$ref": "#/components/schemas/LifeLinkContextValue"
+          },
+          "experience": {
+            "$ref": "#/components/schemas/LifeLinkContextValue"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/LifeLinkContextValue"
+          }
+        }
+      },
+      "LifeLinkPublicFieldKey": {
+        "type": "string",
+        "enum": [
+          "notes",
+          "summary",
+          "condition",
+          "experience",
+          "plan"
+        ]
+      },
       "LifeLink": {
         "type": "object",
         "additionalProperties": false,
@@ -2120,6 +3948,10 @@
           "bodyDoc",
           "bodyDocVersion",
           "privacy",
+          "browsingRole",
+          "context",
+          "placementConfirmedAt",
+          "publicFieldKeys",
           "media",
           "createdAt",
           "updatedAt"
@@ -2175,6 +4007,33 @@
               "private"
             ]
           },
+          "browsingRole": {
+            "$ref": "#/components/schemas/LifeLinkBrowsingRole"
+          },
+          "context": {
+            "$ref": "#/components/schemas/LifeLinkContext"
+          },
+          "placementConfirmedAt": {
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Time of the latest newly recorded placement, or null when no confirmation is recorded. This is not sensor or live-location evidence."
+          },
+          "publicFieldKeys": {
+            "type": "array",
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/LifeLinkPublicFieldKey"
+            },
+            "description": "Exact saved public-field selection used by public QR resolution. Only these fields are exposed when the record is public; hierarchy, Collections, placement and media are never included."
+          },
           "media": {
             "type": "array",
             "maxItems": 8,
@@ -2202,6 +4061,7 @@
           "qrId",
           "title",
           "privacy",
+          "browsingRole",
           "updatedAt",
           "childCount"
         ],
@@ -2243,6 +4103,9 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "browsingRole": {
+            "$ref": "#/components/schemas/LifeLinkBrowsingRole"
           },
           "childCount": {
             "type": "integer",
@@ -2298,6 +4161,412 @@
           }
         }
       },
+      "CollectionId": {
+        "type": "string",
+        "pattern": "^collection-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+      },
+      "CollectionSectionId": {
+        "type": "string",
+        "pattern": "^section-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+      },
+      "Collection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "ownerId",
+          "title",
+          "purpose",
+          "notes",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/CollectionId"
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "purpose": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CollectionSection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "ownerId",
+          "collectionId",
+          "title",
+          "position",
+          "createdAt",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/CollectionSectionId"
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "collectionId": {
+            "$ref": "#/components/schemas/CollectionId"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "position": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "LifeLinkCollectionMembership": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collection",
+          "sections"
+        ],
+        "properties": {
+          "collection": {
+            "$ref": "#/components/schemas/Collection"
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CollectionSection"
+            }
+          }
+        }
+      },
+      "CollectionListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collections",
+          "nextCursor",
+          "truncated"
+        ],
+        "properties": {
+          "collections": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/Collection"
+            }
+          },
+          "nextCursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CollectionMembershipListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "memberships",
+          "nextCursor",
+          "truncated"
+        ],
+        "properties": {
+          "memberships": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/LifeLinkCollectionMembership"
+            }
+          },
+          "nextCursor": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CollectionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collection"
+        ],
+        "properties": {
+          "collection": {
+            "$ref": "#/components/schemas/Collection"
+          }
+        }
+      },
+      "CollectionDetailResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collection",
+          "sections",
+          "sectionsPage"
+        ],
+        "properties": {
+          "collection": {
+            "$ref": "#/components/schemas/Collection"
+          },
+          "sections": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/CollectionSection"
+            }
+          },
+          "sectionsPage": {
+            "$ref": "#/components/schemas/LifeLinkChildrenPage"
+          }
+        }
+      },
+      "CollectionSectionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collection",
+          "section"
+        ],
+        "properties": {
+          "collection": {
+            "$ref": "#/components/schemas/Collection"
+          },
+          "section": {
+            "$ref": "#/components/schemas/CollectionSection"
+          }
+        }
+      },
+      "CollectionCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/CollectionId"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "purpose": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "CollectionPatchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedUpdatedAt"
+        ],
+        "properties": {
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64,
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "purpose": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        },
+        "minProperties": 2
+      },
+      "CollectionRevisionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "expectedUpdatedAt"
+        ],
+        "properties": {
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64,
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          }
+        }
+      },
+      "CollectionSectionCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "expectedUpdatedAt"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/CollectionSectionId"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64,
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          }
+        }
+      },
+      "CollectionSectionPatchRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "title",
+          "expectedUpdatedAt"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64,
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          }
+        }
+      },
+      "CollectionSectionAssignmentsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sectionIds",
+          "expectedUpdatedAt"
+        ],
+        "properties": {
+          "sectionIds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CollectionSectionId"
+            }
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64,
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          }
+        }
+      },
+      "QrBindingSetRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "commandId",
+          "qrId",
+          "expectedUpdatedAt"
+        ],
+        "properties": {
+          "commandId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "qrId": {
+            "$ref": "#/components/schemas/QrId"
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64,
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          }
+        }
+      },
+      "QrBindingClearRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "commandId",
+          "expectedUpdatedAt"
+        ],
+        "properties": {
+          "commandId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "expectedUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 64,
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+          }
+        }
+      },
       "LifeLinkDetail": {
         "type": "object",
         "additionalProperties": false,
@@ -2305,9 +4574,21 @@
           "lifeLink",
           "ancestry",
           "children",
-          "childrenPage"
+          "childrenPage",
+          "collectionMemberships",
+          "collectionMembershipsPage"
         ],
         "properties": {
+          "collectionMemberships": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/LifeLinkCollectionMembership"
+            }
+          },
+          "collectionMembershipsPage": {
+            "$ref": "#/components/schemas/LifeLinkChildrenPage"
+          },
           "lifeLink": {
             "$ref": "#/components/schemas/LifeLink"
           },
@@ -2335,6 +4616,7 @@
           "title_prefix",
           "title",
           "recorded_path",
+          "context",
           "body"
         ]
       },
@@ -2490,6 +4772,24 @@
           }
         },
         "properties": {
+          "id": {
+            "$ref": "#/components/schemas/LifeLinkId",
+            "description": "Optional stable caller identity for create replay. Omit for a server-generated identity."
+          },
+          "browsingRole": {
+            "$ref": "#/components/schemas/LifeLinkBrowsingRole",
+            "default": "item"
+          },
+          "context": {
+            "$ref": "#/components/schemas/LifeLinkContext"
+          },
+          "publicFieldKeys": {
+            "type": "array",
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/LifeLinkPublicFieldKey"
+            }
+          },
           "parentId": {
             "oneOf": [
               {
@@ -2538,6 +4838,16 @@
         "anyOf": [
           {
             "required": [
+              "context"
+            ]
+          },
+          {
+            "required": [
+              "publicFieldKeys"
+            ]
+          },
+          {
+            "required": [
               "title"
             ]
           },
@@ -2574,6 +4884,17 @@
           }
         },
         "properties": {
+          "context": {
+            "$ref": "#/components/schemas/LifeLinkContext",
+            "description": "Full replacement of the structured aggregate; omission preserves all current values."
+          },
+          "publicFieldKeys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LifeLinkPublicFieldKey"
+            },
+            "description": "Exact selected public fields. This selection does not itself make a private record public."
+          },
           "expectedUpdatedAt": {
             "type": "string",
             "format": "date-time",
@@ -2643,7 +4964,16 @@
           "hierarchy_cycle",
           "stale_life_link",
           "qr_already_bound",
+          "qr_not_found",
           "life_link_already_tagged",
+          "invalid_collection",
+          "collection_not_found",
+          "stale_collection",
+          "duplicate_collection_id",
+          "section_not_found",
+          "invalid_section",
+          "duplicate_section_id",
+          "collection_membership_not_found",
           "output_limit_exceeded"
         ]
       },
@@ -2978,17 +5308,6 @@
               "public",
               "private"
             ]
-          },
-          "projectId": {
-            "oneOf": [
-              {
-                "type": "string",
-                "maxLength": 160
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         }
       },
@@ -3013,46 +5332,6 @@
         "properties": {
           "media": {
             "$ref": "#/components/schemas/LinkMedia"
-          }
-        }
-      },
-      "ProjectListResponse": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "projects"
-        ],
-        "properties": {
-          "projects": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/Project"
-            }
-          }
-        }
-      },
-      "ProjectCreateRequest": {
-        "type": "object",
-        "required": [
-          "name"
-        ],
-        "properties": {
-          "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 80
-          }
-        }
-      },
-      "ProjectResponse": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "project"
-        ],
-        "properties": {
-          "project": {
-            "$ref": "#/components/schemas/Project"
           }
         }
       },
@@ -3283,6 +5562,388 @@
           "retryAfterSeconds": {
             "type": "integer",
             "minimum": 1
+          }
+        }
+      },
+      "AttachmentImageResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mediaId",
+          "sourceRevision",
+          "status",
+          "reason",
+          "source",
+          "rendition",
+          "warnings",
+          "image"
+        ],
+        "properties": {
+          "mediaId": {
+            "type": "string"
+          },
+          "sourceRevision": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "described",
+              "bytes_ready",
+              "unreadable"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "unsupported_format",
+              "unsupported_animation",
+              "malformed",
+              "decode_limit",
+              "output_limit",
+              "processing_timeout",
+              "runtime_unavailable",
+              "encrypted"
+            ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "mimeType",
+                  "sizeBytes",
+                  "width",
+                  "height",
+                  "orientation",
+                  "frameCount"
+                ],
+                "properties": {
+                  "mimeType": {
+                    "type": "string"
+                  },
+                  "sizeBytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 26214400
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16384
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16384
+                  },
+                  "orientation": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8
+                  },
+                  "frameCount": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 512
+                  },
+                  "office": {
+                    "type": "object", "additionalProperties": false,
+                    "required": ["format", "pageNumber", "pageCount", "rotation", "pixelsPerPoint", "conversionProfile"],
+                    "properties": {
+                      "format": { "enum": ["docx", "xlsx"] }, "pageNumber": { "type": "integer", "minimum": 1, "maximum": 512 },
+                      "pageCount": { "type": "integer", "minimum": 1, "maximum": 512 }, "rotation": { "enum": [0, 90, 180, 270] },
+                      "pixelsPerPoint": { "const": 4 }, "conversionProfile": { "const": "cached-print-v1" }
+                    }
+                  },
+                  "video": {
+                    "type": "object", "additionalProperties": false,
+                    "required": ["streamIndex", "durationMs", "requestedTimeMs", "frameTimeMs", "framePts", "timeBase", "hasAudio"],
+                    "properties": {
+                      "streamIndex": { "type": "integer", "minimum": 0, "maximum": 7 }, "durationMs": { "type": "number", "minimum": 0, "maximum": 300000 },
+                      "requestedTimeMs": { "type": "integer", "minimum": 0, "maximum": 300000 }, "frameTimeMs": { "type": "number", "minimum": 0, "maximum": 300000 },
+                      "framePts": { "type": "string", "pattern": "^-?[0-9]+$" }, "timeBase": { "type": "string", "pattern": "^[1-9][0-9]*/[1-9][0-9]*$" }, "hasAudio": { "type": "boolean" }
+                    }
+                  },
+                  "animation": {
+                    "type": "object", "additionalProperties": false,
+                    "required": ["frameNumber", "frameCount", "startMs", "durationMs", "loopCount"],
+                    "properties": {
+                      "frameNumber": { "type": "integer", "minimum": 1, "maximum": 512 }, "frameCount": { "type": "integer", "minimum": 1, "maximum": 512 },
+                      "startMs": { "type": "number", "minimum": 0 }, "durationMs": { "type": "number", "minimum": 0 }, "loopCount": { "type": ["integer", "null"], "minimum": 0 }
+                    }
+                  },
+                  "pdf": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["pageNumber", "pageCount", "rotation", "pixelsPerPoint"],
+                    "description": "Present only for PDF sources; pageNumber is the requested page, not a frame index. Width/height describe its rotated page grid.",
+                    "properties": {
+                      "pageNumber": { "type": "integer", "minimum": 1, "maximum": 512 },
+                      "pageCount": { "type": "integer", "minimum": 1, "maximum": 512 },
+                      "rotation": { "type": "integer", "enum": [0, 90, 180, 270] },
+                      "pixelsPerPoint": { "type": "integer", "const": 4 }
+                    }
+                  }
+                },
+                "allOf": [{
+                  "if": { "properties": { "mimeType": { "const": "application/pdf" } } },
+                  "then": { "required": ["pdf"], "properties": { "orientation": { "const": 1 }, "frameCount": { "const": 1 } } },
+                  "else": { "not": { "required": ["pdf"] } }
+                }, {
+                  "if": { "properties": { "mimeType": { "enum": ["application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"] } } },
+                  "then": { "required": ["office"], "properties": { "orientation": { "const": 1 }, "frameCount": { "const": 1 } } },
+                  "else": { "not": { "required": ["office"] } }
+                }, {
+                  "if": { "properties": { "mimeType": { "enum": ["video/mp4", "video/webm", "video/quicktime"] } } },
+                  "then": { "required": ["video"], "properties": { "orientation": { "const": 1 }, "frameCount": { "const": 1 } } },
+                  "else": { "not": { "required": ["video"] } }
+                }, {
+                  "if": { "required": ["animation"] },
+                  "then": { "properties": { "mimeType": { "enum": ["image/gif", "image/webp", "image/png"] }, "orientation": { "const": 1 } } },
+                  "else": { "properties": { "frameCount": { "const": 1 } } }
+                }]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rendition": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "mimeType",
+                  "sizeBytes",
+                  "sha256",
+                  "width",
+                  "height",
+                  "region",
+                  "encoding",
+                  "quality",
+                  "processorVersion"
+                ],
+                "properties": {
+                  "mimeType": {
+                    "type": "string",
+                    "enum": [
+                      "image/png",
+                      "image/jpeg"
+                    ]
+                  },
+                  "sizeBytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2097152
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "width": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2048
+                  },
+                  "height": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 2048
+                  },
+                  "region": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "x",
+                      "y",
+                      "width",
+                      "height"
+                    ],
+                    "properties": {
+                      "x": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "y": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "width": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "height": {
+                        "type": "integer",
+                        "minimum": 1
+                      }
+                    }
+                  },
+                  "encoding": {
+                    "type": "string",
+                    "enum": [
+                      "png",
+                      "jpeg"
+                    ]
+                  },
+                  "quality": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "enum": [
+                      null,
+                      92
+                    ]
+                  },
+                  "processorVersion": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warnings": {
+            "type": "array",
+            "maxItems": 8,
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          "image": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "mimeType",
+                  "data"
+                ],
+                "properties": {
+                  "mimeType": {
+                    "type": "string",
+                    "enum": [
+                      "image/png",
+                      "image/jpeg"
+                    ]
+                  },
+                  "data": {
+                    "type": "string",
+                    "contentEncoding": "base64",
+                    "maxLength": 2796204
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "AttachmentContentPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "mediaId",
+          "revision",
+          "status",
+          "reason",
+          "format",
+          "text",
+          "offset",
+          "nextOffset",
+          "totalChars",
+          "warnings"
+        ],
+        "properties": {
+          "mediaId": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "unreadable"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              null,
+              "unsupported_media",
+              "scanned_or_no_text",
+              "encrypted",
+              "malformed",
+              "extraction_limit",
+              "extraction_timeout",
+              "runtime_unavailable",
+              "no_audio"
+            ]
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "text",
+              "pdf",
+              "docx",
+              "xlsx",
+              "image",
+              "video"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "nextOffset": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "transcript": {
+            "type": "object", "additionalProperties": false,
+            "required": ["startMs", "endMs", "sourceDurationMs", "nextStartMs", "audioStreamIndex", "processorVersion", "modelSha256"],
+            "description": "Only for inferred local video speech; timestamps are approximate. Other windows/streams remain uninspected.",
+            "properties": {
+              "startMs": { "type": "number", "minimum": 0 }, "endMs": { "type": "number", "minimum": 0 },
+              "sourceDurationMs": { "type": "number", "minimum": 0, "maximum": 300000 }, "nextStartMs": { "type": ["number", "null"], "minimum": 0 },
+              "audioStreamIndex": { "type": "integer", "minimum": 0, "maximum": 7 }, "processorVersion": { "type": "string" },
+              "modelSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+            }
+          },
+          "totalChars": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }
@@ -3558,7 +6219,7 @@
         }
       },
       "LifeLinkMediaContent": {
-        "description": "Owner-authorized canonical Life Link media bytes. This route always uses private, no-store caching.",
+        "description": "Owner-authorized canonical Life Link media bytes. This route always uses private, no-store caching. Documents use Content-Disposition attachment; images and video retain inline display. All bytes remain owner-only.",
         "headers": {
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"
@@ -3608,6 +6269,48 @@
             }
           },
           "video/quicktime": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "application/pdf": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "text/plain": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "text/csv": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "text/markdown": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "application/json": {
             "schema": {
               "type": "string",
               "format": "binary"
@@ -3616,7 +6319,7 @@
         }
       },
       "MediaContent": {
-        "description": "Media bytes. Private media is disclosed only to its owner; denied private reads use the same 404 response as missing media.",
+        "description": "Media bytes. Private media is disclosed only to its owner; denied private reads use the same 404 response as missing media. Documents use Content-Disposition attachment; images and video retain inline display. All bytes remain owner-only.",
         "headers": {
           "X-Request-Id": {
             "$ref": "#/components/headers/RequestId"
@@ -3670,35 +6373,47 @@
               "type": "string",
               "format": "binary"
             }
-          }
-        }
-      },
-      "ProjectListOk": {
-        "description": "Projects owned by the current user.",
-        "headers": {
-          "X-Request-Id": {
-            "$ref": "#/components/headers/RequestId"
-          }
-        },
-        "content": {
-          "application/json": {
+          },
+          "application/pdf": {
             "schema": {
-              "$ref": "#/components/schemas/ProjectListResponse"
+              "type": "string",
+              "format": "binary"
             }
-          }
-        }
-      },
-      "ProjectCreated": {
-        "description": "Created project.",
-        "headers": {
-          "X-Request-Id": {
-            "$ref": "#/components/headers/RequestId"
-          }
-        },
-        "content": {
+          },
+          "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "text/plain": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "text/csv": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
+          "text/markdown": {
+            "schema": {
+              "type": "string",
+              "format": "binary"
+            }
+          },
           "application/json": {
             "schema": {
-              "$ref": "#/components/schemas/ProjectResponse"
+              "type": "string",
+              "format": "binary"
             }
           }
         }

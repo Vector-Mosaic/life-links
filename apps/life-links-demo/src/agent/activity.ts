@@ -9,11 +9,18 @@ export const LIFE_LINKS_AGENT_TOOL_NAMES = LIFE_LINKS_PAGE_TOOL_NAMES;
 export type LifeLinksAgentToolName = LifeLinksPageToolName;
 
 export type AgentActivityVisibleEffect =
+  | "attachment_content_read"
+  | "attachment_image_described"
+  | "attachment_image_bytes_ready"
+  | "life_link_change_previewed"
+  | "life_link_change_applied"
   | "current_life_link_focused"
   | "search_results_shown"
   | "life_link_opened"
   | "life_link_content_updated"
-  | "find_mode_started";
+  | "find_mode_started"
+  | "life_link_created" | "life_link_moved" | "life_link_qr_updated"
+  | "collections_opened" | "collection_opened" | "collection_updated";
 
 export type AgentActivityOutcome = "succeeded" | "failed" | "cancelled";
 
@@ -23,12 +30,14 @@ export type AgentActivityEntry = {
   occurredAt: string;
   outcome: AgentActivityOutcome;
   affectedLifeLinkIds: string[];
+  affectedCollectionIds: string[];
   visibleEffect: AgentActivityVisibleEffect | null;
   errorCode: string | null;
 };
 
-export type AgentActivityInput = Omit<AgentActivityEntry, "id" | "occurredAt" | "affectedLifeLinkIds"> & {
+export type AgentActivityInput = Omit<AgentActivityEntry, "id" | "occurredAt" | "affectedLifeLinkIds" | "affectedCollectionIds"> & {
   affectedLifeLinkIds?: readonly string[];
+  affectedCollectionIds?: readonly string[];
 };
 
 const MAX_ACTIVITY_IDS = 10;
@@ -47,6 +56,7 @@ export function createAgentActivityEntry(
       .filter((value) => typeof value === "string" && value.length > 0)
       .slice(0, MAX_ACTIVITY_IDS)
       .map((value) => value.slice(0, MAX_ACTIVITY_ID_LENGTH)),
+    affectedCollectionIds: Array.from(new Set(input.affectedCollectionIds ?? [])).filter((value) => typeof value === "string" && value.length > 0).slice(0, MAX_ACTIVITY_IDS).map((value) => value.slice(0, MAX_ACTIVITY_ID_LENGTH)),
     visibleEffect: input.visibleEffect,
     errorCode: input.errorCode ? input.errorCode.slice(0, 80) : null
   };
@@ -71,6 +81,15 @@ export function agentActivityLabel(entry: AgentActivityEntry) {
   if (entry.visibleEffect === "life_link_content_updated") {
     return "Updated Life Link content";
   }
+  const labels: Partial<Record<AgentActivityVisibleEffect, string>> = {
+    attachment_content_read: "Read attachment information",
+    attachment_image_described: "Read attachment image metadata",
+    attachment_image_bytes_ready: "Prepared attachment image bytes for the agent",
+    life_link_change_previewed: "Prepared an exact move or deletion preview", life_link_change_applied: "Applied a confirmed Life Link change",
+    life_link_created: "Created a Life Link", life_link_moved: "Moved a Life Link", life_link_qr_updated: "Updated QR or public view",
+    collections_opened: "Opened My Collections", collection_opened: "Opened a Collection", collection_updated: "Updated a Collection"
+  };
+  if (entry.visibleEffect && labels[entry.visibleEffect]) return labels[entry.visibleEffect]!;
   return "Started Find Mode for a Life Link";
 }
 
@@ -120,7 +139,9 @@ function activityFromResult(tool: LifeLinksAgentToolName, result: WebMcpJsonValu
     tool,
     outcome: "succeeded",
     affectedLifeLinkIds: affectedIds(tool, record),
-    visibleEffect: visibleEffectForTool(tool),
+    affectedCollectionIds: typeof record.collectionId === "string" ? [record.collectionId] : objectRecord(record.collection)?.id ? [String(objectRecord(record.collection)!.id)] : Array.isArray(record.collections) ? record.collections.map((item) => objectRecord(item)?.id).filter((id): id is string => typeof id === "string") : [],
+    visibleEffect: tool === "read_life_link_attachment" && record.status === "bytes_ready" ? "attachment_image_bytes_ready" :
+      tool === "read_life_link_attachment" && record.status === "described" ? "attachment_image_described" : visibleEffectForTool(tool),
     errorCode: null
   });
 }
@@ -142,6 +163,9 @@ function affectedIds(tool: LifeLinksAgentToolName, result: Record<string, unknow
 
 function visibleEffectForTool(tool: LifeLinksAgentToolName): AgentActivityVisibleEffect {
   switch (tool) {
+    case "read_life_link_attachment": return "attachment_content_read";
+    case "prepare_life_link_change": return "life_link_change_previewed";
+    case "apply_life_link_change": return "life_link_change_applied";
     case "inspect_current_life_link":
       return "current_life_link_focused";
     case "search_my_life_links":
@@ -152,6 +176,12 @@ function visibleEffectForTool(tool: LifeLinksAgentToolName): AgentActivityVisibl
       return "life_link_content_updated";
     case "start_find_mode":
       return "find_mode_started";
+    case "create_life_link": return "life_link_created";
+    case "move_life_link": return "life_link_moved";
+    case "manage_life_link_qr": return "life_link_qr_updated";
+    case "list_my_collections": return "collections_opened";
+    case "inspect_collection": return "collection_opened";
+    case "maintain_collection": return "collection_updated";
   }
 }
 
@@ -169,6 +199,9 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
 
 function toolLabel(tool: LifeLinksAgentToolName) {
   switch (tool) {
+    case "read_life_link_attachment": return "Read attachment";
+    case "prepare_life_link_change": return "Preview change";
+    case "apply_life_link_change": return "Apply change";
     case "inspect_current_life_link":
       return "Inspect";
     case "search_my_life_links":
@@ -179,6 +212,12 @@ function toolLabel(tool: LifeLinksAgentToolName) {
       return "Update";
     case "start_find_mode":
       return "Find Mode";
+    case "create_life_link": return "Create Life Link";
+    case "move_life_link": return "Move Life Link";
+    case "manage_life_link_qr": return "Manage QR";
+    case "list_my_collections": return "List Collections";
+    case "inspect_collection": return "Inspect Collection";
+    case "maintain_collection": return "Maintain Collection";
   }
 }
 

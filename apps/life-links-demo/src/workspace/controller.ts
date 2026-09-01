@@ -1,12 +1,23 @@
 import QRCode from "qrcode";
+import { validateAttachmentTranscript } from "../attachmentTranscript";
 import {
   DEFAULT_QR_BASE_URL,
   DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
   DEFAULT_LIFE_LINK_SEARCH_LIMIT,
   MAX_LIFE_LINK_SOURCE_REFERENCE_COUNT,
   linksToCsv,
+  buildQrUrl,
   normalizeBatchCount,
   parseQrId,
+  summarizeLifeLink,
+  type CollectionPatch,
+  type ChangeHistory,
+  type LifeLinkChangePreview,
+  type LifeLinkChangeResult,
+  type PreviewLifeLinkChangeInput,
+  type CollectionRecord,
+  type CollectionSectionRecord,
+  type LifeLinkCollectionMembership,
   type CreateLifeLinkInput,
   type LifeLinkDetail,
   type LifeLinkRecord,
@@ -19,11 +30,30 @@ import {
 
 import {
   ApiError,
+  previewLifeLinkChange,
+  getLifeLinkChangePreview,
+  applyLifeLinkChange,
+  getChangeHistory,
+  undoChange,
+  addCollectionMember,
+  clearLifeLinkQrBinding,
+  createCollection,
+  createCollectionSection,
+  getCollection,
+  listCollections,
+  listCollectionMembers,
+  listLifeLinkCollectionMemberships,
+  removeCollectionMember,
+  removeCollectionSection,
+  replaceCollectionSectionAssignments,
+  setLifeLinkQrBinding,
+  updateCollection,
+  updateCollectionSection,
+  type CollectionCreateInput,
   attachQr,
   claimQr,
   connectAgent,
   createLifeLink,
-  createProject,
   createQrBatch,
   deleteLifeLinkMedia,
   deleteLinkMedia,
@@ -31,33 +61,46 @@ import {
   findScan,
   getConfig,
   getLifeLinkDetail,
+  getLifeLinkAttachmentContent,
+  getLifeLinkAttachmentImage,
   getMe,
   getQr,
   listLifeLinks,
   listLinks,
-  listProjects,
   login,
   logout,
   moveLifeLink,
   searchLifeLinks,
   updateLifeLink,
-  updateLink,
   uploadLifeLinkMedia,
   uploadLinkMedia
 } from "../api";
 import {
   clearCanonicalLifeLinkDraft,
-  clearLinkEditorDraft,
   readCanonicalLifeLinkDraft
 } from "./editorSession";
 import {
   classifyLifeLinksRoute,
+  collectionIdFromPath,
+  collectionMemberIdFromPath,
   createWindowWorkspaceRoute,
+  isCollectionsPath,
+  ownerCollectionPath,
   ownerLifeLinkPath,
   qrIdFromPath,
   type WorkspaceBrowserRoute
 } from "./routes";
 import type {
+  AgentReadAttachmentInput,
+  AgentReadAttachmentResult,
+  AgentCreateLifeLinkInput,
+  AgentMoveLifeLinkInput,
+  AgentManageLifeLinkQrInput,
+  AgentListCollectionsInput,
+  AgentInspectCollectionInput,
+  AgentMaintainCollectionInput,
+  AgentCollectionListResult,
+  WorkspaceCommandOptions,
   AgentSearchLifeLinksControllerResult,
   AgentToolControllerActionResult,
   AgentUpdateLifeLinkContentInput,
@@ -65,12 +108,30 @@ import type {
   InventoryFilter,
   LifeLinkBranchState,
   LifeLinksWorkspaceSnapshot,
-  LinkEditorPatch,
   ThemeMode,
   WorkspaceView
 } from "./types";
 
 export type LifeLinksWorkspaceApi = {
+  previewLifeLinkChange: typeof previewLifeLinkChange;
+  getLifeLinkChangePreview: typeof getLifeLinkChangePreview;
+  applyLifeLinkChange: typeof applyLifeLinkChange;
+  getChangeHistory: typeof getChangeHistory;
+  undoChange: typeof undoChange;
+  addCollectionMember: typeof addCollectionMember;
+  clearLifeLinkQrBinding: typeof clearLifeLinkQrBinding;
+  createCollection: typeof createCollection;
+  createCollectionSection: typeof createCollectionSection;
+  getCollection: typeof getCollection;
+  listCollections: typeof listCollections;
+  listCollectionMembers: typeof listCollectionMembers;
+  listLifeLinkCollectionMemberships: typeof listLifeLinkCollectionMemberships;
+  removeCollectionMember: typeof removeCollectionMember;
+  removeCollectionSection: typeof removeCollectionSection;
+  replaceCollectionSectionAssignments: typeof replaceCollectionSectionAssignments;
+  setLifeLinkQrBinding: typeof setLifeLinkQrBinding;
+  updateCollection: typeof updateCollection;
+  updateCollectionSection: typeof updateCollectionSection;
   getConfig: typeof getConfig;
   getMe: typeof getMe;
   login: typeof login;
@@ -78,11 +139,8 @@ export type LifeLinksWorkspaceApi = {
   connectAgent: typeof connectAgent;
   disconnectAgent: typeof disconnectAgent;
   listLinks: typeof listLinks;
-  listProjects: typeof listProjects;
-  updateLink: typeof updateLink;
   uploadLinkMedia: typeof uploadLinkMedia;
   deleteLinkMedia: typeof deleteLinkMedia;
-  createProject: typeof createProject;
   createQrBatch: typeof createQrBatch;
   getQr: typeof getQr;
   claimQr: typeof claimQr;
@@ -90,6 +148,8 @@ export type LifeLinksWorkspaceApi = {
   listLifeLinks: typeof listLifeLinks;
   createLifeLink: typeof createLifeLink;
   getLifeLinkDetail: typeof getLifeLinkDetail;
+  getLifeLinkAttachmentContent: typeof getLifeLinkAttachmentContent;
+  getLifeLinkAttachmentImage: typeof getLifeLinkAttachmentImage;
   searchLifeLinks: typeof searchLifeLinks;
   updateLifeLink: typeof updateLifeLink;
   moveLifeLink: typeof moveLifeLink;
@@ -99,6 +159,25 @@ export type LifeLinksWorkspaceApi = {
 };
 
 const defaultApi: LifeLinksWorkspaceApi = {
+  previewLifeLinkChange,
+  getLifeLinkChangePreview,
+  applyLifeLinkChange,
+  getChangeHistory,
+  undoChange,
+  addCollectionMember,
+  clearLifeLinkQrBinding,
+  createCollection,
+  createCollectionSection,
+  getCollection,
+  listCollections,
+  listCollectionMembers,
+  listLifeLinkCollectionMemberships,
+  removeCollectionMember,
+  removeCollectionSection,
+  replaceCollectionSectionAssignments,
+  setLifeLinkQrBinding,
+  updateCollection,
+  updateCollectionSection,
   getConfig,
   getMe,
   login,
@@ -106,11 +185,8 @@ const defaultApi: LifeLinksWorkspaceApi = {
   connectAgent,
   disconnectAgent,
   listLinks,
-  listProjects,
-  updateLink,
   uploadLinkMedia,
   deleteLinkMedia,
-  createProject,
   createQrBatch,
   getQr,
   claimQr,
@@ -118,6 +194,8 @@ const defaultApi: LifeLinksWorkspaceApi = {
   listLifeLinks,
   createLifeLink,
   getLifeLinkDetail,
+  getLifeLinkAttachmentContent,
+  getLifeLinkAttachmentImage,
   searchLifeLinks,
   updateLifeLink,
   moveLifeLink,
@@ -133,6 +211,31 @@ type LifeLinksWorkspaceControllerOptions = {
 };
 
 export interface LifeLinksWorkspaceActions {
+  agentReadAttachment(input: AgentReadAttachmentInput, signal?: AbortSignal): Promise<AgentReadAttachmentResult>;
+  getChangeHistory(): Promise<ChangeHistory>;
+  previewLifeLinkChange(input: PreviewLifeLinkChangeInput): Promise<LifeLinkChangePreview>;
+  applyLifeLinkChange(previewId: string): Promise<LifeLinkChangeResult>;
+  undoLastChange(): Promise<LifeLinkChangeResult>;
+  confirmAgentChange(confirmed: boolean): void;
+  openHierarchy(parentId?: string | null): Promise<void>;
+  activateLifeLink(lifeLinkId: string): Promise<void>;
+  openCollections(): Promise<void>;
+  loadCollections(): Promise<void>;
+  openCollection(collectionId: string, selectedLifeLinkId?: string): Promise<void>;
+  selectCollectionMember(lifeLinkId: string): Promise<void>;
+  setDetailsOpen(open: boolean): void;
+  createCollection(input: CollectionCreateInput): Promise<void>;
+  updateCollection(patch: CollectionPatch, target?: CollectionRecord): Promise<void>;
+  createCollectionSection(title: string): Promise<void>;
+  updateCollectionSection(sectionId: string, title: string, target?: CollectionRecord): Promise<void>;
+  removeCollectionSection(sectionId: string): Promise<void>;
+  addCollectionMember(lifeLinkId: string, target?: CollectionRecord): Promise<void>;
+  removeCollectionMember(lifeLinkId: string, target?: CollectionRecord): Promise<void>;
+  replaceCollectionSectionAssignments(lifeLinkId: string, sectionIds: string[], target?: CollectionRecord): Promise<void>;
+  updateSelectedLifeLink(patch: UpdateLifeLinkPatch, expectedUpdatedAt?: string): Promise<void>;
+  setLifeLinkQrBinding(lifeLinkId: string, qrId: string): Promise<void>;
+  clearLifeLinkQrBinding(lifeLinkId: string): Promise<void>;
+  createQrForLifeLink(lifeLinkId: string): Promise<void>;
   getSnapshot(): LifeLinksWorkspaceSnapshot;
   subscribe(listener: () => void): () => void;
   refreshOwnerLibrary(): Promise<void>;
@@ -145,10 +248,8 @@ export interface LifeLinksWorkspaceActions {
   disconnectAgent(): Promise<void>;
   generateBatch(): Promise<void>;
   claimActiveLink(): Promise<void>;
-  saveLink(qrId: string, patch: LinkEditorPatch): Promise<void>;
   uploadMedia(qrId: string, files: FileList | File[]): Promise<void>;
   removeMedia(qrId: string, mediaId: string): Promise<void>;
-  addProject(): Promise<void>;
   refresh(): Promise<void>;
   selectLifeLink(input: { lifeLinkId: string; source: "human" | "agent" | "route" | "search" | "scan" }): Promise<void>;
   toggleLifeLinkExpanded(lifeLinkId: string): Promise<void>;
@@ -178,6 +279,12 @@ export interface LifeLinksWorkspaceActions {
     input: { lifeLinkId: string },
     signal?: AbortSignal
   ): Promise<AgentToolControllerActionResult>;
+  agentCreateLifeLink(input: AgentCreateLifeLinkInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult>;
+  agentMoveLifeLink(input: AgentMoveLifeLinkInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult>;
+  agentManageLifeLinkQr(input: AgentManageLifeLinkQrInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult>;
+  agentListCollections(input: AgentListCollectionsInput, signal?: AbortSignal): Promise<AgentCollectionListResult>;
+  agentInspectCollection(input: AgentInspectCollectionInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult>;
+  agentMaintainCollection(input: AgentMaintainCollectionInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult>;
   openPublicQrInWorkspace(): Promise<void>;
   saveCanonicalLifeLink(
     lifeLinkId: string,
@@ -194,6 +301,18 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private unsubscribeRoute: (() => void) | null = null;
   private active = false;
   private lifecycle = 0;
+  private navigationRevision = 0;
+  private ownerRevision = 0;
+  private searchRevision = 0;
+  private selectionRevision = 0;
+  private readonly pendingCreateIds = new Map<string, string>();
+  private readonly pendingQrBindings = new Map<string, { commandId: string; expectedUpdatedAt: string }>();
+  private readonly pendingGeneratedQrs = new Map<string, string>();
+  private readonly pendingChangeCommands = new Map<string, string>();
+  private readonly agentChangePreviews = new Map<string, { preview: LifeLinkChangePreview; authorized: boolean }>();
+  private agentChangeApplication: object | null = null;
+  private settleAgentChange: ((confirmed: boolean) => void) | null = null;
+  private historyRevision = 0;
   private snapshot: LifeLinksWorkspaceSnapshot;
 
   constructor(options: LifeLinksWorkspaceControllerOptions = {}) {
@@ -203,11 +322,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const routePathname = this.route.pathname();
     const routeQrId = qrIdFromPath(routePathname);
     this.snapshot = {
+      ...emptyFieldLedgerState(),
       currentUser: null,
       agentConnection: { connected: false, connectedAt: null },
       qrBaseUrl: DEFAULT_QR_BASE_URL,
       links: [],
-      projects: [],
       activeView: routeQrId ? "scan" : "home",
       batchCount: 48,
       lastBatchId: null,
@@ -221,7 +340,6 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       findTargetId: null,
       query: "",
       guestView: false,
-      newProjectName: "",
       scanMessage: {
         tone: "neutral",
         title: "Ready",
@@ -252,6 +370,176 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
 
   getSnapshot = () => this.snapshot;
 
+  async getChangeHistory(): Promise<ChangeHistory> {
+    const ownerId = this.snapshot.currentUser?.id;
+    if (!ownerId) return { limit: 5, entries: [] };
+    const ownerRevision = this.ownerRevision;
+    const revision = ++this.historyRevision;
+    const current = () => ownerRevision === this.ownerRevision && ownerId === this.snapshot.currentUser?.id && revision === this.historyRevision;
+    try {
+      const history = await this.api.getChangeHistory();
+      if (current()) this.update({ changeHistory: history });
+      return history;
+    } catch (error) {
+      // A superseded request must not clear a newer owner's or newer request's history.
+      if (current()) this.update({ changeHistory: { limit: 5, entries: [] } });
+      throw error;
+    }
+  }
+
+  async previewLifeLinkChange(input: PreviewLifeLinkChangeInput, signal?: AbortSignal): Promise<LifeLinkChangePreview> {
+    if (!this.snapshot.currentUser || this.snapshot.guestView || this.snapshot.routeQrId) throw new Error("Open your private workspace to edit Life Links.");
+    return this.api.previewLifeLinkChange(input, signal);
+  }
+
+  async applyLifeLinkChange(previewId: string, signal?: AbortSignal): Promise<LifeLinkChangeResult> {
+    return this.commitOwnerChange(`preview:${previewId}`, (commandId) => this.api.applyLifeLinkChange(previewId, commandId, signal));
+  }
+
+  async undoLastChange(): Promise<LifeLinkChangeResult> {
+    const entry = this.snapshot.changeHistory.entries[0];
+    if (!entry) throw new Error("There are no saved changes to undo.");
+    return this.commitOwnerChange(`undo:${entry.id}`, (commandId) => this.api.undoChange(entry.id, commandId));
+  }
+
+  private async commitOwnerChange(key: string, commit: (commandId: string) => Promise<LifeLinkChangeResult>): Promise<LifeLinkChangeResult> {
+    const ownerId = this.snapshot.currentUser?.id;
+    const continuation = { owner: this.ownerRevision, navigation: this.navigationRevision };
+    const sameOwner = () => continuation.owner === this.ownerRevision && this.snapshot.currentUser?.id === ownerId;
+    const current = () => sameOwner() && continuation.navigation === this.navigationRevision;
+    if (!ownerId || this.snapshot.guestView || this.snapshot.routeQrId) throw new Error("Open your private workspace to edit Life Links.");
+    if (this.snapshot.canonicalEditingId) throw new Error("Close the record editor before moving, deleting or undoing changes.");
+    const commandId = this.pendingChangeCommands.get(key) ?? `change-${this.commandId()}`;
+    this.pendingChangeCommands.set(key, commandId);
+    this.update({ busy: true, error: "" });
+    try {
+      const result = await commit(commandId);
+      if (!sameOwner()) return result;
+      ++this.historyRevision;
+      this.update({ changeHistory: result.history });
+      // The mutation is committed even if its readback fails. Keep its command
+      // identity for safe retry, and never report a successful write as undone.
+      try { if (current()) await this.reconcileOwnerChange(result, continuation); }
+      catch (error) { if (current()) this.update({ error: `Change saved. Refresh the workspace to load the updated view: ${messageFromError(error)}` }); }
+      return result;
+    } catch (error) {
+      if (current()) this.update({ error: messageFromError(error) });
+      throw error;
+    } finally {
+      if (sameOwner()) this.update({ busy: false });
+    }
+  }
+
+  private async reconcileOwnerChange(result: LifeLinkChangeResult, continuation: { owner: number; navigation: number }) {
+    const current = () => continuation.owner === this.ownerRevision && continuation.navigation === this.navigationRevision;
+    // These existing route methods synchronously claim a navigation revision.
+    const restore = (action: Promise<void>) => { continuation.navigation = this.navigationRevision; return action; };
+    const removed = new Set(result.operation === "delete" ? result.affectedIds : []);
+    const selectedId = this.snapshot.selectedLifeLinkId;
+    const parentId = this.snapshot.hierarchyParentId;
+    const collectionId = this.snapshot.selectedCollection?.id;
+    const mode = this.snapshot.workspaceMode;
+    const detailsOpen = this.snapshot.detailsOpen;
+    this.update({ lifeLinkChildren: {}, lifeLinkMemberships: {}, lifeLinkMembershipsComplete: {},
+      lifeLinkSearchResults: [], lifeLinkSearchTotalCount: 0, lifeLinkSearchNextCursor: null,
+      selectedLifeLinkDetail: null, selectedLifeLinkMemberships: [], collectionMemberDetails: {},
+      collectionMemberMemberships: {}, collectionsComplete: false, collectionComplete: false });
+    await this.refreshOwnerLibrary();
+    if (!current()) return;
+    if (mode === "collections") {
+      await this.loadCollections();
+      if (!current()) return;
+      if (collectionId && this.snapshot.collections.some((collection) => collection.id === collectionId)) {
+        await restore(this.openCollection(collectionId, selectedId && !removed.has(selectedId) ? selectedId : undefined, false));
+      } else await restore(this.openCollections(false));
+    } else if (selectedId && !removed.has(selectedId)) {
+      try {
+        await this.api.getLifeLinkDetail(selectedId, { limit: 1 });
+        if (!current()) return;
+        await restore(this.selectLifeLink({ lifeLinkId: selectedId, source: "route" }, false));
+      } catch (error) {
+        if (!current()) return;
+        if (!(error instanceof ApiError) || error.status !== 404) throw error;
+        await restore(this.openHierarchy(null));
+      }
+    } else {
+      const nextParent = parentId && !removed.has(parentId) ? parentId : null;
+      await restore(this.openHierarchy(nextParent));
+    }
+    if (!current()) return;
+    if (!removed.has(selectedId ?? "")) this.update({ detailsOpen });
+    if (this.snapshot.lifeLinkSearchQuery.trim()) await this.searchLifeLinks(this.snapshot.lifeLinkSearchQuery);
+    if (!current()) return;
+    if (this.snapshot.activeQrId) await this.refreshActiveQr();
+  }
+
+  confirmAgentChange(confirmed: boolean) {
+    const settle = this.settleAgentChange;
+    this.settleAgentChange = null;
+    if (this.snapshot?.agentChangeConfirmation) this.update({ agentChangeConfirmation: null });
+    settle?.(confirmed);
+  }
+
+  async agentPreviewLifeLinkChange(input: PreviewLifeLinkChangeInput, signal?: AbortSignal) {
+    let preview: LifeLinkChangePreview | null = null;
+    const result = await this.runAgentCommand(async (options) => {
+      for (const id of input.lifeLinkIds) await this.agentMutableRecord(id, options);
+      preview = await this.previewLifeLinkChange(input, signal);
+      this.assertCommandActive(options);
+      if (this.agentChangePreviews.size >= 5) this.agentChangePreviews.delete(this.agentChangePreviews.keys().next().value!);
+      this.agentChangePreviews.set(preview.id, { preview, authorized: false });
+    }, signal);
+    return result.ok && preview ? { ok: true as const, preview: preview as LifeLinkChangePreview } : result;
+  }
+
+  async agentApplyLifeLinkChange(previewId: string, signal?: AbortSignal): Promise<Exclude<AgentToolControllerActionResult, { ok: true }> | { ok: true; change: LifeLinkChangeResult }> {
+    if (this.agentChangeApplication) return { ok: false, code: "invalid_operation" };
+    const admission = {};
+    this.agentChangeApplication = admission;
+    let change: LifeLinkChangeResult | null = null;
+    try {
+      const action = await this.runAgentCommand(async (options) => {
+        const assertOwner = options.assertActive;
+        options.assertActive = () => {
+          assertOwner?.();
+          if (this.agentChangeApplication !== admission) throw new AgentCommandError("cancelled");
+        };
+        const entry = this.agentChangePreviews.get(previewId);
+        if (!entry) throw new AgentCommandError("invalid_operation");
+        const { preview } = entry;
+        if (!entry.authorized) {
+          // First apply validates every draft and obtains the sole human delete choice.
+          for (const item of preview.items) await this.agentMutableRecord(item.id, options);
+          if (preview.operation === "delete") {
+            const accepted = await new Promise<boolean>((resolve) => {
+              const abort = () => this.confirmAgentChange(false);
+              this.settleAgentChange = (confirmed) => { signal?.removeEventListener("abort", abort); resolve(confirmed); };
+              signal?.addEventListener("abort", abort, { once: true });
+              this.update({ agentChangeConfirmation: preview });
+              if (signal?.aborted) abort();
+            });
+            if (!accepted) throw new AgentCommandError("cancelled");
+          }
+          this.assertCommandActive(options);
+          entry.authorized = true;
+        }
+        this.assertCommandActive(options);
+        try {
+          // An uncertain delete may already have removed every item. Replay the exact
+          // authorized preview/command at the store; do not require those items to exist.
+          change = await this.applyLifeLinkChange(previewId, signal);
+        } catch (error) {
+          if (error instanceof ApiError && error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status)) entry.authorized = false;
+          throw error;
+        }
+      }, signal);
+      if (!action.ok) return action;
+      return change ? { ok: true, change } : { ok: false, code: "effect_not_applied" };
+    } finally {
+      if (this.agentChangeApplication === admission) this.agentChangeApplication = null;
+    }
+  }
+
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
@@ -270,19 +558,26 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   dispose() {
+    this.confirmAgentChange(false);
+    this.agentChangeApplication = null;
+    this.agentChangePreviews.clear();
     this.active = false;
     this.lifecycle += 1;
+    this.ownerRevision += 1;
+    this.navigationRevision += 1;
     this.unsubscribeRoute?.();
     this.unsubscribeRoute = null;
   }
 
   setActiveView(view: WorkspaceView) {
-    if (view !== "projects" && this.snapshot.routeLifeLinkId) {
+    ++this.navigationRevision;
+    const panelState = view === "workspace" ? {} : { detailsOpen: false };
+    if (view !== "workspace" && this.snapshot.routeLifeLinkId) {
       this.route.push("/");
-      this.update({ routePathname: "/", routeQrId: null, routeLifeLinkId: null, activeView: view });
+      this.update({ ...panelState, routePathname: "/", routeQrId: null, routeLifeLinkId: null, activeView: view });
       return;
     }
-    this.update({ activeView: view });
+    this.update({ ...panelState, activeView: view });
   }
 
   setBatchCount(value: string | number) {
@@ -313,10 +608,6 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     this.update({ findTargetId: qrId, activeQrId: qrId });
   }
 
-  setNewProjectName(newProjectName: string) {
-    this.update({ newProjectName });
-  }
-
   toggleGuestView() {
     this.update((current) => ({
       guestView: !current.guestView,
@@ -340,6 +631,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     if (this.snapshot.selectedLifeLinkId !== lifeLinkId || !this.snapshot.selectedLifeLinkDetail) {
       await this.selectLifeLink({ lifeLinkId, source: "human" });
     }
+    if (this.snapshot.selectedLifeLinkId !== lifeLinkId || !this.snapshot.selectedLifeLinkDetail) return;
     this.update({ canonicalEditingId: lifeLinkId });
   }
 
@@ -347,22 +639,256 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     this.update({ canonicalEditingId: null });
   }
 
-  async refreshOwnerLibrary(user = this.snapshot.currentUser) {
+  setDetailsOpen(detailsOpen: boolean) {
+    this.update({ detailsOpen });
+  }
+
+  async openHierarchy(parentId: string | null = null, updateHistory = true) {
+    if (parentId) {
+      await this.selectLifeLink({ lifeLinkId: parentId, source: "route" }, updateHistory);
+      if (this.snapshot.selectedLifeLinkId === parentId && this.snapshot.selectedLifeLinkDetail?.lifeLink.browsingRole === "container") {
+        this.update({ detailsOpen: false });
+      }
+      return;
+    }
+    ++this.navigationRevision;
+    this.update({
+      workspaceMode: "hierarchies", hierarchyParentId: null, hierarchyParentDetail: null,
+      selectedCollection: null, selectedLifeLinkId: null, selectedLifeLinkDetail: null,
+      selectedLifeLinkMemberships: [], membershipsComplete: true, membershipsLoading: false,
+      detailsOpen: false, activeView: "workspace", routePathname: "/life-links", routeQrId: null,
+      routeLifeLinkId: null, publicQrState: null, canonicalEditingId: null, error: ""
+    });
+    if (updateHistory && this.route.pathname() !== "/life-links") this.route.push("/life-links");
+    await this.loadLifeLinkBranch(null, false);
+  }
+
+  async activateLifeLink(lifeLinkId: string) {
+    await this.selectLifeLink({ lifeLinkId, source: "route" });
+    if (this.snapshot.selectedLifeLinkId === lifeLinkId && this.snapshot.selectedLifeLinkDetail?.lifeLink.browsingRole === "container") this.setDetailsOpen(false);
+  }
+
+  async openCollections(updateHistory = true, options: WorkspaceCommandOptions = {}) {
+    this.assertCommandActive(options);
+    const navigation = ++this.navigationRevision;
+    this.update({
+      workspaceMode: "collections", selectedCollection: null, collectionMembers: [], collectionSections: [],
+      collectionMemberDetails: {}, collectionMemberMemberships: {}, collectionComplete: false, collectionLoading: false,
+      selectedLifeLinkId: null, selectedLifeLinkDetail: null, selectedLifeLinkMemberships: [],
+      membershipsComplete: true, membershipsLoading: false, detailsOpen: false,
+      activeView: "workspace", routePathname: "/collections", routeQrId: null, routeLifeLinkId: null,
+      publicQrState: null, canonicalEditingId: null, error: ""
+    });
+    if (updateHistory && this.route.pathname() !== "/collections") this.route.push("/collections");
+    try { await this.refreshCollections(navigation, options); }
+    catch (error) {
+      if (this.navigationRevision === navigation) this.update({ error: messageFromError(error) });
+      if (options.throwOnError) throw error;
+    }
+  }
+
+  async loadCollections() {
+    const ownerRevision = this.ownerRevision;
+    const navigation = this.navigationRevision;
+    try { await this.refreshCollections(); }
+    catch (error) { if (ownerRevision === this.ownerRevision && navigation === this.navigationRevision) this.update({ error: messageFromError(error) }); }
+  }
+
+  async openCollection(collectionId: string, selectedLifeLinkId?: string, updateHistory = true, options: WorkspaceCommandOptions = {}) {
+    this.assertCommandActive(options);
+    const navigation = ++this.navigationRevision;
+    const ownerRevision = this.ownerRevision;
+    const pathname = ownerCollectionPath(collectionId, selectedLifeLinkId);
+    this.update({
+      workspaceMode: "collections", activeView: "workspace", routePathname: pathname, routeQrId: null,
+      routeLifeLinkId: null, publicQrState: null, selectedCollection: null,
+      collectionMembers: [], collectionSections: [], collectionMemberMemberships: {}, collectionMemberDetails: {},
+      collectionLoading: true, collectionComplete: false, detailsOpen: false,
+      selectedLifeLinkId: null, selectedLifeLinkDetail: null, selectedLifeLinkMemberships: [],
+      membershipsLoading: false, membershipsComplete: false, canonicalEditingId: null, error: ""
+    });
+    if (updateHistory && this.route.pathname() !== pathname) this.route.push(pathname);
+    try {
+      const result = await this.readCollectionWorkspace(collectionId, options.signal);
+      this.assertCommandActive(options);
+      if (navigation !== this.navigationRevision || ownerRevision !== this.ownerRevision) return;
+      this.update({
+        selectedCollection: result.collection, collectionSections: result.sections,
+        collectionMembers: result.members, collectionMemberDetails: result.details,
+        collectionMemberMemberships: result.memberships, collectionComplete: true,
+        collections: mergeById(this.snapshot.collections, [result.collection]),
+        lifeLinkMemberships: { ...this.snapshot.lifeLinkMemberships, ...result.memberships },
+        lifeLinkMembershipsComplete: { ...this.snapshot.lifeLinkMembershipsComplete,
+          ...Object.fromEntries(result.members.map((item) => [item.id, true])) }
+      });
+      if (selectedLifeLinkId) await this.selectCollectionMember(selectedLifeLinkId, false, options);
+    } catch (error) {
+      if (navigation === this.navigationRevision && ownerRevision === this.ownerRevision) this.update({ error: messageFromError(error) });
+      if (options.throwOnError) throw error;
+    } finally {
+      if (navigation === this.navigationRevision && ownerRevision === this.ownerRevision) this.update({ collectionLoading: false });
+    }
+  }
+
+  async selectCollectionMember(lifeLinkId: string, updateHistory = true, options: WorkspaceCommandOptions = {}) {
+    this.assertCommandActive(options);
+    const collection = this.snapshot.selectedCollection;
+    if (!collection || !this.snapshot.collectionMembers.some((member) => member.id === lifeLinkId)) {
+      this.update({ error: "This Life Link is not a member of the current Collection." });
+      return;
+    }
+    const navigation = this.navigationRevision;
+    const selection = ++this.selectionRevision;
+    const ownerRevision = this.ownerRevision;
+    this.update({ busy: true, error: "" });
+    try {
+      const { detail } = await this.api.getLifeLinkDetail(lifeLinkId, { signal: options.signal });
+      this.assertCommandActive(options);
+      if (navigation !== this.navigationRevision || ownerRevision !== this.ownerRevision || selection !== this.selectionRevision) return;
+      this.applySelectedLifeLinkDetail(detail, updateHistory, true);
+      await this.loadSelectedMemberships(lifeLinkId);
+      this.assertCommandActive(options);
+    } catch (error) {
+      if (navigation === this.navigationRevision && ownerRevision === this.ownerRevision && selection === this.selectionRevision) this.update({ error: messageFromError(error) });
+      if (options.throwOnError) throw error;
+    } finally {
+      if (navigation === this.navigationRevision && ownerRevision === this.ownerRevision && selection === this.selectionRevision) this.update({ busy: false });
+    }
+  }
+
+  async createCollection(input: CollectionCreateInput, options: WorkspaceCommandOptions = {}) {
+    const ownerRevision = this.ownerRevision;
+    const navigation = this.navigationRevision;
+    const pendingKey = `collection:${JSON.stringify(input)}`;
+    const id = input.id ?? this.pendingCreateId(pendingKey, "collection");
+    this.update({ busy: true, error: "" });
+    try {
+      this.assertCommandActive(options);
+      const { collection } = await this.api.createCollection({ ...input, id }, { signal: options.signal });
+      this.assertCommandActive(options);
+      if (ownerRevision === this.ownerRevision) this.pendingCreateIds.delete(pendingKey);
+      if (ownerRevision !== this.ownerRevision || navigation !== this.navigationRevision) return;
+      await this.openCollection(collection.id, undefined, true, options);
+    } catch (error) {
+      if (ownerRevision === this.ownerRevision && navigation === this.navigationRevision) this.update({ error: messageFromError(error) });
+      if (options.throwOnError) throw error;
+    }
+    finally { if (ownerRevision === this.ownerRevision) this.update({ busy: false }); }
+  }
+
+  async updateCollection(patch: CollectionPatch, target?: CollectionRecord, options: WorkspaceCommandOptions = {}) {
+    await this.mutateCollection((collection) => this.api.updateCollection(collection.id, collection.updatedAt, patch, { signal: options.signal }), target, options);
+  }
+
+  async createCollectionSection(title: string, target?: CollectionRecord, stableId?: string, options: WorkspaceCommandOptions = {}) {
+    const ownerRevision = this.ownerRevision;
+    const pendingKey = `section:${target?.id ?? this.snapshot.selectedCollection?.id}:${title}`;
+    const id = stableId ?? this.pendingCreateId(pendingKey, "section");
+    await this.mutateCollection(async (collection) => {
+      const result = await this.api.createCollectionSection(collection.id, collection.updatedAt, { id, title }, { signal: options.signal });
+      if (ownerRevision === this.ownerRevision) this.pendingCreateIds.delete(pendingKey);
+      return result;
+    }, target, options);
+  }
+
+  async updateCollectionSection(sectionId: string, title: string, target?: CollectionRecord, options: WorkspaceCommandOptions = {}) {
+    await this.mutateCollection((collection) => this.api.updateCollectionSection(collection.id, sectionId, collection.updatedAt, title, { signal: options.signal }), target, options);
+  }
+
+  async removeCollectionSection(sectionId: string, target?: CollectionRecord, options: WorkspaceCommandOptions = {}) {
+    await this.mutateCollection((collection) => this.api.removeCollectionSection(collection.id, sectionId, collection.updatedAt, { signal: options.signal }), target, options);
+  }
+
+  async loadCollectionForAssignment(collectionId: string, lifeLinkId: string) {
+    const ownerRevision = this.ownerRevision;
+    const [target, memberships] = await Promise.all([this.readCollectionSections(collectionId), this.readMemberships(lifeLinkId)]);
+    if (ownerRevision !== this.ownerRevision) throw new Error("The account changed while loading Collections.");
+    return { ...target, membership: memberships.find((entry) => entry.collection.id === collectionId) ?? null };
+  }
+
+  async addCollectionMember(lifeLinkId: string, target?: CollectionRecord, options: WorkspaceCommandOptions = {}) {
+    await this.mutateCollection((collection) => this.api.addCollectionMember(collection.id, lifeLinkId, collection.updatedAt, { signal: options.signal }), target, options);
+  }
+
+  async removeCollectionMember(lifeLinkId: string, target?: CollectionRecord, options: WorkspaceCommandOptions = {}) {
+    await this.mutateCollection((collection) => this.api.removeCollectionMember(collection.id, lifeLinkId, collection.updatedAt, { signal: options.signal }), target, options);
+  }
+
+  async replaceCollectionSectionAssignments(lifeLinkId: string, sectionIds: string[], target?: CollectionRecord, options: WorkspaceCommandOptions = {}) {
+    await this.mutateCollection((collection) => this.api.replaceCollectionSectionAssignments(collection.id, lifeLinkId, collection.updatedAt, sectionIds, { signal: options.signal }), target, options);
+  }
+
+  async updateSelectedLifeLink(patch: UpdateLifeLinkPatch, expectedUpdatedAt?: string, options: WorkspaceCommandOptions = {}) {
+    const lifeLink = this.snapshot.selectedLifeLinkDetail?.lifeLink;
+    if (!lifeLink) return;
+    const ownerRevision = this.ownerRevision;
+    const navigation = this.navigationRevision;
+    this.update({ busy: true, error: "" });
+    try {
+      this.assertCommandActive(options);
+      const result = await this.api.updateLifeLink(lifeLink.id, expectedUpdatedAt ?? lifeLink.updatedAt, patch, { signal: options.signal });
+      this.assertCommandActive(options);
+      if (ownerRevision !== this.ownerRevision || navigation !== this.navigationRevision) return;
+      this.applyLifeLinkRecord(result.lifeLink);
+      await this.refreshSelectedSubject(lifeLink.id, options);
+      this.assertCommandActive(options);
+      await this.loadLifeLinkBranch(lifeLink.parentId, false);
+    } catch (error) {
+      if (ownerRevision === this.ownerRevision && navigation === this.navigationRevision) this.update({ error: messageFromError(error) });
+      if (options.throwOnError) throw error;
+    }
+    finally { if (ownerRevision === this.ownerRevision) this.update({ busy: false }); }
+  }
+
+  async setLifeLinkQrBinding(lifeLinkId: string, qrId: string, command?: { commandId: string; expectedUpdatedAt: string }, options: WorkspaceCommandOptions = {}) {
+    const parsed = parseQrId(qrId);
+    if (!parsed) { this.update({ error: "Enter or scan a valid Life Links QR URL or ID." }); return; }
+    await this.mutateQrBinding(lifeLinkId, parsed, command, options);
+  }
+
+  async clearLifeLinkQrBinding(lifeLinkId: string, command?: { commandId: string; expectedUpdatedAt: string }, options: WorkspaceCommandOptions = {}) {
+    await this.mutateQrBinding(lifeLinkId, null, command, options);
+  }
+
+  async createQrForLifeLink(lifeLinkId: string) {
+    const ownerRevision = this.ownerRevision;
+    const navigation = this.navigationRevision;
+    this.update({ busy: true, error: "" });
+    try {
+      let qrId = this.pendingGeneratedQrs.get(lifeLinkId);
+      if (!qrId) {
+        const { qrCodes } = await this.api.createQrBatch(1);
+        if (ownerRevision !== this.ownerRevision || navigation !== this.navigationRevision) return;
+        qrId = qrCodes[0]?.id;
+        if (!qrId) throw new Error("No QR code was generated.");
+        this.pendingGeneratedQrs.set(lifeLinkId, qrId);
+      }
+      await this.mutateQrBinding(lifeLinkId, qrId);
+      if (ownerRevision === this.ownerRevision && !this.snapshot.error) this.pendingGeneratedQrs.delete(lifeLinkId);
+    } catch (error) { if (ownerRevision === this.ownerRevision && navigation === this.navigationRevision) this.update({ error: messageFromError(error) }); }
+    finally { if (ownerRevision === this.ownerRevision) this.update({ busy: false }); }
+  }
+
+  async refreshOwnerLibrary(user = this.snapshot.currentUser, options: WorkspaceCommandOptions = {}) {
+    this.assertCommandActive(options);
     if (!user) {
       return;
     }
-    const [linkResult, projectResult, rootResult] = await Promise.all([
+    const ownerRevision = this.ownerRevision;
+    const [linkResult, rootResult] = await Promise.all([
       this.api.listLinks(),
-      this.api.listProjects(),
-      this.api.listLifeLinks({ limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT })
+      this.api.listLifeLinks({ limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal: options.signal })
     ]);
+    this.assertCommandActive(options);
+    if (ownerRevision !== this.ownerRevision) return;
     this.update((current) => ({
       links: linkResult.links,
-      projects: projectResult.projects,
       activeQrId: current.activeQrId ?? linkResult.links[0]?.id ?? null,
       inventoryPage: boundedInventoryPage(current.inventoryPage, current.inventoryFilter, linkResult.links),
       rootLifeLinks: branchFromPage(rootResult)
     }));
+    await this.loadHierarchyMemberships(rootResult.lifeLinks);
+    await this.getChangeHistory();
   }
 
   async refreshActiveQr(qrId = this.snapshot.activeQrId) {
@@ -383,18 +909,39 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
 
   async selectLifeLink(
     input: { lifeLinkId: string; source: "human" | "agent" | "route" | "search" | "scan" },
-    updateHistory = true
+    updateHistory = true,
+    options: WorkspaceCommandOptions = {}
   ) {
+    if (input.source === "human" && this.snapshot.workspaceMode === "collections" &&
+        this.snapshot.selectedCollection && this.snapshot.collectionMembers.some((member) => member.id === input.lifeLinkId)) {
+      await this.selectCollectionMember(input.lifeLinkId, updateHistory);
+      return;
+    }
+    const navigation = ++this.navigationRevision;
+    const ownerRevision = this.ownerRevision;
     this.update({ busy: true, error: "" });
     try {
+      this.assertCommandActive(options);
       const { detail } = await this.api.getLifeLinkDetail(input.lifeLinkId, {
-        limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT
+        limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal: options.signal
       });
-      this.applySelectedLifeLinkDetail(detail, updateHistory);
+      this.assertCommandActive(options);
+      if (navigation !== this.navigationRevision || ownerRevision !== this.ownerRevision) return;
+      const parentId = detail.lifeLink.browsingRole === "container" ? detail.lifeLink.id : detail.lifeLink.parentId;
+      const parentDetail = detail.lifeLink.browsingRole === "container" ? detail : parentId
+        ? (await this.api.getLifeLinkDetail(parentId, { limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal: options.signal })).detail : null;
+      this.assertCommandActive(options);
+      if (navigation !== this.navigationRevision || ownerRevision !== this.ownerRevision) return;
+      this.update({ hierarchyParentDetail: parentDetail });
+      this.applySelectedLifeLinkDetail(detail, updateHistory, false, input.source !== "route" || detail.lifeLink.browsingRole !== "container");
+      await this.loadLifeLinkBranch(parentId, false);
+      if (navigation !== this.navigationRevision || ownerRevision !== this.ownerRevision) return;
+      await this.loadSelectedMemberships(detail.lifeLink.id);
     } catch (selectError) {
-      this.update({ error: messageFromError(selectError) });
+      if (navigation === this.navigationRevision && ownerRevision === this.ownerRevision) this.update({ error: messageFromError(selectError) });
+      if (options.throwOnError) throw selectError;
     } finally {
-      this.update({ busy: false });
+      if (navigation === this.navigationRevision && ownerRevision === this.ownerRevision) this.update({ busy: false });
     }
   }
 
@@ -417,30 +964,44 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     await this.loadLifeLinkBranch(parentId, Boolean(branch?.loaded));
   }
 
-  async createLifeLink(input: CreateLifeLinkInput) {
+  async createLifeLink(input: CreateLifeLinkInput & { id?: string }, options: WorkspaceCommandOptions = {}) {
+    const ownerRevision = this.ownerRevision;
+    const navigation = this.navigationRevision;
+    const pendingKey = `life-link:${JSON.stringify(input)}`;
+    const id = input.id ?? this.pendingCreateId(pendingKey, "life-link");
     this.update({ busy: true, error: "" });
     try {
-      const normalized: CreateLifeLinkInput = {
+      this.assertCommandActive(options);
+      const normalized: CreateLifeLinkInput & { id?: string } = {
         ...input,
+        id,
         parentId: input.parentId ?? null,
         title: input.title?.trim() || undefined
       };
-      const { lifeLink } = await this.api.createLifeLink(normalized);
+      const { lifeLink } = await this.api.createLifeLink(normalized, { signal: options.signal });
+      this.assertCommandActive(options);
+      if (ownerRevision === this.ownerRevision) this.pendingCreateIds.delete(pendingKey);
+      if (ownerRevision !== this.ownerRevision || navigation !== this.navigationRevision) return;
       await this.loadLifeLinkBranch(lifeLink.parentId, false);
-      await this.selectLifeLink({ lifeLinkId: lifeLink.id, source: "human" });
+      await this.selectLifeLink({ lifeLinkId: lifeLink.id, source: "route" }, true, options);
     } catch (createError) {
-      this.update({ error: messageFromError(createError) });
+      if (ownerRevision === this.ownerRevision && navigation === this.navigationRevision) this.update({ error: messageFromError(createError) });
+      if (options.throwOnError) throw createError;
     } finally {
-      this.update({ busy: false });
+      if (ownerRevision === this.ownerRevision) this.update({ busy: false });
     }
   }
 
-  async moveLifeLink(lifeLinkId: string, parentId: string | null) {
+  async moveLifeLink(lifeLinkId: string, parentId: string | null, expectedUpdatedAt?: string, options: WorkspaceCommandOptions = {}) {
+    const ownerRevision = this.ownerRevision;
     this.update({ busy: true, error: "" });
     try {
       const detail = await this.detailForMutation(lifeLinkId);
+      this.assertCommandActive(options);
       const previousParentId = detail.lifeLink.parentId;
-      const { lifeLink } = await this.api.moveLifeLink(lifeLinkId, parentId, detail.lifeLink.updatedAt);
+      const { lifeLink } = await this.api.moveLifeLink(lifeLinkId, parentId, expectedUpdatedAt ?? detail.lifeLink.updatedAt, { signal: options.signal });
+      this.assertCommandActive(options);
+      if (ownerRevision !== this.ownerRevision) return;
       const searchQuery = this.snapshot.lifeLinkSearchQuery.trim();
       this.update((current) => ({
         selectedLifeLinkDetail:
@@ -461,9 +1022,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
           throw new Error(this.snapshot.error);
         }
       }
-      await this.selectLifeLink({ lifeLinkId, source: "human" });
+      this.assertCommandActive(options);
+      await this.selectLifeLink({ lifeLinkId, source: "route" }, true, options);
     } catch (moveError) {
-      this.update({ error: messageFromError(moveError) });
+      if (ownerRevision === this.ownerRevision) this.update({ error: messageFromError(moveError) });
+      if (options.throwOnError) throw moveError;
     } finally {
       this.update({ busy: false });
     }
@@ -495,6 +1058,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async searchLifeLinks(query = this.snapshot.lifeLinkSearchQuery, append = false) {
+    const search = ++this.searchRevision;
+    const ownerRevision = this.ownerRevision;
     const normalized = query.trim();
     this.update({ lifeLinkSearchQuery: query, error: "" });
     if (!normalized) {
@@ -503,7 +1068,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         lifeLinkSearchTotalCount: 0,
         lifeLinkSearchNextCursor: null,
         lifeLinkSearchTruncated: false,
-        lifeLinkSearchLoading: false
+        lifeLinkSearchLoading: false,
+        collectionSearchResults: [], collectionSearchComplete: true
       });
       return;
     }
@@ -513,6 +1079,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         cursor: append ? this.snapshot.lifeLinkSearchNextCursor : null,
         limit: DEFAULT_LIFE_LINK_SEARCH_LIMIT
       });
+      if (search !== this.searchRevision || ownerRevision !== this.ownerRevision) return;
       this.update((current) => ({
         lifeLinkSearchResults: append
           ? mergeSearchResults(current.lifeLinkSearchResults, result.results)
@@ -521,11 +1088,124 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         lifeLinkSearchNextCursor: result.nextCursor,
         lifeLinkSearchTruncated: result.truncated
       }));
+      await this.loadHierarchyMemberships(result.results.map((entry) => entry.lifeLink), () => search === this.searchRevision);
+      if (search !== this.searchRevision || ownerRevision !== this.ownerRevision) return;
+      if (!append) {
+        this.update({ collectionSearchResults: [], collectionSearchComplete: false });
+        const collectionSearchResults = await this.searchCollectionsAndSections(normalized);
+        if (search !== this.searchRevision || ownerRevision !== this.ownerRevision) return;
+        this.update({ collectionSearchResults, collectionSearchComplete: true });
+      }
     } catch (searchError) {
-      this.update({ error: messageFromError(searchError) });
+      if (search === this.searchRevision && ownerRevision === this.ownerRevision) this.update({ error: messageFromError(searchError) });
     } finally {
-      this.update({ lifeLinkSearchLoading: false });
+      if (search === this.searchRevision && ownerRevision === this.ownerRevision) this.update({ lifeLinkSearchLoading: false });
     }
+  }
+
+  async agentCreateLifeLink(input: AgentCreateLifeLinkInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult> {
+    return this.runAgentCommand(async (options) => {
+      if (input.parentId) await this.agentMutableRecord(input.parentId, options);
+      await this.createLifeLink(input, options);
+    }, signal);
+  }
+
+  async agentMoveLifeLink(input: AgentMoveLifeLinkInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult> {
+    return this.runAgentCommand(async (options) => {
+      await this.agentMutableRecord(input.lifeLinkId, options);
+      if (input.parentId) await this.agentMutableRecord(input.parentId, options);
+      await this.moveLifeLink(input.lifeLinkId, input.parentId, input.baseUpdatedAt, options);
+    }, signal);
+  }
+
+  async agentManageLifeLinkQr(input: AgentManageLifeLinkQrInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult> {
+    return this.runAgentCommand(async (options) => {
+      const detail = await this.agentMutableRecord(input.lifeLinkId, options);
+      await this.selectLifeLink({ lifeLinkId: input.lifeLinkId, source: "agent" }, true, options);
+      if (input.action === "set_public_projection") {
+        await this.updateSelectedLifeLink({ privacy: input.privacy, publicFieldKeys: input.publicFieldKeys }, input.baseUpdatedAt, options);
+      } else if (input.action === "detach") {
+        await this.clearLifeLinkQrBinding(input.lifeLinkId, { commandId: input.commandId, expectedUpdatedAt: input.baseUpdatedAt }, options);
+      } else {
+        if (input.action === "attach" && input.baseUpdatedAt === detail.lifeLink.updatedAt && detail.lifeLink.qrId && detail.lifeLink.qrId !== input.qrId) throw new AgentCommandError("invalid_operation");
+        await this.setLifeLinkQrBinding(input.lifeLinkId, input.qrId, { commandId: input.commandId, expectedUpdatedAt: input.baseUpdatedAt }, options);
+      }
+    }, signal);
+  }
+
+  async agentListCollections(input: AgentListCollectionsInput, signal?: AbortSignal): Promise<AgentCollectionListResult> {
+    let page: Awaited<ReturnType<LifeLinksWorkspaceApi["listCollections"]>> | undefined;
+    const action = await this.runAgentCommand(async (options) => {
+      page = await this.api.listCollections({ cursor: input.cursor, limit: input.limit, signal });
+      this.assertCommandActive(options);
+      await this.openCollections(true, options);
+      this.assertCommandActive(options);
+    }, signal);
+    return action.ok ? (page ? { ok: true, ...page } : { ok: false, code: "effect_not_applied" }) : action;
+  }
+
+  async agentInspectCollection(input: AgentInspectCollectionInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult> {
+    return this.runAgentCommand((options) => this.openCollection(input.collectionId, undefined, true, options), signal);
+  }
+
+  async agentMaintainCollection(input: AgentMaintainCollectionInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult> {
+    return this.runAgentCommand(async (options) => {
+      if (input.action === "create_collection") {
+        await this.createCollection({ id: input.id, title: input.title, purpose: input.purpose, notes: input.notes }, options);
+        return;
+      }
+      const { collection } = await this.api.getCollection(input.collectionId, { limit: 1, signal });
+      this.assertCommandActive(options);
+      const target = { ...collection, updatedAt: input.baseUpdatedAt };
+      switch (input.action) {
+        case "update_collection":
+          await this.updateCollection({ ...(input.title === undefined ? {} : { title: input.title }), ...(input.purpose === undefined ? {} : { purpose: input.purpose }), ...(input.notes === undefined ? {} : { notes: input.notes }) }, target, options); break;
+        case "add_member": await this.addCollectionMember(input.lifeLinkId, target, options); break;
+        case "remove_member": await this.removeCollectionMember(input.lifeLinkId, target, options); break;
+        case "create_section": await this.createCollectionSection(input.title, target, input.id, options); break;
+        case "update_section": await this.updateCollectionSection(input.sectionId, input.title, target, options); break;
+        case "remove_section": await this.removeCollectionSection(input.sectionId, target, options); break;
+        case "replace_sections": await this.replaceCollectionSectionAssignments(input.lifeLinkId, input.sectionIds, target, options); break;
+      }
+      this.assertCommandActive(options);
+      await this.openCollection(input.collectionId, undefined, true, options);
+    }, signal);
+  }
+
+  private async runAgentCommand(operation: (options: WorkspaceCommandOptions) => Promise<void>, signal?: AbortSignal): Promise<AgentToolControllerActionResult> {
+    const ownerId = this.currentAgentOwnerId();
+    const options: WorkspaceCommandOptions = { signal, throwOnError: true, assertActive: () => {
+      if (!ownerId || this.currentAgentOwnerId() !== ownerId) throw new AgentCommandError("life_link_unavailable");
+      if (this.snapshot.canonicalEditingId !== null) throw new AgentCommandError("editor_open");
+    } };
+    try {
+      this.assertCommandActive(options);
+      await operation(options);
+      this.assertCommandActive(options);
+      return { ok: true };
+    } catch (error) {
+      if (signal?.aborted || isAbortError(error)) return { ok: false, code: "cancelled" };
+      if (error instanceof AgentCommandError) return { ok: false, code: error.code };
+      if (error instanceof ApiError) {
+        if (error.code === "stale_life_link" || error.code === "stale_collection") return { ok: false, code: error.code };
+        if ([401, 403, 404].includes(error.status)) return { ok: false, code: "life_link_unavailable" };
+        return { ok: false, code: "invalid_operation" };
+      }
+      return { ok: false, code: "effect_not_applied" };
+    }
+  }
+
+  private async agentMutableRecord(lifeLinkId: string, options: WorkspaceCommandOptions) {
+    const { detail } = await this.api.getLifeLinkDetail(lifeLinkId, { limit: 1, signal: options.signal });
+    this.assertCommandActive(options);
+    if (detail.lifeLink.ownerId !== this.currentAgentOwnerId()) throw new AgentCommandError("life_link_unavailable");
+    if (readCanonicalLifeLinkDraft(lifeLinkId, detail.lifeLink.qrId, detail.lifeLink.updatedAt)) throw new AgentCommandError("editor_dirty");
+    const priorAssertion = options.assertActive;
+    options.assertActive = () => {
+      priorAssertion?.();
+      if (readCanonicalLifeLinkDraft(lifeLinkId, detail.lifeLink.qrId, detail.lifeLink.updatedAt)) throw new AgentCommandError("editor_dirty");
+    };
+    return detail;
   }
 
   async agentInspectCurrentLifeLink(
@@ -560,10 +1240,81 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
           code: this.snapshot.canonicalEditingId !== null ? "editor_open" : "life_link_unavailable"
         };
       }
-      this.applySelectedLifeLinkDetail(detail, false);
+      this.applySelectedLifeLinkDetail(detail, false, this.snapshot.workspaceMode === "collections");
+      await this.hydrateVisibleDetails(detail, signal);
       return { ok: true };
     } catch (error) {
       return agentReadFailure(error, "life_link_unavailable");
+    }
+  }
+
+  async agentReadAttachment(input: AgentReadAttachmentInput, signal?: AbortSignal): Promise<AgentReadAttachmentResult> {
+    const ownerId = this.currentAgentOwnerId();
+    const ownerRevision = this.ownerRevision;
+    const navigationRevision = this.navigationRevision;
+    const denial = (): Exclude<AgentReadAttachmentResult, { ok: true }> | null => {
+      if (signal?.aborted) return { ok: false, code: "cancelled" };
+      if (!ownerId || this.currentAgentOwnerId() !== ownerId || !this.snapshot.agentConnection.connected ||
+          this.ownerRevision !== ownerRevision || this.navigationRevision !== navigationRevision) {
+        return { ok: false, code: "life_link_unavailable" };
+      }
+      if (this.snapshot.canonicalEditingId !== null) return { ok: false, code: "editor_open" };
+      return null;
+    };
+    const before = denial();
+    if (before) return before;
+    try {
+      // Refresh authorization and metadata instead of returning cached private attachments.
+      const { detail } = await this.api.getLifeLinkDetail(input.lifeLinkId, { limit: 1, signal });
+      const afterDetail = denial();
+      if (afterDetail) return afterDetail;
+      if (detail.lifeLink.id !== input.lifeLinkId || detail.lifeLink.ownerId !== ownerId) {
+        return { ok: false, code: "life_link_unavailable" };
+      }
+      if (!input.mediaId) {
+        if (input.revision !== undefined && input.revision !== detail.lifeLink.updatedAt) {
+          return { ok: false, code: "stale_life_link" };
+        }
+        return { ok: true, kind: "list", attachments: detail.lifeLink.media, revision: detail.lifeLink.updatedAt };
+      }
+      const media = detail.lifeLink.media.find((media) => media.id === input.mediaId);
+      if (!media || media.ownerId !== ownerId || media.lifeLinkId !== input.lifeLinkId) {
+        return { ok: false, code: "life_link_unavailable" };
+      }
+      if (input.representation === "image") {
+        const { representation: _representation, lifeLinkId: _lifeLinkId, mediaId: _mediaId, ...options } = input;
+        const result = await this.api.getLifeLinkAttachmentImage(input.lifeLinkId, input.mediaId, options, signal);
+        const afterImage = denial();
+        if (afterImage) return afterImage;
+        if (result.mediaId !== media.id || (input.mode !== "describe" && result.sourceRevision !== input.sourceRevision) ||
+            (result.source !== null && (result.source.mimeType !== media.mimeType || result.source.sizeBytes !== media.sizeBytes ||
+              (media.mimeType === "application/pdf" ? result.source.pdf?.pageNumber !== (input.page ?? 1) :
+                result.source.office ? result.source.office.pageNumber !== (input.page ?? 1) : input.page !== undefined)))) {
+          return { ok: false, code: "effect_not_applied" };
+        }
+        return { ok: true, kind: "image", result };
+      }
+      const page = await this.api.getLifeLinkAttachmentContent(input.lifeLinkId, input.mediaId, {
+        offset: input.offset, revision: input.revision, limit: 1000, signal,
+        ...(input.representation === "transcript" ? { representation: "transcript", startMs: input.startMs,
+          durationMs: input.durationMs, audioStreamIndex: input.audioStreamIndex } : {})
+      });
+      const afterContent = denial();
+      if (afterContent) return afterContent;
+      if (page.mediaId !== input.mediaId) return { ok: false, code: "effect_not_applied" };
+      if (input.representation === "transcript") validateAttachmentTranscript(page, input.mediaId, input);
+      else if (page.transcript !== undefined) return { ok: false, code: "effect_not_applied" };
+      return { ok: true, kind: "content", page };
+    } catch (error) {
+      const cancelled = denial();
+      if (cancelled) return cancelled;
+      if (isAbortError(error)) return { ok: false, code: "cancelled" };
+      if (error instanceof ApiError) {
+        if ([401, 403, 404].includes(error.status)) return { ok: false, code: "life_link_unavailable" };
+        if (error.status === 409) return { ok: false, code: "stale_life_link" };
+        if (error.status === 400) return { ok: false, code: "invalid_operation" };
+      }
+      return { ok: false, code: "effect_not_applied" };
     }
   }
 
@@ -572,6 +1323,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     signal?: AbortSignal
   ): Promise<AgentSearchLifeLinksControllerResult> {
     const agentOwnerId = this.currentAgentOwnerId();
+    const revision = ++this.searchRevision;
     if (!agentOwnerId) {
       return { ok: false, code: "life_link_unavailable" };
     }
@@ -606,16 +1358,32 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       hasMore: result.hasMore || result.results.length > boundedResults.length,
       truncated: result.truncated || result.hasMore || result.results.length > boundedResults.length
     };
+    if (revision !== this.searchRevision) return { ok: true, search };
     this.update({
-      activeView: "projects",
+      activeView: "search",
+      detailsOpen: false,
       lifeLinkSearchQuery: search.query,
       lifeLinkSearchResults: search.results,
       lifeLinkSearchTotalCount: search.totalCount,
       lifeLinkSearchNextCursor: search.nextCursor,
       lifeLinkSearchTruncated: search.truncated,
       lifeLinkSearchLoading: false,
+      collectionSearchResults: [], collectionSearchComplete: false,
       error: ""
     });
+    const current = () => revision === this.searchRevision && !signal?.aborted && this.currentAgentOwnerId() === agentOwnerId && this.snapshot.canonicalEditingId === null;
+    await this.loadHierarchyMemberships(search.results.map((entry) => entry.lifeLink), current, signal);
+    try {
+      if (current()) {
+        const collections = await this.searchCollectionsAndSections(input.query, signal);
+        if (current()) this.update({ collectionSearchResults: collections, collectionSearchComplete: true });
+      }
+    } catch (error) {
+      if (current()) this.update({ error: messageFromError(error), collectionSearchComplete: false });
+    }
+    if (signal?.aborted) return { ok: false, code: "cancelled" };
+    if (this.currentAgentOwnerId() !== agentOwnerId) return { ok: false, code: "life_link_unavailable" };
+    if (this.snapshot.canonicalEditingId !== null) return { ok: false, code: "editor_open" };
     return { ok: true, search };
   }
 
@@ -648,6 +1416,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         };
       }
       this.applySelectedLifeLinkDetail(detail, true);
+      await this.hydrateVisibleDetails(detail, signal);
       return { ok: true };
     } catch (error) {
       return agentReadFailure(error, "life_link_unavailable");
@@ -758,7 +1527,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     try {
       updatedLifeLink = (await this.api.updateLifeLink(input.lifeLinkId, input.baseUpdatedAt, {
         ...(input.title === undefined ? {} : { title: input.title }),
-        ...(input.body === undefined ? {} : { body: input.body })
+        ...(input.body === undefined ? {} : { body: input.body }),
+        ...(input.context === undefined ? {} : { context: input.context })
       }, { signal })).lifeLink;
     } catch (error) {
       if (error instanceof ApiError && error.code === "stale_life_link") {
@@ -786,7 +1556,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       }
     };
     if (this.currentAgentOwnerId() === agentOwnerId) {
-      this.applySelectedLifeLinkDetail(updatedDetail, true);
+      this.applySelectedLifeLinkDetail(updatedDetail, true, this.snapshot.workspaceMode === "collections");
+      await this.hydrateVisibleDetails(updatedDetail, signal);
     }
     return { ok: true };
   }
@@ -823,7 +1594,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         return { ok: false, code: "qr_not_attached" };
       }
       this.applySelectedLifeLinkDetail(detail, true);
-      this.setActiveView("search");
+      this.setActiveView("scan");
       this.update({ findTargetId: detail.lifeLink.qrId, activeQrId: detail.lifeLink.qrId });
       return { ok: true };
     } catch (error) {
@@ -874,10 +1645,10 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       if (nextRoute.surface === "public-qr") {
         await this.refreshActiveQr(nextRoute.qrId);
       } else {
-        await this.refreshOwnerLibrary(result.user);
+        if (!isCollectionsPath(this.route.pathname())) await this.refreshOwnerLibrary(result.user);
       }
-      if (nextRoute.surface === "owner-workspace" && nextRoute.lifeLinkId) {
-        await this.selectLifeLink({ lifeLinkId: nextRoute.lifeLinkId, source: "route" }, false);
+      if (nextRoute.surface === "owner-workspace" && (nextRoute.lifeLinkId || isCollectionsPath(this.route.pathname()) || this.route.pathname() === "/life-links")) {
+        await this.restoreOwnerRoute(this.route.pathname());
       } else if (nextRoute.surface !== "public-qr" && activeQrId) {
         await this.refreshActiveQr(activeQrId);
       }
@@ -889,13 +1660,23 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async logout() {
+    this.confirmAgentChange(false);
+    this.agentChangeApplication = null;
+    this.agentChangePreviews.clear();
+    this.pendingChangeCommands.clear();
+    ++this.ownerRevision;
+    ++this.navigationRevision;
+    ++this.searchRevision;
+    this.pendingCreateIds.clear();
+    this.pendingQrBindings.clear();
+    this.pendingGeneratedQrs.clear();
     const logoutRequest = this.api.logout().catch(() => undefined);
     const nextRoute = classifyLifeLinksRoute(this.route.pathname(), false);
     this.update({
+      ...emptyFieldLedgerState(),
       currentUser: null,
       agentConnection: { connected: false, connectedAt: null },
       links: [],
-      projects: [],
       editingId: null,
       canonicalEditingId: null,
       rootLifeLinks: emptyLifeLinkBranch(),
@@ -929,6 +1710,9 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async disconnectAgent() {
+    this.confirmAgentChange(false);
+    this.agentChangeApplication = null;
+    this.agentChangePreviews.clear();
     if (!this.snapshot.currentUser) {
       this.update({ error: "Log in to disconnect your agent." });
       return;
@@ -945,6 +1729,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async openQr(qrId: string, updateHistory = true) {
+    ++this.navigationRevision;
     this.update({
       activeQrId: qrId,
       activeView: "scan",
@@ -1074,23 +1859,6 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
   }
 
-  async saveLink(qrId: string, patch: LinkEditorPatch) {
-    this.update({ busy: true, error: "" });
-    try {
-      const result = await this.api.updateLink(qrId, patch);
-      clearLinkEditorDraft(qrId);
-      this.update((current) => ({
-        links: current.links.map((link) => (link.id === qrId ? result.link : link)),
-        editingId: null
-      }));
-      await this.refreshActiveQr(qrId);
-    } catch (saveError) {
-      this.update({ error: messageFromError(saveError) });
-    } finally {
-      this.update({ busy: false });
-    }
-  }
-
   async saveCanonicalLifeLink(
     lifeLinkId: string,
     expectedUpdatedAt: string,
@@ -1100,6 +1868,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     try {
       const result = await this.api.updateLifeLink(lifeLinkId, expectedUpdatedAt, patch);
       clearCanonicalLifeLinkDraft(lifeLinkId, result.lifeLink.qrId);
+      this.applyLifeLinkRecord(result.lifeLink);
       this.update((current) => ({
         selectedLifeLinkDetail:
           current.selectedLifeLinkDetail?.lifeLink.id === lifeLinkId
@@ -1178,27 +1947,13 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
   }
 
-  async addProject() {
-    const name = this.snapshot.newProjectName.trim();
-    if (!name) {
-      return;
-    }
-    this.update({ busy: true, error: "" });
-    try {
-      const result = await this.api.createProject(name);
-      this.update((current) => ({
-        projects: [...current.projects, result.project].sort((a, b) => a.name.localeCompare(b.name)),
-        newProjectName: ""
-      }));
-    } catch (projectError) {
-      this.update({ error: messageFromError(projectError) });
-    } finally {
-      this.update({ busy: false });
-    }
-  }
-
   async refresh() {
     this.update({ error: "" });
+    if (this.snapshot.workspaceMode === "collections" && !this.snapshot.routeQrId) {
+      if (this.snapshot.selectedCollection) await this.openCollection(this.snapshot.selectedCollection.id, this.snapshot.selectedLifeLinkId ?? undefined, false);
+      else await this.loadCollections();
+      return;
+    }
     await Promise.all([this.refreshOwnerLibrary(), this.refreshActiveQr()]);
     if (this.snapshot.selectedLifeLinkId) {
       await this.selectLifeLink({ lifeLinkId: this.snapshot.selectedLifeLinkId, source: "human" }, false);
@@ -1207,25 +1962,27 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
 
   async downloadSelectedQr(format: "svg" | "png") {
     const activeLink = resolveActiveLink(this.snapshot);
-    if (!activeLink) {
+    const qrId = activeLink?.id ?? (this.snapshot.selectedLifeLinkDetail?.lifeLink.qrId === this.snapshot.activeQrId ? this.snapshot.activeQrId : null);
+    if (!qrId) {
       return;
     }
+    const url = activeLink?.url ?? buildQrUrl(this.snapshot.qrBaseUrl, qrId);
     if (format === "svg") {
-      const svg = await QRCode.toString(activeLink.url, {
+      const svg = await QRCode.toString(url, {
         type: "svg",
         errorCorrectionLevel: "M",
         margin: 2,
         scale: 8
       });
-      downloadBlob(new Blob([svg], { type: "image/svg+xml" }), `${activeLink.id}.svg`);
+      downloadBlob(new Blob([svg], { type: "image/svg+xml" }), `${qrId}.svg`);
       return;
     }
-    const dataUrl = await QRCode.toDataURL(activeLink.url, {
+    const dataUrl = await QRCode.toDataURL(url, {
       errorCorrectionLevel: "M",
       margin: 2,
       scale: 10
     });
-    downloadBlob(dataUrlToBlob(dataUrl), `${activeLink.id}.png`);
+    downloadBlob(dataUrlToBlob(dataUrl), `${qrId}.png`);
   }
 
   downloadCsv(ids?: string[]) {
@@ -1255,15 +2012,299 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       : null;
   }
 
-  private applySelectedLifeLinkDetail(detail: LifeLinkDetail, updateHistory: boolean) {
-    const pathname = ownerLifeLinkPath(detail.lifeLink.id);
+  private async refreshCollections(navigation = this.navigationRevision, options: WorkspaceCommandOptions = {}) {
+    const ownerRevision = this.ownerRevision;
+    this.update({ collectionsLoading: true, collectionsComplete: false });
+    try {
+      const collections = await readAllPages(async (cursor) => {
+        this.assertCommandActive(options);
+        const page = await this.api.listCollections({ cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal: options.signal });
+        return { ...page, items: page.collections };
+      });
+      this.assertCommandActive(options);
+      if (navigation === this.navigationRevision && ownerRevision === this.ownerRevision) {
+        this.update({ collections, collectionsComplete: true });
+      }
+      return collections;
+    } finally {
+      if (navigation === this.navigationRevision && ownerRevision === this.ownerRevision) this.update({ collectionsLoading: false });
+    }
+  }
+
+  private async readMemberships(lifeLinkId: string, signal?: AbortSignal) {
+    return readAllPages(async (cursor) => {
+      const page = await this.api.listLifeLinkCollectionMemberships(lifeLinkId, { cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal });
+      return { ...page, items: page.memberships };
+    });
+  }
+
+  private async loadSelectedMemberships(lifeLinkId: string) {
+    const ownerRevision = this.ownerRevision;
+    const navigation = this.navigationRevision;
+    this.update({ selectedLifeLinkMemberships: [], membershipsLoading: true, membershipsComplete: false });
+    try {
+      const memberships = await this.readMemberships(lifeLinkId);
+      if (ownerRevision !== this.ownerRevision || navigation !== this.navigationRevision || this.snapshot.selectedLifeLinkId !== lifeLinkId) return;
+      this.update((current) => ({
+        selectedLifeLinkMemberships: memberships, membershipsComplete: true,
+        lifeLinkMemberships: { ...current.lifeLinkMemberships, [lifeLinkId]: memberships },
+        lifeLinkMembershipsComplete: { ...current.lifeLinkMembershipsComplete, [lifeLinkId]: true }
+      }));
+    } catch (error) {
+      if (ownerRevision === this.ownerRevision && navigation === this.navigationRevision && this.snapshot.selectedLifeLinkId === lifeLinkId) {
+        this.update({ error: `Collection memberships could not be fully loaded: ${messageFromError(error)}` });
+      }
+    } finally {
+      if (ownerRevision === this.ownerRevision && navigation === this.navigationRevision && this.snapshot.selectedLifeLinkId === lifeLinkId) this.update({ membershipsLoading: false });
+    }
+  }
+
+  private async loadHierarchyMemberships(items: LifeLinkSummary[], isCurrent: () => boolean = () => true, signal?: AbortSignal) {
+    const ownerRevision = this.ownerRevision;
+    for (const item of items) {
+      if (ownerRevision !== this.ownerRevision || !isCurrent()) return;
+      this.update((current) => ({ lifeLinkMembershipsComplete: { ...current.lifeLinkMembershipsComplete, [item.id]: false } }));
+      try {
+        const memberships = await this.readMemberships(item.id, signal);
+        if (ownerRevision !== this.ownerRevision || !isCurrent()) return;
+        this.update((current) => ({
+          lifeLinkMemberships: { ...current.lifeLinkMemberships, [item.id]: memberships },
+          lifeLinkMembershipsComplete: { ...current.lifeLinkMembershipsComplete, [item.id]: true }
+        }));
+      } catch (error) {
+        if (ownerRevision === this.ownerRevision && isCurrent()) this.update({ error: `Collection labels could not be fully loaded: ${messageFromError(error)}` });
+      }
+    }
+  }
+
+  private async readCollectionSections(collectionId: string, signal?: AbortSignal) {
+    let collection: CollectionRecord | undefined;
+    const sections = await readAllPages(async (cursor) => {
+      const page = await this.api.getCollection(collectionId, { cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal });
+      if (collection && collection.updatedAt !== page.collection.updatedAt) throw new Error("Collection changed while loading. Open it again to refresh.");
+      collection = page.collection;
+      return { items: page.sections, ...page.sectionsPage };
+    });
+    return { collection: collection!, sections };
+  }
+
+  private async readCollectionWorkspace(collectionId: string, signal?: AbortSignal) {
+    const { collection, sections } = await this.readCollectionSections(collectionId, signal);
+    const members = await readAllPages(async (cursor) => {
+      const page = await this.api.listCollectionMembers(collectionId, { cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal });
+      return { ...page, items: page.lifeLinks };
+    });
+    const details: Record<string, LifeLinkDetail> = {};
+    const memberships: Record<string, LifeLinkCollectionMembership[]> = {};
+    for (const member of members) {
+      const [detail, memberMemberships] = await Promise.all([
+        this.api.getLifeLinkDetail(member.id, { signal }), this.readMemberships(member.id, signal)
+      ]);
+      details[member.id] = detail.detail;
+      memberships[member.id] = memberMemberships;
+    }
+    const latest = await this.api.getCollection(collectionId, { limit: 1, signal });
+    if (latest.collection.updatedAt !== collection.updatedAt) throw new Error("Collection changed while loading. Open it again to refresh.");
+    return { collection, sections, members, details, memberships };
+  }
+
+  private async searchCollectionsAndSections(query: string, signal?: AbortSignal) {
+    const normalized = query.toLocaleLowerCase();
+    const collections = await readAllPages(async (cursor) => {
+      const page = await this.api.listCollections({ cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal });
+      return { ...page, items: page.collections };
+    });
+    const results: LifeLinksWorkspaceSnapshot["collectionSearchResults"] = [];
+    for (const collection of collections) {
+      const { sections } = await this.readCollectionSections(collection.id, signal);
+      const matchedSections = sections.filter((section) => section.title.toLocaleLowerCase().includes(normalized));
+      const collectionMatches = collection.title.toLocaleLowerCase().includes(normalized);
+      if (!collectionMatches && !matchedSections.length) continue;
+      const members = await readAllPages(async (cursor) => {
+        const page = await this.api.listCollectionMembers(collection.id, { cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal });
+        return { ...page, items: page.lifeLinks };
+      });
+      const matchingMembers: LifeLinkRecord[] = [];
+      for (const member of members) {
+        if (collectionMatches) matchingMembers.push(member);
+        else {
+          const memberships = await this.readMemberships(member.id, signal);
+          const membership = memberships.find((entry) => entry.collection.id === collection.id);
+          if (membership?.sections.some((section) => matchedSections.some((matched) => matched.id === section.id))) matchingMembers.push(member);
+        }
+      }
+      results.push({ collection, sections: matchedSections, members: matchingMembers });
+    }
+    return results;
+  }
+
+  private async mutateCollection(operation: (collection: CollectionRecord) => Promise<{ collection: CollectionRecord }>, target?: CollectionRecord, options: WorkspaceCommandOptions = {}) {
+    const collection = target ?? this.snapshot.selectedCollection;
+    if (!collection) return;
+    const selectedId = this.snapshot.selectedLifeLinkId;
+    const ownerRevision = this.ownerRevision;
+    const navigation = this.navigationRevision;
+    this.update({ busy: true, error: "" });
+    try {
+      this.assertCommandActive(options);
+      const result = await operation(collection);
+      this.assertCommandActive(options);
+      if (ownerRevision !== this.ownerRevision || navigation !== this.navigationRevision) return;
+      if (this.snapshot.selectedCollection?.id !== collection.id || this.snapshot.workspaceMode !== "collections") {
+        this.update({ collections: mergeById(this.snapshot.collections, [result.collection]) });
+        if (selectedId) await this.loadSelectedMemberships(selectedId);
+        const branch = this.snapshot.hierarchyParentId ? this.snapshot.lifeLinkChildren[this.snapshot.hierarchyParentId] : this.snapshot.rootLifeLinks;
+        if (branch) await this.loadHierarchyMemberships(branch.items);
+        return;
+      }
+      // Keep the committed revision visible if the subsequent read fails.
+      this.update({ selectedCollection: result.collection, collectionComplete: false, collectionLoading: true });
+      const workspace = await this.readCollectionWorkspace(collection.id, options.signal);
+      this.assertCommandActive(options);
+      if (ownerRevision !== this.ownerRevision || navigation !== this.navigationRevision) return;
+      this.update({ selectedCollection: workspace.collection, collectionMembers: workspace.members,
+        collectionSections: workspace.sections, collectionMemberDetails: workspace.details,
+        collectionMemberMemberships: workspace.memberships, collectionComplete: true,
+        collections: mergeById(this.snapshot.collections, [workspace.collection]),
+        lifeLinkMemberships: { ...this.snapshot.lifeLinkMemberships, ...workspace.memberships },
+        lifeLinkMembershipsComplete: { ...this.snapshot.lifeLinkMembershipsComplete,
+          ...Object.fromEntries(workspace.members.map((member) => [member.id, true])) }
+      });
+      // Reconcile the current selection without treating a refresh as a click.
+      // In particular, keep mobile Back / collapsed Details and newer selections intact.
+      const currentSelectedId = this.snapshot.selectedLifeLinkId;
+      const selectedDetail = currentSelectedId ? workspace.details[currentSelectedId] : null;
+      if (currentSelectedId && selectedDetail) {
+        this.update({ selectedLifeLinkDetail: selectedDetail,
+          selectedLifeLinkMemberships: workspace.memberships[currentSelectedId],
+          membershipsLoading: false, membershipsComplete: true });
+      } else if (currentSelectedId && this.snapshot.selectedCollection?.id === collection.id) {
+        const pathname = ownerCollectionPath(collection.id);
+        this.update({ selectedLifeLinkId: null, selectedLifeLinkDetail: null, selectedLifeLinkMemberships: [],
+          detailsOpen: false, membershipsComplete: true, routePathname: pathname });
+        if (this.route.pathname() !== pathname) this.route.push(pathname);
+      }
+    } catch (error) {
+      // Do not retry a stale command against a silently refreshed revision.
+      if (ownerRevision === this.ownerRevision && navigation === this.navigationRevision) this.update({ error: messageFromError(error) });
+      if (options.throwOnError) throw error;
+    } finally { if (ownerRevision === this.ownerRevision && navigation === this.navigationRevision) this.update({ busy: false, collectionLoading: false }); }
+  }
+
+  private async refreshSelectedSubject(lifeLinkId: string, options: WorkspaceCommandOptions = {}) {
+    this.assertCommandActive(options);
+    if (this.snapshot.workspaceMode === "collections" && this.snapshot.selectedCollection) {
+      await this.selectCollectionMember(lifeLinkId, false, options);
+      return;
+    }
+    await this.selectLifeLink({ lifeLinkId, source: "route" }, false, options);
+  }
+
+  private async hydrateVisibleDetails(detail: LifeLinkDetail, signal?: AbortSignal) {
+    const navigation = this.navigationRevision;
+    const ownerRevision = this.ownerRevision;
+    const current = () => !signal?.aborted && navigation === this.navigationRevision && ownerRevision === this.ownerRevision && this.snapshot.selectedLifeLinkId === detail.lifeLink.id;
+    if (!current()) return;
+    try {
+      if (this.snapshot.workspaceMode === "hierarchies") {
+        const parentId = detail.lifeLink.browsingRole === "container" ? detail.lifeLink.id : detail.lifeLink.parentId;
+        const parent = detail.lifeLink.browsingRole === "container" ? detail : parentId
+          ? (await this.api.getLifeLinkDetail(parentId, { limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal })).detail : null;
+        if (!current()) return;
+        this.update({ hierarchyParentDetail: parent });
+        await this.loadLifeLinkBranch(parentId, false);
+      } else {
+        this.update({ collectionMemberDetails: { ...this.snapshot.collectionMemberDetails, [detail.lifeLink.id]: detail } });
+      }
+      if (current()) await this.loadSelectedMemberships(detail.lifeLink.id);
+    } catch (error) {
+      if (current()) this.update({ error: `The record is open, but its surrounding context could not be loaded: ${messageFromError(error)}` });
+    }
+  }
+
+  private async mutateQrBinding(lifeLinkId: string, qrId: string | null, explicitCommand?: { commandId: string; expectedUpdatedAt: string }, options: WorkspaceCommandOptions = {}) {
+    const ownerRevision = this.ownerRevision;
+    const navigation = this.navigationRevision;
+    const pendingKey = `${lifeLinkId}:${qrId ?? "clear"}`;
+    this.update({ busy: true, error: "" });
+    try {
+      const detail = await this.detailForMutation(lifeLinkId);
+      this.assertCommandActive(options);
+      if (ownerRevision !== this.ownerRevision || navigation !== this.navigationRevision) return;
+      const command = explicitCommand ?? this.pendingQrBindings.get(pendingKey) ?? {
+        commandId: `qr-binding-${this.commandId()}`, expectedUpdatedAt: detail.lifeLink.updatedAt
+      };
+      this.pendingQrBindings.set(pendingKey, command);
+      const result = qrId === null
+        ? await this.api.clearLifeLinkQrBinding(lifeLinkId, command.expectedUpdatedAt, command.commandId, { signal: options.signal })
+        : await this.api.setLifeLinkQrBinding(lifeLinkId, qrId, command.expectedUpdatedAt, command.commandId, { signal: options.signal });
+      this.assertCommandActive(options);
+      if (ownerRevision === this.ownerRevision) this.pendingQrBindings.delete(pendingKey);
+      if (ownerRevision !== this.ownerRevision || navigation !== this.navigationRevision) return;
+      this.applyLifeLinkRecord(result.lifeLink);
+      await this.refreshOwnerLibrary(this.snapshot.currentUser, options);
+      await this.refreshSelectedSubject(lifeLinkId, options);
+    } catch (error) {
+      if (ownerRevision === this.ownerRevision) {
+        // A definitive rejection did not consume the command. After an explicit
+        // record refresh, a new click may use the new revision. Ambiguous
+        // transport/server failures retain the original command for replay.
+        if (error instanceof ApiError && error.status >= 400 && error.status < 500 && ![408, 429].includes(error.status)) this.pendingQrBindings.delete(pendingKey);
+        if (navigation === this.navigationRevision) this.update({ error: messageFromError(error) });
+      }
+      if (options.throwOnError) throw error;
+    }
+    finally { if (ownerRevision === this.ownerRevision) this.update({ busy: false }); }
+  }
+
+  private pendingCreateId(key: string, prefix: string): string {
+    const existing = this.pendingCreateIds.get(key);
+    if (existing) return existing;
+    const id = `${prefix}-${this.commandId()}`;
+    this.pendingCreateIds.set(key, id);
+    return id;
+  }
+
+  private assertCommandActive(options: WorkspaceCommandOptions) {
+    options.signal?.throwIfAborted();
+    options.assertActive?.();
+  }
+
+  private applyLifeLinkRecord(lifeLink: LifeLinkRecord) {
+    const summary = (item: LifeLinkSummary) => item.id === lifeLink.id ? summarizeLifeLink(lifeLink, item.childCount) : item;
+    const detail = (value: LifeLinkDetail | null): LifeLinkDetail | null => value ? {
+      ...value, lifeLink: value.lifeLink.id === lifeLink.id ? lifeLink : value.lifeLink,
+      ancestry: { ...value.ancestry, items: value.ancestry.items.map(summary) },
+      children: value.children.map(summary)
+    } : null;
     this.update((current) => ({
-      activeView: "projects",
+      selectedLifeLinkDetail: detail(current.selectedLifeLinkDetail),
+      hierarchyParentDetail: detail(current.hierarchyParentDetail),
+      collectionMembers: current.collectionMembers.map((item) => item.id === lifeLink.id ? lifeLink : item),
+      collectionMemberDetails: Object.fromEntries(Object.entries(current.collectionMemberDetails).map(([id, value]) => [id, detail(value)!])),
+      rootLifeLinks: { ...current.rootLifeLinks, items: current.rootLifeLinks.items.map(summary) },
+      lifeLinkChildren: Object.fromEntries(Object.entries(current.lifeLinkChildren).map(([id, branch]) => [id, { ...branch, items: branch.items.map(summary) }])),
+      ...(current.selectedLifeLinkId === lifeLink.id ? { activeQrId: lifeLink.qrId } : {})
+    }));
+  }
+
+  private applySelectedLifeLinkDetail(detail: LifeLinkDetail, updateHistory: boolean, preserveCollection = false, detailsOpen = true) {
+    const collection = preserveCollection ? this.snapshot.selectedCollection : null;
+    const pathname = collection ? ownerCollectionPath(collection.id, detail.lifeLink.id) : ownerLifeLinkPath(detail.lifeLink.id);
+    this.update((current) => ({
+      workspaceMode: collection ? "collections" : "hierarchies",
+      selectedCollection: collection,
+      detailsOpen,
+      ...(collection ? {} : {
+        hierarchyParentId: detail.lifeLink.browsingRole === "container" ? detail.lifeLink.id : detail.lifeLink.parentId,
+        hierarchyParentDetail: detail.lifeLink.browsingRole === "container" ? detail : current.hierarchyParentDetail
+      }),
+      activeView: "workspace",
       activeQrId: detail.lifeLink.qrId,
       publicQrState: null,
       routePathname: pathname,
       routeQrId: null,
-      routeLifeLinkId: detail.lifeLink.id,
+      routeLifeLinkId: collection ? null : detail.lifeLink.id,
       selectedLifeLinkId: detail.lifeLink.id,
       selectedLifeLinkDetail: detail,
       highlightedLifeLinkId: detail.lifeLink.id,
@@ -1295,7 +2336,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         routeLifeLinkId: routeState.lifeLinkId
       });
 
-      if (me.user && routeState.surface !== "public-qr") {
+      if (me.user && routeState.surface !== "public-qr" && !isCollectionsPath(routePathname)) {
         await this.refreshOwnerLibrary(me.user);
         if (!this.isCurrent(lifecycle)) {
           return;
@@ -1312,8 +2353,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
           publicQrState,
           scanMessage: { tone: "neutral", title: "QR opened", detail: routeState.qrId }
         });
-      } else if (routeState.surface === "owner-workspace" && routeState.lifeLinkId) {
-        await this.selectLifeLink({ lifeLinkId: routeState.lifeLinkId, source: "route" }, false);
+      } else if (routeState.surface === "owner-workspace") {
+        await this.restoreOwnerRoute(routePathname);
       }
     } catch (bootError) {
       if (this.isCurrent(lifecycle)) {
@@ -1338,8 +2379,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       await this.openQr(routeState.qrId, false);
       return;
     }
-    if (routeState.surface === "owner-workspace" && routeState.lifeLinkId) {
-      await this.selectLifeLink({ lifeLinkId: routeState.lifeLinkId, source: "route" }, false);
+    if (routeState.surface === "owner-workspace") {
+      await this.restoreOwnerRoute(routePathname);
       return;
     }
     this.update({
@@ -1351,7 +2392,30 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     });
   }
 
+  private async restoreOwnerRoute(pathname: string) {
+    if (isCollectionsPath(pathname)) {
+      const collectionId = collectionIdFromPath(pathname);
+      if (collectionId) await this.openCollection(collectionId, collectionMemberIdFromPath(pathname) ?? undefined, false);
+      else await this.openCollections(false);
+      return;
+    }
+    const route = classifyLifeLinksRoute(pathname, true);
+    if (route.lifeLinkId) {
+      await this.openHierarchy(route.lifeLinkId, false);
+      return;
+    }
+    if (pathname === "/life-links" || pathname === "/life-links/") {
+      await this.openHierarchy(null, false);
+      return;
+    }
+    ++this.navigationRevision;
+    this.update({ workspaceMode: "hierarchies", hierarchyParentId: null, hierarchyParentDetail: null,
+      selectedCollection: null, selectedLifeLinkId: null, selectedLifeLinkDetail: null,
+      detailsOpen: false, publicQrState: null, activeView: "home" });
+  }
+
   private async loadLifeLinkBranch(parentId: string | null, append: boolean, propagateError = false) {
+    const ownerRevision = this.ownerRevision;
     const currentBranch = parentId ? this.snapshot.lifeLinkChildren[parentId] : this.snapshot.rootLifeLinks;
     if (append && !currentBranch?.nextCursor) {
       return;
@@ -1366,13 +2430,16 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         cursor: append ? currentBranch?.nextCursor : null,
         limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT
       });
+      if (ownerRevision !== this.ownerRevision) return;
       const latest = parentId ? this.snapshot.lifeLinkChildren[parentId] : this.snapshot.rootLifeLinks;
       const preserveKnownPath = !append && !currentBranch?.loaded && Boolean(currentBranch?.items.length);
       const nextBranch = branchFromPage(result, append ? latest : undefined);
       this.setBranch(parentId, preserveKnownPath
         ? { ...nextBranch, items: mergeSummaries(nextBranch.items, latest.items) }
         : nextBranch);
+      await this.loadHierarchyMemberships(result.lifeLinks);
     } catch (branchError) {
+      if (ownerRevision !== this.ownerRevision) return;
       this.setBranch(parentId, {
         ...(parentId ? this.snapshot.lifeLinkChildren[parentId] : this.snapshot.rootLifeLinks),
         loading: false
@@ -1427,15 +2494,55 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       | ((current: LifeLinksWorkspaceSnapshot) => Partial<LifeLinksWorkspaceSnapshot>)
   ) {
     const next = typeof patch === "function" ? patch(this.snapshot) : patch;
+    const finishedMutation = this.snapshot.busy && next.busy === false;
+    const loadedOwner = !this.snapshot.currentUser && next.currentUser;
     this.snapshot = { ...this.snapshot, ...next };
     for (const listener of this.listeners) {
       listener();
+    }
+    if ((finishedMutation || loadedOwner) && this.snapshot.currentUser && !this.snapshot.routeQrId) {
+      // getChangeHistory owns revision-safe invalidation on failure.
+      void this.getChangeHistory().catch(() => undefined);
     }
   }
 }
 
 function emptyLifeLinkBranch(): LifeLinkBranchState {
   return { items: [], nextCursor: null, truncated: false, loaded: false, loading: false };
+}
+
+function emptyFieldLedgerState() {
+  return {
+    changeHistory: { limit: 5 as const, entries: [] }, agentChangeConfirmation: null,
+    workspaceMode: "hierarchies" as const, hierarchyParentId: null, hierarchyParentDetail: null,
+    detailsOpen: false, collections: [], collectionsLoading: false, collectionsComplete: false,
+    selectedCollection: null, collectionMembers: [], collectionSections: [], collectionMemberMemberships: {},
+    collectionMemberDetails: {}, collectionLoading: false, collectionComplete: false,
+    selectedLifeLinkMemberships: [], membershipsLoading: false, membershipsComplete: false,
+    lifeLinkMemberships: {}, lifeLinkMembershipsComplete: {}, collectionSearchResults: [], collectionSearchComplete: false
+  };
+}
+
+/** Exhaust every cursor; an interrupted/invalid page is not an exhaustive result. */
+async function readAllPages<T>(read: (cursor: string | null) => Promise<{ items: T[]; nextCursor: string | null; truncated: boolean }>): Promise<T[]> {
+  const items: T[] = [];
+  const seen = new Set<string>();
+  let cursor: string | null = null;
+  do {
+    const page = await read(cursor);
+    items.push(...page.items);
+    if (page.truncated && !page.nextCursor) throw new Error("The server returned an incomplete list without a continuation cursor.");
+    cursor = page.nextCursor;
+    if (cursor && seen.has(cursor)) throw new Error("The server repeated a continuation cursor; the list is incomplete.");
+    if (cursor) seen.add(cursor);
+  } while (cursor);
+  return items;
+}
+
+function mergeById<T extends { id: string }>(existing: T[], incoming: T[]): T[] {
+  const records = new Map(existing.map((item) => [item.id, item]));
+  for (const item of incoming) records.set(item.id, item);
+  return [...records.values()];
 }
 
 function branchFromPage(
@@ -1558,6 +2665,12 @@ function agentReadFailure(
     return { ok: false, code: fallbackCode };
   }
   throw error;
+}
+
+class AgentCommandError extends Error {
+  constructor(readonly code: Exclude<AgentToolControllerActionResult, { ok: true }>["code"]) {
+    super(code);
+  }
 }
 
 function isAbortError(error: unknown) {
