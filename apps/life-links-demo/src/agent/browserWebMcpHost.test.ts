@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   getBrowserWebMcpHost,
+  LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES,
+  LIFE_LINKS_LEGACY_TOOL_CATALOG_ID,
   LIFE_LINKS_PAGE_TOOL_NAMES,
   validateLifeLinksPageToolCatalog
 } from "./browserWebMcpHost";
@@ -52,6 +54,15 @@ describe("browser WebMCP host", () => {
     expect(validation.definitions.map(({ name }) => name)).toEqual(
       LIFE_LINKS_PAGE_TOOL_NAMES
     );
+    const legacy = validateLifeLinksPageToolCatalog(
+      makeCatalog().filter(({ name }) => new Set<string>(LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES).has(name)),
+      LIFE_LINKS_LEGACY_TOOL_CATALOG_ID
+    );
+    expect(legacy.ok).toBe(true);
+    if (!legacy.ok) throw new Error("expected a valid legacy catalog");
+    expect(legacy.definitions.map(({ name }) => name)).toEqual(
+      LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES
+    );
 
     expect(validateLifeLinksPageToolCatalog(makeCatalog().slice(0, 4))).toMatchObject({
       ok: false,
@@ -87,7 +98,7 @@ describe("browser WebMCP host", () => {
     expect(modelContext.registrations.map(({ definition }) => definition.name)).toEqual(
       LIFE_LINKS_PAGE_TOOL_NAMES
     );
-    expect(modelContext.registrations).toHaveLength(14);
+    expect(modelContext.registrations).toHaveLength(21);
     expect(
       new Set(modelContext.registrations.map(({ options }) => options?.signal))
     ).toEqual(new Set([controller.signal]));

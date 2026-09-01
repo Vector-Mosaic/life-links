@@ -8,6 +8,7 @@ import {
   summarizeLifeLink,
   type CollectionRecord,
   type CollectionSectionRecord,
+  type CalendarRecord,
   type LifeLinkDetail,
   type LifeLinkChangePreview,
   type LifeLinkRecord,
@@ -17,12 +18,15 @@ import {
 } from "@life-links/core";
 
 import { LifeLinksWorkspaceController, type LifeLinksWorkspaceApi } from "./controller";
-import { ApiError, type ApiAgentConnection } from "../api";
+import { ApiError, type ApiAgentConnection, type CalendarEventDetail } from "../api";
 import { writeCanonicalLifeLinkDraft } from "./editorSession";
 import {
   classifyLifeLinksRoute,
+  calendarEventIdFromPath,
+  isCalendarPath,
   isRoutinesPath,
   lifeLinkIdFromPath,
+  ownerCalendarEventPath,
   ownerRoutinePath,
   qrIdFromPath,
   routineIdFromPath,
@@ -40,12 +44,14 @@ const owner = {
 
 const connectedAgentConnection: ApiAgentConnection = {
   connected: true,
-  connectedAt: "2026-08-27T21:00:00.000Z"
+  connectedAt: "2026-08-27T21:00:00.000Z",
+  toolCatalogId: "life-links-calendar-v2"
 };
 
 const disconnectedAgentConnection: ApiAgentConnection = {
   connected: false,
-  connectedAt: null
+  connectedAt: null,
+  toolCatalogId: null
 };
 
 const rootFixture = {
@@ -125,6 +131,44 @@ const section: CollectionSectionRecord = {
   id: "section-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", ownerId: owner.id, collectionId: collection.id,
   title: "Family sleep systems", position: 0, createdAt: rootFixture.createdAt, updatedAt: rootFixture.createdAt
 };
+const nativeCalendar: CalendarRecord = {
+  id: "calendar-11111111-1111-4111-8111-111111111111",
+  ownerId: owner.id,
+  title: "My Calendar",
+  color: "#7FC9B3",
+  timeZone: "America/New_York",
+  source: "native",
+  isDefault: true,
+  createdAt: rootFixture.createdAt,
+  updatedAt: rootFixture.createdAt,
+  deletedAt: null
+};
+const nativeCalendarEvent: CalendarEventDetail = {
+  event: {
+    id: "calendar-event-22222222-2222-4222-8222-222222222222",
+    ownerId: owner.id,
+    calendarId: nativeCalendar.id,
+    currentRevisionId: "calendar-event-revision-33333333-3333-4333-8333-333333333333",
+    lineage: { kind: "standalone" },
+    createdAt: rootFixture.createdAt,
+    updatedAt: rootFixture.createdAt,
+    deletedAt: null
+  },
+  currentRevision: {
+    id: "calendar-event-revision-33333333-3333-4333-8333-333333333333",
+    ownerId: owner.id,
+    eventId: "calendar-event-22222222-2222-4222-8222-222222222222",
+    revisionNumber: 1,
+    title: "Dentist appointment",
+    description: "Past appointments are valid Calendar history.",
+    location: "Downtown",
+    status: "confirmed",
+    span: { kind: "all_day", startDate: "2026-08-20", endDateExclusive: "2026-08-21" },
+    recurrence: null,
+    subjectLinks: [],
+    createdAt: rootFixture.createdAt
+  }
+};
 
 describe("Life Links route classification", () => {
   it("keeps public QR, login, and owner surfaces explicit", () => {
@@ -137,6 +181,11 @@ describe("Life Links route classification", () => {
     expect(isRoutinesPath("/routines/one/more")).toBe(false);
     expect(routineIdFromPath("/routines/Tuesday%20reset/")).toBe("Tuesday reset");
     expect(ownerRoutinePath("routine/one")).toBe("/routines/routine%2Fone");
+    expect(isCalendarPath("/calendar")).toBe(true);
+    expect(isCalendarPath("/calendar/Team%20planning/" )).toBe(true);
+    expect(isCalendarPath("/calendar/one/more")).toBe(false);
+    expect(calendarEventIdFromPath("/calendar/Team%20planning/")).toBe("Team planning");
+    expect(ownerCalendarEventPath("calendar-event/one")).toBe("/calendar/calendar-event%2Fone");
     expect(classifyLifeLinksRoute("/qr/LL-DEMO-00001", false)).toEqual({
       surface: "public-qr",
       qrId: "LL-DEMO-00001",
@@ -187,6 +236,272 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.listLinks).toHaveBeenCalledOnce();
     expect(api.listLifeLinks).toHaveBeenCalledWith({ limit: 25 });
     expect(listener).toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("boots an exact Calendar event route through Calendar boundaries only", async () => {
+    const route = new FakeRoute(ownerCalendarEventPath(nativeCalendarEvent.event.id));
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.getCalendarEvent.mockResolvedValue({ calendarEvent: nativeCalendarEvent, latestTombstone: null });
+    const controller = new LifeLinksWorkspaceController({ api, route });
+
+    await controller.start();
+
+    expect(controller.getSnapshot()).toMatchObject({
+      workspaceMode: "calendar",
+      routePathname: ownerCalendarEventPath(nativeCalendarEvent.event.id),
+      detailsOpen: true,
+      calendarWorkspace: {
+        calendars: [nativeCalendar],
+        selectedEvent: nativeCalendarEvent,
+        loading: false,
+        error: ""
+      }
+    });
+    expect(api.getCalendarEvent).toHaveBeenCalledWith(nativeCalendarEvent.event.id);
+    expect(api.listLinks).not.toHaveBeenCalled();
+    expect(api.listLifeLinks).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("drops an obsolete Calendar window after navigation changes", async () => {
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    const events = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listCalendarEvents"]>>>();
+    api.listCalendarEvents.mockImplementationOnce(() => events.promise);
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+
+    const pending = controller.loadCalendarWindow({ startDate: "2026-08-01", endDate: "2026-08-31" });
+    await controller.openRoutines();
+    events.resolve({ calendarEvents: [nativeCalendarEvent], nextCursor: null, truncated: false });
+    await pending;
+
+    expect(controller.getSnapshot()).toMatchObject({
+      workspaceMode: "routines",
+      calendarWorkspace: { events: [], range: null }
+    });
+    controller.dispose();
+  });
+
+  it("uses the authenticated Calendar clock for the selected IANA view zone", async () => {
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.getCalendarClock.mockResolvedValue({
+      serverTime: "2026-09-02T02:00:00.000Z", timeZone: "Pacific/Auckland", today: "2026-09-02"
+    });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+
+    await expect(controller.loadCalendarClock("Pacific/Auckland")).resolves.toMatchObject({
+      timeZone: "Pacific/Auckland", today: "2026-09-02"
+    });
+    expect(api.getCalendarClock).toHaveBeenCalledWith("Pacific/Auckland", undefined);
+    expect(controller.getSnapshot().calendarWorkspace.clock).toMatchObject({
+      timeZone: "Pacific/Auckland", today: "2026-09-02"
+    });
+    controller.dispose();
+  });
+
+  it("queries canonical Calendar instances through the shared recurrence materializer", async () => {
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.listCalendarEvents.mockResolvedValue({ calendarEvents: [nativeCalendarEvent], nextCursor: null, truncated: false });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+    await controller.connectAgent();
+
+    const result = await controller.agentQueryCalendarEvents({
+      startDate: "2026-08-20", endDate: "2026-08-20", limit: 2
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      instances: [{
+        instance: {
+          instanceId: `calendar-instance:${nativeCalendarEvent.event.id}`,
+          eventId: nativeCalendarEvent.event.id,
+          revisionId: nativeCalendarEvent.currentRevision.id,
+          calendarId: nativeCalendar.id,
+          masterEventId: null,
+          originalOccurrence: null,
+          isException: false,
+          title: nativeCalendarEvent.currentRevision.title
+        },
+        calendar: { id: nativeCalendar.id, provider: "life_links", writeAuthority: "life_links" }
+      }],
+      nextCursor: null,
+      truncated: false
+    });
+    controller.dispose();
+  });
+
+  it("includes Routine-owned Calendar projections without presenting them as mutable Calendar events", async () => {
+    const routineId = "routine-44444444-4444-4444-8444-444444444444";
+    const routineRevisionId = "routine-revision-55555555-5555-4555-8555-555555555555";
+    const occurrence = {
+      id: "routine-occurrence-66666666-6666-4666-8666-666666666666",
+      ownerId: owner.id,
+      scheduleId: "routine-schedule-77777777-7777-4777-8777-777777777777",
+      scheduleRevision: 1,
+      routineId,
+      routineRevisionId,
+      localDate: "2026-08-20",
+      plannedFor: "2026-08-20T13:00:00.000Z",
+      status: "planned" as const,
+      createdAt: rootFixture.createdAt,
+      updatedAt: rootFixture.createdAt
+    };
+    const routine = {
+      id: routineId,
+      ownerId: owner.id,
+      groupId: null,
+      currentRevisionId: routineRevisionId,
+      revisionNumber: 1,
+      title: "Thursday strength",
+      purpose: "Build strength",
+      createdAt: rootFixture.createdAt,
+      updatedAt: rootFixture.createdAt,
+      archivedAt: null
+    };
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.listCalendarEvents.mockResolvedValue({ calendarEvents: [nativeCalendarEvent], nextCursor: null, truncated: false });
+    api.listRoutines.mockResolvedValue({ routines: [routine], nextCursor: null, truncated: false });
+    api.listRoutineOccurrences.mockImplementation(async (options = {}) => ({
+      occurrences: options.startDate ? [occurrence] : [], nextCursor: null, truncated: false
+    }));
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+    await controller.connectAgent();
+
+    const result = await controller.agentQueryCalendarEvents({
+      startDate: "2026-08-20", endDate: "2026-08-20", calendarIds: [nativeCalendar.id], limit: 2
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      instances: [
+        { source: "calendar_event", instance: { eventId: nativeCalendarEvent.event.id } },
+        {
+          source: "routine_projection",
+          occurrence: { id: occurrence.id, routineId, routineRevisionId },
+          routine: { id: routineId, title: "Thursday strength" }
+        }
+      ],
+      nextCursor: null,
+      truncated: false
+    });
+    expect(api.materializeRoutineOccurrences).toHaveBeenCalledWith({
+      startDate: "2026-08-20", endDate: "2026-08-20", signal: undefined
+    });
+    controller.dispose();
+  });
+
+  it("replays an exact confirmed Calendar deletion after a lost response without confirming twice", async () => {
+    const deletedAt = "2026-09-01T12:05:00.000Z";
+    const deleted = {
+      ...nativeCalendarEvent,
+      event: { ...nativeCalendarEvent.event, updatedAt: deletedAt, deletedAt }
+    };
+    const tombstone = {
+      id: "calendar-event-tombstone-stable-calendar-delete",
+      ownerId: owner.id,
+      calendarId: nativeCalendar.id,
+      eventId: nativeCalendarEvent.event.id,
+      lastRevisionId: nativeCalendarEvent.currentRevision.id,
+      lineage: nativeCalendarEvent.event.lineage,
+      deletedAt
+    };
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.getCalendarEvent.mockResolvedValue({ calendarEvent: nativeCalendarEvent, latestTombstone: null });
+    api.deleteCalendarEvent.mockImplementationOnce(async (_eventId, input) => {
+      expect(input.tombstoneId).toBe(tombstone.id);
+      api.getCalendarEvent.mockResolvedValue({ calendarEvent: deleted, latestTombstone: tombstone });
+      throw new Error("connection lost after Calendar deletion committed");
+    }).mockResolvedValue({ calendarEvent: deleted, latestTombstone: tombstone });
+    const controller = new LifeLinksWorkspaceController({
+      api,
+      route: new FakeRoute("/calendar"),
+      commandId: () => "stable-calendar-delete"
+    });
+    await controller.start();
+    await controller.connectAgent();
+    const prepared = await controller.agentPrepareCalendarEventDeletion({
+      eventId: nativeCalendarEvent.event.id,
+      expectedCurrentRevisionId: nativeCalendarEvent.currentRevision.id,
+      target: { scope: "event", eventId: nativeCalendarEvent.event.id }
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) throw new Error("Expected a Calendar deletion preview.");
+
+    const first = controller.agentApplyCalendarEventDeletion(prepared.preview.id);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentCalendarDeletionConfirmation).toEqual(prepared.preview));
+    controller.confirmAgentCalendarDeletion(true);
+    expect(await first).toEqual({ ok: false, code: "effect_not_applied" });
+    expect(controller.getSnapshot().agentCalendarDeletionConfirmation).toBeNull();
+
+    await expect(controller.agentApplyCalendarEventDeletion(prepared.preview.id)).resolves.toEqual({
+      ok: true,
+      result: {
+        eventId: nativeCalendarEvent.event.id,
+        calendarId: nativeCalendar.id,
+        deleted: true,
+        tombstoneId: tombstone.id
+      }
+    });
+    expect(api.deleteCalendarEvent).toHaveBeenCalledTimes(2);
+    expect(api.deleteCalendarEvent.mock.calls.map((call) => call[1].tombstoneId)).toEqual([tombstone.id, tombstone.id]);
+    expect(controller.getSnapshot().agentCalendarDeletionConfirmation).toBeNull();
+    controller.dispose();
+  });
+
+  it("rejects a different Calendar tombstone as stale and requires a fresh confirmation", async () => {
+    const deletedAt = "2026-09-01T12:06:00.000Z";
+    const deleted = {
+      ...nativeCalendarEvent,
+      event: { ...nativeCalendarEvent.event, updatedAt: deletedAt, deletedAt }
+    };
+    const differentTombstone = {
+      id: "calendar-event-tombstone-99999999-9999-4999-8999-999999999999",
+      ownerId: owner.id,
+      calendarId: nativeCalendar.id,
+      eventId: nativeCalendarEvent.event.id,
+      lastRevisionId: nativeCalendarEvent.currentRevision.id,
+      lineage: nativeCalendarEvent.event.lineage,
+      deletedAt
+    };
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.getCalendarEvent.mockResolvedValue({ calendarEvent: nativeCalendarEvent, latestTombstone: null });
+    const controller = new LifeLinksWorkspaceController({
+      api,
+      route: new FakeRoute("/calendar"),
+      commandId: () => "stale-calendar-delete"
+    });
+    await controller.start();
+    await controller.connectAgent();
+    const prepared = await controller.agentPrepareCalendarEventDeletion({
+      eventId: nativeCalendarEvent.event.id,
+      expectedCurrentRevisionId: nativeCalendarEvent.currentRevision.id,
+      target: { scope: "event", eventId: nativeCalendarEvent.event.id }
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) throw new Error("Expected a Calendar deletion preview.");
+
+    const pending = controller.agentApplyCalendarEventDeletion(prepared.preview.id);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentCalendarDeletionConfirmation).toEqual(prepared.preview));
+    api.getCalendarEvent.mockResolvedValue({ calendarEvent: deleted, latestTombstone: differentTombstone });
+    controller.confirmAgentCalendarDeletion(true);
+
+    expect(await pending).toEqual({ ok: false, code: "stale_calendar_event" });
+    expect(api.deleteCalendarEvent).not.toHaveBeenCalled();
+    const retry = controller.agentApplyCalendarEventDeletion(prepared.preview.id);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentCalendarDeletionConfirmation).toEqual(prepared.preview));
+    controller.confirmAgentCalendarDeletion(false);
+    expect(await retry).toEqual({ ok: false, code: "confirmation_cancelled" });
     controller.dispose();
   });
 
@@ -384,6 +699,7 @@ describe("LifeLinksWorkspaceController", () => {
 
     await controller.connectAgent();
     expect(api.connectAgent).toHaveBeenCalledOnce();
+    expect(api.connectAgent).toHaveBeenCalledWith("life-links-calendar-v2");
     expect(controller.getSnapshot().agentConnection).toEqual(connectedAgentConnection);
     controller.dispose();
   });
@@ -1843,6 +2159,82 @@ describe("Routine workspace controller contract", () => {
     controller.dispose();
   });
 
+  it("materializes and exhausts a Calendar window without replacing selected-Routine occurrences", async () => {
+    const selected = fixture(20, "Selected Routine");
+    const later = fixture(21, "Later Routine");
+    const api = fakeApi();
+    api.getRoutine.mockResolvedValue({ routine: selected.routine });
+    api.listRoutineOccurrences.mockImplementation(async (options = {}) => {
+      if (options.routineId) {
+        return { occurrences: [selected.occurrence], nextCursor: null, truncated: false };
+      }
+      if (options.cursor === "calendar-next") {
+        return { occurrences: [later.occurrence], nextCursor: null, truncated: false };
+      }
+      return { occurrences: [selected.occurrence], nextCursor: "calendar-next", truncated: true };
+    });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    await controller.selectRoutine(selected.routine.routine.id);
+
+    await controller.loadRoutineCalendarWindow({ startDate: "2026-09-01", endDate: "2026-09-30" });
+
+    expect(api.materializeRoutineOccurrences).toHaveBeenCalledWith({
+      startDate: "2026-09-01", endDate: "2026-09-30"
+    });
+    expect(api.listRoutineOccurrences).toHaveBeenNthCalledWith(2, {
+      startDate: "2026-09-01", endDate: "2026-09-30", limit: 100, signal: undefined
+    });
+    expect(api.listRoutineOccurrences).toHaveBeenNthCalledWith(3, {
+      startDate: "2026-09-01", endDate: "2026-09-30", limit: 100,
+      cursor: "calendar-next", signal: undefined
+    });
+    expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+      selectedRoutine: selected.routine,
+      occurrences: [selected.occurrence],
+      calendarOccurrences: [selected.occurrence, later.occurrence],
+      calendarRange: { startDate: "2026-09-01", endDate: "2026-09-30" },
+      calendarLoading: false,
+      calendarError: ""
+    });
+    controller.dispose();
+  });
+
+  it("keeps the newest Calendar window when an older materialization resolves later", async () => {
+    const older = fixture(22, "Older window");
+    const newer = fixture(23, "Newer window");
+    const api = fakeApi();
+    const olderMaterialization = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["materializeRoutineOccurrences"]>>>();
+    api.materializeRoutineOccurrences.mockImplementation(async (options) => {
+      if (options.startDate === "2026-08-01") return olderMaterialization.promise;
+      return { ...options, routineCount: 1, occurrenceCount: 1 };
+    });
+    api.listRoutineOccurrences.mockImplementation(async (options = {}) => ({
+      occurrences: options.startDate === "2026-09-01" ? [newer.occurrence] : [older.occurrence],
+      nextCursor: null,
+      truncated: false
+    }));
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+
+    const loadingOlder = controller.loadRoutineCalendarWindow({ startDate: "2026-08-01", endDate: "2026-08-31" });
+    const loadingNewer = controller.loadRoutineCalendarWindow({ startDate: "2026-09-01", endDate: "2026-09-30" });
+    await loadingNewer;
+    olderMaterialization.resolve({
+      startDate: "2026-08-01", endDate: "2026-08-31", routineCount: 1, occurrenceCount: 1
+    });
+    await loadingOlder;
+
+    expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+      calendarOccurrences: [newer.occurrence],
+      calendarRange: { startDate: "2026-09-01", endDate: "2026-09-30" },
+      calendarLoading: false,
+      calendarError: ""
+    });
+    expect(api.listRoutineOccurrences).toHaveBeenCalledOnce();
+    controller.dispose();
+  });
+
   it("reloads archived definitions and consumes every Routine cursor without replacing earlier pages", async () => {
     const first = fixture(5, "First page");
     const second = fixture(6, "Second page");
@@ -2018,6 +2410,20 @@ function fakeApi() {
     getLifeLinkChangePreview: vi.fn<LifeLinksWorkspaceApi["getLifeLinkChangePreview"]>(),
     applyLifeLinkChange: vi.fn<LifeLinksWorkspaceApi["applyLifeLinkChange"]>(),
     undoChange: vi.fn<LifeLinksWorkspaceApi["undoChange"]>(),
+    createCalendar: vi.fn<LifeLinksWorkspaceApi["createCalendar"]>(),
+    createCalendarEvent: vi.fn<LifeLinksWorkspaceApi["createCalendarEvent"]>(),
+    deleteCalendar: vi.fn<LifeLinksWorkspaceApi["deleteCalendar"]>(),
+    deleteCalendarEvent: vi.fn<LifeLinksWorkspaceApi["deleteCalendarEvent"]>(),
+    getCalendarEvent: vi.fn<LifeLinksWorkspaceApi["getCalendarEvent"]>(),
+    getCalendarClock: vi.fn<LifeLinksWorkspaceApi["getCalendarClock"]>(async (timeZone) => ({
+      serverTime: "2026-09-01T16:00:00.000Z", timeZone, today: "2026-09-01"
+    })),
+    listCalendars: vi.fn<LifeLinksWorkspaceApi["listCalendars"]>(async () => ({ calendars: [], nextCursor: null, truncated: false })),
+    listCalendarEvents: vi.fn<LifeLinksWorkspaceApi["listCalendarEvents"]>(async () => ({ calendarEvents: [], nextCursor: null, truncated: false })),
+    restoreCalendar: vi.fn<LifeLinksWorkspaceApi["restoreCalendar"]>(),
+    restoreCalendarEvent: vi.fn<LifeLinksWorkspaceApi["restoreCalendarEvent"]>(),
+    updateCalendar: vi.fn<LifeLinksWorkspaceApi["updateCalendar"]>(),
+    updateCalendarEvent: vi.fn<LifeLinksWorkspaceApi["updateCalendarEvent"]>(),
     listCollections: vi.fn<LifeLinksWorkspaceApi["listCollections"]>(async () => ({ collections: [], nextCursor: null, truncated: false })),
     getCollection: vi.fn<LifeLinksWorkspaceApi["getCollection"]>(async () => ({ collection, sections: [section], sectionsPage: { nextCursor: null, truncated: false } })),
     createCollection: vi.fn<LifeLinksWorkspaceApi["createCollection"]>(async () => ({ collection })),
@@ -2044,6 +2450,9 @@ function fakeApi() {
     getActiveRoutineRun: vi.fn<LifeLinksWorkspaceApi["getActiveRoutineRun"]>(async () => ({ run: null })),
     listRoutineActivities: vi.fn<LifeLinksWorkspaceApi["listRoutineActivities"]>(async () => ({ activities: [], nextCursor: null, truncated: false })),
     listRoutineGroups: vi.fn<LifeLinksWorkspaceApi["listRoutineGroups"]>(async () => ({ routineGroups: [], nextCursor: null, truncated: false })),
+    materializeRoutineOccurrences: vi.fn<LifeLinksWorkspaceApi["materializeRoutineOccurrences"]>(async ({ startDate, endDate }) => ({
+      startDate, endDate, routineCount: 0, occurrenceCount: 0
+    })),
     listRoutineOccurrences: vi.fn<LifeLinksWorkspaceApi["listRoutineOccurrences"]>(async () => ({ occurrences: [], nextCursor: null, truncated: false })),
     listRoutines: vi.fn<LifeLinksWorkspaceApi["listRoutines"]>(async () => ({ routines: [], nextCursor: null, truncated: false })),
     listRoutineSchedules: vi.fn<LifeLinksWorkspaceApi["listRoutineSchedules"]>(async () => ({ schedules: [], nextCursor: null, truncated: false })),

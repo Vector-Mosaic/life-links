@@ -3,6 +3,8 @@ import type {
   AttachmentImageReadOptions,
   AttachmentImageResult,
   ActivityRecord,
+  CalendarEventTombstoneRecord,
+  CalendarRecord,
   CanonicalRoutineCreation,
   LifeLinkMediaRecord,
   ChangeHistory,
@@ -27,7 +29,8 @@ import type {
   UpdateLifeLinkPatch
 } from "@life-links/core";
 
-import type { ApiAgentConnection, ApiUser } from "../api";
+import type { ApiAgentConnection, ApiUser, CalendarClock, CalendarEventDetail } from "../api";
+import type { AgentCalendarDeletionPreview } from "../agent/calendarToolHandlers";
 
 export type WorkspaceView = "home" | "factory" | "scan" | "workspace" | "search";
 export type InventoryFilter = "all" | "claimed" | "unclaimed";
@@ -150,6 +153,10 @@ export type RoutineWorkspaceState = {
   schedulesNextCursor: string | null;
   occurrences: RoutineOccurrenceRecord[];
   occurrencesNextCursor: string | null;
+  calendarOccurrences: RoutineOccurrenceRecord[];
+  calendarRange: { startDate: string; endDate: string } | null;
+  calendarLoading: boolean;
+  calendarError: string;
   activeRun: RoutineRunRecord | null;
   sessions: RoutineSessionProjection[];
   sessionsNextCursor: string | null;
@@ -159,11 +166,28 @@ export type RoutineWorkspaceState = {
   error: string;
 };
 
+export type CalendarWorkspaceState = {
+  clock: CalendarClock | null;
+  calendars: CalendarRecord[];
+  calendarsNextCursor: string | null;
+  calendarsComplete: boolean;
+  events: CalendarEventDetail[];
+  eventsNextCursor: string | null;
+  eventsComplete: boolean;
+  range: { startDate: string; endDate: string } | null;
+  selectedEvent: CalendarEventDetail | null;
+  latestTombstone: CalendarEventTombstoneRecord | null;
+  loading: boolean;
+  error: string;
+};
+
 export type LifeLinksWorkspaceSnapshot = {
   changeHistory: ChangeHistory;
   agentChangeConfirmation: LifeLinkChangePreview | null;
+  agentCalendarDeletionConfirmation: AgentCalendarDeletionPreview | null;
   routineWorkspace: RoutineWorkspaceState;
-  workspaceMode: "hierarchies" | "collections" | "routines";
+  calendarWorkspace: CalendarWorkspaceState;
+  workspaceMode: "hierarchies" | "collections" | "routines" | "calendar";
   hierarchyParentId: string | null;
   hierarchyParentDetail: LifeLinkDetail | null;
   detailsOpen: boolean;

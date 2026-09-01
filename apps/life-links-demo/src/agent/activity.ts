@@ -20,7 +20,10 @@ export type AgentActivityVisibleEffect =
   | "life_link_content_updated"
   | "find_mode_started"
   | "life_link_created" | "life_link_moved" | "life_link_qr_updated"
-  | "collections_opened" | "collection_opened" | "collection_updated";
+  | "collections_opened" | "collection_opened" | "collection_updated"
+  | "calendars_opened" | "calendar_events_shown" | "calendar_event_opened"
+  | "calendar_event_created" | "calendar_event_updated"
+  | "calendar_deletion_previewed" | "calendar_event_deleted";
 
 export type AgentActivityOutcome = "succeeded" | "failed" | "cancelled";
 
@@ -31,13 +34,17 @@ export type AgentActivityEntry = {
   outcome: AgentActivityOutcome;
   affectedLifeLinkIds: string[];
   affectedCollectionIds: string[];
+  affectedCalendarIds: string[];
+  affectedCalendarEventIds: string[];
   visibleEffect: AgentActivityVisibleEffect | null;
   errorCode: string | null;
 };
 
-export type AgentActivityInput = Omit<AgentActivityEntry, "id" | "occurredAt" | "affectedLifeLinkIds" | "affectedCollectionIds"> & {
+export type AgentActivityInput = Omit<AgentActivityEntry, "id" | "occurredAt" | "affectedLifeLinkIds" | "affectedCollectionIds" | "affectedCalendarIds" | "affectedCalendarEventIds"> & {
   affectedLifeLinkIds?: readonly string[];
   affectedCollectionIds?: readonly string[];
+  affectedCalendarIds?: readonly string[];
+  affectedCalendarEventIds?: readonly string[];
 };
 
 const MAX_ACTIVITY_IDS = 10;
@@ -57,6 +64,8 @@ export function createAgentActivityEntry(
       .slice(0, MAX_ACTIVITY_IDS)
       .map((value) => value.slice(0, MAX_ACTIVITY_ID_LENGTH)),
     affectedCollectionIds: Array.from(new Set(input.affectedCollectionIds ?? [])).filter((value) => typeof value === "string" && value.length > 0).slice(0, MAX_ACTIVITY_IDS).map((value) => value.slice(0, MAX_ACTIVITY_ID_LENGTH)),
+    affectedCalendarIds: boundedIds(input.affectedCalendarIds),
+    affectedCalendarEventIds: boundedIds(input.affectedCalendarEventIds),
     visibleEffect: input.visibleEffect,
     errorCode: input.errorCode ? input.errorCode.slice(0, 80) : null
   };
@@ -87,7 +96,11 @@ export function agentActivityLabel(entry: AgentActivityEntry) {
     attachment_image_bytes_ready: "Prepared attachment image bytes for the agent",
     life_link_change_previewed: "Prepared an exact move or deletion preview", life_link_change_applied: "Applied a confirmed Life Link change",
     life_link_created: "Created a Life Link", life_link_moved: "Moved a Life Link", life_link_qr_updated: "Updated QR or public view",
-    collections_opened: "Opened My Collections", collection_opened: "Opened a Collection", collection_updated: "Updated a Collection"
+    collections_opened: "Opened My Collections", collection_opened: "Opened a Collection", collection_updated: "Updated a Collection",
+    calendars_opened: "Opened authorized Calendars", calendar_events_shown: "Showed a bounded Calendar event window",
+    calendar_event_opened: "Opened a Calendar event", calendar_event_created: "Created a Calendar event",
+    calendar_event_updated: "Updated a Calendar event", calendar_deletion_previewed: "Prepared an exact Calendar deletion preview",
+    calendar_event_deleted: "Applied an app-confirmed Calendar event deletion"
   };
   if (entry.visibleEffect && labels[entry.visibleEffect]) return labels[entry.visibleEffect]!;
   return "Started Find Mode for a Life Link";
@@ -140,6 +153,8 @@ function activityFromResult(tool: LifeLinksAgentToolName, result: WebMcpJsonValu
     outcome: "succeeded",
     affectedLifeLinkIds: affectedIds(tool, record),
     affectedCollectionIds: typeof record.collectionId === "string" ? [record.collectionId] : objectRecord(record.collection)?.id ? [String(objectRecord(record.collection)!.id)] : Array.isArray(record.collections) ? record.collections.map((item) => objectRecord(item)?.id).filter((id): id is string => typeof id === "string") : [],
+    affectedCalendarIds: calendarIds(record),
+    affectedCalendarEventIds: calendarEventIds(record),
     visibleEffect: tool === "read_life_link_attachment" && record.status === "bytes_ready" ? "attachment_image_bytes_ready" :
       tool === "read_life_link_attachment" && record.status === "described" ? "attachment_image_described" : visibleEffectForTool(tool),
     errorCode: null
@@ -182,6 +197,13 @@ function visibleEffectForTool(tool: LifeLinksAgentToolName): AgentActivityVisibl
     case "list_my_collections": return "collections_opened";
     case "inspect_collection": return "collection_opened";
     case "maintain_collection": return "collection_updated";
+    case "list_my_calendars": return "calendars_opened";
+    case "query_my_calendar_events": return "calendar_events_shown";
+    case "inspect_calendar_event": return "calendar_event_opened";
+    case "create_calendar_event": return "calendar_event_created";
+    case "update_calendar_event": return "calendar_event_updated";
+    case "prepare_calendar_event_deletion": return "calendar_deletion_previewed";
+    case "apply_calendar_event_deletion": return "calendar_event_deleted";
   }
 }
 
@@ -218,7 +240,44 @@ function toolLabel(tool: LifeLinksAgentToolName) {
     case "list_my_collections": return "List Collections";
     case "inspect_collection": return "Inspect Collection";
     case "maintain_collection": return "Maintain Collection";
+    case "list_my_calendars": return "List Calendars";
+    case "query_my_calendar_events": return "Query Calendar";
+    case "inspect_calendar_event": return "Inspect Calendar event";
+    case "create_calendar_event": return "Create Calendar event";
+    case "update_calendar_event": return "Update Calendar event";
+    case "prepare_calendar_event_deletion": return "Preview Calendar deletion";
+    case "apply_calendar_event_deletion": return "Delete Calendar event";
   }
+}
+
+function boundedIds(values: readonly string[] | undefined): string[] {
+  return Array.from(new Set(values ?? []))
+    .filter((value) => typeof value === "string" && value.length > 0)
+    .slice(0, MAX_ACTIVITY_IDS)
+    .map((value) => value.slice(0, MAX_ACTIVITY_ID_LENGTH));
+}
+
+function calendarIds(result: Record<string, unknown>): string[] {
+  const calendar = objectRecord(result.calendar);
+  const event = objectRecord(result.event);
+  const direct = typeof result.calendarId === "string" ? [result.calendarId] : [];
+  const one = typeof calendar?.id === "string" ? [calendar.id] : typeof event?.calendarId === "string" ? [event.calendarId] : [];
+  const many = Array.isArray(result.calendars)
+    ? result.calendars.map((item) => objectRecord(item)?.id).filter((id): id is string => typeof id === "string")
+    : Array.isArray(result.instances)
+      ? result.instances.map((item) => objectRecord(item)?.calendarId).filter((id): id is string => typeof id === "string")
+      : [];
+  return [...direct, ...one, ...many];
+}
+
+function calendarEventIds(result: Record<string, unknown>): string[] {
+  const event = objectRecord(result.event);
+  const direct = typeof result.eventId === "string" ? [result.eventId] : [];
+  const one = typeof event?.id === "string" ? [event.id] : [];
+  const many = Array.isArray(result.instances)
+    ? result.instances.map((item) => objectRecord(item)?.eventId).filter((id): id is string => typeof id === "string")
+    : [];
+  return [...direct, ...one, ...many];
 }
 
 function createActivityId() {

@@ -6,19 +6,31 @@ import {
   createLifeLinksAgentToolCatalog,
   type LifeLinksAgentToolController
 } from "../src/agent/toolHandlers";
-import { validateLifeLinksPageToolCatalog } from "../src/agent/browserWebMcpHost";
+import {
+  LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
+  LIFE_LINKS_LEGACY_TOOL_CATALOG_ID
+} from "../src/agent/calendarToolHandlers";
+import {
+  LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES,
+  LIFE_LINKS_PAGE_TOOL_NAMES,
+  validateLifeLinksPageToolCatalog
+} from "../src/agent/browserWebMcpHost";
 import type { WebMcpToolDefinition } from "../src/webmcpCompatibility";
 
 const SNAPSHOT_FILENAME =
-  "life-links-page-webmcp-v1.authenticated-owner-page.full.json";
-const SNAPSHOT_SCHEMA_VERSION = "life-links-page-webmcp-contract-snapshot.v1";
-const NORMALIZATION_PROFILE = "life-links-page-webmcp-catalog-v1";
+  "life-links-calendar-v2.authenticated-owner-page.full.json";
+const SNAPSHOT_SCHEMA_VERSION = "life-links-page-webmcp-contract-snapshot.v2";
+const NORMALIZATION_PROFILE = "life-links-page-webmcp-catalog-v2";
 const GENERATOR_SOURCE =
   "systems/life_links/apps/life-links-demo/tools/webmcp-contract-snapshot.ts";
 const CATALOG_SOURCE =
   "systems/life_links/apps/life-links-demo/src/agent/toolHandlers.ts";
+const CALENDAR_CATALOG_SOURCE =
+  "systems/life_links/apps/life-links-demo/src/agent/calendarToolHandlers.ts";
 const REGISTRATION_SOURCE =
   "systems/life_links/apps/life-links-demo/src/agent/browserWebMcpHost.ts";
+const ACTIVATION_SOURCE =
+  "systems/life_links/apps/life-links-demo/src/agent/usePageToolRegistration.ts";
 const COMPATIBILITY_SOURCE =
   "systems/life_links/apps/life-links-demo/src/webmcpCompatibility.ts";
 
@@ -33,7 +45,9 @@ const contractDirectory = path.resolve(appRoot, "..", "..", "contracts", "mcp");
 
 const DIGEST_SOURCE_PATHS = [
   CATALOG_SOURCE,
+  CALENDAR_CATALOG_SOURCE,
   REGISTRATION_SOURCE,
+  ACTIVATION_SOURCE,
   COMPATIBILITY_SOURCE,
   GENERATOR_SOURCE
 ] as const;
@@ -122,13 +136,13 @@ export async function buildWebMcpContractSnapshot(): Promise<
   return {
     schema_version: SNAPSHOT_SCHEMA_VERSION,
     artifact_id:
-      "artifact.life_links.page_webmcp.snapshot.authenticated_owner_full",
+      "artifact.life_links.page_webmcp.snapshot.authenticated_owner_calendar_v2",
     artifact_role: "derived_evidence",
     contract_authority_artifact_id:
-      "artifact.life_links.page_webmcp.registration_authority",
+      "artifact.life_links.page_webmcp.registration_authority.calendar_v2",
     interface_id: "if.life_links.page_webmcp",
-    contract_line_id: "life-links-page-webmcp-v1",
-    contract_version: "1",
+    contract_line_id: LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
+    contract_version: "2",
     stability_state: "experimental",
     protocol: {
       family: "WebMCP",
@@ -138,7 +152,22 @@ export async function buildWebMcpContractSnapshot(): Promise<
     configuration: {
       partition_id: "partition.life_links.authenticated_owner_page_webmcp",
       catalog_profile_id:
-        "catalog.life_links.authenticated_owner_page_webmcp.full",
+        "catalog.life_links.authenticated_owner_page_webmcp.calendar_v2",
+      required_persisted_grant_id: LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
+      legacy_grant_id: LIFE_LINKS_LEGACY_TOOL_CATALOG_ID,
+      legacy_grant_inherits_calendar_access: false,
+      grant_profiles: [
+        {
+          id: LIFE_LINKS_LEGACY_TOOL_CATALOG_ID,
+          tool_count: LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES.length,
+          calendar_access: false
+        },
+        {
+          id: LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
+          tool_count: LIFE_LINKS_PAGE_TOOL_NAMES.length,
+          calendar_access: true
+        }
+      ],
       exposure: "page_bound",
       registration_host: "document.modelContext",
       page_scope: "eligible_authenticated_owner_workspace",
@@ -150,7 +179,9 @@ export async function buildWebMcpContractSnapshot(): Promise<
     derivation: {
       generator: GENERATOR_SOURCE,
       catalog_source: CATALOG_SOURCE,
+      calendar_catalog_source: CALENDAR_CATALOG_SOURCE,
       registration_source: REGISTRATION_SOURCE,
+      activation_source: ACTIVATION_SOURCE,
       compatibility_source: COMPATIBILITY_SOURCE,
       normalization_profile: NORMALIZATION_PROFILE,
       source_sha256: await sourceDigest(tools),

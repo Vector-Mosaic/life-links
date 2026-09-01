@@ -6,6 +6,12 @@ import type {
   ActivityPatch,
   ActivityRecord,
   AppendRoutineSessionAmendmentCommand,
+  CalendarEventEditTargetInput,
+  CalendarEventRecord,
+  CalendarEventRevisionRecord,
+  CalendarEventTombstoneRecord,
+  CalendarPatch,
+  CalendarRecord,
   ChangeHistory,
   CanonicalRoutineCreation,
   LifeLinkChangePreview,
@@ -15,6 +21,8 @@ import type {
   CollectionRecord,
   CollectionSectionMutationResult,
   CollectionSectionRecord,
+  CreateCalendarCommand,
+  CreateCalendarEventCommand,
   CreateCollectionCommand,
   CreateRoutineContextBindingInput,
   CreateRoutineStepInput,
@@ -41,6 +49,9 @@ import type {
   RoutineSessionAmendmentRecord,
   RoutineSessionProjection,
   RoutineValue,
+  ReviseCalendarEventCommand,
+  RestoreCalendarEventCommand,
+  SoftDeleteCalendarEventCommand,
   UpdateLifeLinkPatch,
   UserRecord
 } from "@life-links/core";
@@ -86,7 +97,10 @@ export type ApiUser = Pick<UserRecord, "id" | "email" | "displayName" | "created
 export type ApiAgentConnection = {
   connected: boolean;
   connectedAt: string | null;
+  toolCatalogId: ApiAgentToolCatalogId | null;
 };
+
+export type ApiAgentToolCatalogId = "life-links-page-webmcp-v1" | "life-links-calendar-v2";
 
 export type ApiSession = {
   user: ApiUser | null;
@@ -95,6 +109,12 @@ export type ApiSession = {
 };
 
 export type AuthenticatedApiSession = Omit<ApiSession, "user"> & { user: ApiUser };
+
+export type CalendarClock = {
+  serverTime: string;
+  timeZone: string;
+  today: string;
+};
 
 async function apiFetch<T>(path: string, init: RequestInit = {}, maxResponseBytes?: number): Promise<T> {
   const bodyIsFormData = init.body instanceof FormData;
@@ -234,9 +254,10 @@ export async function logout() {
   return apiFetch<void>("/api/auth/logout", { method: "POST" });
 }
 
-export async function connectAgent() {
+export async function connectAgent(toolCatalogId: ApiAgentToolCatalogId = "life-links-page-webmcp-v1") {
   return apiFetch<{ agentConnection: ApiAgentConnection }>("/api/agent-connection", {
-    method: "PUT"
+    method: "PUT",
+    body: JSON.stringify({ toolCatalogId })
   });
 }
 
@@ -244,6 +265,11 @@ export async function disconnectAgent() {
   return apiFetch<{ agentConnection: ApiAgentConnection }>("/api/agent-connection", {
     method: "DELETE"
   });
+}
+
+export function getCalendarClock(timeZone: string, signal?: AbortSignal): Promise<CalendarClock> {
+  const query = new URLSearchParams({ timeZone });
+  return apiFetch(`/api/calendar-clock?${query}`, { signal });
 }
 
 export type LifeLinkPageResponse = {
@@ -325,7 +351,41 @@ export type ActivityPageResponse = { activities: ActivityRecord[]; nextCursor: s
 export type RoutinePageResponse = { routines: RoutineSummaryRecord[]; nextCursor: string | null; truncated: boolean };
 export type RoutineSchedulePageResponse = { schedules: RoutineScheduleRecord[]; nextCursor: string | null; truncated: boolean };
 export type RoutineOccurrencePageResponse = { occurrences: RoutineOccurrenceRecord[]; nextCursor: string | null; truncated: boolean };
+export type RoutineOccurrenceMaterializationResponse = {
+  startDate: string;
+  endDate: string;
+  routineCount: number;
+  occurrenceCount: number;
+};
 export type RoutineSessionPageResponse = { sessions: RoutineSessionProjection[]; nextCursor: string | null; truncated: boolean };
+export type CalendarPageResponse = { calendars: CalendarRecord[]; nextCursor: string | null; truncated: boolean };
+export type CalendarEventDetail = { event: CalendarEventRecord; currentRevision: CalendarEventRevisionRecord };
+export type CalendarEventPageResponse = {
+  calendarEvents: CalendarEventDetail[];
+  nextCursor: string | null;
+  truncated: boolean;
+};
+export type CalendarEventDetailResponse = {
+  calendarEvent: CalendarEventDetail;
+  latestTombstone: CalendarEventTombstoneRecord | null;
+};
+export type CalendarCreateInput = Omit<CreateCalendarCommand, "id" | "ownerId" | "createdAt"> & { id?: string };
+export type CalendarEventCreateInput = Omit<
+  CreateCalendarEventCommand,
+  "id" | "revisionId" | "ownerId" | "createdAt"
+> & { id?: string; revisionId?: string };
+export type CalendarEventRevisionInput = Omit<
+  ReviseCalendarEventCommand,
+  "revisionId" | "ownerId" | "eventId" | "createdAt"
+> & { revisionId?: string; target: CalendarEventEditTargetInput };
+export type CalendarEventDeleteInput = Pick<SoftDeleteCalendarEventCommand, "expectedCurrentRevisionId"> & {
+  tombstoneId?: string;
+  target: CalendarEventEditTargetInput;
+};
+export type CalendarEventRestoreInput = Pick<
+  RestoreCalendarEventCommand,
+  "expectedCurrentRevisionId" | "tombstoneId"
+>;
 
 export function listRoutineGroups(options: RoutinePageOptions = {}) {
   return apiFetch<RoutineGroupPageResponse>(`/api/routine-groups${pageSuffix(options)}`, { signal: options.signal });
@@ -438,6 +498,14 @@ export function listRoutineOccurrences(options: RoutineOccurrenceListOptions = {
   });
 }
 
+export function materializeRoutineOccurrences(options: { startDate: string; endDate: string; signal?: AbortSignal }) {
+  return apiFetch<RoutineOccurrenceMaterializationResponse>("/api/routine-occurrences/materialize", {
+    method: "POST",
+    body: JSON.stringify({ startDate: options.startDate, endDate: options.endDate }),
+    signal: options.signal
+  });
+}
+
 export function getRoutineOccurrence(occurrenceId: string, signal?: AbortSignal) {
   return apiFetch<{ occurrence: RoutineOccurrenceRecord }>(
     `/api/routine-occurrences/${encodeURIComponent(occurrenceId)}`,
@@ -501,6 +569,97 @@ export function appendRoutineSessionAmendment(sessionId: string, input: RoutineS
     `/api/routine-sessions/${encodeURIComponent(sessionId)}/amendments`,
     { method: "POST", body: JSON.stringify(input), signal }
   );
+}
+
+export type CalendarPageOptions = PageOptions & { includeDeleted?: boolean };
+export type CalendarEventListOptions = PageOptions & {
+  startDate: string;
+  endDate: string;
+  calendarId?: string;
+  includeDeleted?: boolean;
+};
+
+function calendarPageSuffix(options: CalendarPageOptions): string {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set("cursor", options.cursor);
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.includeDeleted !== undefined) query.set("includeDeleted", String(options.includeDeleted));
+  return query.size ? `?${query.toString()}` : "";
+}
+
+export function listCalendars(options: CalendarPageOptions = {}) {
+  const suffix = calendarPageSuffix(options);
+  return apiFetch<CalendarPageResponse>(`/api/calendars${suffix}`, { signal: options.signal });
+}
+
+export function createCalendar(input: CalendarCreateInput, signal?: AbortSignal) {
+  return apiFetch<{ calendar: CalendarRecord }>("/api/calendars", {
+    method: "POST", body: JSON.stringify(input), signal
+  });
+}
+
+export function getCalendar(calendarId: string, signal?: AbortSignal) {
+  return apiFetch<{ calendar: CalendarRecord }>(`/api/calendars/${encodeURIComponent(calendarId)}`, { signal });
+}
+
+export function updateCalendar(
+  calendarId: string,
+  expectedUpdatedAt: string,
+  patch: CalendarPatch,
+  signal?: AbortSignal
+) {
+  return apiFetch<{ calendar: CalendarRecord }>(`/api/calendars/${encodeURIComponent(calendarId)}`, {
+    method: "PATCH", body: JSON.stringify({ ...patch, expectedUpdatedAt }), signal
+  });
+}
+
+export function deleteCalendar(calendarId: string, expectedUpdatedAt: string, signal?: AbortSignal) {
+  return apiFetch<{ calendar: CalendarRecord }>(`/api/calendars/${encodeURIComponent(calendarId)}`, {
+    method: "DELETE", body: JSON.stringify({ expectedUpdatedAt }), signal
+  });
+}
+
+export function restoreCalendar(calendarId: string, expectedUpdatedAt: string, signal?: AbortSignal) {
+  return apiFetch<{ calendar: CalendarRecord }>(`/api/calendars/${encodeURIComponent(calendarId)}/restore`, {
+    method: "POST", body: JSON.stringify({ expectedUpdatedAt }), signal
+  });
+}
+
+export function listCalendarEvents(options: CalendarEventListOptions) {
+  const query = new URLSearchParams({ startDate: options.startDate, endDate: options.endDate });
+  if (options.cursor) query.set("cursor", options.cursor);
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.calendarId) query.set("calendarId", options.calendarId);
+  if (options.includeDeleted !== undefined) query.set("includeDeleted", String(options.includeDeleted));
+  return apiFetch<CalendarEventPageResponse>(`/api/calendar-events?${query.toString()}`, { signal: options.signal });
+}
+
+export function createCalendarEvent(input: CalendarEventCreateInput, signal?: AbortSignal) {
+  return apiFetch<CalendarEventDetailResponse>("/api/calendar-events", {
+    method: "POST", body: JSON.stringify(input), signal
+  });
+}
+
+export function getCalendarEvent(eventId: string, signal?: AbortSignal) {
+  return apiFetch<CalendarEventDetailResponse>(`/api/calendar-events/${encodeURIComponent(eventId)}`, { signal });
+}
+
+export function updateCalendarEvent(eventId: string, input: CalendarEventRevisionInput, signal?: AbortSignal) {
+  return apiFetch<CalendarEventDetailResponse>(`/api/calendar-events/${encodeURIComponent(eventId)}`, {
+    method: "PATCH", body: JSON.stringify(input), signal
+  });
+}
+
+export function deleteCalendarEvent(eventId: string, input: CalendarEventDeleteInput, signal?: AbortSignal) {
+  return apiFetch<CalendarEventDetailResponse>(`/api/calendar-events/${encodeURIComponent(eventId)}`, {
+    method: "DELETE", body: JSON.stringify(input), signal
+  });
+}
+
+export function restoreCalendarEvent(eventId: string, input: CalendarEventRestoreInput, signal?: AbortSignal) {
+  return apiFetch<CalendarEventDetailResponse>(`/api/calendar-events/${encodeURIComponent(eventId)}/restore`, {
+    method: "POST", body: JSON.stringify(input), signal
+  });
 }
 
 export async function listCollections(options: PageOptions = {}) {

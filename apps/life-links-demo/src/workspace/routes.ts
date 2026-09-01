@@ -64,6 +64,20 @@ export function ownerRoutinePath(routineId: string): string {
   return `/routines/${encodeURIComponent(routineId)}`;
 }
 
+export function isCalendarPath(pathname: string): boolean {
+  return /^\/calendar(?:\/[^/]+)?\/?$/i.test(pathname.split("?")[0]);
+}
+
+export function calendarEventIdFromPath(pathname: string): string | null {
+  const match = pathname.split("?")[0].match(/^\/calendar\/([^/]+)\/?$/i);
+  if (!match) return null;
+  try { return decodeURIComponent(match[1]); } catch { return match[1]; }
+}
+
+export function ownerCalendarEventPath(eventId: string): string {
+  return `/calendar/${encodeURIComponent(eventId)}`;
+}
+
 export function classifyLifeLinksRoute(pathname: string, authenticated: boolean): LifeLinksRoute {
   const qrId = qrIdFromPath(pathname);
   if (qrId) {

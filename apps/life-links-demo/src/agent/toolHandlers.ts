@@ -44,6 +44,10 @@ import type {
   AgentMaintainCollectionInput, AgentCollectionListResult
 } from "../workspace/types";
 import { LIFE_LINKS_PAGE_TOOL_NAMES } from "./browserWebMcpHost";
+import {
+  createCalendarAgentToolCatalog,
+  type CalendarAgentToolController
+} from "./calendarToolHandlers";
 import { validateAttachmentImageEnvelope } from "../attachmentImage";
 import { validateAttachmentTranscript } from "../attachmentTranscript";
 
@@ -124,7 +128,7 @@ export type AgentStartFindModeInput = {
   readonly lifeLinkId: string;
 };
 
-export interface LifeLinksAgentToolController {
+export interface LifeLinksAgentToolController extends CalendarAgentToolController {
   agentReadAttachment(input: AgentReadAttachmentInput, signal?: AbortSignal): Promise<AgentReadAttachmentResult>;
   agentPreviewLifeLinkChange(input: PreviewLifeLinkChangeInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult | { ok: true; preview: LifeLinkChangePreview }>;
   agentApplyLifeLinkChange(previewId: string, signal?: AbortSignal): Promise<Exclude<AgentToolControllerActionResult, { ok: true }> | { ok: true; change: LifeLinkChangeResult }>;
@@ -550,7 +554,7 @@ export function createLifeLinksAgentToolCatalog(
       } catch { return failure(context.signal?.aborted ? "cancelled" : "effect_not_applied"); }
     }
   };
-  return [
+  const fieldLedgerCatalog: readonly WebMcpToolDefinition[] = [
     {
       name: LIFE_LINKS_AGENT_TOOL_NAMES[0],
       title: "Inspect current Life Link",
@@ -665,6 +669,7 @@ export function createLifeLinksAgentToolCatalog(
       execute: (input, context = {}) => readAttachment(controller, input, context)
     }
   ];
+  return [...fieldLedgerCatalog, ...createCalendarAgentToolCatalog(controller)];
 }
 
 async function readAttachment(controller: LifeLinksAgentToolController, input: unknown, context: WebMcpExecutionContext): Promise<WebMcpJsonValue> {

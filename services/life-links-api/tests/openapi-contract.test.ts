@@ -20,6 +20,19 @@ const webClientPath = path.resolve(testDirectory, "../../../apps/life-links-demo
 const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/workspace/controller.ts");
 
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
+  "GET /api/calendar-clock",
+  "GET /api/calendars",
+  "POST /api/calendars",
+  "GET /api/calendars/{calendarId}",
+  "PATCH /api/calendars/{calendarId}",
+  "DELETE /api/calendars/{calendarId}",
+  "POST /api/calendars/{calendarId}/restore",
+  "GET /api/calendar-events",
+  "POST /api/calendar-events",
+  "GET /api/calendar-events/{eventId}",
+  "PATCH /api/calendar-events/{eventId}",
+  "DELETE /api/calendar-events/{eventId}",
+  "POST /api/calendar-events/{eventId}/restore",
   "GET /api/routine-groups",
   "POST /api/routine-groups",
   "GET /api/routine-groups/{groupId}",
@@ -39,6 +52,7 @@ const EXPECTED_WEB_CLIENT_OPERATIONS = [
   "POST /api/routines/{routineId}/schedules",
   "PATCH /api/routine-schedules/{scheduleId}",
   "GET /api/routine-occurrences",
+  "POST /api/routine-occurrences/materialize",
   "GET /api/routine-occurrences/{occurrenceId}",
   "POST /api/routines/{routineId}/runs",
   "GET /api/routine-runs/{runId}",
@@ -438,14 +452,14 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(77);
+    expect(published).toHaveLength(91);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
     expect(schemas).not.toHaveProperty("Project");
     expect(objectValue(objectValue(schemas.Link, "Link").properties, "Link properties")).not.toHaveProperty("projectId");
     const operationIds = [...contractOperations(document).values()].map((operation) => operation.operationId);
-    expect(new Set(operationIds).size).toBe(77);
+    expect(new Set(operationIds).size).toBe(91);
     expect(operationIds.every((operationId) => typeof operationId === "string" && operationId.length > 0)).toBe(true);
   });
 
@@ -553,6 +567,19 @@ describe("Life Links OpenAPI v1", () => {
     expect(document.security).toEqual([{ CookieSession: [] }, { BearerSession: [] }]);
 
     const protectedOperationIds = [
+      "getCalendarClock",
+      "listCalendars",
+      "createCalendar",
+      "getCalendar",
+      "updateCalendar",
+      "deleteCalendar",
+      "restoreCalendar",
+      "listCalendarEvents",
+      "createCalendarEvent",
+      "getCalendarEvent",
+      "updateCalendarEvent",
+      "deleteCalendarEvent",
+      "restoreCalendarEvent",
       "listRoutineGroups",
       "createRoutineGroup",
       "getRoutineGroup",
@@ -661,11 +688,26 @@ describe("Life Links OpenAPI v1", () => {
     const operations = contractOperations(document);
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
     const connection = objectValue(schemas.AgentConnection, "AgentConnection");
-    expect(connection.required).toEqual(["connected", "connectedAt"]);
+    expect(connection.required).toEqual(["connected", "connectedAt", "toolCatalogId"]);
     expect(objectValue(connection.properties, "AgentConnection properties")).toMatchObject({
       connected: { type: "boolean" },
       connectedAt: {
         oneOf: [{ type: "string", format: "date-time" }, { type: "null" }]
+      },
+      toolCatalogId: {
+        oneOf: [
+          { type: "string", enum: ["life-links-page-webmcp-v1", "life-links-calendar-v2"] },
+          { type: "null" }
+        ]
+      }
+    });
+
+    const connectionRequest = objectValue(schemas.AgentConnectionRequest, "AgentConnectionRequest");
+    expect(connectionRequest).toMatchObject({ type: "object", additionalProperties: false });
+    expect(objectValue(connectionRequest.properties, "AgentConnectionRequest properties")).toMatchObject({
+      toolCatalogId: {
+        type: "string",
+        enum: ["life-links-page-webmcp-v1", "life-links-calendar-v2"]
       }
     });
 
@@ -683,6 +725,8 @@ describe("Life Links OpenAPI v1", () => {
         "403": { $ref: "#/components/responses/Forbidden" }
       });
     }
+    expect(objectValue(operations.get("PUT /api/agent-connection")?.responses, "PUT agent connection responses"))
+      .toMatchObject({ "400": { $ref: "#/components/responses/BadRequest" } });
 
     const login = objectValue(schemas.LoginResponse, "LoginResponse");
     const me = objectValue(schemas.MeResponse, "MeResponse");
@@ -701,7 +745,7 @@ describe("Life Links OpenAPI v1", () => {
     const responses = objectValue(components.responses, "responses");
     const routineOperations = EXPECTED_WEB_CLIENT_OPERATIONS.filter((key) => key.includes("/routine"));
 
-    expect(routineOperations).toHaveLength(27);
+    expect(routineOperations).toHaveLength(28);
     for (const key of routineOperations) {
       const operation = operations.get(key);
       expect(operation, key).toBeTruthy();
@@ -793,6 +837,84 @@ describe("Life Links OpenAPI v1", () => {
       "actualValues",
       "proposedNextValues"
     ]);
+  });
+
+  it("publishes owner-only Calendars with an authoritative clock, bounded windows and fail-closed recurrence mutation scopes", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    const components = objectValue(document.components, "components");
+    const schemas = objectValue(components.schemas, "schemas");
+    const parameters = objectValue(components.parameters, "parameters");
+    const responses = objectValue(components.responses, "responses");
+    const calendarOperations = EXPECTED_WEB_CLIENT_OPERATIONS.filter((key) =>
+      key.includes("/calendar")
+    );
+
+    expect(calendarOperations).toHaveLength(13);
+    for (const key of calendarOperations) {
+      const operation = operations.get(key);
+      expect(operation, key).toBeTruthy();
+      expect(operation?.security, `${key} must inherit owner session security`).toBeUndefined();
+      expect(objectValue(operation?.responses, `${key} responses`)).toHaveProperty("401");
+    }
+
+    const eventList = operationById(operations, "listCalendarEvents");
+    expect(String(eventList.description)).toContain("at most 366 days");
+    expect(String(eventList.description)).toContain("does not expand recurrence instances");
+    expect(eventList.parameters).toEqual(expect.arrayContaining([
+      { $ref: "#/components/parameters/CalendarStartDate" },
+      { $ref: "#/components/parameters/CalendarEndDate" }
+    ]));
+    expect(objectValue(parameters.CalendarStartDate, "CalendarStartDate").required).toBe(true);
+    expect(objectValue(parameters.CalendarEndDate, "CalendarEndDate").required).toBe(true);
+
+    const clock = operationById(operations, "getCalendarClock");
+    expect(String(clock.description)).toContain("server clock");
+    expect(objectValue(schemas.CalendarClock, "CalendarClock").required).toEqual([
+      "serverTime", "timeZone", "today"
+    ]);
+
+    expect(objectValue(schemas.CalendarErrorCode, "CalendarErrorCode").enum).toEqual([
+      "invalid_calendar",
+      "calendar_not_found",
+      "invalid_calendar_event",
+      "calendar_event_not_found",
+      "stale_calendar",
+      "stale_calendar_event",
+      "calendar_conflict",
+      "calendar_reference_conflict"
+    ]);
+    const subjectLinks = objectValue(schemas.CalendarSubjectLink, "CalendarSubjectLink").oneOf as JsonObject[];
+    expect(subjectLinks.map((variant) =>
+      objectValue(objectValue(variant.properties, "subject-link properties").kind, "subject-link kind").const
+    )).toEqual([
+      "life_link",
+      "collection",
+      "routine",
+      "routine_schedule",
+      "routine_occurrence",
+      "routine_session"
+    ]);
+    const editTargets = objectValue(schemas.CalendarEventEditTarget, "CalendarEventEditTarget").oneOf as JsonObject[];
+    expect(editTargets.map((variant) =>
+      objectValue(objectValue(variant.properties, "edit-target properties").scope, "edit-target scope").const
+    )).toEqual(["event", "series"]);
+    for (const name of [
+      "CalendarCreateRequest",
+      "CalendarPatchRequest",
+      "CalendarRevisionRequest",
+      "CalendarEventCreateRequest",
+      "CalendarEventRevisionRequest",
+      "CalendarEventDeleteRequest",
+      "CalendarEventRestoreRequest"
+    ]) {
+      expect(objectValue(schemas[name], name).additionalProperties, `${name} must reject unknown input`).toBe(false);
+    }
+    for (const responseName of ["CalendarBadRequest", "CalendarNotFound", "CalendarConflict"]) {
+      expect(objectValue(responses[responseName], responseName)).toMatchObject({
+        content: { "application/json": { schema: { $ref: "#/components/schemas/CalendarErrorResponse" } } }
+      });
+    }
   });
 
   it("pins the bounded canonical hierarchy contract and keeps public QR schemas compatibility-only", () => {

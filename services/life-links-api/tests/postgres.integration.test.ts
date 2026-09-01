@@ -39,6 +39,7 @@ import { ClaimIdempotencyConflictError } from "../src/store.js";
 import { fieldLedgerStoreContract } from "./field-ledger-contract.js";
 import { changeHistoryStoreContract } from "./change-history-contract.js";
 import { routineStoreContract } from "./routine-store-contract.js";
+import { calendarStoreContract } from "./calendar-store-contract.js";
 
 const databaseUrl = process.env.LIFE_LINKS_TEST_DATABASE_URL;
 const allowSchemaMutation = process.env.LIFE_LINKS_ALLOW_TEST_DB_SCHEMA === "1";
@@ -77,6 +78,7 @@ describe("Life Links Postgres integration", () => {
 
   fieldLedgerStoreContract(() => store);
   routineStoreContract(() => store);
+  calendarStoreContract(() => store);
 
   describe("isolated saved-change parity", () => {
     let parityStore: PostgresLifeLinksStore;
@@ -209,7 +211,7 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(10);
+    expect(migrations.rows[0].count).toBe(11);
     const agentConnectionColumn = await adminPool.query(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -435,7 +437,21 @@ describe("Life Links Postgres integration", () => {
       routineRuns: 0,
       routineSessions: 0,
       routineSessionStepResults: 0,
-      routineSessionAmendments: 0
+      routineSessionAmendments: 0,
+      calendars: 0,
+      calendarEvents: 0,
+      calendarEventRevisions: 0,
+      calendarEventSubjectLinks: 0,
+      calendarEventTombstones: 0,
+      calendarProviderConnections: 0,
+      calendarProviderBindings: 0,
+      calendarProviderSyncStates: 0,
+      calendarProviderEventProjections: 0,
+      calendarProviderEventProjectionRevisions: 0,
+      calendarProviderEventTombstones: 0,
+      calendarProviderEventTombstoneHistory: 0,
+      calendarProviderOutbox: 0,
+      calendarProviderWebhookHints: 0
     });
     expect(await store.getUserById(COMPETITION_OWNER_ID)).toBeNull();
 
@@ -447,7 +463,16 @@ describe("Life Links Postgres integration", () => {
     await store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
       ownerId: COMPETITION_OWNER_ID, title: "Reset probe", createdAt: "2026-09-01T00:00:00.000Z",
       steps: [{ id: `routine-step-${randomUUID()}`, activityId: resetActivity.id, activityTitle: resetActivity.title, position: 0 }] });
-    expect((await store.resetCompetitionFixture(options)).before).toMatchObject({ routines: 1, routineActivities: 1, routineRevisions: 1, routineSteps: 1 });
+    const resetCalendar = await store.createCalendar({ id: `calendar-${randomUUID()}`, ownerId: COMPETITION_OWNER_ID,
+      title: "Reset probe", timeZone: "America/New_York", createdAt: "2026-09-01T00:00:00.000Z" });
+    await store.createCalendarEvent({ id: `calendar-event-${randomUUID()}`, revisionId: `calendar-event-revision-${randomUUID()}`,
+      ownerId: COMPETITION_OWNER_ID, calendarId: resetCalendar.id, title: "Reset probe",
+      span: { kind: "all_day", startDate: "2026-08-31", endDateExclusive: "2026-09-01" },
+      createdAt: "2026-09-01T00:00:00.000Z" });
+    expect((await store.resetCompetitionFixture(options)).before).toMatchObject({
+      routines: 1, routineActivities: 1, routineRevisions: 1, routineSteps: 1,
+      calendars: 1, calendarEvents: 1, calendarEventRevisions: 1
+    });
     expect((await store.resetCompetitionFixture({ ...options, mode: "apply" })).after).toEqual(firstApply.expected);
     expect((await store.resetCompetitionFixture(options)).shapeMatchesExpected).toBe(true);
     expect((await store.resetCompetitionFixture({ ...options, password: "wrong-password" })).shapeMatchesExpected).toBe(false);
@@ -838,7 +863,7 @@ describe("Life Links Postgres integration", () => {
       password: DEMO_PASSWORD
     });
     expect(login.status).toBe(200);
-    expect(login.body.agentConnection).toEqual({ connected: false, connectedAt: null });
+    expect(login.body.agentConnection).toEqual({ connected: false, connectedAt: null, toolCatalogId: null });
     const connected = await agent.put("/api/agent-connection");
     expect(connected.body.agentConnection).toMatchObject({ connected: true, connectedAt: expect.any(String) });
     const durableConnectedAt = connected.body.agentConnection.connectedAt;
@@ -847,10 +872,15 @@ describe("Life Links Postgres integration", () => {
       email: "owner@life-links.test",
       password: DEMO_PASSWORD
     });
-    expect(relogin.body.agentConnection).toEqual({ connected: true, connectedAt: durableConnectedAt });
+    expect(relogin.body.agentConnection).toEqual({
+      connected: true,
+      connectedAt: durableConnectedAt,
+      toolCatalogId: "life-links-page-webmcp-v1"
+    });
     expect((await agent.delete("/api/agent-connection")).body.agentConnection).toEqual({
       connected: false,
-      connectedAt: null
+      connectedAt: null,
+      toolCatalogId: null
     });
 
     const links = await agent.get("/api/links");
@@ -1092,7 +1122,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(10);
+      expect(receiptCount.rows[0].count).toBe(11);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1119,7 +1149,8 @@ describe("Life Links Postgres integration", () => {
         "007_remove_project_compat.sql",
         "008_saved_change_history.sql",
         "009_document_attachments.sql",
-        "010_general_routines.sql"
+        "010_general_routines.sql",
+        "011_calendar.sql"
       ]);
     } finally {
       await concurrent.store.close();

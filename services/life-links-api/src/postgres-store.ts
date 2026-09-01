@@ -73,6 +73,24 @@ import {
   type UpdateRoutineCommand,
   type UpdateRoutineGroupCommand,
   type UpdateRoutineScheduleCommand,
+  type CalendarRecord,
+  type CalendarEventLineage,
+  type CalendarOriginalOccurrence,
+  type CalendarEventRecord,
+  type CalendarEventRevisionRecord,
+  type CalendarEventTombstoneRecord,
+  type CalendarSubjectLink,
+  type CreateCalendarCommand,
+  type UpdateCalendarCommand,
+  type SoftDeleteCalendarCommand,
+  type RestoreCalendarCommand,
+  type CanonicalCalendarEventCreation,
+  type CreateCalendarEventCommand,
+  type ReviseCalendarEventCommand,
+  type SoftDeleteCalendarEventCommand,
+  type RestoreCalendarEventCommand,
+  type CalendarEventDeletion,
+  CalendarDomainError,
   resolveLifeLinkChangeScope,
   lifeLinkChangePreviewItem,
   stableChangeFingerprint,
@@ -109,6 +127,16 @@ import {
   listRoutineScheduleLocalDates,
   projectRoutineSessionWithAmendments,
   reviseCanonicalRoutine,
+  createCanonicalCalendar,
+  normalizeCalendarSource,
+  applyCalendarPatch,
+  softDeleteCalendar,
+  restoreCalendar,
+  createCanonicalCalendarEvent,
+  reviseCanonicalCalendarEvent,
+  softDeleteCalendarEvent,
+  restoreCalendarEvent,
+  calendarRecurrenceIncludesOriginalOccurrence,
   createCompetitionFixtureData,
   createDemoSeedData,
   createLinkBodyDocFromPlainText,
@@ -154,6 +182,15 @@ import {
   type LifeLinkMediaFile,
   type LifeLinksStore,
   type MaterializeRoutineOccurrencesInput,
+  type CalendarPageRequest,
+  type CalendarEventPageRequest,
+  type CalendarEventDetail,
+  sameCalendarPayload,
+  sameCalendarCreatePayload,
+  calendarConflict,
+  compareCalendarEventDetails,
+  assertCalendarEventDateWindow,
+  calendarEventInDateWindow,
   type RoutineDetail,
   type RoutineOccurrencePageRequest,
   type RoutinePageRequest,
@@ -161,6 +198,7 @@ import {
   type LinkMediaInput,
   type SessionRecord,
   type StoredUser,
+  type AgentToolCatalogId,
   expectedCompetitionFixtureCounts,
   sameCompetitionFixtureCounts
 } from "./store.js";
@@ -181,17 +219,27 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     return result.rows[0] ? mapUser(result.rows[0]) : null;
   }
 
-  async connectAgent(userId: string): Promise<StoredUser | null> {
+  async connectAgent(
+    userId: string,
+    toolCatalogId: AgentToolCatalogId = "life-links-page-webmcp-v1"
+  ): Promise<StoredUser | null> {
     const result = await this.pool.query(
-      "UPDATE users SET agent_connected_at = COALESCE(agent_connected_at, now()) WHERE id = $1 RETURNING *",
-      [userId]
+      `UPDATE users
+       SET agent_connected_at = CASE
+         WHEN agent_tool_catalog_id IS DISTINCT FROM $2
+           THEN GREATEST(now(), COALESCE(agent_connected_at + interval '1 millisecond', now()))
+         ELSE COALESCE(agent_connected_at, now())
+       END,
+       agent_tool_catalog_id = $2
+       WHERE id = $1 RETURNING *`,
+      [userId, toolCatalogId]
     );
     return result.rows[0] ? mapUser(result.rows[0]) : null;
   }
 
   async disconnectAgent(userId: string): Promise<StoredUser | null> {
     const result = await this.pool.query(
-      "UPDATE users SET agent_connected_at = NULL WHERE id = $1 RETURNING *",
+      "UPDATE users SET agent_connected_at = NULL, agent_tool_catalog_id = NULL WHERE id = $1 RETURNING *",
       [userId]
     );
     return result.rows[0] ? mapUser(result.rows[0]) : null;
@@ -215,7 +263,9 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
   async getSessionByTokenHash(tokenHash: string): Promise<(SessionRecord & { user: StoredUser }) | null> {
     const result = await this.pool.query(
       `SELECT s.*, u.id AS user_id_value, u.email, u.display_name, u.password_hash,
-              u.agent_connected_at AS user_agent_connected_at, u.created_at AS user_created_at
+              u.agent_connected_at AS user_agent_connected_at,
+              u.agent_tool_catalog_id AS user_agent_tool_catalog_id,
+              u.created_at AS user_created_at
        FROM sessions s
        JOIN users u ON u.id = s.user_id
        WHERE s.token_hash = $1 AND s.expires_at > now()`,
@@ -237,6 +287,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         displayName: String(row.display_name),
         passwordHash: String(row.password_hash),
         agentConnectedAt: nullableIso(row.user_agent_connected_at),
+        agentToolCatalogId: row.user_agent_tool_catalog_id === null ? null : String(row.user_agent_tool_catalog_id) as AgentToolCatalogId,
         createdAt: toIso(row.user_created_at)
       }
     };
@@ -1644,6 +1695,228 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     },null);
   }
 
+  async listCalendars(userId: string, page: CalendarPageRequest = {}): Promise<LifeLinkPage<CalendarRecord>> {
+    const result = await this.pool.query(
+      `SELECT * FROM calendars WHERE owner_id=$1 ${page.includeDeleted ? "" : "AND deleted_at IS NULL"}
+       ORDER BY is_default DESC, lower(title), id`,
+      [userId]
+    );
+    return pageCollectionRecords(result.rows.map(mapCalendar), page);
+  }
+
+  async getCalendar(userId: string, calendarId: string): Promise<CalendarRecord | null> {
+    const result = await this.pool.query("SELECT * FROM calendars WHERE id=$1 AND owner_id=$2", [calendarId, userId]);
+    return result.rows[0] ? mapCalendar(result.rows[0]) : null;
+  }
+
+  async createCalendar(command: CreateCalendarCommand): Promise<CalendarRecord> {
+    const candidate = createCanonicalCalendar(command);
+    return this.withTransaction([`owner:${candidate.ownerId}`, `calendar-id:${candidate.id}`], async (client) => {
+      if (!(await client.query("SELECT 1 FROM users WHERE id=$1", [candidate.ownerId])).rowCount) {
+        throw new CalendarDomainError("calendar_reference_conflict", "Calendar owner was not found.", { reason: "owner_not_found" });
+      }
+      const existing = await client.query("SELECT * FROM calendars WHERE id=$1 FOR UPDATE", [candidate.id]);
+      if (existing.rows[0]) {
+        const row = mapCalendar(existing.rows[0]);
+        if (sameCalendarCreatePayload(row, candidate)) return row;
+        return calendarConflict("Calendar identity is already bound to another request.", "calendar_id_conflict");
+      }
+      if (candidate.isDefault) await clearPostgresDefaultCalendars(client, candidate.ownerId, candidate.id, candidate.createdAt);
+      await insertPostgresCalendar(client, candidate);
+      return candidate;
+    }, null);
+  }
+
+  async updateCalendar(userId: string, command: UpdateCalendarCommand): Promise<CalendarRecord | null> {
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const result = await client.query("SELECT * FROM calendars WHERE id=$1 AND owner_id=$2 FOR UPDATE", [command.calendarId, userId]);
+      if (!result.rows[0]) return null;
+      const current = mapCalendar(result.rows[0]);
+      const candidate = applyCalendarPatch(current, command, nextTimestamp(current.updatedAt));
+      if (sameCalendarPayload({ ...candidate, updatedAt: current.updatedAt }, current)) return current;
+      if (candidate.isDefault) await clearPostgresDefaultCalendars(client, userId, candidate.id, candidate.updatedAt);
+      await updatePostgresCalendar(client, candidate);
+      return candidate;
+    }, null);
+  }
+
+  async softDeleteCalendar(userId: string, command: SoftDeleteCalendarCommand): Promise<CalendarRecord | null> {
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const result = await client.query("SELECT * FROM calendars WHERE id=$1 AND owner_id=$2 FOR UPDATE", [command.calendarId, userId]);
+      if (!result.rows[0]) return null;
+      const current = mapCalendar(result.rows[0]);
+      assertNativeCalendarWriteAuthority(current);
+      if ((await client.query("SELECT 1 FROM calendar_events WHERE owner_id=$1 AND calendar_id=$2 AND deleted_at IS NULL LIMIT 1", [userId, current.id])).rowCount) {
+        return calendarConflict("Calendar with active events cannot be deleted.", "calendar_not_empty");
+      }
+      const candidate = softDeleteCalendar(current, command);
+      await updatePostgresCalendar(client, candidate);
+      return candidate;
+    }, null);
+  }
+
+  async restoreCalendar(userId: string, command: RestoreCalendarCommand): Promise<CalendarRecord | null> {
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const result = await client.query("SELECT * FROM calendars WHERE id=$1 AND owner_id=$2 FOR UPDATE", [command.calendarId, userId]);
+      if (!result.rows[0]) return null;
+      const current = mapCalendar(result.rows[0]);
+      assertNativeCalendarWriteAuthority(current);
+      const candidate = restoreCalendar(current, command);
+      if (candidate.isDefault && (await client.query(
+        "SELECT 1 FROM calendars WHERE owner_id=$1 AND id<>$2 AND is_default AND deleted_at IS NULL LIMIT 1",
+        [userId, candidate.id]
+      )).rowCount) return calendarConflict("Another Calendar is already the default.", "default_calendar_conflict");
+      await updatePostgresCalendar(client, candidate);
+      return candidate;
+    }, null);
+  }
+
+  async listCalendarEvents(userId: string, page: CalendarEventPageRequest = {}): Promise<LifeLinkPage<CalendarEventDetail>> {
+    assertCalendarEventDateWindow(page);
+    if (page.calendarId && !(await this.pool.query("SELECT 1 FROM calendars WHERE id=$1 AND owner_id=$2", [page.calendarId, userId])).rowCount) {
+      return { items: [], truncated: false, nextCursor: null };
+    }
+    const result = await this.pool.query(
+      `SELECT * FROM calendar_events WHERE owner_id=$1 ${page.calendarId ? "AND calendar_id=$2" : ""}
+       ${page.includeDeleted ? "" : "AND deleted_at IS NULL"}`,
+      page.calendarId ? [userId, page.calendarId] : [userId]
+    );
+    const details = await Promise.all(result.rows.map((row) => loadPostgresCalendarEventDetail(this.pool, mapCalendarEvent(row))));
+    const wrapped = details.filter((detail) => calendarEventInDateWindow(detail, page))
+      .sort(compareCalendarEventDetails).map((detail) => ({ id: detail.event.id, detail }));
+    const paged = pageCollectionRecords(wrapped, page);
+    return { ...paged, items: paged.items.map((item) => item.detail) };
+  }
+
+  async getCalendarEvent(userId: string, eventId: string): Promise<CalendarEventDetail | null> {
+    const result = await this.pool.query("SELECT * FROM calendar_events WHERE id=$1 AND owner_id=$2", [eventId, userId]);
+    return result.rows[0] ? loadPostgresCalendarEventDetail(this.pool, mapCalendarEvent(result.rows[0])) : null;
+  }
+
+  async listCalendarEventRevisions(userId: string, eventId: string): Promise<CalendarEventRevisionRecord[] | null> {
+    if (!(await this.pool.query("SELECT 1 FROM calendar_events WHERE id=$1 AND owner_id=$2", [eventId, userId])).rowCount) return null;
+    const result = await this.pool.query(
+      "SELECT * FROM calendar_event_revisions WHERE event_id=$1 AND owner_id=$2 ORDER BY revision_number",
+      [eventId, userId]
+    );
+    return Promise.all(result.rows.map((row) => loadPostgresCalendarEventRevision(this.pool, row)));
+  }
+
+  async createCalendarEvent(command: CreateCalendarEventCommand): Promise<CanonicalCalendarEventCreation> {
+    const candidate = createCanonicalCalendarEvent(command);
+    return this.withTransaction([
+      `owner:${candidate.event.ownerId}`,
+      `calendar-event-id:${candidate.event.id}`,
+      `calendar-event-revision-id:${candidate.currentRevision.id}`
+    ], async (client) => {
+      const existing = await client.query("SELECT * FROM calendar_events WHERE id=$1 FOR UPDATE", [candidate.event.id]);
+      if (existing.rows[0]) {
+        const detail = await loadPostgresCalendarEventDetail(client, mapCalendarEvent(existing.rows[0]));
+        if (sameCalendarCreatePayload(detail, candidate)) return detail;
+        return calendarConflict("Calendar event identity is already bound to another request.", "event_id_conflict");
+      }
+      if ((await client.query("SELECT 1 FROM calendar_event_revisions WHERE id=$1", [candidate.currentRevision.id])).rowCount) {
+        return calendarConflict("Calendar event revision identity is already in use.", "event_revision_id_conflict");
+      }
+      await assertPostgresCalendarEventReferences(client, candidate.event, candidate.currentRevision);
+      await insertPostgresCalendarEvent(client, candidate.event);
+      await insertPostgresCalendarEventRevision(client, candidate.currentRevision);
+      return candidate;
+    }, null);
+  }
+
+  async reviseCalendarEvent(userId: string, command: ReviseCalendarEventCommand): Promise<CalendarEventDetail | null> {
+    return this.withTransaction([`owner:${userId}`, `calendar-event-revision-id:${command.revisionId}`], async (client) => {
+      const eventResult = await client.query("SELECT * FROM calendar_events WHERE id=$1 AND owner_id=$2 FOR UPDATE", [command.eventId, userId]);
+      if (!eventResult.rows[0]) return null;
+      const event = mapCalendarEvent(eventResult.rows[0]);
+      const replayResult = await client.query("SELECT * FROM calendar_event_revisions WHERE id=$1", [command.revisionId]);
+      if (replayResult.rows[0]) {
+        const replay = await loadPostgresCalendarEventRevision(client, replayResult.rows[0]);
+        const previousResult = await client.query(
+          "SELECT * FROM calendar_event_revisions WHERE owner_id=$1 AND event_id=$2 AND revision_number=$3",
+          [userId, event.id, replay.revisionNumber - 1]
+        );
+        if (replay.ownerId === userId && replay.eventId === event.id && event.currentRevisionId === replay.id && previousResult.rows[0]) {
+          const previous = await loadPostgresCalendarEventRevision(client, previousResult.rows[0]);
+          if (command.expectedCurrentRevisionId === previous.id) {
+            const replayCandidate = reviseCanonicalCalendarEvent(
+              { ...event, currentRevisionId: previous.id, updatedAt: previous.createdAt, deletedAt: null }, previous,
+              { ...command, createdAt: replay.createdAt }
+            );
+            if (isDeepStrictEqual(replayCandidate.currentRevision, replay)) return loadPostgresCalendarEventDetail(client, event);
+          }
+        }
+        return calendarConflict("Calendar event revision identity is already in use.", "event_revision_id_conflict");
+      }
+      const currentResult = await client.query("SELECT * FROM calendar_event_revisions WHERE id=$1 AND owner_id=$2", [event.currentRevisionId, userId]);
+      const currentRevision = await loadPostgresCalendarEventRevision(client, currentResult.rows[0]);
+      const candidate = reviseCanonicalCalendarEvent(event, currentRevision, command);
+      await assertPostgresCalendarEventReferences(client, candidate.event, candidate.currentRevision);
+      await insertPostgresCalendarEventRevision(client, candidate.currentRevision);
+      await client.query("UPDATE calendar_events SET current_revision_id=$3,updated_at=$4 WHERE id=$1 AND owner_id=$2", [event.id, userId, candidate.event.currentRevisionId, candidate.event.updatedAt]);
+      return candidate;
+    }, null);
+  }
+
+  async softDeleteCalendarEvent(userId: string, command: SoftDeleteCalendarEventCommand): Promise<CalendarEventDeletion | null> {
+    return this.withTransaction([`owner:${userId}`, `calendar-event-tombstone-id:${command.tombstoneId}`], async (client) => {
+      const eventResult = await client.query("SELECT * FROM calendar_events WHERE id=$1 AND owner_id=$2 FOR UPDATE", [command.eventId, userId]);
+      if (!eventResult.rows[0]) return null;
+      const event = mapCalendarEvent(eventResult.rows[0]);
+      const replayResult = await client.query("SELECT * FROM calendar_event_tombstones WHERE id=$1", [command.tombstoneId]);
+      if (replayResult.rows[0]) {
+        const tombstone = mapCalendarEventTombstone(replayResult.rows[0]);
+        if (tombstone.ownerId === userId && tombstone.eventId === event.id &&
+          tombstone.lastRevisionId === command.expectedCurrentRevisionId && event.deletedAt === tombstone.deletedAt) {
+          return { event, tombstone };
+        }
+        return calendarConflict("Calendar event tombstone identity is already in use.", "event_tombstone_id_conflict");
+      }
+      const deletion = softDeleteCalendarEvent(event, command);
+      await client.query("UPDATE calendar_events SET updated_at=$3,deleted_at=$4 WHERE id=$1 AND owner_id=$2", [event.id, userId, deletion.event.updatedAt, deletion.event.deletedAt]);
+      await insertPostgresCalendarEventTombstone(client, deletion.tombstone);
+      return deletion;
+    }, null);
+  }
+
+  async restoreCalendarEvent(userId: string, command: RestoreCalendarEventCommand): Promise<CalendarEventDetail | null> {
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const eventResult = await client.query("SELECT * FROM calendar_events WHERE id=$1 AND owner_id=$2 FOR UPDATE", [command.eventId, userId]);
+      const tombstoneResult = await client.query("SELECT * FROM calendar_event_tombstones WHERE id=$1 AND owner_id=$2", [command.tombstoneId, userId]);
+      if (!eventResult.rows[0] || !tombstoneResult.rows[0]) return null;
+      const event = mapCalendarEvent(eventResult.rows[0]);
+      const calendarResult = await client.query("SELECT 1 FROM calendars WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL", [event.calendarId, userId]);
+      if (!calendarResult.rowCount) return calendarConflict("Deleted Calendar event cannot be restored into an unavailable Calendar.", "calendar_unavailable");
+      const restored = restoreCalendarEvent(event, mapCalendarEventTombstone(tombstoneResult.rows[0]), command);
+      const revisionResult = await client.query(
+        "SELECT * FROM calendar_event_revisions WHERE id=$1 AND event_id=$2 AND owner_id=$3",
+        [restored.currentRevisionId, restored.id, userId]
+      );
+      if (!revisionResult.rows[0]) {
+        throw new CalendarDomainError("calendar_reference_conflict", "Calendar event current revision is unavailable.", {
+          reason: "current_revision_not_found"
+        });
+      }
+      await assertPostgresCalendarEventReferences(
+        client,
+        restored,
+        await loadPostgresCalendarEventRevision(client, revisionResult.rows[0])
+      );
+      await client.query("UPDATE calendar_events SET updated_at=$3,deleted_at=NULL WHERE id=$1 AND owner_id=$2", [event.id, userId, restored.updatedAt]);
+      return loadPostgresCalendarEventDetail(client, restored);
+    }, null);
+  }
+
+  async listCalendarEventTombstones(userId: string, eventId: string): Promise<CalendarEventTombstoneRecord[] | null> {
+    if (!(await this.pool.query("SELECT 1 FROM calendar_events WHERE id=$1 AND owner_id=$2", [eventId, userId])).rowCount) return null;
+    const result = await this.pool.query(
+      "SELECT * FROM calendar_event_tombstones WHERE event_id=$1 AND owner_id=$2 ORDER BY deleted_at,id",
+      [eventId, userId]
+    );
+    return result.rows.map(mapCalendarEventTombstone);
+  }
+
   async resetCompetitionFixture(options: CompetitionFixtureResetOptions): Promise<CompetitionFixtureResetReport> {
     const fixture = createCompetitionFixtureData(options.password, options.qrBaseUrl);
     const mode = options.mode ?? "dry-run";
@@ -1839,6 +2112,300 @@ export function createPostgresStore(databaseUrl: string, schemaName?: string): {
   return { store: new PostgresLifeLinksStore(pool), pool };
 }
 
+function mapCalendar(row: Record<string, unknown>): CalendarRecord {
+  return {
+    id: String(row.id),
+    ownerId: String(row.owner_id),
+    title: String(row.title),
+    color: String(row.color),
+    timeZone: String(row.time_zone),
+    source: normalizeCalendarSource(row.source),
+    isDefault: Boolean(row.is_default),
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    deletedAt: nullableIso(row.deleted_at)
+  };
+}
+
+function mapCalendarEvent(row: Record<string, unknown>): CalendarEventRecord {
+  const lineageKind = String(row.lineage_kind);
+  let lineage: CalendarEventLineage;
+  if (lineageKind === "recurrence_exception") {
+    lineage = {
+      kind: "recurrence_exception",
+      masterEventId: String(row.recurrence_master_event_id),
+      originalOccurrence: structuredClone(row.original_occurrence) as CalendarOriginalOccurrence
+    };
+  } else {
+    lineage = { kind: lineageKind as "standalone" | "recurrence_master" };
+  }
+  return {
+    id: String(row.id),
+    ownerId: String(row.owner_id),
+    calendarId: String(row.calendar_id),
+    currentRevisionId: String(row.current_revision_id),
+    lineage,
+    createdAt: toIso(row.created_at),
+    updatedAt: toIso(row.updated_at),
+    deletedAt: nullableIso(row.deleted_at)
+  };
+}
+
+function mapCalendarEventTombstone(row: Record<string, unknown>): CalendarEventTombstoneRecord {
+  return {
+    id: String(row.id),
+    ownerId: String(row.owner_id),
+    calendarId: String(row.calendar_id),
+    eventId: String(row.event_id),
+    lastRevisionId: String(row.last_revision_id),
+    lineage: structuredClone(row.lineage) as CalendarEventLineage,
+    deletedAt: toIso(row.deleted_at)
+  };
+}
+
+async function loadPostgresCalendarEventRevision(
+  queryable: Queryable,
+  row: Record<string, unknown>
+): Promise<CalendarEventRevisionRecord> {
+  const linkResult = await queryable.query(
+    `SELECT link.* FROM calendar_event_subject_links link
+     WHERE link.event_revision_id=$1 AND link.owner_id=$2
+     ORDER BY link.position`,
+    [String(row.id), String(row.owner_id)]
+  );
+  return {
+    id: String(row.id),
+    ownerId: String(row.owner_id),
+    eventId: String(row.event_id),
+    revisionNumber: Number(row.revision_number),
+    title: String(row.title),
+    description: String(row.description),
+    location: String(row.location),
+    status: String(row.status) as CalendarEventRevisionRecord["status"],
+    span: structuredClone(row.span) as CalendarEventRevisionRecord["span"],
+    recurrence: row.recurrence === null ? null : structuredClone(row.recurrence) as CalendarEventRevisionRecord["recurrence"],
+    subjectLinks: linkResult.rows.map(mapCalendarSubjectLink),
+    createdAt: toIso(row.created_at)
+  };
+}
+
+function mapCalendarSubjectLink(row: Record<string, unknown>): CalendarSubjectLink {
+  const kind = String(row.subject_type);
+  if (kind === "life_link") return { kind: "life_link", lifeLinkId: String(row.subject_id) };
+  if (kind === "collection") return { kind: "collection", collectionId: String(row.subject_id) };
+  const routineId = String(row.routine_id);
+  if (kind === "routine") return { kind: "routine", routineId };
+  if (kind === "routine_schedule") return { kind: "routine_schedule", routineId, scheduleId: String(row.subject_id) };
+  if (kind === "routine_occurrence") {
+    return {
+      kind: "routine_occurrence",
+      routineId,
+      scheduleId: String(row.schedule_id),
+      occurrenceId: String(row.subject_id)
+    };
+  }
+  return { kind: "routine_session", routineId, sessionId: String(row.subject_id) };
+}
+
+async function loadPostgresCalendarEventDetail(queryable: Queryable, event: CalendarEventRecord): Promise<CalendarEventDetail> {
+  const result = await queryable.query(
+    "SELECT * FROM calendar_event_revisions WHERE id=$1 AND owner_id=$2 AND event_id=$3",
+    [event.currentRevisionId, event.ownerId, event.id]
+  );
+  if (!result.rows[0]) {
+    throw new CalendarDomainError("calendar_reference_conflict", "Calendar event current revision is unavailable.", {
+      reason: "current_revision_not_found"
+    });
+  }
+  return { event, currentRevision: await loadPostgresCalendarEventRevision(queryable, result.rows[0]) };
+}
+
+async function insertPostgresCalendar(client: PoolClient, calendar: CalendarRecord): Promise<void> {
+  await client.query(
+    `INSERT INTO calendars(id,owner_id,title,color,time_zone,source,is_default,created_at,updated_at,deleted_at)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [calendar.id, calendar.ownerId, calendar.title, calendar.color, calendar.timeZone, calendar.source,
+      calendar.isDefault, calendar.createdAt, calendar.updatedAt, calendar.deletedAt]
+  );
+}
+
+async function updatePostgresCalendar(client: PoolClient, calendar: CalendarRecord): Promise<void> {
+  await client.query(
+    `UPDATE calendars SET title=$3,color=$4,time_zone=$5,is_default=$6,updated_at=$7,deleted_at=$8
+     WHERE id=$1 AND owner_id=$2`,
+    [calendar.id, calendar.ownerId, calendar.title, calendar.color, calendar.timeZone,
+      calendar.isDefault, calendar.updatedAt, calendar.deletedAt]
+  );
+}
+
+async function clearPostgresDefaultCalendars(
+  client: PoolClient,
+  ownerId: string,
+  calendarId: string,
+  changedAt: string
+): Promise<void> {
+  await client.query(
+    `UPDATE calendars SET is_default=false,
+       updated_at=GREATEST(updated_at + interval '1 millisecond',$3::timestamptz)
+     WHERE owner_id=$1 AND id<>$2 AND is_default AND deleted_at IS NULL`,
+    [ownerId, calendarId, changedAt]
+  );
+}
+
+async function insertPostgresCalendarEvent(client: PoolClient, event: CalendarEventRecord): Promise<void> {
+  await client.query(
+    `INSERT INTO calendar_events(
+       id,owner_id,calendar_id,current_revision_id,lineage_kind,recurrence_master_event_id,
+       original_occurrence,created_at,updated_at,deleted_at
+     ) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10)`,
+    [event.id, event.ownerId, event.calendarId, event.currentRevisionId, event.lineage.kind,
+      event.lineage.kind === "recurrence_exception" ? event.lineage.masterEventId : null,
+      event.lineage.kind === "recurrence_exception" ? JSON.stringify(event.lineage.originalOccurrence) : null,
+      event.createdAt, event.updatedAt, event.deletedAt]
+  );
+}
+
+async function insertPostgresCalendarEventRevision(
+  client: PoolClient,
+  revision: CalendarEventRevisionRecord
+): Promise<void> {
+  await client.query(
+    `INSERT INTO calendar_event_revisions(
+       id,owner_id,event_id,revision_number,title,description,location,status,span,recurrence,created_at
+     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11)`,
+    [revision.id, revision.ownerId, revision.eventId, revision.revisionNumber, revision.title,
+      revision.description, revision.location, revision.status, JSON.stringify(revision.span),
+      revision.recurrence === null ? null : JSON.stringify(revision.recurrence), revision.createdAt]
+  );
+  for (const [position, link] of revision.subjectLinks.entries()) {
+    const stored = calendarSubjectStorage(link);
+    await client.query(
+      `INSERT INTO calendar_event_subject_links(
+         owner_id,event_revision_id,subject_type,routine_id,schedule_id,subject_id,position
+       ) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+      [revision.ownerId, revision.id, stored.subjectType, stored.routineId, stored.scheduleId, stored.subjectId, position]
+    );
+  }
+}
+
+function calendarSubjectStorage(link: CalendarSubjectLink): {
+  subjectType: CalendarSubjectLink["kind"];
+  routineId: string | null;
+  scheduleId: string | null;
+  subjectId: string;
+} {
+  if (link.kind === "life_link") return { subjectType: link.kind, routineId: null, scheduleId: null, subjectId: link.lifeLinkId };
+  if (link.kind === "collection") return { subjectType: link.kind, routineId: null, scheduleId: null, subjectId: link.collectionId };
+  if (link.kind === "routine") return { subjectType: link.kind, routineId: link.routineId, scheduleId: null, subjectId: link.routineId };
+  if (link.kind === "routine_schedule") return { subjectType: link.kind, routineId: link.routineId, scheduleId: null, subjectId: link.scheduleId };
+  if (link.kind === "routine_occurrence") {
+    return { subjectType: link.kind, routineId: link.routineId, scheduleId: link.scheduleId, subjectId: link.occurrenceId };
+  }
+  return { subjectType: link.kind, routineId: link.routineId, scheduleId: null, subjectId: link.sessionId };
+}
+
+async function insertPostgresCalendarEventTombstone(
+  client: PoolClient,
+  tombstone: CalendarEventTombstoneRecord
+): Promise<void> {
+  await client.query(
+    `INSERT INTO calendar_event_tombstones(id,owner_id,calendar_id,event_id,last_revision_id,lineage,deleted_at)
+     VALUES($1,$2,$3,$4,$5,$6::jsonb,$7)`,
+    [tombstone.id, tombstone.ownerId, tombstone.calendarId, tombstone.eventId,
+      tombstone.lastRevisionId, JSON.stringify(tombstone.lineage), tombstone.deletedAt]
+  );
+}
+
+async function assertPostgresCalendarEventReferences(
+  client: PoolClient,
+  event: CalendarEventRecord,
+  revision: CalendarEventRevisionRecord
+): Promise<void> {
+  const calendarResult = await client.query(
+    "SELECT * FROM calendars WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL",
+    [event.calendarId, event.ownerId]
+  );
+  if (!calendarResult.rowCount) {
+    throw new CalendarDomainError("calendar_reference_conflict", "Calendar event Calendar is unavailable.", {
+      reason: "calendar_unavailable"
+    });
+  }
+  assertNativeCalendarWriteAuthority(mapCalendar(calendarResult.rows[0]));
+  if (event.lineage.kind === "recurrence_exception") {
+    const masterResult = await client.query(
+      `SELECT revision.* FROM calendar_events event
+       JOIN calendar_event_revisions revision
+         ON revision.id=event.current_revision_id AND revision.event_id=event.id AND revision.owner_id=event.owner_id
+       WHERE event.id=$1 AND event.owner_id=$2 AND event.calendar_id=$3
+         AND event.lineage_kind='recurrence_master' AND event.deleted_at IS NULL`,
+      [event.lineage.masterEventId, event.ownerId, event.calendarId]
+    );
+    if (!masterResult.rows[0]) {
+      throw new CalendarDomainError("calendar_reference_conflict", "Recurrence master is unavailable.", {
+        reason: "recurrence_master_unavailable"
+      });
+    }
+    const masterRevision = await loadPostgresCalendarEventRevision(client, masterResult.rows[0]);
+    if (!calendarRecurrenceIncludesOriginalOccurrence(masterRevision, event.lineage.originalOccurrence)) {
+      throw new CalendarDomainError(
+        "calendar_reference_conflict",
+        "Recurrence exception does not name an occurrence generated by its master.",
+        { reason: "recurrence_exception_not_generated" }
+      );
+    }
+    if ((await client.query(
+      `SELECT 1 FROM calendar_events
+       WHERE owner_id=$1 AND id<>$2 AND lineage_kind='recurrence_exception'
+       AND recurrence_master_event_id=$3 AND original_occurrence=$4::jsonb
+       LIMIT 1`,
+      [event.ownerId, event.id, event.lineage.masterEventId, JSON.stringify(event.lineage.originalOccurrence)]
+    )).rowCount) {
+      throw new CalendarDomainError("calendar_conflict", "A recurrence exception already exists for this occurrence.", {
+        reason: "duplicate_recurrence_exception"
+      });
+    }
+  }
+  for (const link of revision.subjectLinks) {
+    const stored = calendarSubjectStorage(link);
+    let query: string;
+    let values: unknown[];
+    if (link.kind === "life_link") {
+      query = "SELECT 1 FROM life_links WHERE id=$1 AND owner_id=$2";
+      values = [link.lifeLinkId, event.ownerId];
+    } else if (link.kind === "collection") {
+      query = "SELECT 1 FROM collections WHERE id=$1 AND owner_id=$2";
+      values = [link.collectionId, event.ownerId];
+    } else if (link.kind === "routine") {
+      query = "SELECT 1 FROM routines WHERE id=$1 AND owner_id=$2";
+      values = [link.routineId, event.ownerId];
+    } else if (link.kind === "routine_schedule") {
+      query = "SELECT 1 FROM routine_schedules WHERE id=$1 AND routine_id=$2 AND owner_id=$3";
+      values = [stored.subjectId, link.routineId, event.ownerId];
+    } else if (link.kind === "routine_occurrence") {
+      query = "SELECT 1 FROM routine_occurrences WHERE id=$1 AND schedule_id=$2 AND routine_id=$3 AND owner_id=$4";
+      values = [stored.subjectId, link.scheduleId, link.routineId, event.ownerId];
+    } else {
+      query = "SELECT 1 FROM routine_sessions WHERE id=$1 AND routine_id=$2 AND owner_id=$3";
+      values = [stored.subjectId, link.routineId, event.ownerId];
+    }
+    if (!(await client.query(query, values)).rowCount) {
+      throw new CalendarDomainError("calendar_reference_conflict", "Calendar event subject is unavailable.", {
+        reason: `${link.kind}_unavailable`
+      });
+    }
+  }
+}
+
+function assertNativeCalendarWriteAuthority(calendar: CalendarRecord): void {
+  if (calendar.source !== "native") {
+    throw new CalendarDomainError(
+      "calendar_conflict",
+      "External Calendar changes must use the exact provider connection boundary.",
+      { reason: "external_calendar_write_authority" }
+    );
+  }
+}
+
 async function postgresCompetitionFixtureCounts(
   queryable: Queryable,
   ownerId: string
@@ -1873,7 +2440,21 @@ async function postgresCompetitionFixtureCounts(
        (SELECT count(*)::int FROM routine_runs WHERE owner_id = $1) AS routine_runs,
        (SELECT count(*)::int FROM routine_sessions WHERE owner_id = $1) AS routine_sessions,
        (SELECT count(*)::int FROM routine_session_step_results WHERE owner_id = $1) AS routine_session_step_results,
-       (SELECT count(*)::int FROM routine_session_amendments WHERE owner_id = $1) AS routine_session_amendments`,
+       (SELECT count(*)::int FROM routine_session_amendments WHERE owner_id = $1) AS routine_session_amendments,
+       (SELECT count(*)::int FROM calendars WHERE owner_id = $1) AS calendars,
+       (SELECT count(*)::int FROM calendar_events WHERE owner_id = $1) AS calendar_events,
+       (SELECT count(*)::int FROM calendar_event_revisions WHERE owner_id = $1) AS calendar_event_revisions,
+       (SELECT count(*)::int FROM calendar_event_subject_links WHERE owner_id = $1) AS calendar_event_subject_links,
+        (SELECT count(*)::int FROM calendar_event_tombstones WHERE owner_id = $1) AS calendar_event_tombstones,
+        (SELECT count(*)::int FROM calendar_provider_connections WHERE owner_id = $1) AS calendar_provider_connections,
+        (SELECT count(*)::int FROM calendar_provider_bindings WHERE owner_id = $1) AS calendar_provider_bindings,
+        (SELECT count(*)::int FROM calendar_provider_sync_states WHERE owner_id = $1) AS calendar_provider_sync_states,
+        (SELECT count(*)::int FROM calendar_provider_event_projections WHERE owner_id = $1) AS calendar_provider_event_projections,
+        (SELECT count(*)::int FROM calendar_provider_event_projection_revisions WHERE owner_id = $1) AS calendar_provider_event_projection_revisions,
+        (SELECT count(*)::int FROM calendar_provider_event_tombstones WHERE owner_id = $1) AS calendar_provider_event_tombstones,
+        (SELECT count(*)::int FROM calendar_provider_event_tombstone_history WHERE owner_id = $1) AS calendar_provider_event_tombstone_history,
+        (SELECT count(*)::int FROM calendar_provider_outbox WHERE owner_id = $1) AS calendar_provider_outbox,
+        (SELECT count(*)::int FROM calendar_provider_webhook_hints WHERE owner_id = $1) AS calendar_provider_webhook_hints`,
     [ownerId]
   );
   const row = result.rows[0];
@@ -1901,7 +2482,21 @@ async function postgresCompetitionFixtureCounts(
     routineRuns: Number(row.routine_runs),
     routineSessions: Number(row.routine_sessions),
     routineSessionStepResults: Number(row.routine_session_step_results),
-    routineSessionAmendments: Number(row.routine_session_amendments)
+    routineSessionAmendments: Number(row.routine_session_amendments),
+    calendars: Number(row.calendars),
+    calendarEvents: Number(row.calendar_events),
+    calendarEventRevisions: Number(row.calendar_event_revisions),
+    calendarEventSubjectLinks: Number(row.calendar_event_subject_links),
+    calendarEventTombstones: Number(row.calendar_event_tombstones),
+    calendarProviderConnections: Number(row.calendar_provider_connections),
+    calendarProviderBindings: Number(row.calendar_provider_bindings),
+    calendarProviderSyncStates: Number(row.calendar_provider_sync_states),
+    calendarProviderEventProjections: Number(row.calendar_provider_event_projections),
+    calendarProviderEventProjectionRevisions: Number(row.calendar_provider_event_projection_revisions),
+    calendarProviderEventTombstones: Number(row.calendar_provider_event_tombstones),
+    calendarProviderEventTombstoneHistory: Number(row.calendar_provider_event_tombstone_history),
+    calendarProviderOutbox: Number(row.calendar_provider_outbox),
+    calendarProviderWebhookHints: Number(row.calendar_provider_webhook_hints)
   };
 }
 
@@ -2041,6 +2636,21 @@ async function replacePostgresCompetitionFixture(
   await client.query("DELETE FROM life_link_change_receipts WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM sessions WHERE user_id = $1", [ownerId]);
   await client.query("DELETE FROM claim_events WHERE owner_id = $1", [ownerId]);
+  await client.query("SET LOCAL life_links.allow_calendar_delete = 'on'");
+  await client.query("DELETE FROM calendar_provider_webhook_hints WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_provider_outbox WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_provider_event_tombstone_history WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_provider_event_tombstones WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_provider_event_projection_revisions WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_provider_event_projections WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_provider_sync_states WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_provider_bindings WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_provider_connections WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_event_tombstones WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_event_subject_links WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_event_revisions WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_events WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendars WHERE owner_id = $1", [ownerId]);
   await client.query("SET LOCAL life_links.allow_routine_delete = 'on'");
   await client.query("DELETE FROM routine_session_amendments WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM routine_session_step_results WHERE owner_id = $1", [ownerId]);
@@ -2547,6 +3157,7 @@ function mapUser(row: Record<string, unknown>): StoredUser {
     displayName: String(row.display_name),
     passwordHash: String(row.password_hash),
     agentConnectedAt: nullableIso(row.agent_connected_at),
+    agentToolCatalogId: row.agent_tool_catalog_id === null ? null : String(row.agent_tool_catalog_id) as AgentToolCatalogId,
     createdAt: toIso(row.created_at)
   };
 }

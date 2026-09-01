@@ -26,6 +26,7 @@ import { ClaimIdempotencyConflictError, InMemoryLifeLinksStore } from "../src/st
 import { fieldLedgerStoreContract } from "./field-ledger-contract.js";
 import { changeHistoryStoreContract } from "./change-history-contract.js";
 import { routineStoreContract } from "./routine-store-contract.js";
+import { calendarStoreContract } from "./calendar-store-contract.js";
 
 describe("canonical Life Links store contract", () => {
   let store: InMemoryLifeLinksStore;
@@ -33,6 +34,7 @@ describe("canonical Life Links store contract", () => {
   fieldLedgerStoreContract(() => store);
   changeHistoryStoreContract(() => store);
   routineStoreContract(() => store);
+  calendarStoreContract(() => store);
 
   beforeEach(async () => {
     store = new InMemoryLifeLinksStore();
@@ -41,16 +43,24 @@ describe("canonical Life Links store contract", () => {
 
   it("connects and disconnects an owner agent idempotently", async () => {
     expect((await store.getUserById(DEMO_OWNER_ID))?.agentConnectedAt).toBeNull();
+    expect((await store.getUserById(DEMO_OWNER_ID))?.agentToolCatalogId).toBeNull();
 
     const connected = await store.connectAgent(DEMO_OWNER_ID);
     expect(connected?.agentConnectedAt).toEqual(expect.any(String));
+    expect(connected?.agentToolCatalogId).toBe("life-links-page-webmcp-v1");
     expect(new Date(connected!.agentConnectedAt!).toISOString()).toBe(connected!.agentConnectedAt);
 
     const replay = await store.connectAgent(DEMO_OWNER_ID);
     expect(replay?.agentConnectedAt).toBe(connected?.agentConnectedAt);
+    expect(replay?.agentToolCatalogId).toBe("life-links-page-webmcp-v1");
+
+    const upgraded = await store.connectAgent(DEMO_OWNER_ID, "life-links-calendar-v2");
+    expect(upgraded?.agentToolCatalogId).toBe("life-links-calendar-v2");
+    expect(Date.parse(upgraded!.agentConnectedAt!)).toBeGreaterThan(Date.parse(connected!.agentConnectedAt!));
 
     const disconnected = await store.disconnectAgent(DEMO_OWNER_ID);
     expect(disconnected?.agentConnectedAt).toBeNull();
+    expect(disconnected?.agentToolCatalogId).toBeNull();
     expect((await store.disconnectAgent(DEMO_OWNER_ID))?.agentConnectedAt).toBeNull();
     expect(await store.connectAgent("missing-owner")).toBeNull();
     expect(await store.disconnectAgent("missing-owner")).toBeNull();
@@ -118,7 +128,21 @@ describe("canonical Life Links store contract", () => {
       routineRuns: 0,
       routineSessions: 0,
       routineSessionStepResults: 0,
-      routineSessionAmendments: 0
+      routineSessionAmendments: 0,
+      calendars: 0,
+      calendarEvents: 0,
+      calendarEventRevisions: 0,
+      calendarEventSubjectLinks: 0,
+      calendarEventTombstones: 0,
+      calendarProviderConnections: 0,
+      calendarProviderBindings: 0,
+      calendarProviderSyncStates: 0,
+      calendarProviderEventProjections: 0,
+      calendarProviderEventProjectionRevisions: 0,
+      calendarProviderEventTombstones: 0,
+      calendarProviderEventTombstoneHistory: 0,
+      calendarProviderOutbox: 0,
+      calendarProviderWebhookHints: 0
     });
     expect(await store.getUserById(COMPETITION_OWNER_ID)).toBeNull();
 
@@ -130,7 +154,16 @@ describe("canonical Life Links store contract", () => {
     await store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
       ownerId: COMPETITION_OWNER_ID, title: "Reset probe", createdAt: "2026-09-01T00:00:00.000Z",
       steps: [{ id: `routine-step-${randomUUID()}`, activityId: resetActivity.id, activityTitle: resetActivity.title, position: 0 }] });
-    expect((await store.resetCompetitionFixture(options)).before).toMatchObject({ routines: 1, routineActivities: 1, routineRevisions: 1, routineSteps: 1 });
+    const resetCalendar = await store.createCalendar({ id: `calendar-${randomUUID()}`, ownerId: COMPETITION_OWNER_ID,
+      title: "Reset probe", timeZone: "America/New_York", createdAt: "2026-09-01T00:00:00.000Z" });
+    await store.createCalendarEvent({ id: `calendar-event-${randomUUID()}`, revisionId: `calendar-event-revision-${randomUUID()}`,
+      ownerId: COMPETITION_OWNER_ID, calendarId: resetCalendar.id, title: "Reset probe",
+      span: { kind: "all_day", startDate: "2026-08-31", endDateExclusive: "2026-09-01" },
+      createdAt: "2026-09-01T00:00:00.000Z" });
+    expect((await store.resetCompetitionFixture(options)).before).toMatchObject({
+      routines: 1, routineActivities: 1, routineRevisions: 1, routineSteps: 1,
+      calendars: 1, calendarEvents: 1, calendarEventRevisions: 1
+    });
     expect((await store.resetCompetitionFixture({ ...options, mode: "apply" })).after).toEqual(firstApply.expected);
     expect((await store.resetCompetitionFixture(options)).shapeMatchesExpected).toBe(true);
     expect((await store.resetCompetitionFixture({ ...options, password: "wrong-password" })).shapeMatchesExpected).toBe(false);

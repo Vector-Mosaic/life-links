@@ -5,6 +5,7 @@ export type AgentAccessRegistrationStatus = "inactive" | "registering" | "ready"
 export function AgentAccessPanel({
   supported,
   connected,
+  catalogCurrent,
   busy,
   registrationStatus,
   registrationError,
@@ -13,6 +14,7 @@ export function AgentAccessPanel({
 }: {
   supported: boolean;
   connected: boolean;
+  catalogCurrent: boolean;
   busy: boolean;
   registrationStatus: AgentAccessRegistrationStatus;
   registrationError: string;
@@ -20,6 +22,7 @@ export function AgentAccessPanel({
   onDisconnect(): void;
 }) {
   const accessReady = supported && registrationStatus === "ready";
+  const upgradeAvailable = connected && !catalogCurrent;
   return (
     <section className="panel agent-access-panel" aria-labelledby="agent-access-title">
       <header className="agent-access-heading">
@@ -29,14 +32,24 @@ export function AgentAccessPanel({
             <h3 id="agent-access-title">Agent Connection</h3>
           </div>
         </div>
-        <button
-          className={connected ? "secondary-button agent-connection-action" : "primary-button agent-connection-action"}
-          type="button"
-          disabled={busy}
-          onClick={connected ? onDisconnect : onConnect}
-        >
-          {connected ? "Disconnect Agent" : "Connect Agent"}
-        </button>
+        <div className="agent-connection-actions">
+          {upgradeAvailable && <button
+            className="primary-button agent-connection-action"
+            type="button"
+            disabled={busy}
+            onClick={onConnect}
+          >
+            Update Agent Access
+          </button>}
+          <button
+            className={connected ? "secondary-button agent-connection-action" : "primary-button agent-connection-action"}
+            type="button"
+            disabled={busy}
+            onClick={connected ? onDisconnect : onConnect}
+          >
+            {connected ? "Disconnect Agent" : "Connect Agent"}
+          </button>
+        </div>
       </header>
 
       {!supported ? (
@@ -58,9 +71,13 @@ export function AgentAccessPanel({
       )}
 
       <div className="agent-access-scope">
+        {upgradeAvailable && <p className="agent-access-scope-item connection">
+          <strong>Calendar access is not granted yet:</strong> update this saved connection to add the seven Calendar tools. Existing access stays unchanged until you choose to update it.
+        </p>}
         <p className="agent-access-scope-item allowed">
           <strong>Your agent can:</strong> find and open Life Links; create, move, and edit folders and items;
-          manage QR codes and public fields; organize Collections and Sections; read supported attachment text; and start Find Mode.
+          manage QR codes and public fields; organize Collections and Sections; read supported attachments; start Find Mode;
+          and, when Calendar access is granted, read and manage authorized Calendar events.
         </p>
         <p className="agent-access-scope-item connection">
           <strong>One connection:</strong> saved to your account until you explicitly disconnect it.

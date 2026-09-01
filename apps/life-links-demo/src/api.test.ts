@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ApiError, addCollectionMember, attachQr, clearLifeLinkQrBinding, connectAgent, createCollection,
-  createRoutine, finalizeRoutineRun,
+  createCalendar, createCalendarEvent, createRoutine, deleteCalendar, deleteCalendarEvent, finalizeRoutineRun,
   createCollectionSection, createLifeLink, disconnectAgent, getCollection, listCollections,
-  getActiveRoutineRun, listRoutineGroups, listRoutines,
+  getActiveRoutineRun, getCalendar, getCalendarClock, getCalendarEvent, listCalendarEvents, listCalendars, listRoutineGroups, listRoutines,
   listCollectionMembers, listLifeLinkCollectionMemberships, login, moveLifeLink, removeCollectionMember,
   removeCollectionSection, replaceCollectionSectionAssignments, setLifeLinkQrBinding,
   updateCollection, updateCollectionSection, updateLifeLink, getLifeLinkAttachmentContent, getLifeLinkAttachmentImage,
-  listRoutineOccurrences, putRoutineRunStepResult
+  listRoutineOccurrences, materializeRoutineOccurrences, putRoutineRunStepResult,
+  restoreCalendar, restoreCalendarEvent, updateCalendar, updateCalendarEvent
 } from "./api";
 import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, ATTACHMENT_IMAGE_MAX_BYTES } from "@life-links/core";
 import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedImageFixture, attachmentTranscriptFixture } from "./attachmentImage.testFixtures";
@@ -249,6 +250,26 @@ describe("Life Links API error normalization", () => {
       expect.objectContaining({ signal: abort.signal })
     );
 
+    stubJsonResponse(200, {
+      startDate: "2026-09-01",
+      endDate: "2026-09-07",
+      routineCount: 2,
+      occurrenceCount: 4
+    });
+    await expect(materializeRoutineOccurrences({
+      startDate: "2026-09-01",
+      endDate: "2026-09-07",
+      signal: abort.signal
+    })).resolves.toMatchObject({ routineCount: 2, occurrenceCount: 4 });
+    expect(vi.mocked(fetch)).toHaveBeenLastCalledWith(
+      "/api/routine-occurrences/materialize",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ startDate: "2026-09-01", endDate: "2026-09-07" }),
+        signal: abort.signal
+      })
+    );
+
     stubJsonResponse(200, { routineGroups: [], nextCursor: null, truncated: false });
     await listRoutineGroups({ cursor: "archive page", limit: 10, includeArchived: true, signal: abort.signal });
     expect(vi.mocked(fetch)).toHaveBeenLastCalledWith(
@@ -326,13 +347,15 @@ describe("Life Links API error normalization", () => {
     const connected = {
       agentConnection: {
         connected: true,
-        connectedAt: "2026-08-27T21:00:00.000Z"
+        connectedAt: "2026-08-27T21:00:00.000Z",
+        toolCatalogId: "life-links-calendar-v2"
       }
     };
     const disconnected = {
       agentConnection: {
         connected: false,
-        connectedAt: null
+        connectedAt: null,
+        toolCatalogId: null
       }
     };
     const fetchMock = vi.fn()
@@ -340,12 +363,13 @@ describe("Life Links API error normalization", () => {
       .mockResolvedValueOnce(jsonResponse(200, disconnected));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(connectAgent()).resolves.toEqual(connected);
+    await expect(connectAgent("life-links-calendar-v2")).resolves.toEqual(connected);
     await expect(disconnectAgent()).resolves.toEqual(disconnected);
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/agent-connection", {
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      method: "PUT"
+      method: "PUT",
+      body: JSON.stringify({ toolCatalogId: "life-links-calendar-v2" })
     });
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/agent-connection", {
       credentials: "include",
@@ -391,6 +415,90 @@ describe("Life Links API error normalization", () => {
       ["/api/collections/collection-1/members/life-link-1", "DELETE", { expectedUpdatedAt: "revision-6" }],
       ["/api/collections/collection-1/sections/section-1", "DELETE", { expectedUpdatedAt: "revision-7" }]
     ]);
+  });
+
+  it("uses exact native Calendar identities, bounded windows and revision-safe mutation payloads", async () => {
+    const fetchMock = stubJsonResponse(200, {});
+    const signal = new AbortController().signal;
+    const calendarId = "calendar-00000000-0000-4000-8000-000000000001";
+    const eventId = "calendar-event-00000000-0000-4000-8000-000000000001";
+    const revisionId = "calendar-event-revision-00000000-0000-4000-8000-000000000001";
+    const nextRevisionId = "calendar-event-revision-00000000-0000-4000-8000-000000000002";
+    const tombstoneId = "calendar-event-tombstone-00000000-0000-4000-8000-000000000001";
+    const span = { kind: "all_day" as const, startDate: "2026-08-01", endDateExclusive: "2026-08-02" };
+    const recurrence = {
+      frequency: "weekly" as const,
+      interval: 1,
+      weekdays: ["saturday" as const],
+      end: { kind: "count" as const, count: 8 }
+    };
+    const target = { scope: "series" as const, masterEventId: eventId };
+
+    await getCalendarClock("America/New_York", signal);
+    await listCalendars({ cursor: "calendar/page", limit: 12, includeDeleted: true, signal });
+    await createCalendar({ id: calendarId, title: "Personal", timeZone: "America/New_York", isDefault: true }, signal);
+    await getCalendar(calendarId, signal);
+    await updateCalendar(calendarId, "2026-09-01T00:00:00.000Z", { title: "Home" }, signal);
+    await deleteCalendar(calendarId, "2026-09-01T00:00:01.000Z", signal);
+    await restoreCalendar(calendarId, "2026-09-01T00:00:02.000Z", signal);
+    await listCalendarEvents({
+      startDate: "2026-08-01", endDate: "2026-08-31", calendarId, includeDeleted: false, limit: 50, signal
+    });
+    await createCalendarEvent({
+      id: eventId,
+      revisionId,
+      calendarId,
+      lineage: { kind: "recurrence_master" },
+      title: "Weekly planning",
+      span,
+      recurrence,
+      subjectLinks: [
+        { kind: "routine", routineId: "routine-00000000-0000-4000-8000-000000000001" },
+        { kind: "life_link", lifeLinkId: "life-link-00000000-0000-4000-8000-000000000001" },
+        { kind: "collection", collectionId: "collection-00000000-0000-4000-8000-000000000001" }
+      ]
+    }, signal);
+    await getCalendarEvent(eventId, signal);
+    await updateCalendarEvent(eventId, {
+      revisionId: nextRevisionId,
+      expectedCurrentRevisionId: revisionId,
+      target,
+      title: "Weekly planning",
+      span,
+      recurrence,
+      subjectLinks: []
+    }, signal);
+    await deleteCalendarEvent(eventId, { tombstoneId, expectedCurrentRevisionId: nextRevisionId, target }, signal);
+    await restoreCalendarEvent(eventId, { tombstoneId, expectedCurrentRevisionId: nextRevisionId }, signal);
+
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([path, init]) => [path, init.method ?? "GET", init.body ? JSON.parse(String(init.body)) : null]))
+      .toEqual([
+        ["/api/calendar-clock?timeZone=America%2FNew_York", "GET", null],
+        ["/api/calendars?cursor=calendar%2Fpage&limit=12&includeDeleted=true", "GET", null],
+        ["/api/calendars", "POST", { id: calendarId, title: "Personal", timeZone: "America/New_York", isDefault: true }],
+        [`/api/calendars/${calendarId}`, "GET", null],
+        [`/api/calendars/${calendarId}`, "PATCH", { title: "Home", expectedUpdatedAt: "2026-09-01T00:00:00.000Z" }],
+        [`/api/calendars/${calendarId}`, "DELETE", { expectedUpdatedAt: "2026-09-01T00:00:01.000Z" }],
+        [`/api/calendars/${calendarId}/restore`, "POST", { expectedUpdatedAt: "2026-09-01T00:00:02.000Z" }],
+        [`/api/calendar-events?startDate=2026-08-01&endDate=2026-08-31&limit=50&calendarId=${calendarId}&includeDeleted=false`, "GET", null],
+        ["/api/calendar-events", "POST", {
+          id: eventId, revisionId, calendarId, lineage: { kind: "recurrence_master" }, title: "Weekly planning", span,
+          recurrence, subjectLinks: [
+            { kind: "routine", routineId: "routine-00000000-0000-4000-8000-000000000001" },
+            { kind: "life_link", lifeLinkId: "life-link-00000000-0000-4000-8000-000000000001" },
+            { kind: "collection", collectionId: "collection-00000000-0000-4000-8000-000000000001" }
+          ]
+        }],
+        [`/api/calendar-events/${eventId}`, "GET", null],
+        [`/api/calendar-events/${eventId}`, "PATCH", {
+          revisionId: nextRevisionId, expectedCurrentRevisionId: revisionId, target, title: "Weekly planning", span,
+          recurrence, subjectLinks: []
+        }],
+        [`/api/calendar-events/${eventId}`, "DELETE", { tombstoneId, expectedCurrentRevisionId: nextRevisionId, target }],
+        [`/api/calendar-events/${eventId}/restore`, "POST", { tombstoneId, expectedCurrentRevisionId: nextRevisionId }]
+      ]);
+    for (const [, init] of calls) expect(init.signal).toBe(signal);
   });
 
   it("sets and clears QR bindings with exact command identity instead of changing identity in the client", async () => {

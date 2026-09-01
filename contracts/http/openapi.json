@@ -56,6 +56,9 @@
     },
     {
       "name": "routines"
+    },
+    {
+      "name": "calendar"
     }
   ],
   "paths": {
@@ -597,7 +600,7 @@
       "put": {
         "operationId": "connectLifeLinksAgent",
         "summary": "Connect the owner's agent persistently",
-        "description": "The authenticated owner grants agent access once. The mutation is idempotent, preserves the original connection timestamp on replay, and the durable connection survives page reloads, browser restarts, logout, and session expiry until the owner explicitly disconnects it. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
+        "description": "The authenticated owner grants one explicit, versioned agent-tool catalog. Replaying the same catalog is idempotent and preserves its connection timestamp; choosing a newer catalog is an explicit upgrade and records a new connection timestamp. The durable grant survives page reloads, browser restarts, logout, and session expiry until the owner explicitly disconnects it. Omitting the request body retains the historical v1 behavior. Browser-origin enforcement applies to browser mutations; authenticated native bearer calls may omit browser Origin and Referer headers.",
         "tags": [
           "agent-connection"
         ],
@@ -609,9 +612,22 @@
             "$ref": "#/components/parameters/BrowserOrigin"
           }
         ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentConnectionRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "$ref": "#/components/responses/AgentConnectionOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
@@ -2840,6 +2856,9 @@
     "/api/routine-occurrences": {
       "get": { "operationId": "listRoutineOccurrences", "summary": "List already materialized owner Routine Occurrences", "description": "GET never materializes new Occurrences.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/LifeLinkCursor"},{"$ref":"#/components/parameters/LifeLinkPageLimit"},{"$ref":"#/components/parameters/RoutineIdQuery"},{"$ref":"#/components/parameters/RoutineStartDate"},{"$ref":"#/components/parameters/RoutineEndDate"}], "responses": {"200":{"$ref":"#/components/responses/RoutineOccurrencePageOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
     },
+    "/api/routine-occurrences/materialize": {
+      "post": { "operationId": "materializeRoutineOccurrences", "summary": "Materialize one bounded owner calendar window", "description": "Idempotently materializes scheduled Occurrences across every active owner Routine for an inclusive window of at most 366 days. The response exposes only the accepted window and bounded counts.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineOccurrenceMaterializeRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/RoutineOccurrenceMaterializedOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
     "/api/routine-occurrences/{occurrenceId}": {
       "get": { "operationId": "getRoutineOccurrence", "summary": "Read one materialized Routine Occurrence", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineOccurrenceId"}], "responses": {"200":{"$ref":"#/components/responses/RoutineOccurrenceOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
     },
@@ -2863,6 +2882,49 @@
     },
     "/api/routine-sessions/{sessionId}/amendments": {
       "post": { "operationId": "appendRoutineSessionAmendment", "summary": "Append an owner-private immutable Session correction", "description": "A stable Amendment ID makes exact replay converge; original values and the full Amendment chain remain visible.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineSessionId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineSessionAmendmentCreateRequest"}}}}, "responses": {"201":{"$ref":"#/components/responses/RoutineAmendmentOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/calendar-clock": {
+      "get": {
+        "operationId": "getCalendarClock",
+        "summary": "Resolve the authoritative current Calendar date",
+        "description": "Returns the server clock and the corresponding local date in one validated IANA time zone. Calendar views use this result rather than trusting the browser device clock.",
+        "tags": ["calendar"],
+        "parameters": [
+          {"$ref":"#/components/parameters/XRequestId"},
+          {"name":"timeZone","in":"query","required":true,"schema":{"type":"string","minLength":1,"maxLength":100}}
+        ],
+        "responses": {
+          "200":{"$ref":"#/components/responses/CalendarClockOk"},
+          "400":{"$ref":"#/components/responses/CalendarBadRequest"},
+          "401":{"$ref":"#/components/responses/Unauthorized"},
+          "429":{"$ref":"#/components/responses/RateLimited"},
+          "500":{"$ref":"#/components/responses/InternalError"}
+        }
+      }
+    },
+    "/api/calendars": {
+      "get": { "operationId": "listCalendars", "summary": "List owner-native Calendar containers", "description": "Returns a deterministic bounded page. Deleted Calendars are excluded unless includeDeleted is true.", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/LifeLinkCursor"},{"$ref":"#/components/parameters/LifeLinkPageLimit"},{"$ref":"#/components/parameters/CalendarIncludeDeleted"}], "responses": {"200":{"$ref":"#/components/responses/CalendarPageOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "post": { "operationId": "createCalendar", "summary": "Create an owner-native Calendar container", "description": "An optional stable Calendar ID makes exact retries converge.", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CalendarCreateRequest"}}}}, "responses": {"201":{"$ref":"#/components/responses/CalendarOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"409":{"$ref":"#/components/responses/CalendarConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/calendars/{calendarId}": {
+      "get": { "operationId": "getCalendar", "summary": "Read one owner-native Calendar container", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/CalendarId"}], "responses": {"200":{"$ref":"#/components/responses/CalendarOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/CalendarNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "patch": { "operationId": "updateCalendar", "summary": "Revision-safely update an owner Calendar container", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/CalendarId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CalendarPatchRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/CalendarOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/CalendarNotFound"},"409":{"$ref":"#/components/responses/CalendarConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "delete": { "operationId": "deleteCalendar", "summary": "Revision-safely soft-delete an empty owner Calendar container", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/CalendarId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CalendarRevisionRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/CalendarOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/CalendarNotFound"},"409":{"$ref":"#/components/responses/CalendarConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/calendars/{calendarId}/restore": {
+      "post": { "operationId": "restoreCalendar", "summary": "Revision-safely restore an owner Calendar container", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/CalendarId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CalendarRevisionRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/CalendarOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/CalendarNotFound"},"409":{"$ref":"#/components/responses/CalendarConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/calendar-events": {
+      "get": { "operationId": "listCalendarEvents", "summary": "List owner-native Calendar event definitions in a bounded date window", "description": "startDate and endDate are required together, inclusive, and may span at most 366 days. Standalone definitions are filtered by current-revision overlap. Recurrence masters and all their live exceptions remain present so the canonical projector can suppress or move generated occurrences without resurrecting a replaced occurrence. This endpoint does not expand recurrence instances.", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/LifeLinkCursor"},{"$ref":"#/components/parameters/LifeLinkPageLimit"},{"$ref":"#/components/parameters/CalendarIdQuery"},{"$ref":"#/components/parameters/CalendarIncludeDeleted"},{"$ref":"#/components/parameters/CalendarStartDate"},{"$ref":"#/components/parameters/CalendarEndDate"}], "responses": {"200":{"$ref":"#/components/responses/CalendarEventPageOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "post": { "operationId": "createCalendarEvent", "summary": "Create an owner-native Calendar event and immutable revision one", "description": "Optional stable event and revision IDs make exact retries converge. Subject links are owner-scoped.", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CalendarEventCreateRequest"}}}}, "responses": {"201":{"$ref":"#/components/responses/CalendarEventOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/CalendarNotFound"},"409":{"$ref":"#/components/responses/CalendarConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/calendar-events/{eventId}": {
+      "get": { "operationId": "getCalendarEvent", "summary": "Read one owner-native Calendar event and latest deletion tombstone", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/CalendarEventId"}], "responses": {"200":{"$ref":"#/components/responses/CalendarEventOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/CalendarNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "patch": { "operationId": "updateCalendarEvent", "summary": "Create a complete immutable replacement Calendar event revision", "description": "Only whole-event and whole-series targets are currently accepted; occurrence and this-and-future mutation scopes fail closed.", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/CalendarEventId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CalendarEventRevisionRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/CalendarEventOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/CalendarNotFound"},"409":{"$ref":"#/components/responses/CalendarConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "delete": { "operationId": "deleteCalendarEvent", "summary": "Revision-safely soft-delete a whole event or recurrence series", "description": "Only whole-event and whole-series targets are currently accepted; occurrence and this-and-future mutation scopes fail closed.", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/CalendarEventId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CalendarEventDeleteRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/CalendarEventOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/CalendarNotFound"},"409":{"$ref":"#/components/responses/CalendarConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/calendar-events/{eventId}/restore": {
+      "post": { "operationId": "restoreCalendarEvent", "summary": "Restore one soft-deleted Calendar event from an exact tombstone", "tags": ["calendar"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/CalendarEventId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CalendarEventRestoreRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/CalendarEventOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/CalendarNotFound"},"409":{"$ref":"#/components/responses/CalendarConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
     }
   },
   "components": {
@@ -3017,7 +3079,13 @@
       "RoutineStepId": { "name":"routineStepId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/RoutineStepId"} },
       "RoutineSessionId": { "name":"sessionId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/RoutineSessionId"} },
       "RoutineStartDate": { "name":"startDate", "in":"query", "required":false, "schema":{"type":"string","format":"date"} },
-      "RoutineEndDate": { "name":"endDate", "in":"query", "required":false, "schema":{"type":"string","format":"date"} }
+      "RoutineEndDate": { "name":"endDate", "in":"query", "required":false, "schema":{"type":"string","format":"date"} },
+      "CalendarId": { "name":"calendarId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/CalendarId"} },
+      "CalendarIdQuery": { "name":"calendarId", "in":"query", "required":false, "schema":{"$ref":"#/components/schemas/CalendarId"} },
+      "CalendarEventId": { "name":"eventId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/CalendarEventId"} },
+      "CalendarIncludeDeleted": { "name":"includeDeleted", "in":"query", "required":false, "schema":{"type":"boolean","default":false} },
+      "CalendarStartDate": { "name":"startDate", "in":"query", "required":true, "description":"Inclusive local-date lower bound. Must be supplied with endDate; the window may span at most 366 days.", "schema":{"type":"string","format":"date"} },
+      "CalendarEndDate": { "name":"endDate", "in":"query", "required":true, "description":"Inclusive local-date upper bound. Must be supplied with startDate; the window may span at most 366 days.", "schema":{"type":"string","format":"date"} }
     },
     "headers": {
       "RequestId": {
@@ -3578,7 +3646,8 @@
         "additionalProperties": false,
         "required": [
           "connected",
-          "connectedAt"
+          "connectedAt",
+          "toolCatalogId"
         ],
         "properties": {
           "connected": {
@@ -3595,7 +3664,35 @@
                 "type": "null"
               }
             ],
-            "description": "The original one-time connection timestamp, or null when disconnected."
+            "description": "The grant timestamp for the current tool catalog, or null when disconnected."
+          },
+          "toolCatalogId": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "life-links-page-webmcp-v1",
+                  "life-links-calendar-v2"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The exact versioned tool catalog granted by the owner, or null when disconnected."
+          }
+        }
+      },
+      "AgentConnectionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "toolCatalogId": {
+            "type": "string",
+            "enum": [
+              "life-links-page-webmcp-v1",
+              "life-links-calendar-v2"
+            ]
           }
         }
       },
@@ -6105,16 +6202,95 @@
       "RoutineScheduleListResponse": { "type":"object", "additionalProperties":false, "required":["schedules","nextCursor","truncated"], "properties":{"schedules":{"type":"array","items":{"$ref":"#/components/schemas/RoutineSchedule"}},"nextCursor":{"oneOf":[{"type":"string"},{"type":"null"}]},"truncated":{"type":"boolean"}} },
       "RoutineOccurrenceResponse": { "type":"object", "additionalProperties":false, "required":["occurrence"], "properties":{"occurrence":{"$ref":"#/components/schemas/RoutineOccurrence"}} },
       "RoutineOccurrenceListResponse": { "type":"object", "additionalProperties":false, "required":["occurrences","nextCursor","truncated"], "properties":{"occurrences":{"type":"array","items":{"$ref":"#/components/schemas/RoutineOccurrence"}},"nextCursor":{"oneOf":[{"type":"string"},{"type":"null"}]},"truncated":{"type":"boolean"}} },
+      "RoutineOccurrenceMaterializeRequest": { "type":"object", "additionalProperties":false, "required":["startDate","endDate"], "properties":{"startDate":{"type":"string","format":"date"},"endDate":{"type":"string","format":"date"}} },
+      "RoutineOccurrenceMaterializeResponse": { "type":"object", "additionalProperties":false, "required":["startDate","endDate","routineCount","occurrenceCount"], "properties":{"startDate":{"type":"string","format":"date"},"endDate":{"type":"string","format":"date"},"routineCount":{"type":"integer","minimum":0},"occurrenceCount":{"type":"integer","minimum":0}} },
       "RoutineRunResponse": { "type":"object", "additionalProperties":false, "required":["run"], "properties":{"run":{"$ref":"#/components/schemas/RoutineRun"}} },
       "RoutineActiveRunResponse": { "type":"object", "additionalProperties":false, "required":["run"], "properties":{"run":{"oneOf":[{"$ref":"#/components/schemas/RoutineRun"},{"type":"null"}]}} },
       "RoutineFinalizeResponse": { "type":"object", "additionalProperties":false, "required":["run","session"], "properties":{"run":{"$ref":"#/components/schemas/RoutineRun"},"session":{"$ref":"#/components/schemas/RoutineSessionProjection"}} },
       "RoutineSessionResponse": { "type":"object", "additionalProperties":false, "required":["session"], "properties":{"session":{"$ref":"#/components/schemas/RoutineSessionProjection"}} },
       "RoutineSessionListResponse": { "type":"object", "additionalProperties":false, "required":["sessions","nextCursor","truncated"], "properties":{"sessions":{"type":"array","items":{"$ref":"#/components/schemas/RoutineSessionProjection"}},"nextCursor":{"oneOf":[{"type":"string"},{"type":"null"}]},"truncated":{"type":"boolean"}} },
       "RoutineAmendmentResponse": { "type":"object", "additionalProperties":false, "required":["amendment","session"], "properties":{"amendment":{"$ref":"#/components/schemas/RoutineSessionAmendment"},"session":{"$ref":"#/components/schemas/RoutineSessionProjection"}} },
+      "CalendarId": { "type":"string", "pattern":"^calendar-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "CalendarEventId": { "type":"string", "pattern":"^calendar-event-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "CalendarEventRevisionId": { "type":"string", "pattern":"^calendar-event-revision-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "CalendarEventTombstoneId": { "type":"string", "pattern":"^calendar-event-tombstone-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "CalendarNullableTimestamp": { "oneOf":[{"type":"string","format":"date-time"},{"type":"null"}] },
+      "Calendar": { "type":"object", "additionalProperties":false, "required":["id","ownerId","title","color","timeZone","source","isDefault","createdAt","updatedAt","deletedAt"], "properties":{"id":{"$ref":"#/components/schemas/CalendarId"},"ownerId":{"type":"string","minLength":1,"maxLength":256},"title":{"type":"string","minLength":1,"maxLength":120},"color":{"type":"string","pattern":"^#[0-9a-f]{6}$"},"timeZone":{"type":"string","minLength":1,"maxLength":100},"source":{"type":"string","enum":["native","external"]},"isDefault":{"type":"boolean"},"createdAt":{"type":"string","format":"date-time"},"updatedAt":{"type":"string","format":"date-time"},"deletedAt":{"$ref":"#/components/schemas/CalendarNullableTimestamp"}} },
+      "CalendarAllDaySpanInput": { "type":"object", "additionalProperties":false, "required":["kind","startDate","endDateExclusive"], "properties":{"kind":{"const":"all_day"},"startDate":{"type":"string","format":"date"},"endDateExclusive":{"type":"string","format":"date"}} },
+      "CalendarZonedSpanInput": { "type":"object", "additionalProperties":false, "required":["kind","startLocalDateTime","endLocalDateTime","timeZone"], "properties":{"kind":{"const":"zoned"},"startLocalDateTime":{"type":"string"},"endLocalDateTime":{"type":"string"},"timeZone":{"type":"string","minLength":1,"maxLength":100}} },
+      "CalendarEventSpanInput": { "oneOf":[{"$ref":"#/components/schemas/CalendarAllDaySpanInput"},{"$ref":"#/components/schemas/CalendarZonedSpanInput"}] },
+      "CalendarZonedSpan": { "type":"object", "additionalProperties":false, "required":["kind","startLocalDateTime","endLocalDateTime","timeZone","startInstant","endInstant"], "properties":{"kind":{"const":"zoned"},"startLocalDateTime":{"type":"string"},"endLocalDateTime":{"type":"string"},"timeZone":{"type":"string","minLength":1,"maxLength":100},"startInstant":{"type":"string","format":"date-time"},"endInstant":{"type":"string","format":"date-time"}} },
+      "CalendarEventSpan": { "oneOf":[{"$ref":"#/components/schemas/CalendarAllDaySpanInput"},{"$ref":"#/components/schemas/CalendarZonedSpan"}] },
+      "CalendarRecurrenceEnd": { "oneOf":[{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"never"}}},{"type":"object","additionalProperties":false,"required":["kind","untilDate"],"properties":{"kind":{"const":"until"},"untilDate":{"type":"string","format":"date"}}},{"type":"object","additionalProperties":false,"required":["kind","count"],"properties":{"kind":{"const":"count"},"count":{"type":"integer","minimum":1,"maximum":10000}}}] },
+      "CalendarRecurrenceRule": { "oneOf":[{"type":"object","additionalProperties":false,"required":["frequency","interval","end"],"properties":{"frequency":{"const":"daily"},"interval":{"type":"integer","minimum":1,"maximum":366},"end":{"$ref":"#/components/schemas/CalendarRecurrenceEnd"}}},{"type":"object","additionalProperties":false,"required":["frequency","interval","weekdays","end"],"properties":{"frequency":{"const":"weekly"},"interval":{"type":"integer","minimum":1,"maximum":366},"weekdays":{"type":"array","minItems":1,"maxItems":7,"uniqueItems":true,"items":{"enum":["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]}},"end":{"$ref":"#/components/schemas/CalendarRecurrenceEnd"}}},{"type":"object","additionalProperties":false,"required":["frequency","interval","monthDays","end"],"properties":{"frequency":{"const":"monthly"},"interval":{"type":"integer","minimum":1,"maximum":366},"monthDays":{"type":"array","minItems":1,"maxItems":31,"uniqueItems":true,"items":{"type":"integer","minimum":1,"maximum":31}},"end":{"$ref":"#/components/schemas/CalendarRecurrenceEnd"}}},{"type":"object","additionalProperties":false,"required":["frequency","interval","months","monthDays","end"],"properties":{"frequency":{"const":"yearly"},"interval":{"type":"integer","minimum":1,"maximum":366},"months":{"type":"array","minItems":1,"maxItems":12,"uniqueItems":true,"items":{"type":"integer","minimum":1,"maximum":12}},"monthDays":{"type":"array","minItems":1,"maxItems":31,"uniqueItems":true,"items":{"type":"integer","minimum":1,"maximum":31}},"end":{"$ref":"#/components/schemas/CalendarRecurrenceEnd"}}}] },
+      "CalendarOriginalOccurrenceInput": { "oneOf":[{"type":"object","additionalProperties":false,"required":["kind","startDate"],"properties":{"kind":{"const":"all_day"},"startDate":{"type":"string","format":"date"}}},{"type":"object","additionalProperties":false,"required":["kind","startLocalDateTime","timeZone"],"properties":{"kind":{"const":"zoned"},"startLocalDateTime":{"type":"string"},"timeZone":{"type":"string","minLength":1,"maxLength":100}}}] },
+      "CalendarOriginalOccurrence": { "oneOf":[{"type":"object","additionalProperties":false,"required":["kind","startDate"],"properties":{"kind":{"const":"all_day"},"startDate":{"type":"string","format":"date"}}},{"type":"object","additionalProperties":false,"required":["kind","startLocalDateTime","timeZone","startInstant"],"properties":{"kind":{"const":"zoned"},"startLocalDateTime":{"type":"string"},"timeZone":{"type":"string","minLength":1,"maxLength":100},"startInstant":{"type":"string","format":"date-time"}}}] },
+      "CalendarEventLineageInput": { "oneOf":[{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"standalone"}}},{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"recurrence_master"}}},{"type":"object","additionalProperties":false,"required":["kind","masterEventId","originalOccurrence"],"properties":{"kind":{"const":"recurrence_exception"},"masterEventId":{"$ref":"#/components/schemas/CalendarEventId"},"originalOccurrence":{"$ref":"#/components/schemas/CalendarOriginalOccurrenceInput"}}}] },
+      "CalendarEventLineage": { "oneOf":[{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"standalone"}}},{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"recurrence_master"}}},{"type":"object","additionalProperties":false,"required":["kind","masterEventId","originalOccurrence"],"properties":{"kind":{"const":"recurrence_exception"},"masterEventId":{"$ref":"#/components/schemas/CalendarEventId"},"originalOccurrence":{"$ref":"#/components/schemas/CalendarOriginalOccurrence"}}}] },
+      "CalendarSubjectLink": { "oneOf":[{"type":"object","additionalProperties":false,"required":["kind","lifeLinkId"],"properties":{"kind":{"const":"life_link"},"lifeLinkId":{"type":"string","minLength":1,"maxLength":512}}},{"type":"object","additionalProperties":false,"required":["kind","collectionId"],"properties":{"kind":{"const":"collection"},"collectionId":{"type":"string","pattern":"^collection-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"}}},{"type":"object","additionalProperties":false,"required":["kind","routineId"],"properties":{"kind":{"const":"routine"},"routineId":{"$ref":"#/components/schemas/RoutineId"}}},{"type":"object","additionalProperties":false,"required":["kind","routineId","scheduleId"],"properties":{"kind":{"const":"routine_schedule"},"routineId":{"$ref":"#/components/schemas/RoutineId"},"scheduleId":{"$ref":"#/components/schemas/RoutineScheduleId"}}},{"type":"object","additionalProperties":false,"required":["kind","routineId","scheduleId","occurrenceId"],"properties":{"kind":{"const":"routine_occurrence"},"routineId":{"$ref":"#/components/schemas/RoutineId"},"scheduleId":{"$ref":"#/components/schemas/RoutineScheduleId"},"occurrenceId":{"$ref":"#/components/schemas/RoutineOccurrenceId"}}},{"type":"object","additionalProperties":false,"required":["kind","routineId","sessionId"],"properties":{"kind":{"const":"routine_session"},"routineId":{"$ref":"#/components/schemas/RoutineId"},"sessionId":{"$ref":"#/components/schemas/RoutineSessionId"}}}] },
+      "CalendarEvent": { "type":"object", "additionalProperties":false, "required":["id","ownerId","calendarId","currentRevisionId","lineage","createdAt","updatedAt","deletedAt"], "properties":{"id":{"$ref":"#/components/schemas/CalendarEventId"},"ownerId":{"type":"string","minLength":1,"maxLength":256},"calendarId":{"$ref":"#/components/schemas/CalendarId"},"currentRevisionId":{"$ref":"#/components/schemas/CalendarEventRevisionId"},"lineage":{"$ref":"#/components/schemas/CalendarEventLineage"},"createdAt":{"type":"string","format":"date-time"},"updatedAt":{"type":"string","format":"date-time"},"deletedAt":{"$ref":"#/components/schemas/CalendarNullableTimestamp"}} },
+      "CalendarEventRevision": { "type":"object", "additionalProperties":false, "required":["id","ownerId","eventId","revisionNumber","title","description","location","status","span","recurrence","subjectLinks","createdAt"], "properties":{"id":{"$ref":"#/components/schemas/CalendarEventRevisionId"},"ownerId":{"type":"string","minLength":1,"maxLength":256},"eventId":{"$ref":"#/components/schemas/CalendarEventId"},"revisionNumber":{"type":"integer","minimum":1},"title":{"type":"string","minLength":1,"maxLength":120},"description":{"type":"string","maxLength":4000},"location":{"type":"string","maxLength":500},"status":{"enum":["confirmed","tentative","canceled"]},"span":{"$ref":"#/components/schemas/CalendarEventSpan"},"recurrence":{"oneOf":[{"$ref":"#/components/schemas/CalendarRecurrenceRule"},{"type":"null"}]},"subjectLinks":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/CalendarSubjectLink"}},"createdAt":{"type":"string","format":"date-time"}} },
+      "CalendarEventDetail": { "type":"object", "additionalProperties":false, "required":["event","currentRevision"], "properties":{"event":{"$ref":"#/components/schemas/CalendarEvent"},"currentRevision":{"$ref":"#/components/schemas/CalendarEventRevision"}} },
+      "CalendarEventTombstone": { "type":"object", "additionalProperties":false, "required":["id","ownerId","calendarId","eventId","lastRevisionId","lineage","deletedAt"], "properties":{"id":{"$ref":"#/components/schemas/CalendarEventTombstoneId"},"ownerId":{"type":"string","minLength":1,"maxLength":256},"calendarId":{"$ref":"#/components/schemas/CalendarId"},"eventId":{"$ref":"#/components/schemas/CalendarEventId"},"lastRevisionId":{"$ref":"#/components/schemas/CalendarEventRevisionId"},"lineage":{"$ref":"#/components/schemas/CalendarEventLineage"},"deletedAt":{"type":"string","format":"date-time"}} },
+      "CalendarCreateRequest": { "type":"object", "additionalProperties":false, "required":["title","timeZone"], "properties":{"id":{"$ref":"#/components/schemas/CalendarId"},"title":{"type":"string","minLength":1,"maxLength":120},"color":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},"timeZone":{"type":"string","minLength":1,"maxLength":100},"isDefault":{"type":"boolean"}} },
+      "CalendarPatchRequest": { "type":"object", "additionalProperties":false, "required":["expectedUpdatedAt"], "anyOf":[{"required":["title"]},{"required":["color"]},{"required":["timeZone"]},{"required":["isDefault"]}], "properties":{"expectedUpdatedAt":{"type":"string","format":"date-time"},"title":{"type":"string","minLength":1,"maxLength":120},"color":{"type":"string","pattern":"^#[0-9a-fA-F]{6}$"},"timeZone":{"type":"string","minLength":1,"maxLength":100},"isDefault":{"type":"boolean"}} },
+      "CalendarRevisionRequest": { "type":"object", "additionalProperties":false, "required":["expectedUpdatedAt"], "properties":{"expectedUpdatedAt":{"type":"string","format":"date-time"}} },
+      "CalendarEventCreateRequest": { "type":"object", "additionalProperties":false, "required":["calendarId","title","span"], "properties":{"id":{"$ref":"#/components/schemas/CalendarEventId"},"revisionId":{"$ref":"#/components/schemas/CalendarEventRevisionId"},"calendarId":{"$ref":"#/components/schemas/CalendarId"},"lineage":{"$ref":"#/components/schemas/CalendarEventLineageInput"},"title":{"type":"string","minLength":1,"maxLength":120},"description":{"type":"string","maxLength":4000},"location":{"type":"string","maxLength":500},"status":{"enum":["confirmed","tentative","canceled"]},"span":{"$ref":"#/components/schemas/CalendarEventSpanInput"},"recurrence":{"oneOf":[{"$ref":"#/components/schemas/CalendarRecurrenceRule"},{"type":"null"}]},"subjectLinks":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/CalendarSubjectLink"}}} },
+      "CalendarEventEditTarget": { "oneOf":[{"type":"object","additionalProperties":false,"required":["scope","eventId"],"properties":{"scope":{"const":"event"},"eventId":{"$ref":"#/components/schemas/CalendarEventId"}}},{"type":"object","additionalProperties":false,"required":["scope","masterEventId"],"properties":{"scope":{"const":"series"},"masterEventId":{"$ref":"#/components/schemas/CalendarEventId"}}}] },
+      "CalendarEventRevisionRequest": { "type":"object", "additionalProperties":false, "required":["expectedCurrentRevisionId","target","title","span"], "properties":{"revisionId":{"$ref":"#/components/schemas/CalendarEventRevisionId"},"expectedCurrentRevisionId":{"$ref":"#/components/schemas/CalendarEventRevisionId"},"target":{"$ref":"#/components/schemas/CalendarEventEditTarget"},"title":{"type":"string","minLength":1,"maxLength":120},"description":{"type":"string","maxLength":4000},"location":{"type":"string","maxLength":500},"status":{"enum":["confirmed","tentative","canceled"]},"span":{"$ref":"#/components/schemas/CalendarEventSpanInput"},"recurrence":{"oneOf":[{"$ref":"#/components/schemas/CalendarRecurrenceRule"},{"type":"null"}]},"subjectLinks":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/CalendarSubjectLink"}}} },
+      "CalendarEventDeleteRequest": { "type":"object", "additionalProperties":false, "required":["expectedCurrentRevisionId","target"], "properties":{"tombstoneId":{"$ref":"#/components/schemas/CalendarEventTombstoneId"},"expectedCurrentRevisionId":{"$ref":"#/components/schemas/CalendarEventRevisionId"},"target":{"$ref":"#/components/schemas/CalendarEventEditTarget"}} },
+      "CalendarEventRestoreRequest": { "type":"object", "additionalProperties":false, "required":["expectedCurrentRevisionId","tombstoneId"], "properties":{"expectedCurrentRevisionId":{"$ref":"#/components/schemas/CalendarEventRevisionId"},"tombstoneId":{"$ref":"#/components/schemas/CalendarEventTombstoneId"}} },
+      "CalendarClock": { "type":"object", "additionalProperties":false, "required":["serverTime","timeZone","today"], "properties":{"serverTime":{"type":"string","format":"date-time"},"timeZone":{"type":"string","minLength":1,"maxLength":100},"today":{"type":"string","format":"date"}} },
+      "CalendarResponse": { "type":"object", "additionalProperties":false, "required":["calendar"], "properties":{"calendar":{"$ref":"#/components/schemas/Calendar"}} },
+      "CalendarListResponse": { "type":"object", "additionalProperties":false, "required":["calendars","nextCursor","truncated"], "properties":{"calendars":{"type":"array","items":{"$ref":"#/components/schemas/Calendar"}},"nextCursor":{"oneOf":[{"type":"string"},{"type":"null"}]},"truncated":{"type":"boolean"}} },
+      "CalendarEventResponse": { "type":"object", "additionalProperties":false, "required":["calendarEvent","latestTombstone"], "properties":{"calendarEvent":{"$ref":"#/components/schemas/CalendarEventDetail"},"latestTombstone":{"oneOf":[{"$ref":"#/components/schemas/CalendarEventTombstone"},{"type":"null"}]}} },
+      "CalendarEventListResponse": { "type":"object", "additionalProperties":false, "required":["calendarEvents","nextCursor","truncated"], "properties":{"calendarEvents":{"type":"array","items":{"$ref":"#/components/schemas/CalendarEventDetail"}},"nextCursor":{"oneOf":[{"type":"string"},{"type":"null"}]},"truncated":{"type":"boolean"}} },
+      "CalendarErrorCode": { "type":"string", "enum":["invalid_calendar","calendar_not_found","invalid_calendar_event","calendar_event_not_found","stale_calendar","stale_calendar_event","calendar_conflict","calendar_reference_conflict"] },
+      "CalendarErrorResponse": { "type":"object", "additionalProperties":false, "required":["error"], "properties":{"error":{"type":"object","additionalProperties":false,"required":["code","message","retryable"],"properties":{"code":{"$ref":"#/components/schemas/CalendarErrorCode"},"message":{"type":"string","minLength":1,"maxLength":240},"retryable":{"type":"boolean"},"reason":{"type":"string","minLength":1,"maxLength":120}}}} },
       "RoutineErrorCode": { "type":"string", "enum":["invalid_routine","routine_not_found","stale_routine","routine_conflict","routine_reference_conflict"] },
       "RoutineErrorResponse": { "type":"object", "additionalProperties":false, "required":["error"], "properties":{"error":{"type":"object","additionalProperties":false,"required":["code","message","retryable"],"properties":{"code":{"$ref":"#/components/schemas/RoutineErrorCode"},"message":{"type":"string","minLength":1,"maxLength":240},"retryable":{"type":"boolean"},"reason":{"type":"string","minLength":1,"maxLength":120}}}} }
     },
     "responses": {
+      "CalendarClockOk": {
+        "description": "Authoritative server time and local Calendar date in the requested IANA time zone.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CalendarClock" } } }
+      },
+      "CalendarPageOk": {
+        "description": "Deterministically ordered, bounded page of owner-native Calendar containers.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CalendarListResponse" } } }
+      },
+      "CalendarOk": {
+        "description": "Owner-native Calendar container.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CalendarResponse" } } }
+      },
+      "CalendarEventPageOk": {
+        "description": "Deterministically ordered, bounded page of owner-native Calendar event definitions and current revisions; recurrence instances are not expanded.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CalendarEventListResponse" } } }
+      },
+      "CalendarEventOk": {
+        "description": "Owner-native Calendar event, current immutable revision, and latest deletion tombstone when present.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CalendarEventResponse" } } }
+      },
+      "CalendarBadRequest": {
+        "description": "Calendar input, identifier, recurrence scope, or bounded date-window query is invalid.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CalendarErrorResponse" } } }
+      },
+      "CalendarNotFound": {
+        "description": "The owner-scoped Calendar resource does not exist. Foreign-owner resources are indistinguishable from missing resources.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CalendarErrorResponse" } } }
+      },
+      "CalendarConflict": {
+        "description": "A stale Calendar revision, stable-ID payload mismatch, nonempty Calendar, or owner reference conflict prevented the mutation. Only stale_calendar and stale_calendar_event are retryable.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CalendarErrorResponse" } } }
+      },
       "RoutineGroupPageOk": {
         "description": "Deterministically ordered, bounded page of owner Routine Groups.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
@@ -6169,6 +6345,11 @@
         "description": "One materialized owner Routine Occurrence.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineOccurrenceResponse" } } }
+      },
+      "RoutineOccurrenceMaterializedOk": {
+        "description": "Accepted owner calendar window and safe materialization counts; no Routine content is returned.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineOccurrenceMaterializeResponse" } } }
       },
       "RoutineRunOk": {
         "description": "Owner Routine Run with its immutable start snapshot and current results.",

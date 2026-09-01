@@ -98,4 +98,26 @@ describe("redacted agent activity", () => {
     expect(activities[0]).toMatchObject({ tool: "inspect_collection", affectedCollectionIds: ["collection-stable"], visibleEffect: "collection_opened", outcome: "succeeded" });
     expect(JSON.stringify(activities[0])).not.toMatch(/Private|Sensitive|secret|purpose|notes|section-1/);
   });
+
+  it("records only Calendar/event identities and a visible effect, never private event content or provider account data", async () => {
+    const activities: ReturnType<typeof createAgentActivityEntry>[] = [];
+    const [tool] = instrumentAgentToolCatalog([{
+      name: "query_my_calendar_events", description: "test", inputSchema: { type: "object" },
+      execute: async () => ({
+        ok: true,
+        instances: [{ eventId: "calendar-event-stable", calendarId: "calendar-stable", title: "Private medical appointment", description: "Private notes" }],
+        providerAccountId: "private@example.test",
+        visibleEffect: "calendar_events_shown"
+      })
+    }], (entry) => activities.push(entry));
+    await tool.execute({ eventId: "calendar-event-stable", privateInput: "secret" });
+    expect(activities[0]).toMatchObject({
+      tool: "query_my_calendar_events",
+      affectedCalendarIds: ["calendar-stable"],
+      affectedCalendarEventIds: ["calendar-event-stable"],
+      visibleEffect: "calendar_events_shown",
+      outcome: "succeeded"
+    });
+    expect(JSON.stringify(activities[0])).not.toMatch(/medical|Private|example|secret|providerAccount/i);
+  });
 });

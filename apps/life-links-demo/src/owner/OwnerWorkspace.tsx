@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { Boxes, Box, Search, ScanLine, Pin, PinOff, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, ChevronRight, ChevronDown, FolderPlus, PackagePlus, Settings, HelpCircle, LogOut, Folder, Package, Pencil, Rows3, ListPlus, ChevronLeft, Menu, Download, QrCode, Trash2, Move, Undo2, Repeat2 } from "lucide-react";
+import { Boxes, Box, Search, ScanLine, Pin, PinOff, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, ChevronRight, ChevronDown, FolderPlus, PackagePlus, Settings, HelpCircle, LogOut, Folder, Package, Pencil, Rows3, ListPlus, ChevronLeft, Menu, Download, QrCode, Trash2, Move, Undo2, Repeat2, CalendarDays } from "lucide-react";
 import { ATTACHMENT_FILE_ACCEPT, MAX_BATCH_COUNT, deriveLifeLinkPhysicalLocator, formatRecordedLifeLinkPath, type LifeLinkRecord, type LifeLinkSummary } from "@life-links/core";
 import { LifeLinksWorkspaceController } from "../workspace/controller";
 import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
@@ -10,6 +10,8 @@ import { CHANGE_HISTORY_WARNING, ChangePreviewDialog, FormDialog, LifeLinkChange
 import { RoutineDialogHost } from "./RoutineDialogs";
 import { RoutineDetailPanel, RoutineSessionDetailPanel, RoutineWorkspacePanel } from "./RoutinePanels";
 import type { RoutineDialogState } from "./RoutineShared";
+import { CalendarDetailPanel, CalendarWorkspacePanel } from "./CalendarPanels";
+import { AgentCalendarDeletionDialog, CalendarDialogHost, type CalendarDialogState } from "./CalendarDialogs";
 
 // Keep this aligned with the phone-layout media query in styles.css.
 const PHONE_LAYOUT_QUERY = "(max-width: 700px) and (hover: none), (max-width: 700px) and (pointer: coarse)";
@@ -22,6 +24,7 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
   const { currentUser, busy, workspaceMode, selectedCollection, selectedLifeLinkDetail, hierarchyParentDetail, detailsOpen } = snapshot;
   const [dialog, setDialog] = useState<WorkspaceDialog>(null);
   const [routineDialog, setRoutineDialog] = useState<RoutineDialogState>(null);
+  const [calendarDialog, setCalendarDialog] = useState<CalendarDialogState>(null);
   const [routineDetailKind, setRoutineDetailKind] = useState<"routine" | "session">("routine");
   const [pinned, setPinned] = useState(() => { try { const value = localStorage.getItem("life-links-navigation-pinned"); return value === null ? window.innerWidth >= 1280 : value === "true"; } catch { return false; } });
   const [hovered, setHovered] = useState(false);
@@ -45,10 +48,11 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
   const dataMode = !searchMode && !scanMode;
   const collectionsMode = workspaceMode === "collections";
   const routinesMode = workspaceMode === "routines";
+  const calendarMode = workspaceMode === "calendar";
   const parent = hierarchyParentDetail?.lifeLink;
   const branch = snapshot.hierarchyParentId ? snapshot.lifeLinkChildren[snapshot.hierarchyParentId] : snapshot.rootLifeLinks;
-  const title = searchMode ? "Search" : scanMode ? "Scan a QR" : routinesMode ? "My Routines" : collectionsMode ? selectedCollection?.title ?? "My Collections" : parent?.title ?? "My Life Links";
-  const panelName = searchMode ? "Search" : scanMode ? "Scan" : routinesMode ? "Routines" : collectionsMode ? "Collections" : "Hierarchies";
+  const title = searchMode ? "Search" : scanMode ? "Scan a QR" : calendarMode ? "My Calendar" : routinesMode ? "My Routines" : collectionsMode ? selectedCollection?.title ?? "My Collections" : parent?.title ?? "My Life Links";
+  const panelName = searchMode ? "Search" : scanMode ? "Scan" : calendarMode ? "Calendar" : routinesMode ? "Routines" : collectionsMode ? "Collections" : "Hierarchies";
   const sectionGroupIds = [...snapshot.collectionSections.map((section) => section.id), "__unsectioned"];
   const allSectionsCollapsed = sectionGroupIds.every((id) => collapsedGroups.includes(id));
   const navOpen = pinned || hovered || mobileNavigation || accountMenuOpen;
@@ -56,11 +60,14 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
   useEffect(() => { try { localStorage.setItem("life-links-navigation-pinned", String(pinned)); } catch { /* Cosmetic preference only. */ } }, [pinned]);
   useEffect(() => { scrollRef.current?.scrollTo(0, 0); setMiddleCollapsed(false); }, [snapshot.hierarchyParentId, selectedCollection?.id, snapshot.routineWorkspace.selectedRoutine?.routine.id, snapshot.activeView]);
   useEffect(() => { setCollapsedGroups([]); setCollectionView("sections"); }, [selectedCollection?.id]);
-  useEffect(() => { setEditingHierarchy(false); setSelectedIds([]); setChangeError(""); setRoutineDetailKind("routine"); setRoutineDialog(null); }, [currentUser?.id, snapshot.hierarchyParentId, snapshot.workspaceMode, snapshot.activeView]);
+  useEffect(() => { setEditingHierarchy(false); setSelectedIds([]); setChangeError(""); setRoutineDetailKind("routine"); setRoutineDialog(null); setCalendarDialog(null); }, [currentUser?.id, snapshot.hierarchyParentId, snapshot.workspaceMode, snapshot.activeView]);
   useEffect(() => {
     // An agent must not obscure or discard a human form that is already open.
-    if ((dialog || routineDialog) && snapshot.agentChangeConfirmation) controller.confirmAgentChange(false);
-  }, [controller, dialog, routineDialog, snapshot.agentChangeConfirmation]);
+    if ((dialog || routineDialog || calendarDialog) && snapshot.agentChangeConfirmation) controller.confirmAgentChange(false);
+    if ((dialog || routineDialog || calendarDialog) && snapshot.agentCalendarDeletionConfirmation) {
+      controller.confirmAgentCalendarDeletion(false);
+    }
+  }, [controller, dialog, routineDialog, calendarDialog, snapshot.agentChangeConfirmation, snapshot.agentCalendarDeletionConfirmation]);
   useEffect(() => {
     const phoneLayout = window.matchMedia(PHONE_LAYOUT_QUERY);
     const restoreMiddleOnPhone = () => { if (phoneLayout.matches) setMiddleCollapsed(false); };
@@ -180,9 +187,10 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
       <aside className="ll-sidebar" aria-label="Life Links navigation" onMouseEnter={() => { if (canHover) setHovered(true); }} onMouseLeave={() => setHovered(false)} onFocusCapture={() => setHovered(true)} onBlurCapture={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setHovered(false); }}>
         <div className="ll-sidebar-top"><button className="ll-icon-button ll-pin" onClick={() => setPinned(!pinned)} title={pinned ? "Unpin navigation" : "Pin navigation"} aria-label={pinned ? "Unpin navigation" : "Pin navigation"} aria-pressed={pinned}>{pinned ? <PinOff size={18} /> : <Pin size={18} />}</button></div>
         <nav className="ll-nav-scroll">
-          <button className={`ll-nav-item ${dataMode && !collectionsMode && !routinesMode ? "active" : ""}`} title={!navOpen ? "My Life Links" : undefined} onClick={() => navigate(() => void controller.openHierarchy())}><LifeLinksGlyph double /><span>My Life Links</span></button>
+          <button className={`ll-nav-item ${dataMode && !collectionsMode && !routinesMode && !calendarMode ? "active" : ""}`} title={!navOpen ? "My Life Links" : undefined} onClick={() => navigate(() => void controller.openHierarchy())}><LifeLinksGlyph double /><span>My Life Links</span></button>
           <button className={`ll-nav-item ${dataMode && collectionsMode ? "active" : ""}`} title={!navOpen ? "My Collections" : undefined} onClick={() => navigate(() => void controller.openCollections())}><Boxes size={23} /><span>My Collections</span></button>
           <button className={`ll-nav-item ${dataMode && routinesMode ? "active" : ""}`} title={!navOpen ? "My Routines" : undefined} onClick={() => navigate(() => void controller.openRoutines())}><Repeat2 size={22} /><span>My Routines</span></button>
+          <button className={`ll-nav-item ${dataMode && calendarMode ? "active" : ""}`} title={!navOpen ? "My Calendar" : undefined} onClick={() => navigate(() => void controller.openCalendar())}><CalendarDays size={22} /><span>My Calendar</span></button>
           <button className={`ll-nav-item ${searchMode ? "active" : ""}`} title={!navOpen ? "Search records" : undefined} onClick={() => navigate(() => { controller.setDetailsOpen(false); controller.setActiveView("search"); })}><Search size={22} /><span>Search records</span></button>
           <button className={`ll-nav-item ${scanMode ? "active" : ""}`} title={!navOpen ? "Scan a QR" : undefined} onClick={() => navigate(() => { controller.setDetailsOpen(false); controller.setActiveView("scan"); })}><ScanLine size={22} /><span>Scan a QR</span></button>
         </nav>
@@ -193,27 +201,27 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
         ]}><span className="ll-avatar">{initials}</span><span className="ll-account-name">{currentUser?.displayName}</span></ActionMenu><div className="ll-rail-bottom-line" /></div>
       </aside>
       <main className="ll-middle" aria-label={panelName}>
-        <div className="ll-panel-heading ll-panel-heading-left"><button className="ll-icon-button" title={`${middleCollapsed ? "Expand" : "Collapse"} ${panelName}`} aria-label={`${middleCollapsed ? "Expand" : "Collapse"} ${panelName}`} onClick={() => setMiddleCollapsed(!middleCollapsed)}>{middleCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button>{!middleCollapsed && <><span>{panelName}</span>{dataMode && !collectionsMode && !routinesMode && undoControl()}</>}</div>
+        <div className="ll-panel-heading ll-panel-heading-left"><button className="ll-icon-button" title={`${middleCollapsed ? "Expand" : "Collapse"} ${panelName}`} aria-label={`${middleCollapsed ? "Expand" : "Collapse"} ${panelName}`} onClick={() => setMiddleCollapsed(!middleCollapsed)}>{middleCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button>{!middleCollapsed && <><span>{panelName}</span>{dataMode && !collectionsMode && !routinesMode && !calendarMode && undoControl()}</>}</div>
         {!middleCollapsed && <div className="ll-panel-scroll" ref={scrollRef}>
           {snapshot.error && <div className="ll-error" role="alert">{snapshot.error}<button className="ll-text-button" onClick={() => void controller.refreshOwnerLibrary()}>Retry</button></div>}
           {changeError && <p className="ll-inline-warning" role="alert">{changeError}</p>}
-          {!routinesMode && <PathBreadcrumbs label="Current layer" truncated={!collectionsMode && hierarchyParentDetail?.ancestry.truncated} items={!dataMode ? [] : collectionsMode ? selectedCollection ? [
+          {!routinesMode && !calendarMode && <PathBreadcrumbs label="Current layer" truncated={!collectionsMode && hierarchyParentDetail?.ancestry.truncated} items={!dataMode ? [] : collectionsMode ? selectedCollection ? [
              { id: "__collections", title: "My Collections", onSelect: () => void controller.openCollections() }
            ] : [] : parent ? [
              { id: "__root", title: "My Life Links", onSelect: () => void controller.openHierarchy() },
              ...(hierarchyParentDetail?.ancestry.items ?? []).map((item) => ({ id: item.id, title: item.title, current: item.id === parent.id, onSelect: () => void controller.openHierarchy(item.id) }))
            ] : []} />}
-          {editingHierarchy && dataMode && !collectionsMode && !routinesMode && <section className="ll-edit-toolbar">
+          {editingHierarchy && dataMode && !collectionsMode && !routinesMode && !calendarMode && <section className="ll-edit-toolbar">
             <div role="toolbar" aria-label="Edit hierarchy"><strong aria-live="polite">{selectedIds.length} selected</strong>
               <button className="ll-button" disabled={busy || !selectedIds.length} onClick={() => setDialog({ kind: "move", lifeLinkIds: [...selectedIds] })}><Move size={16} />Move</button>
               <button className="ll-button ll-danger-text" disabled={busy || !selectedIds.length} onClick={() => setDialog({ kind: "delete", lifeLinkIds: [...selectedIds] })}><Trash2 size={16} />Delete</button>
               <button className="ll-text-button" disabled={busy} onClick={finishEditing}>Done</button>
             </div><p className="ll-history-warning">{CHANGE_HISTORY_WARNING}</p>
           </section>}
-          {!routinesMode && <div className="ll-title-row"><div><h1 ref={headingRef} tabIndex={-1}>{title}</h1><p className="ll-subtitle">{dataMode ? collectionsMode ? selectedCollection ? `${snapshot.collectionMembers.length} unique members · ${snapshot.collectionSections.length} sections` : `${snapshot.collections.length} Collections` : `${branch?.items.length ?? 0}${branch?.nextCursor ? "+" : ""} direct Life Links` : searchMode ? "Life Links, Collections, and sections" : "Open a QR from its code or URL"}</p></div>
+          {!routinesMode && !calendarMode && <div className="ll-title-row"><div><h1 ref={headingRef} tabIndex={-1}>{title}</h1><p className="ll-subtitle">{dataMode ? collectionsMode ? selectedCollection ? `${snapshot.collectionMembers.length} unique members · ${snapshot.collectionSections.length} sections` : `${snapshot.collections.length} Collections` : `${branch?.items.length ?? 0}${branch?.nextCursor ? "+" : ""} direct Life Links` : searchMode ? "Life Links, Collections, and sections" : "Open a QR from its code or URL"}</p></div>
              {dataMode && <ActionMenu key={snapshot.routePathname} label={`Add to ${title}`} className="ll-icon-button ll-primary ll-main-plus" items={createActions}><Plus size={24} /></ActionMenu>}
           </div>}
-          {dataMode && !collectionsMode && !routinesMode && <div className="ll-record-list">{branch?.items.map(renderHierarchyRow)}{branch?.loading && <p className="ll-muted">Loading Life Links…</p>}{branch?.loaded && !branch.items.length && <p className="ll-empty">No Life Links here yet. Use + to create a folder or item.</p>}{branch?.nextCursor && <button className="ll-text-button ll-load-more" onClick={() => void controller.loadMoreLifeLinks(snapshot.hierarchyParentId)}>Load more Life Links</button>}{branch?.truncated && !branch.nextCursor && <p className="ll-inline-warning">This layer could not be fully loaded.</p>}</div>}
+          {dataMode && !collectionsMode && !routinesMode && !calendarMode && <div className="ll-record-list">{branch?.items.map(renderHierarchyRow)}{branch?.loading && <p className="ll-muted">Loading Life Links…</p>}{branch?.loaded && !branch.items.length && <p className="ll-empty">No Life Links here yet. Use + to create a folder or item.</p>}{branch?.nextCursor && <button className="ll-text-button ll-load-more" onClick={() => void controller.loadMoreLifeLinks(snapshot.hierarchyParentId)}>Load more Life Links</button>}{branch?.truncated && !branch.nextCursor && <p className="ll-inline-warning">This layer could not be fully loaded.</p>}</div>}
           {dataMode && collectionsMode && !selectedCollection && <div className="ll-record-list">{!snapshot.collectionLoading && snapshot.collections.map((collection) => <button className="ll-collection-index-row" key={collection.id} onClick={() => void controller.openCollection(collection.id)}><Boxes size={24} /><span><strong>{collection.title}</strong><small>{collection.purpose}</small></span><ChevronRight size={18} /></button>)}{snapshot.collectionsLoading || snapshot.collectionLoading ? <p className="ll-muted">Loading Collection…</p> : !snapshot.collections.length && <p className="ll-empty">No Collections yet. Use + to create one.</p>}{!snapshot.collectionsComplete && !snapshot.collectionsLoading && !snapshot.collectionLoading && <p className="ll-inline-warning">The Collections list is incomplete.</p>}</div>}
           {dataMode && collectionsMode && selectedCollection && <>
             {selectedCollection.purpose && <p className="ll-collection-purpose">{selectedCollection.purpose}</p>}
@@ -231,6 +239,7 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
             {selectedCollection.notes && <section className="ll-detail-section"><h3>Collection notes</h3><p className="ll-preserve-lines">{selectedCollection.notes}</p></section>}
           </>}
           {dataMode && routinesMode && <RoutineWorkspacePanel controller={controller} snapshot={snapshot} onOpenDialog={setRoutineDialog} onOpenDetails={() => controller.setDetailsOpen(true)} onShowRoutine={() => setRoutineDetailKind("routine")} onShowSession={() => setRoutineDetailKind("session")} />}
+          {dataMode && calendarMode && <CalendarWorkspacePanel controller={controller} snapshot={snapshot} onOpenDialog={setCalendarDialog} onOpenDetails={() => controller.setDetailsOpen(true)} />}
           {searchMode && <section className="ll-search-screen"><form className="ll-search-form" onSubmit={(event) => { event.preventDefault(); void controller.searchLifeLinks(); }}><Search size={19} /><input aria-label="Search records" placeholder="Search places, things, and notes" value={snapshot.lifeLinkSearchQuery} onChange={(event) => controller.setLifeLinkSearchQuery(event.target.value)} /><button className="ll-button ll-primary" disabled={snapshot.lifeLinkSearchLoading}>Search</button></form>
             {snapshot.lifeLinkSearchLoading && <p className="ll-muted">Searching…</p>}
             {snapshot.lifeLinkSearchResults.map((result) => {
@@ -255,8 +264,10 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
           </section>}
         </div>}
       </main>
-      <aside className="ll-details" aria-label="Details"><div className="ll-panel-heading ll-panel-heading-right">{detailsOpen && <><button className="ll-mobile-back ll-text-button" onClick={() => controller.setDetailsOpen(false)}><ChevronLeft size={18} />Back</button><span>Details</span>{!routinesMode && undoControl()}</>}<button className="ll-icon-button" aria-label={detailsOpen ? "Collapse Details" : "Expand Details"} title={detailsOpen ? "Collapse Details" : "Expand Details"} onClick={() => controller.setDetailsOpen(!detailsOpen)}>{detailsOpen ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}</button></div>
-        {detailsOpen && <div className="ll-panel-scroll" key={snapshot.routePathname}>{changeError && <p className="ll-inline-warning" role="alert">{changeError}</p>}{routinesMode ? routineDetailKind === "session" && snapshot.routineWorkspace.selectedSession
+      <aside className="ll-details" aria-label="Details"><div className="ll-panel-heading ll-panel-heading-right">{detailsOpen && <><button className="ll-mobile-back ll-text-button" onClick={() => controller.setDetailsOpen(false)}><ChevronLeft size={18} />Back</button><span>Details</span>{!routinesMode && !calendarMode && undoControl()}</>}<button className="ll-icon-button" aria-label={detailsOpen ? "Collapse Details" : "Expand Details"} title={detailsOpen ? "Collapse Details" : "Expand Details"} onClick={() => controller.setDetailsOpen(!detailsOpen)}>{detailsOpen ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}</button></div>
+        {detailsOpen && <div className="ll-panel-scroll" key={snapshot.routePathname}>{changeError && <p className="ll-inline-warning" role="alert">{changeError}</p>}{calendarMode
+          ? <CalendarDetailPanel controller={controller} snapshot={snapshot} onOpenDialog={setCalendarDialog} />
+          : routinesMode ? routineDetailKind === "session" && snapshot.routineWorkspace.selectedSession
           ? <RoutineSessionDetailPanel snapshot={snapshot} onBack={() => setRoutineDetailKind("routine")} onOpenDialog={setRoutineDialog} />
           : <RoutineDetailPanel controller={controller} snapshot={snapshot} onOpenDialog={setRoutineDialog} onShowSession={() => setRoutineDetailKind("session")} />
           : <LifeLinkDetail detail={selectedLifeLinkDetail} busy={busy} collectionMode={collectionsMode} memberships={snapshot.selectedLifeLinkMemberships} membershipsLoading={snapshot.membershipsLoading} membershipsComplete={snapshot.membershipsComplete}
@@ -267,13 +278,15 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
     <input type="file" aria-label="Add attachments" accept={ATTACHMENT_FILE_ACCEPT} multiple hidden ref={mediaInput} onChange={(event) => { if (event.target.files?.length && mediaTarget.current) void controller.uploadCanonicalMedia(mediaTarget.current, event.target.files); event.target.value = ""; }} />
     {dialog && ["create", "collection", "section", "members"].includes(dialog.kind) && <FormDialog key={JSON.stringify(dialog)} dialog={dialog} controller={controller} snapshot={snapshot} onClose={close} />}
     {(dialog?.kind === "move" || dialog?.kind === "delete") && <LifeLinkChangeDialog key={JSON.stringify(dialog)} operation={dialog.kind} lifeLinkIds={dialog.lifeLinkIds} controller={controller} snapshot={snapshot} onClose={close} onApplied={() => { close(); finishEditing(); }} />}
-    {!dialog && !routineDialog && snapshot.agentChangeConfirmation && <ChangePreviewDialog preview={snapshot.agentChangeConfirmation} busy={false} onConfirm={() => controller.confirmAgentChange(true)} onCancel={() => controller.confirmAgentChange(false)} />}
+    {!dialog && !routineDialog && !calendarDialog && snapshot.agentChangeConfirmation && <ChangePreviewDialog preview={snapshot.agentChangeConfirmation} busy={false} onConfirm={() => controller.confirmAgentChange(true)} onCancel={() => controller.confirmAgentChange(false)} />}
+    {!dialog && !routineDialog && !calendarDialog && !snapshot.agentChangeConfirmation && snapshot.agentCalendarDeletionConfirmation && <AgentCalendarDeletionDialog preview={snapshot.agentCalendarDeletionConfirmation} onConfirm={() => controller.confirmAgentCalendarDeletion(true)} onCancel={() => controller.confirmAgentCalendarDeletion(false)} />}
     {dialog?.kind === "assign" && <SectionAssignmentDialog controller={controller} snapshot={snapshot} lifeLinkId={dialog.lifeLinkId} onClose={close} />}
     {dialog?.kind === "qr" && <QrDialog controller={controller} snapshot={snapshot} lifeLinkId={dialog.lifeLinkId} onClose={close} />}
     {dialog?.kind === "agent" && <Dialog title="Agent connection" onClose={close}>{agentPanel}</Dialog>}
     {dialog?.kind === "settings" && <Dialog title="Settings" onClose={close}><div className="ll-form"><label>Appearance<select value={snapshot.theme} onChange={(event) => controller.setTheme(event.target.value as "light" | "dark")}><option value="light">Light</option><option value="dark">Dark</option></select></label></div></Dialog>}
-    {dialog?.kind === "help" && <Dialog title="Help" onClose={close}><div className="ll-help"><h3>My Life Links</h3><p>Folders describe where things belong. Open a folder to see its contents; select an item for its details.</p><h3>My Collections</h3><p>Bring items together for a purpose without moving them. Sections organize a Collection, and an item can belong to several sections or Collections.</p><h3>My Routines</h3><p>Plan repeatable actions, record what actually happened, and keep completed Sessions as history. Planned targets, actual results, and next-time proposals stay separate.</p><h3>QR codes</h3><p>Attach a QR to an item or container. Choose exactly which fields its public page shows in Details → QR code.</p></div></Dialog>}
+    {dialog?.kind === "help" && <Dialog title="Help" onClose={close}><div className="ll-help"><h3>My Life Links</h3><p>Folders describe where things belong. Open a folder to see its contents; select an item for its details.</p><h3>My Collections</h3><p>Bring items together for a purpose without moving them. Sections organize a Collection, and an item can belong to several sections or Collections.</p><h3>My Routines</h3><p>Plan repeatable actions, record what actually happened, and keep completed Sessions as history. Planned targets, actual results, and next-time proposals stay separate.</p><h3>My Calendar</h3><p>See Life Links events and planned Routine occurrences together. Native events remain Calendar-owned; Routine occurrences continue to open and update through My Routines.</p><h3>QR codes</h3><p>Attach a QR to an item or container. Choose exactly which fields its public page shows in Details → QR code.</p></div></Dialog>}
     {routineDialog && <RoutineDialogHost dialog={routineDialog} controller={controller} snapshot={snapshot} onClose={() => setRoutineDialog(null)} onSessionCompleted={() => { setRoutineDetailKind("session"); setRoutineDialog(null); controller.setDetailsOpen(true); }} />}
+    {calendarDialog && <CalendarDialogHost dialog={calendarDialog} controller={controller} snapshot={snapshot} onClose={() => setCalendarDialog(null)} />}
     {dialog?.kind === "factory" && <Dialog title="Generate labels" onClose={close}><div className="ll-form"><label>Number of QR labels<input type="number" min={1} max={MAX_BATCH_COUNT} value={snapshot.batchCount} onChange={(event) => controller.setBatchCount(Number(event.target.value))} /></label><button className="ll-button ll-primary" disabled={busy} onClick={() => void controller.generateBatch()}>Generate batch</button>{snapshot.lastBatchIds.length > 0 && <><p>{snapshot.lastBatchIds.length} QR labels ready</p><div className="ll-button-row"><button className="ll-button" onClick={() => void controller.downloadCsv(snapshot.lastBatchIds)}><Download size={17} />Download CSV</button><button className="ll-button" onClick={() => void controller.downloadZip()}><Download size={17} />Download ZIP</button></div><div className="ll-generated-ids">{snapshot.lastBatchIds.map((id) => <code key={id}>{id}</code>)}</div></>}{snapshot.error && <p role="alert" className="ll-inline-warning">{snapshot.error}</p>}</div></Dialog>}
   </div>;
 }

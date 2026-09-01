@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  CalendarDays,
   CalendarPlus,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   CircleCheck,
-  Clock3,
   History,
   Layers3,
   Pencil,
@@ -21,7 +19,6 @@ import { ActionMenu } from "./FieldLedgerPrimitives";
 import {
   RoutineValueList,
   formatRoutineDateTime,
-  localIsoDate,
   routineScheduleMeta,
   type RoutineDialogState,
   type RoutineWorkspaceTab
@@ -59,7 +56,6 @@ export function RoutineWorkspacePanel({ controller, snapshot, onOpenDialog, onOp
     // Selecting one Routine hydrates its focused history. Restore the owner-wide
     // indexes whenever their global tabs are visible so their meaning never
     // silently changes after a selection.
-    if (tab === "today") void controller.loadRoutineOccurrences();
     if (tab === "history") void controller.loadRoutineSessions();
   }, [controller, state.selectedRoutine?.routine.id, tab]);
 
@@ -107,31 +103,23 @@ export function RoutineWorkspacePanel({ controller, snapshot, onOpenDialog, onOp
 
     <div className="ll-collection-toolbar ll-routine-toolbar">
       <div className="ll-view-switch" role="tablist" aria-label="Routine views">
-        <button type="button" role="tab" aria-selected={tab === "routines"} aria-pressed={tab === "routines"} onClick={() => setTab("routines")}><Repeat2 size={15} />Routines</button>
-        <button type="button" role="tab" aria-selected={tab === "today"} aria-pressed={tab === "today"} onClick={() => setTab("today")}><CalendarDays size={15} />Today</button>
-        <button type="button" role="tab" aria-selected={tab === "history"} aria-pressed={tab === "history"} onClick={() => setTab("history")}><History size={15} />History</button>
+        <button id="ll-routine-tab-routines" type="button" role="tab" aria-controls="ll-routine-panel-routines" aria-selected={tab === "routines"} aria-pressed={tab === "routines"} onClick={() => setTab("routines")}><Repeat2 size={15} />Routines</button>
+        <button id="ll-routine-tab-history" type="button" role="tab" aria-controls="ll-routine-panel-history" aria-selected={tab === "history"} aria-pressed={tab === "history"} onClick={() => setTab("history")}><History size={15} />History</button>
       </div>
       {tab === "routines" && groups.length > 1 && <button className="ll-text-button ll-section-toggle-all" onClick={toggleAll}>{allCollapsed ? "Expand all" : "Collapse all"}</button>}
     </div>
 
     {state.error && <p className="ll-error" role="alert">{state.error}</p>}
     {state.loading && !state.routines.length ? <p className="ll-empty" role="status">Loading Routines…</p> : null}
-    {tab === "routines" && <RoutineIndex
+    {tab === "routines" && <div id="ll-routine-panel-routines" role="tabpanel" aria-labelledby="ll-routine-tab-routines"><RoutineIndex
       routines={routines}
       groups={groups}
       collapsedGroups={collapsedGroups}
       selectedRoutineId={state.selectedRoutine?.routine.id ?? null}
       onToggle={toggleGroup}
       onSelect={(routineId) => void showRoutine(routineId)}
-    />}
-    {tab === "today" && <TodayIndex
-      occurrences={state.occurrences}
-      routines={state.routines}
-      activeRunRoutineId={state.activeRun?.routineId ?? null}
-      onSelect={(routineId) => void showRoutine(routineId)}
-      onBegin={(occurrence) => void beginOccurrence(occurrence)}
-    />}
-    {tab === "history" && <SessionIndex sessions={state.sessions} routines={state.routines} onSelect={(session) => void showSession(session)} />}
+    /></div>}
+    {tab === "history" && <div id="ll-routine-panel-history" role="tabpanel" aria-labelledby="ll-routine-tab-history"><SessionIndex sessions={state.sessions} routines={state.routines} onSelect={(session) => void showSession(session)} /></div>}
     {tab === "routines" && state.routinesNextCursor && <button className="ll-button ll-load-more" onClick={() => void controller.loadMoreRoutines()}>Load more Routines</button>}
     {tab === "history" && state.sessionsNextCursor && <button className="ll-button ll-load-more" onClick={() => void controller.loadRoutineSessions({ cursor: state.sessionsNextCursor })}>Load more history</button>}
   </div>;
@@ -169,29 +157,6 @@ function RoutineRow({ routine, selected, onSelect }: { routine: RoutineSummaryRe
       <span className="ll-chip ll-neutral">Revision {routine.revisionNumber}</span>
     </button>
   </div>;
-}
-
-function TodayIndex({ occurrences, routines, activeRunRoutineId, onSelect, onBegin }: {
-  occurrences: RoutineOccurrenceRecord[];
-  routines: RoutineSummaryRecord[];
-  activeRunRoutineId: string | null;
-  onSelect(routineId: string): void;
-  onBegin(occurrence: RoutineOccurrenceRecord): void;
-}) {
-  const today = localIsoDate();
-  const items = occurrences.filter((occurrence) => occurrence.localDate === today).sort((left, right) => left.plannedFor.localeCompare(right.plannedFor));
-  if (!items.length) return <div className="ll-empty ll-routine-empty"><CalendarDays size={24} /><strong>Nothing planned for today</strong><p>Your unscheduled Routines are still available from the Routines tab.</p></div>;
-  return <div className="ll-record-list ll-routine-occurrences">{items.map((occurrence) => {
-    const routine = routines.find((candidate) => candidate.id === occurrence.routineId);
-    const canStart = occurrence.status === "planned" || occurrence.status === "started";
-    return <div className="ll-member-row ll-routine-row" key={occurrence.id}>
-      <button className="ll-row-main" onClick={() => onSelect(occurrence.routineId)}>
-        <Clock3 size={18} /><span className="ll-row-copy"><strong>{routine?.title ?? "Routine"}</strong><small>{formatRoutineDateTime(occurrence.plannedFor)}</small></span>
-        <span className={`ll-chip ${occurrence.status === "completed" ? "ll-blue" : "ll-neutral"}`}>{occurrence.status}</span>
-      </button>
-      {canStart && <button className="ll-icon-button ll-row-action" title={activeRunRoutineId === occurrence.routineId ? "Resume Routine" : "Start Routine"} aria-label={activeRunRoutineId === occurrence.routineId ? "Resume Routine" : "Start Routine"} onClick={() => onBegin(occurrence)}><Play size={17} /></button>}
-    </div>;
-  })}</div>;
 }
 
 function SessionIndex({ sessions, routines, onSelect }: { sessions: RoutineSessionProjection[]; routines: RoutineSummaryRecord[]; onSelect(session: RoutineSessionProjection): void }) {

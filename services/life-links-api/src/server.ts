@@ -9,6 +9,10 @@ import JSZip from "jszip";
 import multer from "multer";
 import QRCode from "qrcode";
 import {
+  type CalendarDomainErrorCode,
+  type CalendarEventEditTarget,
+  type CreateCalendarCommand,
+  type CreateCalendarEventCommand,
   type ClaimQrCommand,
   type AppendRoutineSessionAmendmentCommand,
   type CreateActivityCommand,
@@ -20,6 +24,7 @@ import {
   type LifeLinkPageRequest,
   type PreviewLifeLinkChangeInput,
   LifeLinkDomainError,
+  CalendarDomainError,
   type LinkBodyDoc,
   ATTACHMENT_MIME_TYPES,
   type AttachmentImageReadOptions,
@@ -28,13 +33,19 @@ import {
   type PrivacyStatus,
   type PutRoutineRunStepResultCommand,
   type ReviseRoutineCommand,
+  type ReviseCalendarEventCommand,
+  type RestoreCalendarCommand,
+  type RestoreCalendarEventCommand,
   type RoutineScheduleRecord,
   type RoutineScheduleRule,
   type StartRoutineRunCommand,
+  type SoftDeleteCalendarCommand,
+  type SoftDeleteCalendarEventCommand,
   type UpdateActivityCommand,
   type UpdateRoutineCommand,
   type UpdateRoutineGroupCommand,
   type UpdateRoutineScheduleCommand,
+  type UpdateCalendarCommand,
   COMPETITION_FIXTURE_PROFILE,
   LINK_BODY_DOC_VERSION,
   MAX_BATCH_COUNT,
@@ -45,6 +56,7 @@ import {
   MAX_MEDIA_BYTES,
   MAX_MEDIA_PER_LINK,
   MAX_QR_ID_LENGTH,
+  MAX_ROUTINE_MATERIALIZATION_DAYS,
   MAX_SCAN_TEXT_LENGTH,
   MAX_TITLE_LENGTH,
   createLinkBodyDocFromPlainText,
@@ -81,6 +93,14 @@ import {
   normalizeRoutineValues,
   normalizeClearLifeLinkQrBindingCommand,
   normalizeBatchCount,
+  normalizeCalendarEventEditTarget,
+  normalizeCalendarEventId,
+  normalizeCalendarEventRevisionId,
+  normalizeCalendarEventTombstoneId,
+  normalizeCalendarId,
+  normalizeCalendarIanaTimeZone,
+  normalizeCalendarPatch,
+  assertCalendarEventEditTargetMatches,
   parseQrId
 } from "@life-links/core";
 
@@ -89,7 +109,11 @@ import type { Logger } from "./logger.js";
 import { createSessionToken, hasSessionTokenShape, hashSessionToken, verifyPassword } from "./password.js";
 import {
   ClaimIdempotencyConflictError,
+  LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID,
+  LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID,
   type LifeLinksStore,
+  type CalendarEventPageRequest,
+  type CalendarPageRequest,
   type RoutineOccurrencePageRequest,
   type RoutinePageRequest,
   type StoredUser
@@ -108,6 +132,7 @@ const mediaUpload = multer({
 const MAX_LIFE_LINK_ID_LENGTH = 200;
 const MAX_LIFE_LINK_CURSOR_LENGTH = 4096;
 const MAX_EXPECTED_UPDATED_AT_LENGTH = 64;
+const MAX_CALENDAR_QUERY_WINDOW_DAYS = 366;
 
 function attachmentRequestCancellation(request: Request, response: Response) {
   const controller = new AbortController();
@@ -324,7 +349,23 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   });
 
   app.put("/api/agent-connection", requireAuthenticated, async (request: AppRequest, response) => {
-    const user = await store.connectAgent(request.user!.id);
+    const input = request.body === undefined || request.body === null
+      ? {}
+      : readObjectBody(request, response, logger);
+    if (!input || !validateObjectFields(request, response, logger, input, ["toolCatalogId"])) return;
+    const requestedCatalogId = input.toolCatalogId === undefined
+      ? LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID
+      : input.toolCatalogId;
+    if (typeof requestedCatalogId !== "string") {
+      response.status(400).json({ error: "invalid_agent_tool_catalog" });
+      return;
+    }
+    if (requestedCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID &&
+        requestedCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID) {
+      response.status(400).json({ error: "invalid_agent_tool_catalog" });
+      return;
+    }
+    const user = await store.connectAgent(request.user!.id, requestedCatalogId);
     if (!user) {
       response.status(401).json({ error: "authentication_required" });
       return;
@@ -332,7 +373,8 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
     logger.info("life_links.agent_connection.connected", {
       msg: "Owner connected agent",
       ...requestLogFields(request),
-      user_id: user.id
+      user_id: user.id,
+      tool_catalog_id: user.agentToolCatalogId
     });
     response.json({ agentConnection: agentConnectionForUser(user) });
   });
@@ -1286,6 +1328,36 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
     response.json({ occurrences: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
   });
 
+  app.post("/api/routine-occurrences/materialize", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readRoutineMaterializationWindow(request, response, logger);
+    if (!input) return;
+    const ownerId = request.user!.id;
+    let cursor: string | null = null;
+    let routineCount = 0;
+    let occurrenceCount = 0;
+    do {
+      const page = await store.listRoutines(ownerId, {
+        cursor,
+        limit: MAX_LIFE_LINK_CHILD_PAGE_LIMIT,
+        includeArchived: false
+      });
+      for (const routine of page.items) {
+        routineCount += 1;
+        occurrenceCount += (await store.materializeRoutineOccurrences(ownerId, routine.id, input)).length;
+      }
+      cursor = page.nextCursor;
+    } while (cursor !== null);
+    logger.info("life_links.routine.occurrences_materialized", {
+      msg: "Owner Routine Occurrences materialized for calendar window",
+      ...requestLogFields(request),
+      start_date: input.startDate,
+      end_date: input.endDate,
+      routine_count: routineCount,
+      occurrence_count: occurrenceCount
+    });
+    response.json({ ...input, routineCount, occurrenceCount });
+  });
+
   app.get("/api/routine-occurrences/:occurrenceId", requireAuthenticated, async (request: AppRequest, response) => {
     const occurrence = await store.getRoutineOccurrence(
       request.user!.id, normalizeRoutineOccurrenceId(paramValue(request.params.occurrenceId))
@@ -1403,6 +1475,241 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       routine_session_result_id: amendment.stepResultId
     });
     response.status(201).json({ amendment, session });
+  });
+
+  app.get("/api/calendar-clock", requireAuthenticated, (request: AppRequest, response) => {
+    if (typeof request.query.timeZone !== "string") {
+      rejectValidation(request, response, logger, "timeZone", "calendar_time_zone_required");
+      return;
+    }
+    const timeZone = normalizeCalendarIanaTimeZone(request.query.timeZone);
+    const serverTime = new Date().toISOString();
+    response.json({ serverTime, timeZone, today: localIsoDate(new Date(serverTime), timeZone) });
+  });
+
+  app.get("/api/calendars", requireAuthenticated, async (request: AppRequest, response) => {
+    const page = readCalendarPageQuery(request, response, logger);
+    if (!page) return;
+    const result = await store.listCalendars(request.user!.id, page);
+    response.json({ calendars: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
+  });
+
+  app.post("/api/calendars", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readCalendarBody(request, response, logger, ["id", "title", "color", "timeZone", "isDefault"]);
+    if (!input) return;
+    const calendar = await store.createCalendar({
+      ...input,
+      id: normalizeCalendarId(input.id ?? `calendar-${randomUUID()}`),
+      ownerId: request.user!.id,
+      createdAt: new Date().toISOString()
+    } as unknown as CreateCalendarCommand);
+    logger.info("life_links.calendar.created", {
+      msg: "Owner Calendar created",
+      ...requestLogFields(request),
+      calendar_id: calendar.id,
+      is_default: calendar.isDefault
+    });
+    response.status(201).json({ calendar });
+  });
+
+  app.get("/api/calendars/:calendarId", requireAuthenticated, async (request: AppRequest, response) => {
+    const calendar = await store.getCalendar(
+      request.user!.id,
+      normalizeCalendarId(paramValue(request.params.calendarId))
+    );
+    if (!calendar) { sendCalendarError(response, 404, "calendar_not_found"); return; }
+    response.json({ calendar });
+  });
+
+  app.patch("/api/calendars/:calendarId", requireAuthenticated, async (request: AppRequest, response) => {
+    const calendarId = normalizeCalendarId(paramValue(request.params.calendarId));
+    const input = readCalendarRevisionMutation(request, response, logger, ["title", "color", "timeZone", "isDefault"]);
+    if (!input) return;
+    const { expectedUpdatedAt, ...patch } = input;
+    if (!Object.keys(patch).length) {
+      rejectValidation(request, response, logger, "patch", "calendar_patch_required");
+      return;
+    }
+    const calendar = await store.updateCalendar(request.user!.id, {
+      calendarId,
+      expectedUpdatedAt,
+      patch: normalizeCalendarPatch(patch)
+    } as UpdateCalendarCommand);
+    if (!calendar) { sendCalendarError(response, 404, "calendar_not_found"); return; }
+    logger.info("life_links.calendar.updated", {
+      msg: "Owner Calendar updated",
+      ...requestLogFields(request),
+      calendar_id: calendar.id,
+      is_default: calendar.isDefault
+    });
+    response.json({ calendar });
+  });
+
+  app.delete("/api/calendars/:calendarId", requireAuthenticated, async (request: AppRequest, response) => {
+    const calendarId = normalizeCalendarId(paramValue(request.params.calendarId));
+    const input = readCalendarRevisionMutation(request, response, logger, []);
+    if (!input) return;
+    const calendar = await store.softDeleteCalendar(request.user!.id, {
+      calendarId,
+      expectedUpdatedAt: input.expectedUpdatedAt,
+      deletedAt: new Date().toISOString()
+    } as SoftDeleteCalendarCommand);
+    if (!calendar) { sendCalendarError(response, 404, "calendar_not_found"); return; }
+    logger.info("life_links.calendar.deleted", {
+      msg: "Owner Calendar soft-deleted",
+      ...requestLogFields(request),
+      calendar_id: calendar.id
+    });
+    response.json({ calendar });
+  });
+
+  app.post("/api/calendars/:calendarId/restore", requireAuthenticated, async (request: AppRequest, response) => {
+    const calendarId = normalizeCalendarId(paramValue(request.params.calendarId));
+    const input = readCalendarRevisionMutation(request, response, logger, []);
+    if (!input) return;
+    const calendar = await store.restoreCalendar(request.user!.id, {
+      calendarId,
+      expectedUpdatedAt: input.expectedUpdatedAt,
+      restoredAt: new Date().toISOString()
+    } as RestoreCalendarCommand);
+    if (!calendar) { sendCalendarError(response, 404, "calendar_not_found"); return; }
+    logger.info("life_links.calendar.restored", {
+      msg: "Owner Calendar restored",
+      ...requestLogFields(request),
+      calendar_id: calendar.id
+    });
+    response.json({ calendar });
+  });
+
+  app.get("/api/calendar-events", requireAuthenticated, async (request: AppRequest, response) => {
+    const page = readCalendarEventPageQuery(request, response, logger);
+    if (!page) return;
+    const result = await store.listCalendarEvents(request.user!.id, page);
+    response.json({ calendarEvents: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
+  });
+
+  app.post("/api/calendar-events", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readCalendarBody(request, response, logger, [
+      "id", "revisionId", "calendarId", "lineage", "title", "description", "location", "status", "span",
+      "recurrence", "subjectLinks"
+    ]);
+    if (!input) return;
+    const calendarEvent = await store.createCalendarEvent({
+      ...input,
+      id: normalizeCalendarEventId(input.id ?? `calendar-event-${randomUUID()}`),
+      revisionId: normalizeCalendarEventRevisionId(
+        input.revisionId ?? `calendar-event-revision-${randomUUID()}`
+      ),
+      ownerId: request.user!.id,
+      calendarId: normalizeCalendarId(input.calendarId),
+      createdAt: new Date().toISOString()
+    } as unknown as CreateCalendarEventCommand);
+    logger.info("life_links.calendar.event_created", {
+      msg: "Owner native Calendar event created",
+      ...requestLogFields(request),
+      calendar_id: calendarEvent.event.calendarId,
+      calendar_event_id: calendarEvent.event.id,
+      calendar_event_revision_id: calendarEvent.currentRevision.id,
+      lineage_kind: calendarEvent.event.lineage.kind
+    });
+    response.status(201).json({ calendarEvent, latestTombstone: null });
+  });
+
+  app.get("/api/calendar-events/:eventId", requireAuthenticated, async (request: AppRequest, response) => {
+    const eventId = normalizeCalendarEventId(paramValue(request.params.eventId));
+    const calendarEvent = await store.getCalendarEvent(request.user!.id, eventId);
+    if (!calendarEvent) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
+    const tombstones = calendarEvent.event.deletedAt === null
+      ? null
+      : await store.listCalendarEventTombstones(request.user!.id, eventId);
+    response.json({ calendarEvent, latestTombstone: tombstones?.at(-1) ?? null });
+  });
+
+  app.patch("/api/calendar-events/:eventId", requireAuthenticated, async (request: AppRequest, response) => {
+    const eventId = normalizeCalendarEventId(paramValue(request.params.eventId));
+    const input = readCalendarBody(request, response, logger, [
+      "revisionId", "expectedCurrentRevisionId", "target", "title", "description", "location", "status", "span",
+      "recurrence", "subjectLinks"
+    ]);
+    if (!input) return;
+    const current = await store.getCalendarEvent(request.user!.id, eventId);
+    if (!current) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
+    const target = readSupportedCalendarEditTarget(input.target);
+    assertCalendarEventEditTargetMatches(target, current.event);
+    const { target: _target, ...revisionInput } = input;
+    const calendarEvent = await store.reviseCalendarEvent(request.user!.id, {
+      ...revisionInput,
+      revisionId: normalizeCalendarEventRevisionId(
+        input.revisionId ?? `calendar-event-revision-${randomUUID()}`
+      ),
+      ownerId: request.user!.id,
+      eventId,
+      expectedCurrentRevisionId: normalizeCalendarEventRevisionId(input.expectedCurrentRevisionId),
+      createdAt: new Date().toISOString()
+    } as unknown as ReviseCalendarEventCommand);
+    if (!calendarEvent) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
+    logger.info("life_links.calendar.event_revised", {
+      msg: "Owner native Calendar event revision created",
+      ...requestLogFields(request),
+      calendar_id: calendarEvent.event.calendarId,
+      calendar_event_id: calendarEvent.event.id,
+      calendar_event_revision_id: calendarEvent.currentRevision.id,
+      recurrence_scope: target.scope
+    });
+    response.json({ calendarEvent, latestTombstone: null });
+  });
+
+  app.delete("/api/calendar-events/:eventId", requireAuthenticated, async (request: AppRequest, response) => {
+    const eventId = normalizeCalendarEventId(paramValue(request.params.eventId));
+    const input = readCalendarBody(request, response, logger, [
+      "tombstoneId", "expectedCurrentRevisionId", "target"
+    ]);
+    if (!input) return;
+    const current = await store.getCalendarEvent(request.user!.id, eventId);
+    if (!current) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
+    const target = readSupportedCalendarEditTarget(input.target);
+    assertCalendarEventEditTargetMatches(target, current.event);
+    const deletion = await store.softDeleteCalendarEvent(request.user!.id, {
+      tombstoneId: normalizeCalendarEventTombstoneId(
+        input.tombstoneId ?? `calendar-event-tombstone-${randomUUID()}`
+      ),
+      eventId,
+      expectedCurrentRevisionId: normalizeCalendarEventRevisionId(input.expectedCurrentRevisionId),
+      deletedAt: new Date().toISOString()
+    } as SoftDeleteCalendarEventCommand);
+    if (!deletion) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
+    const calendarEvent = await store.getCalendarEvent(request.user!.id, eventId);
+    if (!calendarEvent) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
+    logger.info("life_links.calendar.event_deleted", {
+      msg: "Owner native Calendar event soft-deleted",
+      ...requestLogFields(request),
+      calendar_id: deletion.event.calendarId,
+      calendar_event_id: deletion.event.id,
+      calendar_event_tombstone_id: deletion.tombstone.id,
+      recurrence_scope: target.scope
+    });
+    response.json({ calendarEvent, latestTombstone: deletion.tombstone });
+  });
+
+  app.post("/api/calendar-events/:eventId/restore", requireAuthenticated, async (request: AppRequest, response) => {
+    const eventId = normalizeCalendarEventId(paramValue(request.params.eventId));
+    const input = readCalendarBody(request, response, logger, ["expectedCurrentRevisionId", "tombstoneId"]);
+    if (!input) return;
+    const calendarEvent = await store.restoreCalendarEvent(request.user!.id, {
+      eventId,
+      expectedCurrentRevisionId: normalizeCalendarEventRevisionId(input.expectedCurrentRevisionId),
+      tombstoneId: normalizeCalendarEventTombstoneId(input.tombstoneId),
+      restoredAt: new Date().toISOString()
+    } as RestoreCalendarEventCommand);
+    if (!calendarEvent) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
+    logger.info("life_links.calendar.event_restored", {
+      msg: "Owner native Calendar event restored",
+      ...requestLogFields(request),
+      calendar_id: calendarEvent.event.calendarId,
+      calendar_event_id: calendarEvent.event.id,
+      calendar_event_revision_id: calendarEvent.currentRevision.id
+    });
+    response.json({ calendarEvent, latestTombstone: null });
   });
 
   app.get("/api/links", requireAuthenticated, async (request: AppRequest, response) => {
@@ -1766,6 +2073,9 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       response.status(409).json({ error: "idempotency_key_conflict" });
       return;
     }
+    if (handleCalendarDomainError(error, request as AppRequest, response, logger)) {
+      return;
+    }
     if (handleLifeLinkDomainError(error, request as AppRequest, response, logger)) {
       return;
     }
@@ -2034,6 +2344,124 @@ function readRoutineBody(
   return input && validateObjectFields(request, response, logger, input, fields) ? input : undefined;
 }
 
+function readCalendarBody(
+  request: AppRequest,
+  response: Response,
+  logger: Logger,
+  fields: readonly string[]
+): Record<string, unknown> | undefined {
+  const input = readObjectBody(request, response, logger);
+  return input && validateObjectFields(request, response, logger, input, fields) ? input : undefined;
+}
+
+function readCalendarRevisionMutation(
+  request: AppRequest,
+  response: Response,
+  logger: Logger,
+  fields: readonly string[]
+): (Record<string, unknown> & { expectedUpdatedAt: string }) | undefined {
+  const input = readCalendarBody(request, response, logger, [...fields, "expectedUpdatedAt"]);
+  if (!input) return undefined;
+  const expectedUpdatedAt = validateExpectedUpdatedAt(request, response, logger, input.expectedUpdatedAt);
+  return expectedUpdatedAt === undefined ? undefined : { ...input, expectedUpdatedAt };
+}
+
+function readCalendarPageQuery(
+  request: AppRequest,
+  response: Response,
+  logger: Logger
+): CalendarPageRequest | undefined {
+  const page = readLifeLinkPageQuery(request, response, logger, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
+  if (!page) return undefined;
+  const includeDeleted = readOptionalCalendarBooleanQuery(request, response, logger, "includeDeleted");
+  if (includeDeleted === undefined && request.query.includeDeleted !== undefined) return undefined;
+  return { ...page, ...(includeDeleted === undefined ? {} : { includeDeleted }) };
+}
+
+function readCalendarEventPageQuery(
+  request: AppRequest,
+  response: Response,
+  logger: Logger
+): CalendarEventPageRequest | undefined {
+  const page = readLifeLinkPageQuery(request, response, logger, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
+  if (!page) return undefined;
+  const includeDeleted = readOptionalCalendarBooleanQuery(request, response, logger, "includeDeleted");
+  if (includeDeleted === undefined && request.query.includeDeleted !== undefined) return undefined;
+  const calendarIdValue = request.query.calendarId;
+  if (calendarIdValue !== undefined && typeof calendarIdValue !== "string") {
+    rejectValidation(request, response, logger, "calendar_id", "invalid_calendar_id");
+    return undefined;
+  }
+  const startDateValue = request.query.startDate;
+  const endDateValue = request.query.endDate;
+  if (typeof startDateValue !== "string" || typeof endDateValue !== "string") {
+    rejectValidation(request, response, logger, "date_window", "calendar_date_window_required");
+    return undefined;
+  }
+  const startDate = normalizeCalendarQueryDate(startDateValue);
+  const endDate = normalizeCalendarQueryDate(endDateValue);
+  if (endDate < startDate) {
+    throw new CalendarDomainError("invalid_calendar_event", "Calendar event date window is invalid.", {
+      reason: "invalid_date_window"
+    });
+  }
+  const inclusiveDays = Math.floor(
+    (Date.parse(`${endDate}T00:00:00.000Z`) - Date.parse(`${startDate}T00:00:00.000Z`)) / 86_400_000
+  ) + 1;
+  if (inclusiveDays > MAX_CALENDAR_QUERY_WINDOW_DAYS) {
+    throw new CalendarDomainError("invalid_calendar_event", "Calendar event date window exceeds its limit.", {
+      reason: "date_window_too_large"
+    });
+  }
+  return {
+    ...page,
+    startDate,
+    endDate,
+    ...(calendarIdValue === undefined ? {} : { calendarId: normalizeCalendarId(calendarIdValue) }),
+    ...(includeDeleted === undefined ? {} : { includeDeleted })
+  };
+}
+
+function readOptionalCalendarBooleanQuery(
+  request: AppRequest,
+  response: Response,
+  logger: Logger,
+  field: string
+): boolean | undefined {
+  const value = request.query[field];
+  if (value === undefined) return undefined;
+  if (value !== "true" && value !== "false") {
+    rejectValidation(request, response, logger, field, `invalid_${field.replace(/[A-Z]/g, (item) => `_${item.toLowerCase()}`)}`);
+    return undefined;
+  }
+  return value === "true";
+}
+
+function normalizeCalendarQueryDate(value: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw new CalendarDomainError("invalid_calendar_event", "Calendar event date window is invalid.", {
+      reason: "invalid_date_window"
+    });
+  }
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new CalendarDomainError("invalid_calendar_event", "Calendar event date window is invalid.", {
+      reason: "invalid_date_window"
+    });
+  }
+  return value;
+}
+
+function readSupportedCalendarEditTarget(value: unknown): CalendarEventEditTarget {
+  const target = normalizeCalendarEventEditTarget(value);
+  if (target.scope === "occurrence" || target.scope === "this_and_future") {
+    throw new CalendarDomainError("invalid_calendar_event", "Calendar recurrence edit scope is not available yet.", {
+      reason: "unsupported_recurrence_scope"
+    });
+  }
+  return target;
+}
+
 function readRoutineRevisionMutation(
   request: AppRequest,
   response: Response,
@@ -2083,6 +2511,33 @@ function readRoutineOccurrencePageQuery(
     ...(startDate === undefined ? {} : { startDate }),
     ...(endDate === undefined ? {} : { endDate })
   };
+}
+
+function readRoutineMaterializationWindow(
+  request: AppRequest,
+  response: Response,
+  logger: Logger
+): { startDate: string; endDate: string } | undefined {
+  const input = readRoutineBody(request, response, logger, ["startDate", "endDate"]);
+  if (!input) return undefined;
+  if (!("startDate" in input) || !("endDate" in input)) {
+    rejectValidation(request, response, logger, "date_window", "missing_materialization_date");
+    return undefined;
+  }
+  const startDate = normalizeRoutineLocalDate(input.startDate);
+  const endDate = normalizeRoutineLocalDate(input.endDate);
+  if (endDate < startDate) {
+    rejectValidation(request, response, logger, "date_window", "invalid_schedule_date_range");
+    return undefined;
+  }
+  const span = Math.floor(
+    (Date.parse(`${endDate}T00:00:00.000Z`) - Date.parse(`${startDate}T00:00:00.000Z`)) / 86_400_000
+  ) + 1;
+  if (span > MAX_ROUTINE_MATERIALIZATION_DAYS) {
+    rejectValidation(request, response, logger, "date_window", "materialization_window_too_large");
+    return undefined;
+  }
+  return { startDate, endDate };
 }
 
 function routineDefinitionWithStableIds(input: Record<string, unknown>, revisionId: string): Record<string, unknown> {
@@ -2522,6 +2977,69 @@ type RoutinePublicErrorCode =
   | "routine_conflict"
   | "routine_reference_conflict";
 
+const CALENDAR_ERROR_MESSAGES: Record<CalendarDomainErrorCode, string> = {
+  invalid_calendar: "Calendar request is invalid.",
+  calendar_not_found: "Calendar was not found.",
+  invalid_calendar_event: "Calendar event request is invalid.",
+  calendar_event_not_found: "Calendar event was not found.",
+  stale_calendar: "Calendar changed after it was read.",
+  stale_calendar_event: "Calendar event changed after it was read.",
+  calendar_conflict: "Calendar operation conflicts with its current state.",
+  calendar_reference_conflict: "Calendar references conflict with owner state."
+};
+
+function calendarErrorStatus(code: CalendarDomainErrorCode): number {
+  if (code === "calendar_not_found" || code === "calendar_event_not_found") return 404;
+  if (
+    code === "stale_calendar" ||
+    code === "stale_calendar_event" ||
+    code === "calendar_conflict" ||
+    code === "calendar_reference_conflict"
+  ) return 409;
+  return 400;
+}
+
+function sendCalendarError(
+  response: Response,
+  status: number,
+  code: CalendarDomainErrorCode,
+  options: { retryable?: boolean; reason?: string } = {}
+): void {
+  response.status(status).json({
+    error: {
+      code,
+      message: CALENDAR_ERROR_MESSAGES[code],
+      retryable: options.retryable ?? (code === "stale_calendar" || code === "stale_calendar_event"),
+      ...(options.reason ? { reason: options.reason } : {})
+    }
+  });
+}
+
+function isCalendarRoute(pathname: string): boolean {
+  return pathname === "/api/calendar-clock" || /^\/api\/(?:calendars|calendar-events)(?:\/|$)/.test(pathname);
+}
+
+function handleCalendarDomainError(
+  error: unknown,
+  request: AppRequest,
+  response: Response,
+  logger: Logger
+): boolean {
+  if (!(error instanceof CalendarDomainError) || !isCalendarRoute(request.path)) return false;
+  const status = calendarErrorStatus(error.code);
+  logger.warn("life_links.calendar.request_rejected", {
+    msg: "Owner Calendar request rejected",
+    ...requestLogFields(request),
+    ...routeLogFields(request.path),
+    error_code: error.code,
+    reason: error.reason,
+    retryable: error.retryable,
+    status
+  });
+  sendCalendarError(response, status, error.code, { retryable: error.retryable, reason: error.reason });
+  return true;
+}
+
 function sendRoutineError(
   response: Response,
   status: number,
@@ -2619,6 +3137,12 @@ function rejectValidation(request: AppRequest, response: Response, logger: Logge
     sendRoutineError(response, 400, "invalid_routine", { reason: error });
     return;
   }
+  if (isCalendarRoute(request.path)) {
+    sendCalendarError(response, 400, request.path.startsWith("/api/calendar-events")
+      ? "invalid_calendar_event"
+      : "invalid_calendar", { reason: error });
+    return;
+  }
   response.status(400).json({ error });
 }
 
@@ -2674,7 +3198,8 @@ function publicUser(user: StoredUser) {
 function agentConnectionForUser(user: StoredUser | undefined) {
   return {
     connected: Boolean(user?.agentConnectedAt),
-    connectedAt: user?.agentConnectedAt ?? null
+    connectedAt: user?.agentConnectedAt ?? null,
+    toolCatalogId: user?.agentToolCatalogId ?? null
   };
 }
 
@@ -2747,6 +3272,14 @@ function requestLogFields(request: AppRequest): Record<string, unknown> {
 }
 
 function routeLogFields(pathname: string): Record<string, unknown> {
+  const calendarEventMatch = pathname.match(/^\/api\/calendar-events\/([^/]+)(?:\/restore)?$/);
+  if (calendarEventMatch) {
+    return { calendar_event_id: decodeURIComponent(calendarEventMatch[1]) };
+  }
+  const calendarMatch = pathname.match(/^\/api\/calendars\/([^/]+)(?:\/restore)?$/);
+  if (calendarMatch) {
+    return { calendar_id: decodeURIComponent(calendarMatch[1]) };
+  }
   const mediaMatch = pathname.match(/^\/api\/links\/([^/]+)\/media\/([^/]+)$/);
   if (mediaMatch) {
     return { qr_id: decodeURIComponent(mediaMatch[1]), media_id: decodeURIComponent(mediaMatch[2]) };

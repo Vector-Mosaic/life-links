@@ -75,6 +75,21 @@ import {
   type UpdateRoutineGroupCommand,
   type UpdateRoutineScheduleCommand,
   type FinalizeRoutineRunCommand,
+  type CalendarRecord,
+  type CalendarEventRecord,
+  type CalendarEventRevisionRecord,
+  type CalendarEventTombstoneRecord,
+  type CreateCalendarCommand,
+  type UpdateCalendarCommand,
+  type SoftDeleteCalendarCommand,
+  type RestoreCalendarCommand,
+  type CanonicalCalendarEventCreation,
+  type CreateCalendarEventCommand,
+  type ReviseCalendarEventCommand,
+  type SoftDeleteCalendarEventCommand,
+  type RestoreCalendarEventCommand,
+  type CalendarEventDeletion,
+  CalendarDomainError,
   LINK_BODY_DOC_VERSION,
   MAX_MEDIA_PER_LINK,
   assertLifeLinkMediaBytes,
@@ -108,6 +123,15 @@ import {
   listRoutineScheduleLocalDates,
   projectRoutineSessionWithAmendments,
   reviseCanonicalRoutine,
+  createCanonicalCalendar,
+  applyCalendarPatch,
+  softDeleteCalendar,
+  restoreCalendar,
+  createCanonicalCalendarEvent,
+  reviseCanonicalCalendarEvent,
+  softDeleteCalendarEvent,
+  restoreCalendarEvent,
+  calendarRecurrenceIncludesOriginalOccurrence,
   createCompetitionFixtureData,
   createDemoSeedData,
   createLinkBodyDocFromPlainText,
@@ -140,7 +164,14 @@ import { hashPassword, verifyPassword } from "./password.js";
 export type StoredUser = UserRecord & {
   passwordHash: string;
   agentConnectedAt: string | null;
+  agentToolCatalogId: AgentToolCatalogId | null;
 };
+
+export const LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID = "life-links-page-webmcp-v1" as const;
+export const LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID = "life-links-calendar-v2" as const;
+export type AgentToolCatalogId =
+  | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID
+  | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID;
 
 export type SessionRecord = {
   id: string;
@@ -226,6 +257,20 @@ export type CompetitionFixtureCounts = {
   routineSessions: number;
   routineSessionStepResults: number;
   routineSessionAmendments: number;
+  calendars: number;
+  calendarEvents: number;
+  calendarEventRevisions: number;
+  calendarEventSubjectLinks: number;
+  calendarEventTombstones: number;
+  calendarProviderConnections: number;
+  calendarProviderBindings: number;
+  calendarProviderSyncStates: number;
+  calendarProviderEventProjections: number;
+  calendarProviderEventProjectionRevisions: number;
+  calendarProviderEventTombstones: number;
+  calendarProviderEventTombstoneHistory: number;
+  calendarProviderOutbox: number;
+  calendarProviderWebhookHints: number;
 };
 
 export type RoutinePageRequest = LifeLinkPageRequest & { includeArchived?: boolean };
@@ -236,6 +281,23 @@ export type RoutineOccurrencePageRequest = LifeLinkPageRequest & {
   endDate?: string;
 };
 export type MaterializeRoutineOccurrencesInput = { startDate: string; endDate: string };
+
+export type CalendarPageRequest = LifeLinkPageRequest & { includeDeleted?: boolean };
+/**
+ * startDate/endDate are an all-or-none inclusive local-date window. The store
+ * returns persisted definitions rather than expanded recurrence instances, so
+ * recurrence masters remain available for expansion by the Calendar layer.
+ */
+export type CalendarEventPageRequest = LifeLinkPageRequest & {
+  calendarId?: string;
+  includeDeleted?: boolean;
+  startDate?: string;
+  endDate?: string;
+};
+export type CalendarEventDetail = {
+  event: CalendarEventRecord;
+  currentRevision: CalendarEventRevisionRecord;
+};
 
 export type CompetitionFixtureResetReport = {
   profile: string;
@@ -263,7 +325,7 @@ export type LifeLinksStore = {
   undoChange(userId: string, input: UndoChangeInput): Promise<LifeLinkChangeResult>;
   getUserByEmail(email: string): Promise<StoredUser | null>;
   getUserById(userId: string): Promise<StoredUser | null>;
-  connectAgent(userId: string): Promise<StoredUser | null>;
+  connectAgent(userId: string, toolCatalogId?: AgentToolCatalogId): Promise<StoredUser | null>;
   disconnectAgent(userId: string): Promise<StoredUser | null>;
   createSession(userId: string, tokenHash: string, expiresAt: string): Promise<SessionRecord>;
   getSessionByTokenHash(tokenHash: string): Promise<(SessionRecord & { user: StoredUser }) | null>;
@@ -328,6 +390,21 @@ export type LifeLinksStore = {
   getRoutineSession(userId: string, sessionId: string): Promise<RoutineSessionProjection | null>;
   appendRoutineSessionAmendment(userId: string, command: AppendRoutineSessionAmendmentCommand): Promise<RoutineSessionAmendmentRecord | null>;
 
+  listCalendars(userId: string, page?: CalendarPageRequest): Promise<LifeLinkPage<CalendarRecord>>;
+  getCalendar(userId: string, calendarId: string): Promise<CalendarRecord | null>;
+  createCalendar(command: CreateCalendarCommand): Promise<CalendarRecord>;
+  updateCalendar(userId: string, command: UpdateCalendarCommand): Promise<CalendarRecord | null>;
+  softDeleteCalendar(userId: string, command: SoftDeleteCalendarCommand): Promise<CalendarRecord | null>;
+  restoreCalendar(userId: string, command: RestoreCalendarCommand): Promise<CalendarRecord | null>;
+  listCalendarEvents(userId: string, page?: CalendarEventPageRequest): Promise<LifeLinkPage<CalendarEventDetail>>;
+  getCalendarEvent(userId: string, eventId: string): Promise<CalendarEventDetail | null>;
+  listCalendarEventRevisions(userId: string, eventId: string): Promise<CalendarEventRevisionRecord[] | null>;
+  createCalendarEvent(command: CreateCalendarEventCommand): Promise<CanonicalCalendarEventCreation>;
+  reviseCalendarEvent(userId: string, command: ReviseCalendarEventCommand): Promise<CalendarEventDetail | null>;
+  softDeleteCalendarEvent(userId: string, command: SoftDeleteCalendarEventCommand): Promise<CalendarEventDeletion | null>;
+  restoreCalendarEvent(userId: string, command: RestoreCalendarEventCommand): Promise<CalendarEventDetail | null>;
+  listCalendarEventTombstones(userId: string, eventId: string): Promise<CalendarEventTombstoneRecord[] | null>;
+
   listLinks(userId: string): Promise<LinkRecord[]>;
   createQrBatch(userId: string, count: number, qrBaseUrl: string): Promise<BatchCreateResult>;
   listBatchLinks(userId: string, batchId: string): Promise<LinkRecord[]>;
@@ -387,6 +464,10 @@ type InMemoryStoreSnapshot = {
   routineSessions: Map<string, RoutineSessionRecord>;
   routineSessionStepResults: Map<string, RoutineSessionStepResultRecord>;
   routineSessionAmendments: Map<string, RoutineSessionAmendmentRecord>;
+  calendars: Map<string, CalendarRecord>;
+  calendarEvents: Map<string, CalendarEventRecord>;
+  calendarEventRevisions: Map<string, CalendarEventRevisionRecord>;
+  calendarEventTombstones: Map<string, CalendarEventTombstoneRecord>;
 };
 
 type ChangeTable = "lifeLinks" | "collections" | "collectionMemberships" | "collectionSections" | "collectionSectionAssignments" | "qrBindings" | "media";
@@ -423,6 +504,10 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   private routineSessions = new Map<string, RoutineSessionRecord>();
   private routineSessionStepResults = new Map<string, RoutineSessionStepResultRecord>();
   private routineSessionAmendments = new Map<string, RoutineSessionAmendmentRecord>();
+  private calendars = new Map<string, CalendarRecord>();
+  private calendarEvents = new Map<string, CalendarEventRecord>();
+  private calendarEventRevisions = new Map<string, CalendarEventRevisionRecord>();
+  private calendarEventTombstones = new Map<string, CalendarEventTombstoneRecord>();
   private ownerLocks = new Map<string, Promise<void>>();
   private changeHistory = new Map<string, MemoryHistoryEntry[]>();
   private changePreviews = new Map<string, Map<string, MemoryPreview>>();
@@ -560,16 +645,23 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     return this.users.get(userId) ?? null;
   }
 
-  async connectAgent(userId: string): Promise<StoredUser | null> {
+  async connectAgent(
+    userId: string,
+    toolCatalogId: AgentToolCatalogId = LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID
+  ): Promise<StoredUser | null> {
     return this.withOwnerLock(userId, async () => {
       const user = this.users.get(userId);
       if (!user) {
         return null;
       }
-      if (user.agentConnectedAt) {
+      if (user.agentConnectedAt && user.agentToolCatalogId === toolCatalogId) {
         return user;
       }
-      const connected = { ...user, agentConnectedAt: new Date().toISOString() };
+      const now = new Date().toISOString();
+      const connectedAt = user.agentConnectedAt && Date.parse(now) <= Date.parse(user.agentConnectedAt)
+        ? new Date(Date.parse(user.agentConnectedAt) + 1).toISOString()
+        : now;
+      const connected = { ...user, agentConnectedAt: connectedAt, agentToolCatalogId: toolCatalogId };
       this.users.set(userId, connected);
       return connected;
     });
@@ -581,10 +673,10 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       if (!user) {
         return null;
       }
-      if (!user.agentConnectedAt) {
+      if (!user.agentConnectedAt && user.agentToolCatalogId === null) {
         return user;
       }
-      const disconnected = { ...user, agentConnectedAt: null };
+      const disconnected = { ...user, agentConnectedAt: null, agentToolCatalogId: null };
       this.users.set(userId, disconnected);
       return disconnected;
     });
@@ -1381,6 +1473,197 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
+  async listCalendars(userId: string, page: CalendarPageRequest = {}): Promise<LifeLinkPage<CalendarRecord>> {
+    const rows = [...this.calendars.values()]
+      .filter((item) => item.ownerId === userId && (page.includeDeleted || item.deletedAt === null))
+      .sort(compareCalendarRows)
+      .map((item) => structuredClone(item));
+    return pageCollectionRecords(rows, page);
+  }
+
+  async getCalendar(userId: string, calendarId: string): Promise<CalendarRecord | null> {
+    return copyOwned(this.calendars.get(calendarId), userId);
+  }
+
+  async createCalendar(command: CreateCalendarCommand): Promise<CalendarRecord> {
+    const candidate = createCanonicalCalendar(command);
+    return this.withLocks([`calendar-id:${candidate.id}`, candidate.ownerId], async () => {
+      this.assertCalendarOwner(candidate.ownerId);
+      const existing = this.calendars.get(candidate.id);
+      if (existing) {
+        if (sameCalendarCreatePayload(existing, candidate)) return structuredClone(existing);
+        calendarConflict("Calendar identity is already bound to another request.", "calendar_id_conflict");
+      }
+      if (candidate.isDefault) this.clearOtherDefaultCalendars(candidate.ownerId, candidate.id, candidate.createdAt);
+      this.calendars.set(candidate.id, candidate);
+      return structuredClone(candidate);
+    });
+  }
+
+  async updateCalendar(userId: string, command: UpdateCalendarCommand): Promise<CalendarRecord | null> {
+    return this.withOwnerLock(userId, async () => {
+      const current = this.calendars.get(command.calendarId);
+      if (!current || current.ownerId !== userId) return null;
+      const candidate = applyCalendarPatch(current, command, nextTimestamp(current.updatedAt));
+      if (sameCalendarPayload({ ...candidate, updatedAt: current.updatedAt }, current)) return structuredClone(current);
+      if (candidate.isDefault) this.clearOtherDefaultCalendars(userId, candidate.id, candidate.updatedAt);
+      this.calendars.set(candidate.id, candidate);
+      return structuredClone(candidate);
+    });
+  }
+
+  async softDeleteCalendar(userId: string, command: SoftDeleteCalendarCommand): Promise<CalendarRecord | null> {
+    return this.withOwnerLock(userId, async () => {
+      const current = this.calendars.get(command.calendarId);
+      if (!current || current.ownerId !== userId) return null;
+      assertNativeCalendarWriteAuthority(current);
+      if ([...this.calendarEvents.values()].some((event) => event.ownerId === userId && event.calendarId === current.id && event.deletedAt === null)) {
+        calendarConflict("Calendar with active events cannot be deleted.", "calendar_not_empty");
+      }
+      const candidate = softDeleteCalendar(current, command);
+      this.calendars.set(candidate.id, candidate);
+      return structuredClone(candidate);
+    });
+  }
+
+  async restoreCalendar(userId: string, command: RestoreCalendarCommand): Promise<CalendarRecord | null> {
+    return this.withOwnerLock(userId, async () => {
+      const current = this.calendars.get(command.calendarId);
+      if (!current || current.ownerId !== userId) return null;
+      assertNativeCalendarWriteAuthority(current);
+      const candidate = restoreCalendar(current, command);
+      if (candidate.isDefault && [...this.calendars.values()].some((item) => item.ownerId === userId && item.id !== candidate.id && item.isDefault && item.deletedAt === null)) {
+        calendarConflict("Another Calendar is already the default.", "default_calendar_conflict");
+      }
+      this.calendars.set(candidate.id, candidate);
+      return structuredClone(candidate);
+    });
+  }
+
+  async listCalendarEvents(userId: string, page: CalendarEventPageRequest = {}): Promise<LifeLinkPage<CalendarEventDetail>> {
+    assertCalendarEventDateWindow(page);
+    if (page.calendarId) {
+      const calendar = this.calendars.get(page.calendarId);
+      if (!calendar || calendar.ownerId !== userId) return { items: [], truncated: false, nextCursor: null };
+    }
+    const wrapped = [...this.calendarEvents.values()]
+      .filter((event) => event.ownerId === userId && (!page.calendarId || event.calendarId === page.calendarId) &&
+        (page.includeDeleted || event.deletedAt === null))
+      .map((event) => ({ id: event.id, detail: this.memoryCalendarEventDetail(event) }))
+      .filter((item) => calendarEventInDateWindow(item.detail, page))
+      .sort((left, right) => compareCalendarEventDetails(left.detail, right.detail));
+    const paged = pageCollectionRecords(wrapped, page);
+    return { ...paged, items: paged.items.map((item) => structuredClone(item.detail)) };
+  }
+
+  async getCalendarEvent(userId: string, eventId: string): Promise<CalendarEventDetail | null> {
+    const event = this.calendarEvents.get(eventId);
+    return event?.ownerId === userId ? structuredClone(this.memoryCalendarEventDetail(event)) : null;
+  }
+
+  async listCalendarEventRevisions(userId: string, eventId: string): Promise<CalendarEventRevisionRecord[] | null> {
+    const event = this.calendarEvents.get(eventId);
+    if (!event || event.ownerId !== userId) return null;
+    return [...this.calendarEventRevisions.values()]
+      .filter((item) => item.ownerId === userId && item.eventId === eventId)
+      .sort((left, right) => left.revisionNumber - right.revisionNumber)
+      .map((item) => structuredClone(item));
+  }
+
+  async createCalendarEvent(command: CreateCalendarEventCommand): Promise<CanonicalCalendarEventCreation> {
+    const candidate = createCanonicalCalendarEvent(command);
+    return this.withLocks([`calendar-event-id:${candidate.event.id}`, `calendar-event-revision-id:${candidate.currentRevision.id}`, candidate.event.ownerId], async () => {
+      this.assertCalendarOwner(candidate.event.ownerId);
+      const existingEvent = this.calendarEvents.get(candidate.event.id);
+      if (existingEvent) {
+        const existingRevision = this.calendarEventRevisions.get(existingEvent.currentRevisionId);
+        if (existingRevision && sameCalendarCreatePayload(
+          { event: existingEvent, currentRevision: existingRevision }, candidate
+        )) return structuredClone({ event: existingEvent, currentRevision: existingRevision });
+        calendarConflict("Calendar event identity is already bound to another request.", "event_id_conflict");
+      }
+      if (this.calendarEventRevisions.has(candidate.currentRevision.id)) {
+        calendarConflict("Calendar event revision identity is already in use.", "event_revision_id_conflict");
+      }
+      this.assertCalendarEventReferences(candidate.event, candidate.currentRevision);
+      this.calendarEvents.set(candidate.event.id, candidate.event);
+      this.calendarEventRevisions.set(candidate.currentRevision.id, candidate.currentRevision);
+      return structuredClone(candidate);
+    });
+  }
+
+  async reviseCalendarEvent(userId: string, command: ReviseCalendarEventCommand): Promise<CalendarEventDetail | null> {
+    return this.withOwnerLock(userId, async () => {
+      const event = this.calendarEvents.get(command.eventId);
+      if (!event || event.ownerId !== userId) return null;
+      const replayRevision = this.calendarEventRevisions.get(command.revisionId);
+      if (replayRevision) {
+        const previousRevision = [...this.calendarEventRevisions.values()].find((item) => item.ownerId === userId &&
+          item.eventId === event.id && item.revisionNumber === replayRevision.revisionNumber - 1);
+        if (replayRevision.ownerId === userId && replayRevision.eventId === event.id && event.currentRevisionId === replayRevision.id &&
+          previousRevision && command.expectedCurrentRevisionId === previousRevision.id) {
+          const replayCandidate = reviseCanonicalCalendarEvent(
+            { ...event, currentRevisionId: previousRevision.id, updatedAt: previousRevision.createdAt, deletedAt: null },
+            previousRevision,
+            { ...command, createdAt: replayRevision.createdAt }
+          );
+          if (isDeepStrictEqual(replayCandidate.currentRevision, replayRevision)) {
+            return structuredClone(this.memoryCalendarEventDetail(event));
+          }
+        }
+        calendarConflict("Calendar event revision identity is already in use.", "event_revision_id_conflict");
+      }
+      const currentRevision = this.calendarEventRevisions.get(event.currentRevisionId)!;
+      const candidate = reviseCanonicalCalendarEvent(event, currentRevision, command);
+      this.assertCalendarEventReferences(candidate.event, candidate.currentRevision);
+      this.calendarEventRevisions.set(candidate.currentRevision.id, candidate.currentRevision);
+      this.calendarEvents.set(candidate.event.id, candidate.event);
+      return structuredClone(candidate);
+    });
+  }
+
+  async softDeleteCalendarEvent(userId: string, command: SoftDeleteCalendarEventCommand): Promise<CalendarEventDeletion | null> {
+    return this.withOwnerLock(userId, async () => {
+      const event = this.calendarEvents.get(command.eventId);
+      if (!event || event.ownerId !== userId) return null;
+      const replay = this.calendarEventTombstones.get(command.tombstoneId);
+      if (replay) {
+        if (replay.ownerId === userId && replay.eventId === event.id && replay.lastRevisionId === command.expectedCurrentRevisionId &&
+          event.deletedAt === replay.deletedAt) return structuredClone({ event, tombstone: replay });
+        calendarConflict("Calendar event tombstone identity is already in use.", "event_tombstone_id_conflict");
+      }
+      const deletion = softDeleteCalendarEvent(event, command);
+      this.calendarEvents.set(event.id, deletion.event);
+      this.calendarEventTombstones.set(deletion.tombstone.id, deletion.tombstone);
+      return structuredClone(deletion);
+    });
+  }
+
+  async restoreCalendarEvent(userId: string, command: RestoreCalendarEventCommand): Promise<CalendarEventDetail | null> {
+    return this.withOwnerLock(userId, async () => {
+      const event = this.calendarEvents.get(command.eventId);
+      const tombstone = this.calendarEventTombstones.get(command.tombstoneId);
+      if (!event || event.ownerId !== userId || !tombstone || tombstone.ownerId !== userId) return null;
+      const calendar = this.calendars.get(event.calendarId);
+      if (!calendar || calendar.ownerId !== userId || calendar.deletedAt !== null) {
+        calendarConflict("Deleted Calendar event cannot be restored into an unavailable Calendar.", "calendar_unavailable");
+      }
+      const restored = restoreCalendarEvent(event, tombstone, command);
+      this.assertCalendarEventReferences(restored, this.calendarEventRevisions.get(restored.currentRevisionId)!);
+      this.calendarEvents.set(restored.id, restored);
+      return structuredClone(this.memoryCalendarEventDetail(restored));
+    });
+  }
+
+  async listCalendarEventTombstones(userId: string, eventId: string): Promise<CalendarEventTombstoneRecord[] | null> {
+    const event = this.calendarEvents.get(eventId);
+    if (!event || event.ownerId !== userId) return null;
+    return [...this.calendarEventTombstones.values()]
+      .filter((item) => item.ownerId === userId && item.eventId === eventId)
+      .sort((left, right) => left.deletedAt.localeCompare(right.deletedAt) || left.id.localeCompare(right.id))
+      .map((item) => structuredClone(item));
+  }
+
   async listLinks(userId: string): Promise<LinkRecord[]> {
     const claimed = Array.from(this.qrBindings.values())
       .map((binding) => this.lifeLinks.get(binding.lifeLinkId))
@@ -1590,7 +1873,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     for (const user of data.users) {
       if (!this.users.has(user.id)) {
         const passwordHash = await hashPassword(password);
-        this.users.set(user.id, { ...user, passwordHash, agentConnectedAt: null });
+        this.users.set(user.id, { ...user, passwordHash, agentConnectedAt: null, agentToolCatalogId: null });
         this.userIdsByEmail.set(user.email.toLowerCase(), user.id);
       }
     }
@@ -1816,6 +2099,118 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       stepResults: [...this.routineSessionStepResults.values()].filter((item) => item.sessionId === session.id).map((item) => structuredClone(item)) };
   }
 
+  private assertCalendarOwner(ownerId: string): void {
+    if (!this.users.has(ownerId)) {
+      throw new CalendarDomainError("calendar_reference_conflict", "Calendar owner was not found.", { reason: "owner_not_found" });
+    }
+  }
+
+  private clearOtherDefaultCalendars(ownerId: string, calendarId: string, changedAt: string): void {
+    for (const [id, calendar] of this.calendars) {
+      if (calendar.ownerId !== ownerId || id === calendarId || !calendar.isDefault || calendar.deletedAt !== null) continue;
+      this.calendars.set(id, {
+        ...calendar,
+        isDefault: false,
+        updatedAt: monotonicCalendarTimestamp(calendar.updatedAt, changedAt)
+      });
+    }
+  }
+
+  private memoryCalendarEventDetail(event: CalendarEventRecord): CalendarEventDetail {
+    const currentRevision = this.calendarEventRevisions.get(event.currentRevisionId);
+    if (!currentRevision || currentRevision.ownerId !== event.ownerId || currentRevision.eventId !== event.id) {
+      throw new CalendarDomainError("calendar_reference_conflict", "Calendar event current revision is unavailable.", {
+        reason: "current_revision_not_found"
+      });
+    }
+    return { event: structuredClone(event), currentRevision: structuredClone(currentRevision) };
+  }
+
+  private assertCalendarEventReferences(event: CalendarEventRecord, revision: CalendarEventRevisionRecord): void {
+    const calendar = this.calendars.get(event.calendarId);
+    if (!calendar || calendar.ownerId !== event.ownerId || calendar.deletedAt !== null) {
+      throw new CalendarDomainError("calendar_reference_conflict", "Calendar event Calendar is unavailable.", {
+        reason: "calendar_unavailable"
+      });
+    }
+    assertNativeCalendarWriteAuthority(calendar);
+    if (event.lineage.kind === "recurrence_exception") {
+      const lineage = event.lineage;
+      const master = this.calendarEvents.get(lineage.masterEventId);
+      if (!master || master.ownerId !== event.ownerId || master.calendarId !== event.calendarId ||
+        master.lineage.kind !== "recurrence_master" || master.deletedAt !== null) {
+        throw new CalendarDomainError("calendar_reference_conflict", "Recurrence master is unavailable.", {
+          reason: "recurrence_master_unavailable"
+        });
+      }
+      const masterRevision = this.calendarEventRevisions.get(master.currentRevisionId);
+      if (!masterRevision || !calendarRecurrenceIncludesOriginalOccurrence(masterRevision, lineage.originalOccurrence)) {
+        throw new CalendarDomainError(
+          "calendar_reference_conflict",
+          "Recurrence exception does not name an occurrence generated by its master.",
+          { reason: "recurrence_exception_not_generated" }
+        );
+      }
+      const duplicate = [...this.calendarEvents.values()].some((item) => item.id !== event.id && item.ownerId === event.ownerId &&
+        item.lineage.kind === "recurrence_exception" && item.lineage.masterEventId === lineage.masterEventId &&
+        isDeepStrictEqual(item.lineage.originalOccurrence, lineage.originalOccurrence));
+      if (duplicate) {
+        throw new CalendarDomainError("calendar_conflict", "A recurrence exception already exists for this occurrence.", {
+          reason: "duplicate_recurrence_exception"
+        });
+      }
+    }
+    for (const link of revision.subjectLinks) {
+      if (link.kind === "life_link") {
+        const lifeLink = this.lifeLinks.get(link.lifeLinkId);
+        if (!lifeLink || lifeLink.ownerId !== event.ownerId) {
+          throw new CalendarDomainError("calendar_reference_conflict", "Calendar event Life Link is unavailable.", {
+            reason: "life_link_unavailable"
+          });
+        }
+        continue;
+      }
+      if (link.kind === "collection") {
+        const collection = this.collections.get(link.collectionId);
+        if (!collection || collection.ownerId !== event.ownerId) {
+          throw new CalendarDomainError("calendar_reference_conflict", "Calendar event Collection is unavailable.", {
+            reason: "collection_unavailable"
+          });
+        }
+        continue;
+      }
+      const routine = this.routines.get(link.routineId);
+      if (!routine || routine.ownerId !== event.ownerId) {
+        throw new CalendarDomainError("calendar_reference_conflict", "Calendar event Routine is unavailable.", {
+          reason: "routine_unavailable"
+        });
+      }
+      if (link.kind === "routine_schedule") {
+        const schedule = this.routineSchedules.get(link.scheduleId);
+        if (!schedule || schedule.ownerId !== event.ownerId || schedule.routineId !== link.routineId) {
+          throw new CalendarDomainError("calendar_reference_conflict", "Calendar event Routine Schedule is unavailable.", {
+            reason: "routine_schedule_unavailable"
+          });
+        }
+      } else if (link.kind === "routine_occurrence") {
+        const occurrence = this.routineOccurrences.get(link.occurrenceId);
+        if (!occurrence || occurrence.ownerId !== event.ownerId || occurrence.routineId !== link.routineId ||
+          occurrence.scheduleId !== link.scheduleId) {
+          throw new CalendarDomainError("calendar_reference_conflict", "Calendar event Routine Occurrence is unavailable.", {
+            reason: "routine_occurrence_unavailable"
+          });
+        }
+      } else if (link.kind === "routine_session") {
+        const session = this.routineSessions.get(link.sessionId);
+        if (!session || session.ownerId !== event.ownerId || session.routineId !== link.routineId) {
+          throw new CalendarDomainError("calendar_reference_conflict", "Calendar event Routine Session is unavailable.", {
+            reason: "routine_session_unavailable"
+          });
+        }
+      }
+    }
+  }
+
   private hydrateOwnerLifeLinks(userId: string): LifeLinkRecord[] {
     return Array.from(this.lifeLinks.values())
       .filter((lifeLink) => lifeLink.ownerId === userId)
@@ -1945,7 +2340,11 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       routineRuns: new Map(this.routineRuns),
       routineSessions: new Map(this.routineSessions),
       routineSessionStepResults: new Map(this.routineSessionStepResults),
-      routineSessionAmendments: new Map(this.routineSessionAmendments)
+      routineSessionAmendments: new Map(this.routineSessionAmendments),
+      calendars: new Map(this.calendars),
+      calendarEvents: new Map(this.calendarEvents),
+      calendarEventRevisions: new Map(this.calendarEventRevisions),
+      calendarEventTombstones: new Map(this.calendarEventTombstones)
     };
   }
 
@@ -1976,6 +2375,10 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     this.routineSessions = snapshot.routineSessions;
     this.routineSessionStepResults = snapshot.routineSessionStepResults;
     this.routineSessionAmendments = snapshot.routineSessionAmendments;
+    this.calendars = snapshot.calendars;
+    this.calendarEvents = snapshot.calendarEvents;
+    this.calendarEventRevisions = snapshot.calendarEventRevisions;
+    this.calendarEventTombstones = snapshot.calendarEventTombstones;
   }
 
   private competitionFixtureCounts(ownerId: string): CompetitionFixtureCounts {
@@ -2013,7 +2416,22 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       routineRuns: Array.from(this.routineRuns.values()).filter((item) => item.ownerId === ownerId).length,
       routineSessions: Array.from(this.routineSessions.values()).filter((item) => item.ownerId === ownerId).length,
       routineSessionStepResults: Array.from(this.routineSessionStepResults.values()).filter((item) => item.ownerId === ownerId).length,
-      routineSessionAmendments: Array.from(this.routineSessionAmendments.values()).filter((item) => item.ownerId === ownerId).length
+      routineSessionAmendments: Array.from(this.routineSessionAmendments.values()).filter((item) => item.ownerId === ownerId).length,
+      calendars: Array.from(this.calendars.values()).filter((item) => item.ownerId === ownerId).length,
+      calendarEvents: Array.from(this.calendarEvents.values()).filter((item) => item.ownerId === ownerId).length,
+      calendarEventRevisions: Array.from(this.calendarEventRevisions.values()).filter((item) => item.ownerId === ownerId).length,
+      calendarEventSubjectLinks: Array.from(this.calendarEventRevisions.values()).filter((item) => item.ownerId === ownerId)
+        .reduce((count, item) => count + item.subjectLinks.length, 0),
+      calendarEventTombstones: Array.from(this.calendarEventTombstones.values()).filter((item) => item.ownerId === ownerId).length,
+      calendarProviderConnections: 0,
+      calendarProviderBindings: 0,
+      calendarProviderSyncStates: 0,
+      calendarProviderEventProjections: 0,
+      calendarProviderEventProjectionRevisions: 0,
+      calendarProviderEventTombstones: 0,
+      calendarProviderEventTombstoneHistory: 0,
+      calendarProviderOutbox: 0,
+      calendarProviderWebhookHints: 0
     };
   }
 
@@ -2120,6 +2538,10 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     );
     removeMapEntries(this.sessions, (session) => session.userId === ownerId);
     removeMapEntries(this.claimEvents, (event) => event.ownerId === ownerId);
+    removeMapEntries(this.calendarEventTombstones, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.calendarEventRevisions, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.calendarEvents, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.calendars, (item) => item.ownerId === ownerId);
     removeMapEntries(this.routineSessionAmendments, (item) => item.ownerId === ownerId);
     removeMapEntries(this.routineSessionStepResults, (item) => item.ownerId === ownerId);
     removeMapEntries(this.routineSessions, (item) => item.ownerId === ownerId);
@@ -2152,7 +2574,8 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     this.users.set(ownerId, {
       ...fixture.owner,
       passwordHash,
-      agentConnectedAt: existingOwner?.agentConnectedAt ?? null
+      agentConnectedAt: existingOwner?.agentConnectedAt ?? null,
+      agentToolCatalogId: existingOwner?.agentToolCatalogId ?? null
     });
     this.userIdsByEmail.set(fixture.owner.email.toLowerCase(), ownerId);
     this.batches.set(fixture.batch.id, { ...fixture.batch });
@@ -2396,6 +2819,16 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   }
 }
 
+function assertNativeCalendarWriteAuthority(calendar: CalendarRecord): void {
+  if (calendar.source !== "native") {
+    throw new CalendarDomainError(
+      "calendar_conflict",
+      "External Calendar changes must use the exact provider connection boundary.",
+      { reason: "external_calendar_write_authority" }
+    );
+  }
+}
+
 function sameChangeRow(left: unknown, right: unknown): boolean {
   const comparable = (value: unknown) => {
     if (!value || typeof value !== "object") return value;
@@ -2457,7 +2890,21 @@ export function expectedCompetitionFixtureCounts(fixture: CompetitionFixtureData
     routineRuns: 0,
     routineSessions: 0,
     routineSessionStepResults: 0,
-    routineSessionAmendments: 0
+    routineSessionAmendments: 0,
+    calendars: 0,
+    calendarEvents: 0,
+    calendarEventRevisions: 0,
+    calendarEventSubjectLinks: 0,
+    calendarEventTombstones: 0,
+    calendarProviderConnections: 0,
+    calendarProviderBindings: 0,
+    calendarProviderSyncStates: 0,
+    calendarProviderEventProjections: 0,
+    calendarProviderEventProjectionRevisions: 0,
+    calendarProviderEventTombstones: 0,
+    calendarProviderEventTombstoneHistory: 0,
+    calendarProviderOutbox: 0,
+    calendarProviderWebhookHints: 0
   };
 }
 
@@ -2498,6 +2945,94 @@ function copyOwned<T extends { ownerId: string }>(value: T | undefined, ownerId:
 
 function sameRoutinePayload(left: unknown, right: unknown): boolean {
   return isDeepStrictEqual(left, right);
+}
+
+export function sameCalendarPayload(left: unknown, right: unknown): boolean {
+  return isDeepStrictEqual(left, right);
+}
+
+export function sameCalendarCreatePayload(left: unknown, right: unknown): boolean {
+  return isDeepStrictEqual(withoutCalendarServerTimes(left), withoutCalendarServerTimes(right));
+}
+
+function withoutCalendarServerTimes(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutCalendarServerTimes);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !["createdAt", "updatedAt"].includes(key))
+    .map(([key, item]) => [key, withoutCalendarServerTimes(item)]));
+}
+
+export function calendarConflict(message: string, reason: string): never {
+  throw new CalendarDomainError("calendar_conflict", message, { reason });
+}
+
+function compareCalendarRows(left: CalendarRecord, right: CalendarRecord): number {
+  return Number(right.isDefault) - Number(left.isDefault) ||
+    left.title.normalize("NFKC").toLowerCase().localeCompare(right.title.normalize("NFKC").toLowerCase()) ||
+    left.id.localeCompare(right.id);
+}
+
+export function compareCalendarEventDetails(left: CalendarEventDetail, right: CalendarEventDetail): number {
+  return calendarEventStartKey(left.currentRevision).localeCompare(calendarEventStartKey(right.currentRevision)) ||
+    left.event.id.localeCompare(right.event.id);
+}
+
+export function assertCalendarEventDateWindow(page: CalendarEventPageRequest): void {
+  if ((page.startDate === undefined) !== (page.endDate === undefined)) {
+    throw new CalendarDomainError("invalid_calendar_event", "Calendar event date window requires both bounds.", {
+      reason: "incomplete_date_window"
+    });
+  }
+  if (page.startDate === undefined || page.endDate === undefined) return;
+  if (!isCalendarIsoDate(page.startDate) || !isCalendarIsoDate(page.endDate) || page.startDate > page.endDate) {
+    throw new CalendarDomainError("invalid_calendar_event", "Calendar event date window is invalid.", {
+      reason: "invalid_date_window"
+    });
+  }
+}
+
+export function calendarEventInDateWindow(detail: CalendarEventDetail, page: CalendarEventPageRequest): boolean {
+  // A bounded read returns definitions for client/controller materialization.
+  // Every recurrence master therefore needs every live exception, including an
+  // occurrence moved out of the requested window; omitting that exception
+  // would incorrectly resurrect the master's generated occurrence.
+  if (page.startDate === undefined || page.endDate === undefined || detail.event.lineage.kind !== "standalone") return true;
+  const span = detail.currentRevision.span;
+  const startDate = span.kind === "all_day" ? span.startDate : span.startLocalDateTime.slice(0, 10);
+  const endDateExclusive = span.kind === "all_day"
+    ? span.endDateExclusive
+    : span.endLocalDateTime.endsWith("T00:00")
+      ? span.endLocalDateTime.slice(0, 10)
+      : nextCalendarDate(span.endLocalDateTime.slice(0, 10));
+  return startDate <= page.endDate && endDateExclusive > page.startDate;
+}
+
+function isCalendarIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const candidate = calendarUtcDate(year, month, day);
+  return candidate.getUTCFullYear() === year && candidate.getUTCMonth() === month - 1 && candidate.getUTCDate() === day;
+}
+
+function nextCalendarDate(value: string): string {
+  const [year, month, day] = value.split("-").map(Number);
+  const candidate = calendarUtcDate(year, month, day + 1);
+  return candidate.toISOString().slice(0, 10);
+}
+
+function calendarUtcDate(year: number, month: number, day: number): Date {
+  const candidate = new Date(0);
+  candidate.setUTCHours(0, 0, 0, 0);
+  candidate.setUTCFullYear(year, month - 1, day);
+  return candidate;
+}
+
+function calendarEventStartKey(revision: CalendarEventRevisionRecord): string {
+  return revision.span.kind === "all_day" ? `${revision.span.startDate}T00:00:00.000Z` : revision.span.startInstant;
+}
+
+function monotonicCalendarTimestamp(previous: string, candidate: string): string {
+  return Date.parse(candidate) > Date.parse(previous) ? candidate : new Date(Date.parse(previous) + 1).toISOString();
 }
 
 function sameRoutineCreatePayload(left: unknown, right: unknown): boolean {

@@ -228,6 +228,347 @@ describe("Life Links API", () => {
     return response;
   }
 
+  it("materializes one bounded owner calendar window across every Routine page without exposing Routine content", async () => {
+    const events: LogEvent[] = [];
+    ctx = await createSeededAgent({
+      logger: createLogger("routine_calendar_window_test", { env: "ci", sink: (event) => events.push(event) })
+    });
+    await login();
+    const privateSentinel = "PRIVATE_ROUTINE_TITLE_MUST_NOT_ESCAPE";
+    const firstRoutineId = "routine-00000000-0000-4000-8000-000000000101";
+    const secondRoutineId = "routine-00000000-0000-4000-8000-000000000102";
+    const listRoutines = vi.spyOn(ctx.store, "listRoutines").mockImplementation(async (ownerId, page = {}) => {
+      expect(ownerId).toBe("demo-owner");
+      expect(page).toMatchObject({ limit: MAX_LIFE_LINK_CHILD_PAGE_LIMIT, includeArchived: false });
+      return page.cursor === "second-page"
+        ? { items: [{ id: secondRoutineId, title: privateSentinel }], nextCursor: null, truncated: false } as never
+        : { items: [{ id: firstRoutineId, title: privateSentinel }], nextCursor: "second-page", truncated: true } as never;
+    });
+    const materialize = vi.spyOn(ctx.store, "materializeRoutineOccurrences").mockImplementation(
+      async (ownerId, routineId, input) => {
+        expect(ownerId).toBe("demo-owner");
+        expect(input).toEqual({ startDate: "2026-01-01", endDate: "2027-01-01" });
+        return Array.from({ length: routineId === firstRoutineId ? 2 : 1 }, () => ({})) as never;
+      }
+    );
+
+    expect((await request(ctx.app).post("/api/routine-occurrences/materialize")
+      .send({ startDate: "2026-01-01", endDate: "2026-01-02" })).status).toBe(401);
+    for (const [body, reason] of [
+      [{ startDate: "2026-01-01" }, "missing_materialization_date"],
+      [{ startDate: "2026-01-01", endDate: "2026-01-02", extra: true }, "unsupported_request_field"],
+      [{ startDate: "2026-02-31", endDate: "2026-03-01" }, "invalid_local_date"],
+      [{ startDate: "2026-01-02", endDate: "2026-01-01" }, "invalid_schedule_date_range"],
+      [{ startDate: "2026-01-01", endDate: "2027-01-02" }, "materialization_window_too_large"]
+    ] as const) {
+      const rejected = await ctx.agent.post("/api/routine-occurrences/materialize").send(body);
+      expect(rejected.status).toBe(400);
+      expect(rejected.body.error).toMatchObject({ code: "invalid_routine", reason, retryable: false });
+    }
+    expect(listRoutines).not.toHaveBeenCalled();
+    expect(materialize).not.toHaveBeenCalled();
+
+    const requestBody = { startDate: "2026-01-01", endDate: "2027-01-01" };
+    const first = await ctx.agent.post("/api/routine-occurrences/materialize").send(requestBody);
+    const replay = await ctx.agent.post("/api/routine-occurrences/materialize").send(requestBody);
+    expect(first.status).toBe(200);
+    expect(replay.status).toBe(200);
+    expect(first.body).toEqual({ ...requestBody, routineCount: 2, occurrenceCount: 3 });
+    expect(replay.body).toEqual(first.body);
+    expect(JSON.stringify(first.body)).not.toContain(privateSentinel);
+    expect(listRoutines).toHaveBeenCalledTimes(4);
+    expect(materialize.mock.calls.map((call) => call[1])).toEqual([
+      firstRoutineId, secondRoutineId, firstRoutineId, secondRoutineId
+    ]);
+    expect(events.filter((event) => event.event === "life_links.routine.occurrences_materialized"))
+      .toEqual([expect.objectContaining({ routine_count: 2, occurrence_count: 3 }), expect.objectContaining({ routine_count: 2, occurrence_count: 3 })]);
+    expect(JSON.stringify(events)).not.toContain(privateSentinel);
+  });
+
+  it("serves owner-only native Calendars and revision-safe events across a bounded date window", async () => {
+    const events: LogEvent[] = [];
+    ctx = await createSeededAgent({
+      logger: createLogger("native_calendar_http_test", { env: "ci", sink: (event) => events.push(event) })
+    });
+    const uuid = (suffix: number) => `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
+    const calendarId = `calendar-${uuid(201)}`;
+    const eventId = `calendar-event-${uuid(202)}`;
+    const revisionId = `calendar-event-revision-${uuid(203)}`;
+    const nextRevisionId = `calendar-event-revision-${uuid(204)}`;
+    const tombstoneId = `calendar-event-tombstone-${uuid(205)}`;
+    const activityId = `activity-${uuid(206)}`;
+    const routineId = `routine-${uuid(207)}`;
+    const routineRevisionId = `routine-revision-${uuid(208)}`;
+    const lifeLinkId = `life-link-${uuid(212)}`;
+    const collectionId = `collection-${uuid(213)}`;
+    const privateTitle = "PRIVATE PAST CALENDAR EVENT MUST NOT ENTER LOGS";
+    const privateDescription = "PRIVATE EVENT DESCRIPTION MUST NOT ENTER LOGS";
+
+    expect((await request(ctx.app).get("/api/calendars")).status).toBe(401);
+    expect((await request(ctx.app).get("/api/calendar-events").query({
+      startDate: "2026-08-01", endDate: "2026-08-31"
+    })).status).toBe(401);
+    await login();
+
+    const clock = await ctx.agent.get("/api/calendar-clock").query({ timeZone: "America/New_York" });
+    expect(clock.status).toBe(200);
+    expect(clock.body).toMatchObject({
+      serverTime: expect.any(String),
+      timeZone: "America/New_York",
+      today: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/)
+    });
+    expect(new Date(clock.body.serverTime).toISOString()).toBe(clock.body.serverTime);
+    expect((await ctx.agent.get("/api/calendar-clock")).status).toBe(400);
+    expect((await ctx.agent.get("/api/calendar-clock").query({ timeZone: "Not/A_Zone" })).status).toBe(400);
+
+    expect((await ctx.agent.post("/api/life-links").send({
+      id: lifeLinkId, title: "Calendar context", browsingRole: "item"
+    })).status).toBe(201);
+    expect((await ctx.agent.post("/api/collections").send({
+      id: collectionId, title: "Calendar purpose"
+    })).status).toBe(201);
+
+    const calendarRequest = {
+      id: calendarId,
+      title: "Personal",
+      color: "#2f6f5f",
+      timeZone: "America/New_York",
+      isDefault: true
+    };
+    const createdCalendar = await ctx.agent.post("/api/calendars").send(calendarRequest);
+    expect(createdCalendar.status).toBe(201);
+    expect(createdCalendar.body.calendar).toMatchObject({
+      id: calendarId, ownerId: "demo-owner", source: "native", timeZone: "America/New_York", isDefault: true,
+      deletedAt: null
+    });
+    const calendarReplay = await ctx.agent.post("/api/calendars").send(calendarRequest);
+    expect(calendarReplay.status).toBe(201);
+    expect(calendarReplay.body).toEqual(createdCalendar.body);
+    const calendarConflict = await ctx.agent.post("/api/calendars").send({ ...calendarRequest, title: "Other" });
+    expect(calendarConflict.status).toBe(409);
+    expect(calendarConflict.body.error).toMatchObject({ code: "calendar_conflict", retryable: false });
+
+    for (const query of [
+      {},
+      { startDate: "2026-08-01" },
+      { startDate: "2026-02-31", endDate: "2026-03-01" },
+      { startDate: "2026-08-02", endDate: "2026-08-01" },
+      { startDate: "2026-01-01", endDate: "2027-01-02" }
+    ]) {
+      const rejected = await ctx.agent.get("/api/calendar-events").query(query);
+      expect(rejected.status).toBe(400);
+      expect(rejected.body.error).toMatchObject({ code: "invalid_calendar_event", retryable: false });
+    }
+
+    const activity = await ctx.agent.post("/api/routine-activities").send({ id: activityId, title: "Plan" });
+    expect(activity.status).toBe(201);
+    const routine = await ctx.agent.post("/api/routines").send({
+      id: routineId,
+      revisionId: routineRevisionId,
+      title: "Planning routine",
+      steps: [{
+        activityId,
+        activityTitle: "Plan",
+        position: 0,
+        plannedValues: [{ key: "effort", label: "Effort", kind: "number", value: 1 }]
+      }]
+    });
+    expect(routine.status).toBe(201);
+
+    const recurrence = {
+      frequency: "weekly",
+      interval: 1,
+      weekdays: ["friday"],
+      end: { kind: "count", count: 8 }
+    };
+    const span = { kind: "all_day", startDate: "2026-08-07", endDateExclusive: "2026-08-08" };
+    const eventRequest = {
+      id: eventId,
+      revisionId,
+      calendarId,
+      lineage: { kind: "recurrence_master" },
+      title: privateTitle,
+      description: privateDescription,
+      location: "Owner-only location",
+      span,
+      recurrence,
+      subjectLinks: [
+        { kind: "routine", routineId },
+        { kind: "life_link", lifeLinkId },
+        { kind: "collection", collectionId }
+      ]
+    };
+    const createdEvent = await ctx.agent.post("/api/calendar-events").send(eventRequest);
+    expect(createdEvent.status).toBe(201);
+    expect(createdEvent.body).toMatchObject({
+      calendarEvent: {
+        event: { id: eventId, calendarId, currentRevisionId: revisionId, lineage: { kind: "recurrence_master" } },
+        currentRevision: {
+          id: revisionId, title: privateTitle, description: privateDescription, span,
+          recurrence,
+          subjectLinks: [
+            { kind: "collection", collectionId },
+            { kind: "life_link", lifeLinkId },
+            { kind: "routine", routineId }
+          ]
+        }
+      },
+      latestTombstone: null
+    });
+    const eventReplay = await ctx.agent.post("/api/calendar-events").send(eventRequest);
+    expect(eventReplay.status).toBe(201);
+    expect(eventReplay.body).toEqual(createdEvent.body);
+
+    const inWindow = await ctx.agent.get("/api/calendar-events").query({
+      calendarId, startDate: "2026-08-01", endDate: "2026-08-31", limit: 50
+    });
+    expect(inWindow.status).toBe(200);
+    expect(inWindow.body).toMatchObject({ calendarEvents: [createdEvent.body.calendarEvent], truncated: false });
+    const futureWindow = await ctx.agent.get("/api/calendar-events").query({
+      calendarId, startDate: "2026-12-01", endDate: "2026-12-31"
+    });
+    expect(futureWindow.status).toBe(200);
+    expect(futureWindow.body.calendarEvents).toEqual([createdEvent.body.calendarEvent]);
+
+    const target = { scope: "series", masterEventId: eventId };
+    const revisionRequest = {
+      revisionId: nextRevisionId,
+      expectedCurrentRevisionId: revisionId,
+      target,
+      title: privateTitle,
+      description: privateDescription,
+      location: "Revised owner-only location",
+      span,
+      recurrence,
+      subjectLinks: [
+        { kind: "routine", routineId },
+        { kind: "life_link", lifeLinkId },
+        { kind: "collection", collectionId }
+      ]
+    };
+    const revised = await ctx.agent.patch(`/api/calendar-events/${eventId}`).send(revisionRequest);
+    expect(revised.status, JSON.stringify(revised.body)).toBe(200);
+    expect(revised.body.calendarEvent).toMatchObject({
+      event: { id: eventId, currentRevisionId: nextRevisionId },
+      currentRevision: { id: nextRevisionId, revisionNumber: 2, location: "Revised owner-only location" }
+    });
+    const revisionReplay = await ctx.agent.patch(`/api/calendar-events/${eventId}`).send(revisionRequest);
+    expect(revisionReplay.status).toBe(200);
+    expect(revisionReplay.body).toEqual(revised.body);
+    const stale = await ctx.agent.patch(`/api/calendar-events/${eventId}`).send({
+      ...revisionRequest,
+      revisionId: `calendar-event-revision-${uuid(209)}`
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toMatchObject({ code: "stale_calendar_event", retryable: true });
+    const unsupportedScope = await ctx.agent.patch(`/api/calendar-events/${eventId}`).send({
+      ...revisionRequest,
+      revisionId: `calendar-event-revision-${uuid(210)}`,
+      expectedCurrentRevisionId: nextRevisionId,
+      target: {
+        scope: "occurrence",
+        masterEventId: eventId,
+        originalOccurrence: { kind: "all_day", startDate: "2026-08-14" }
+      }
+    });
+    expect(unsupportedScope.status).toBe(400);
+    expect(unsupportedScope.body.error).toMatchObject({
+      code: "invalid_calendar_event", reason: "unsupported_recurrence_scope", retryable: false
+    });
+
+    const deleteRequest = { tombstoneId, expectedCurrentRevisionId: nextRevisionId, target };
+    const deleted = await ctx.agent.delete(`/api/calendar-events/${eventId}`).send(deleteRequest);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body).toMatchObject({
+      calendarEvent: { event: { id: eventId, deletedAt: expect.any(String) } },
+      latestTombstone: { id: tombstoneId, eventId, lastRevisionId: nextRevisionId }
+    });
+    const deleteReplay = await ctx.agent.delete(`/api/calendar-events/${eventId}`).send(deleteRequest);
+    expect(deleteReplay.status).toBe(200);
+    expect(deleteReplay.body).toEqual(deleted.body);
+    const loadedDeleted = await ctx.agent.get(`/api/calendar-events/${eventId}`);
+    expect(loadedDeleted.body.latestTombstone).toEqual(deleted.body.latestTombstone);
+    expect((await ctx.agent.get("/api/calendar-events").query({
+      calendarId, startDate: "2026-08-01", endDate: "2026-08-31"
+    })).body.calendarEvents).toEqual([]);
+    expect((await ctx.agent.get("/api/calendar-events").query({
+      calendarId, startDate: "2026-08-01", endDate: "2026-08-31", includeDeleted: true
+    })).body.calendarEvents).toHaveLength(1);
+
+    const restored = await ctx.agent.post(`/api/calendar-events/${eventId}/restore`).send({
+      expectedCurrentRevisionId: nextRevisionId,
+      tombstoneId
+    });
+    expect(restored.status).toBe(200);
+    expect(restored.body).toMatchObject({
+      calendarEvent: { event: { id: eventId, deletedAt: null }, currentRevision: { id: nextRevisionId } },
+      latestTombstone: null
+    });
+    const calendarDeleteWithEvent = await ctx.agent.delete(`/api/calendars/${calendarId}`).send({
+      expectedUpdatedAt: createdCalendar.body.calendar.updatedAt
+    });
+    expect(calendarDeleteWithEvent.status).toBe(409);
+    expect(calendarDeleteWithEvent.body.error).toMatchObject({ code: "calendar_conflict", reason: "calendar_not_empty" });
+
+    const secondTombstoneId = `calendar-event-tombstone-${uuid(211)}`;
+    expect((await ctx.agent.delete(`/api/calendar-events/${eventId}`).send({
+      tombstoneId: secondTombstoneId,
+      expectedCurrentRevisionId: nextRevisionId,
+      target
+    })).status).toBe(200);
+    const deletedCalendar = await ctx.agent.delete(`/api/calendars/${calendarId}`).send({
+      expectedUpdatedAt: createdCalendar.body.calendar.updatedAt
+    });
+    expect(deletedCalendar.status).toBe(200);
+    expect(deletedCalendar.body.calendar.deletedAt).toEqual(expect.any(String));
+    const restoredCalendar = await ctx.agent.post(`/api/calendars/${calendarId}/restore`).send({
+      expectedUpdatedAt: deletedCalendar.body.calendar.updatedAt
+    });
+    expect(restoredCalendar.status).toBe(200);
+    expect(restoredCalendar.body.calendar.deletedAt).toBeNull();
+
+    const guest = request.agent(ctx.app);
+    await login(guest, "guest@life-links.test");
+    expect((await guest.get(`/api/calendars/${calendarId}`)).status).toBe(404);
+    expect((await guest.get(`/api/calendar-events/${eventId}`)).status).toBe(404);
+    expect((await guest.get("/api/calendar-events").query({
+      calendarId, startDate: "2026-08-01", endDate: "2026-08-31", includeDeleted: true
+    })).body.calendarEvents).toEqual([]);
+
+    const serializedLogs = JSON.stringify(events);
+    for (const value of [privateTitle, privateDescription, "Owner-only location", "Revised owner-only location"]) {
+      expect(serializedLogs).not.toContain(value);
+    }
+    expect(events.map((event) => event.event)).toEqual(expect.arrayContaining([
+      "life_links.calendar.created",
+      "life_links.calendar.event_created",
+      "life_links.calendar.event_revised",
+      "life_links.calendar.event_deleted",
+      "life_links.calendar.event_restored",
+      "life_links.calendar.deleted",
+      "life_links.calendar.restored"
+    ]));
+  });
+
+  it("applies the existing browser-origin guard to native Calendar mutations", async () => {
+    const guarded = await createSeededAgent({
+      env: { ORIGIN_CHECK_ENABLED: "true", ORIGIN_CHECK_ALLOW_MISSING: "false" }
+    });
+    const allowedOrigin = new URL(DEFAULT_QR_BASE_URL).origin;
+    const loginResponse = await guarded.agent.post("/api/auth/login").set("Origin", allowedOrigin).send({
+      email: "owner@life-links.test",
+      password: DEMO_PASSWORD
+    });
+    expect(loginResponse.status).toBe(200);
+    const rejected = await guarded.agent.post("/api/calendars").set("Origin", "https://evil.example").send({
+      title: "Must not be created",
+      timeZone: "UTC"
+    });
+    expect(rejected.status).toBe(403);
+    expect(rejected.body).toEqual({ error: "origin_forbidden" });
+    expect((await guarded.store.listCalendars("demo-owner")).items).toEqual([]);
+  });
+
   it("completes the owner-only general Routines journey with stable retries and immutable corrected history", async () => {
     const events: LogEvent[] = [];
     ctx = await createSeededAgent({
@@ -1075,39 +1416,68 @@ describe("Life Links API", () => {
     const signedOut = await ctx.agent.get("/api/me");
     expect(signedOut.body).toMatchObject({
       user: null,
-      agentConnection: { connected: false, connectedAt: null }
+      agentConnection: { connected: false, connectedAt: null, toolCatalogId: null }
     });
     expect((await ctx.agent.put("/api/agent-connection")).status).toBe(401);
     expect((await ctx.agent.delete("/api/agent-connection")).status).toBe(401);
 
     const firstLogin = await login();
-    expect(firstLogin.body.agentConnection).toEqual({ connected: false, connectedAt: null });
+    expect(firstLogin.body.agentConnection).toEqual({ connected: false, connectedAt: null, toolCatalogId: null });
 
     const connected = await ctx.agent.put("/api/agent-connection");
     expect(connected.status).toBe(200);
-    expect(connected.body.agentConnection).toMatchObject({ connected: true, connectedAt: expect.any(String) });
+    expect(connected.body.agentConnection).toMatchObject({
+      connected: true,
+      connectedAt: expect.any(String),
+      toolCatalogId: "life-links-page-webmcp-v1"
+    });
     const connectedAt = connected.body.agentConnection.connectedAt as string;
 
     const replay = await ctx.agent.put("/api/agent-connection");
-    expect(replay.body.agentConnection).toEqual({ connected: true, connectedAt });
-    expect((await ctx.agent.get("/api/me")).body.agentConnection).toEqual({ connected: true, connectedAt });
+    expect(replay.body.agentConnection).toEqual({
+      connected: true,
+      connectedAt,
+      toolCatalogId: "life-links-page-webmcp-v1"
+    });
+    expect((await ctx.agent.get("/api/me")).body.agentConnection).toEqual({
+      connected: true,
+      connectedAt,
+      toolCatalogId: "life-links-page-webmcp-v1"
+    });
+
+    const upgraded = await ctx.agent.put("/api/agent-connection").send({ toolCatalogId: "life-links-calendar-v2" });
+    expect(upgraded.status).toBe(200);
+    expect(upgraded.body.agentConnection).toMatchObject({
+      connected: true,
+      connectedAt: expect.any(String),
+      toolCatalogId: "life-links-calendar-v2"
+    });
+    const upgradedAt = upgraded.body.agentConnection.connectedAt as string;
+    expect(Date.parse(upgradedAt)).toBeGreaterThan(Date.parse(connectedAt));
+    expect((await ctx.agent.put("/api/agent-connection").send({ toolCatalogId: "unknown" })).status).toBe(400);
+    expect((await ctx.agent.put("/api/agent-connection").send({ toolCatalogId: "life-links-calendar-v2", extra: true })).status).toBe(400);
 
     expect((await ctx.agent.post("/api/auth/logout")).status).toBe(204);
     expect((await ctx.agent.get("/api/me")).body).toMatchObject({
       user: null,
-      agentConnection: { connected: false, connectedAt: null }
+      agentConnection: { connected: false, connectedAt: null, toolCatalogId: null }
     });
 
     const secondLogin = await login();
-    expect(secondLogin.body.agentConnection).toEqual({ connected: true, connectedAt });
+    expect(secondLogin.body.agentConnection).toEqual({
+      connected: true,
+      connectedAt: upgradedAt,
+      toolCatalogId: "life-links-calendar-v2"
+    });
 
     const disconnected = await ctx.agent.delete("/api/agent-connection");
-    expect(disconnected.body.agentConnection).toEqual({ connected: false, connectedAt: null });
+    expect(disconnected.body.agentConnection).toEqual({ connected: false, connectedAt: null, toolCatalogId: null });
     const disconnectReplay = await ctx.agent.delete("/api/agent-connection");
-    expect(disconnectReplay.body.agentConnection).toEqual({ connected: false, connectedAt: null });
+    expect(disconnectReplay.body.agentConnection).toEqual({ connected: false, connectedAt: null, toolCatalogId: null });
 
     const connectionEvents = events.filter((event) => event.event.startsWith("life_links.agent_connection."));
     expect(connectionEvents.map((event) => event.event)).toEqual([
+      "life_links.agent_connection.connected",
       "life_links.agent_connection.connected",
       "life_links.agent_connection.connected",
       "life_links.agent_connection.disconnected",

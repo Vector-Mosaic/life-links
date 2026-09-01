@@ -5,7 +5,7 @@ import type {
   RoutineValueKind
 } from "@life-links/core";
 
-export type RoutineWorkspaceTab = "routines" | "today" | "history";
+export type RoutineWorkspaceTab = "routines" | "history";
 
 export const ROUTINE_VALUE_KINDS: RoutineValueKind[] = ["number", "quantity", "duration", "text", "boolean"];
 

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { LIFE_LINKS_PAGE_TOOL_NAMES } from "./browserWebMcpHost";
+import {
+  LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES,
+  LIFE_LINKS_LEGACY_TOOL_CATALOG_ID,
+  LIFE_LINKS_PAGE_TOOL_CATALOG_ID,
+  LIFE_LINKS_PAGE_TOOL_NAMES
+} from "./browserWebMcpHost";
 import {
   PageToolRegistrationLifecycle,
   agentConnectionIsActive,
@@ -81,7 +86,8 @@ class FirstRegistrationPauseModelContext extends ControlledModelContext {
 const ELIGIBLE: PageToolEligibility = {
   authenticatedOwnerId: "owner-one",
   surface: "owner-workspace",
-  agentConnected: true
+  agentConnected: true,
+  catalogId: LIFE_LINKS_PAGE_TOOL_CATALOG_ID
 };
 
 function makeCatalog(version: string): readonly WebMcpToolDefinition[] {
@@ -116,7 +122,12 @@ describe("page tool registration lifecycle", () => {
     expect(
       eligiblePageToolScopeKey({ ...ELIGIBLE, agentConnected: false })
     ).toBeNull();
-    expect(eligiblePageToolScopeKey(ELIGIBLE)).toBe("owner:owner-one");
+    expect(eligiblePageToolScopeKey({ ...ELIGIBLE, catalogId: null })).toBeNull();
+    expect(eligiblePageToolScopeKey({ ...ELIGIBLE, catalogId: LIFE_LINKS_LEGACY_TOOL_CATALOG_ID })).toBe(
+      `owner:owner-one:catalog:${LIFE_LINKS_LEGACY_TOOL_CATALOG_ID}`
+    );
+    expect(eligiblePageToolScopeKey({ ...ELIGIBLE, catalogId: "unknown-catalog" })).toBeNull();
+    expect(eligiblePageToolScopeKey(ELIGIBLE)).toBe(`owner:owner-one:catalog:${LIFE_LINKS_PAGE_TOOL_CATALOG_ID}`);
 
     const modelContext = new ControlledModelContext();
     const lifecycle = new PageToolRegistrationLifecycle();
@@ -125,7 +136,8 @@ describe("page tool registration lifecycle", () => {
       { ...ELIGIBLE, authenticatedOwnerId: null },
       { ...ELIGIBLE, surface: "login" as const },
       { ...ELIGIBLE, surface: "public-qr" as const },
-      { ...ELIGIBLE, agentConnected: false }
+      { ...ELIGIBLE, agentConnected: false },
+      { ...ELIGIBLE, catalogId: "unknown-catalog" }
     ]) {
       await expect(
         lifecycle.synchronize({
@@ -136,6 +148,30 @@ describe("page tool registration lifecycle", () => {
       ).resolves.toEqual({ status: "inactive" });
     }
     expect(modelContext.registrations).toHaveLength(0);
+  });
+
+  it("preserves the v1 grant as exactly fourteen tools while v2 adds Calendar", async () => {
+    const modelContext = new ControlledModelContext();
+    const lifecycle = new PageToolRegistrationLifecycle();
+    const definitions = makeCatalog("versioned");
+    const legacyDefinitions = definitions.filter(({ name }) =>
+      new Set<string>(LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES).has(name)
+    );
+
+    await expect(lifecycle.synchronize({
+      documentLike: { modelContext },
+      eligibility: { ...ELIGIBLE, catalogId: LIFE_LINKS_LEGACY_TOOL_CATALOG_ID },
+      definitions: legacyDefinitions
+    })).resolves.toEqual({ status: "registered", toolNames: LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES });
+    expect([...modelContext.tools.keys()]).toEqual(LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES);
+    expect(modelContext.tools.has("list_my_calendars")).toBe(false);
+
+    await expect(lifecycle.synchronize({
+      documentLike: { modelContext },
+      eligibility: ELIGIBLE,
+      definitions
+    })).resolves.toEqual({ status: "registered", toolNames: LIFE_LINKS_PAGE_TOOL_NAMES });
+    expect([...modelContext.tools.keys()]).toEqual(LIFE_LINKS_PAGE_TOOL_NAMES);
   });
 
   it("reports an eligible unsupported browser without disturbing the human path", async () => {
@@ -166,7 +202,7 @@ describe("page tool registration lifecycle", () => {
     ).resolves.toMatchObject({ status: "registered" });
 
     expect([...modelContext.tools.keys()]).toEqual(LIFE_LINKS_PAGE_TOOL_NAMES);
-    expect(modelContext.registrations).toHaveLength(14);
+    expect(modelContext.registrations).toHaveLength(21);
     const signals = modelContext.registrations.map(({ options }) => options?.signal);
     expect(signals.every((signal) => signal === signals[0])).toBe(true);
 
@@ -181,7 +217,7 @@ describe("page tool registration lifecycle", () => {
       eligibility: ELIGIBLE,
       definitions: makeCatalog("current")
     });
-    expect(modelContext.registrations).toHaveLength(14);
+    expect(modelContext.registrations).toHaveLength(21);
     await expect(registeredInspect!.execute({}, {})).resolves.toMatchObject({
       version: "current"
     });
@@ -209,7 +245,7 @@ describe("page tool registration lifecycle", () => {
 
     modelContext.releaseCatalogRegistration();
     await expect(registration).resolves.toMatchObject({ status: "registered" });
-    expect(modelContext.tools.size).toBe(14);
+    expect(modelContext.tools.size).toBe(21);
     await expect(registeredInspect!.execute({}, {})).resolves.toMatchObject({
       ok: true,
       version: "atomic"
@@ -224,7 +260,7 @@ describe("page tool registration lifecycle", () => {
 
     await lifecycle.synchronize({ documentLike, eligibility: ELIGIBLE, definitions: catalog });
     const firstSignal = modelContext.registrations[0].options?.signal;
-    expect(modelContext.tools.size).toBe(14);
+    expect(modelContext.tools.size).toBe(21);
 
     await lifecycle.synchronize({
       documentLike,
@@ -235,14 +271,14 @@ describe("page tool registration lifecycle", () => {
     expect(modelContext.tools.size).toBe(0);
 
     await lifecycle.synchronize({ documentLike, eligibility: ELIGIBLE, definitions: catalog });
-    const ownerOneSignal = modelContext.registrations[11].options?.signal;
+    const ownerOneSignal = modelContext.registrations[18].options?.signal;
     await lifecycle.synchronize({
       documentLike,
       eligibility: { ...ELIGIBLE, authenticatedOwnerId: "owner-two" },
       definitions: catalog
     });
     expect(ownerOneSignal?.aborted).toBe(true);
-    expect(modelContext.tools.size).toBe(14);
+    expect(modelContext.tools.size).toBe(21);
 
     await lifecycle.synchronize({
       documentLike,

@@ -3,8 +3,15 @@ import {
   type WebMcpModelContext,
   type WebMcpToolDefinition
 } from "../webmcpCompatibility";
+import {
+  LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
+  LIFE_LINKS_CALENDAR_TOOL_NAMES,
+  LIFE_LINKS_LEGACY_TOOL_CATALOG_ID
+} from "./calendarToolHandlers";
 
-export const LIFE_LINKS_PAGE_TOOL_NAMES = [
+export { LIFE_LINKS_LEGACY_TOOL_CATALOG_ID };
+
+export const LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES = [
   "inspect_current_life_link",
   "search_my_life_links",
   "open_life_link",
@@ -21,7 +28,16 @@ export const LIFE_LINKS_PAGE_TOOL_NAMES = [
   "read_life_link_attachment"
 ] as const;
 
+export const LIFE_LINKS_PAGE_TOOL_CATALOG_ID = LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID;
+export const LIFE_LINKS_PAGE_TOOL_NAMES = [
+  ...LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES,
+  ...LIFE_LINKS_CALENDAR_TOOL_NAMES
+] as const;
+
 export type LifeLinksPageToolName = (typeof LIFE_LINKS_PAGE_TOOL_NAMES)[number];
+export type LifeLinksPageToolCatalogId =
+  | typeof LIFE_LINKS_LEGACY_TOOL_CATALOG_ID
+  | typeof LIFE_LINKS_PAGE_TOOL_CATALOG_ID;
 
 export interface BrowserWebMcpHost {
   readonly modelContext: WebMcpModelContext;
@@ -51,27 +67,36 @@ export type LifeLinksPageToolCatalogValidation =
 
 const INVALID_CATALOG_ERROR = {
   code: "invalid_tool_catalog",
-  message: "The Life Links agent connection requires its complete Field Ledger tool catalog.",
+  message: `The Life Links agent connection requires the complete ${LIFE_LINKS_PAGE_TOOL_CATALOG_ID} tool catalog.`,
   retryable: false
 } as const;
 
 export function validateLifeLinksPageToolCatalog(
-  definitions: readonly WebMcpToolDefinition[]
+  definitions: readonly WebMcpToolDefinition[],
+  catalogId: LifeLinksPageToolCatalogId = LIFE_LINKS_PAGE_TOOL_CATALOG_ID
 ): LifeLinksPageToolCatalogValidation {
-  if (definitions.length !== LIFE_LINKS_PAGE_TOOL_NAMES.length) {
+  const grantedNames = catalogId === LIFE_LINKS_LEGACY_TOOL_CATALOG_ID
+    ? LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES
+    : LIFE_LINKS_PAGE_TOOL_NAMES;
+  if (
+    definitions.length < grantedNames.length ||
+    (catalogId === LIFE_LINKS_PAGE_TOOL_CATALOG_ID &&
+      definitions.length !== LIFE_LINKS_PAGE_TOOL_NAMES.length)
+  ) {
     return { ok: false, error: INVALID_CATALOG_ERROR };
   }
 
+  const knownNames = new Set<string>(LIFE_LINKS_PAGE_TOOL_NAMES);
   const definitionsByName = new Map<string, WebMcpToolDefinition>();
   for (const definition of definitions) {
-    if (definitionsByName.has(definition.name)) {
+    if (!knownNames.has(definition.name) || definitionsByName.has(definition.name)) {
       return { ok: false, error: INVALID_CATALOG_ERROR };
     }
     definitionsByName.set(definition.name, definition);
   }
 
   const orderedDefinitions: WebMcpToolDefinition[] = [];
-  for (const name of LIFE_LINKS_PAGE_TOOL_NAMES) {
+  for (const name of grantedNames) {
     const definition = definitionsByName.get(name);
     if (!definition) {
       return { ok: false, error: INVALID_CATALOG_ERROR };

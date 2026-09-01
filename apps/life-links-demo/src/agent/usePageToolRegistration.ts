@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import {
   getBrowserWebMcpHost,
+  LIFE_LINKS_LEGACY_TOOL_CATALOG_ID,
+  LIFE_LINKS_PAGE_TOOL_CATALOG_ID,
   LIFE_LINKS_PAGE_TOOL_NAMES,
   validateLifeLinksPageToolCatalog,
   type BrowserWebMcpHost,
@@ -18,6 +20,8 @@ export interface PageToolEligibility {
   readonly authenticatedOwnerId: string | null;
   readonly surface: LifeLinksAgentSurface;
   readonly agentConnected: boolean;
+  /** Persisted grant identity. Undefined or unknown grants fail closed. */
+  readonly catalogId?: string | null;
 }
 
 export type PageToolRegistrationErrorCode =
@@ -64,14 +68,6 @@ const INACTIVE_STATUS: PageToolRegistrationStatus = { status: "inactive" };
 const UNSUPPORTED_STATUS: PageToolRegistrationStatus = {
   status: "unsupported",
   message: "WebMCP unavailable in this browser"
-};
-const REGISTERING_STATUS: PageToolRegistrationStatus = {
-  status: "registering",
-  toolNames: LIFE_LINKS_PAGE_TOOL_NAMES
-};
-const REGISTERED_STATUS: PageToolRegistrationStatus = {
-  status: "registered",
-  toolNames: LIFE_LINKS_PAGE_TOOL_NAMES
 };
 const INVALID_CATALOG_STATUS: PageToolRegistrationStatus = {
   status: "error",
@@ -124,14 +120,19 @@ function safeRegistrationError(error: unknown): PageToolRegistrationStatus {
 
 export function eligiblePageToolScopeKey(eligibility: PageToolEligibility): string | null {
   const ownerId = eligibility.authenticatedOwnerId?.trim();
+  const grantedCatalog = eligibility.catalogId === LIFE_LINKS_LEGACY_TOOL_CATALOG_ID ||
+    eligibility.catalogId === LIFE_LINKS_PAGE_TOOL_CATALOG_ID
+    ? eligibility.catalogId
+    : null;
   if (
     !eligibility.agentConnected ||
     eligibility.surface !== "owner-workspace" ||
+    grantedCatalog === null ||
     !ownerId
   ) {
     return null;
   }
-  return `owner:${ownerId}`;
+  return `owner:${ownerId}:catalog:${grantedCatalog}`;
 }
 
 export function agentConnectionIsActive(
@@ -161,7 +162,17 @@ export class PageToolRegistrationLifecycle {
   }
 
   async synchronize(request: PageToolRegistrationRequest): Promise<PageToolRegistrationStatus> {
-    const catalog = validateLifeLinksPageToolCatalog(request.definitions);
+    const scopeKey = eligiblePageToolScopeKey(request.eligibility);
+    if (scopeKey === null) {
+      this.stopRegistrations();
+      this.status = INACTIVE_STATUS;
+      return this.status;
+    }
+
+    const catalog = validateLifeLinksPageToolCatalog(
+      request.definitions,
+      request.eligibility.catalogId as typeof LIFE_LINKS_LEGACY_TOOL_CATALOG_ID | typeof LIFE_LINKS_PAGE_TOOL_CATALOG_ID
+    );
     if (!catalog.ok) {
       this.stopRegistrations();
       this.status = INVALID_CATALOG_STATUS;
@@ -171,13 +182,6 @@ export class PageToolRegistrationLifecycle {
     this.definitionsByName = new Map(
       catalog.definitions.map((definition) => [definition.name, definition])
     );
-
-    const scopeKey = eligiblePageToolScopeKey(request.eligibility);
-    if (scopeKey === null) {
-      this.stopRegistrations();
-      this.status = INACTIVE_STATUS;
-      return this.status;
-    }
 
     const resolution = getBrowserWebMcpHost(request.documentLike);
     if (resolution.status === "unsupported") {
@@ -207,7 +211,8 @@ export class PageToolRegistrationLifecycle {
       this.createLiveDefinition(definition, generation, controller)
     );
 
-    this.status = REGISTERING_STATUS;
+    const toolNames = catalog.definitions.map(({ name }) => name as LifeLinksPageToolName);
+    this.status = { status: "registering", toolNames };
     const pendingBase = {
       scopeKey,
       modelContext: resolution.host.modelContext,
@@ -222,7 +227,7 @@ export class PageToolRegistrationLifecycle {
         }
         this.active = pendingBase;
         this.pending = null;
-        this.status = REGISTERED_STATUS;
+        this.status = { status: "registered", toolNames };
         return this.status;
       })
       .catch((error: unknown) => {
@@ -422,6 +427,7 @@ export function usePageToolRegistration({
     documentLike,
     eligibility.agentConnected,
     eligibility.authenticatedOwnerId,
+    eligibility.catalogId,
     eligibility.surface,
     hostIdentity,
     lifecycle
