@@ -1,6 +1,6 @@
 {
-  "canonical_source_byte_count": 38261191,
-  "canonical_source_tree_sha256": "e2cab69b0c1d285166a8f68edd1df547bf6eb9f4d0033a2bdd48e50c0f4ffcdb",
+  "canonical_source_byte_count": 38261351,
+  "canonical_source_tree_sha256": "3537a03671a4b434b27c198b6082aea4e5e06e29022c2b6c15c516ca7f941026",
   "excluded_globs": [
     "**/node_modules/**",
     "**/dist/**",
@@ -159,13 +159,13 @@
       "selected_variant_id": null
     },
     {
-      "canonical_byte_count": 53604,
-      "canonical_sha256": "f14ad9385ed7ca512eb92cc80f1dd71af4736d26c9dade4bd783de7859124761",
+      "canonical_byte_count": 53660,
+      "canonical_sha256": "991c68627ec4530b214ca32fdcbf34f370dbe2bbe10340287580971a6657567c",
       "destination": "packages/life-links-core/src/index.ts",
       "id": "public-core-demo-fixtures",
       "kind": "exact_text_replacements",
-      "projected_byte_count": 53619,
-      "projected_sha256": "0377632a258676ab078accaa2247e5938ffc52e716935d31c6917ab8004d2040",
+      "projected_byte_count": 53675,
+      "projected_sha256": "d3f4cd40c0236a015a70c218f64c857fb26513079f6efd57586bf317cc775e80",
       "replacements": [
         {
           "after_byte_count": 70,
@@ -334,7 +334,7 @@
   "profile_id": "life-links-webmcp-challenge",
   "profile_path": "systems/life_links/config/publication/webmcp_challenge_public_release.profile.json",
   "profile_sha256": "b6353e9561f971e7a9fc9bd74d2e4cc6a72fa99f11f57b678fd1049036104e06",
-  "projection_commit": "9d0172db68c960f8c1171828a8485f1ded5c42ef",
+  "projection_commit": "6ff2d896818e5ffd9d6d7fcfb921c48363ff37a9",
   "scaffold_destinations": [
     ".dockerignore",
     ".env.example",
@@ -424,9 +424,9 @@
     }
   ],
   "schema_version": "life_links.source_projection.v2",
-  "source_byte_count": 38260394,
-  "source_commit": "9d0172db68c960f8c1171828a8485f1ded5c42ef",
-  "source_file_count": 400,
+  "source_byte_count": 38260554,
+  "source_commit": "6ff2d896818e5ffd9d6d7fcfb921c48363ff37a9",
+  "source_file_count": 401,
   "source_mappings": [
     {
       "destination": "apps/life-links-demo",
@@ -453,5 +453,5 @@
       "source": "systems/life_links/contracts/mcp"
     }
   ],
-  "source_tree_sha256": "85fcbfc6a95d4f3eaba3fefbcd96ae078f0715fb49ef7a895a058e11c88c0bc5"
+  "source_tree_sha256": "5a3897e93fe8abbd3c5b74f4ee2968ca6a39a12f98043d34a789cc36f85c850e"
 }

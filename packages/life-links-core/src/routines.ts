@@ -1,4 +1,5 @@
-import { LifeLinkDomainError, MAX_BODY_LENGTH, MAX_TITLE_LENGTH } from "./index.js";
+import { LifeLinkDomainError } from "./index.js";
+import { MAX_BODY_LENGTH, MAX_TITLE_LENGTH } from "./limits.js";
 
 export const ROUTINE_GROUP_ID_PREFIX = "routine-group-";
 export const ACTIVITY_ID_PREFIX = "activity-";

@@ -1,8 +1,10 @@
 import type { LifeLinkBrowsingRole, LifeLinkContext, PublicFieldKey } from "./fieldLedger.js";
 import { normalizeLifeLinkBrowsingRole, normalizeLifeLinkContext, normalizePublicFieldKeys } from "./fieldLedger.js";
+import { MAX_BODY_LENGTH, MAX_TITLE_LENGTH } from "./limits.js";
 
 export * from "./fieldLedger.js";
 export * from "./changeHistory.js";
+export { MAX_BODY_LENGTH, MAX_TITLE_LENGTH } from "./limits.js";
 
 export type PrivacyStatus = "public" | "private";
 export type LinkStatus = "unclaimed" | "claimed";
@@ -110,8 +112,6 @@ export const DEMO_GUEST_ID = "demo-guest";
 export const DEMO_PASSWORD = "local-demo-password-not-for-deployment";
 export const LINK_BODY_DOC_VERSION = 1;
 export const MAX_BATCH_COUNT = 10000;
-export const MAX_TITLE_LENGTH = 120;
-export const MAX_BODY_LENGTH = 4000;
 export const MAX_BODY_DOC_BYTES = 128 * 1024;
 export const MAX_QR_ID_LENGTH = 128;
 export const MAX_SCAN_TEXT_LENGTH = 2048;
