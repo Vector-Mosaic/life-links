@@ -38,6 +38,7 @@ import { createLifeLinksApp } from "../src/server.js";
 import { ClaimIdempotencyConflictError } from "../src/store.js";
 import { fieldLedgerStoreContract } from "./field-ledger-contract.js";
 import { changeHistoryStoreContract } from "./change-history-contract.js";
+import { routineStoreContract } from "./routine-store-contract.js";
 
 const databaseUrl = process.env.LIFE_LINKS_TEST_DATABASE_URL;
 const allowSchemaMutation = process.env.LIFE_LINKS_ALLOW_TEST_DB_SCHEMA === "1";
@@ -75,6 +76,7 @@ describe("Life Links Postgres integration", () => {
   let app: ReturnType<typeof createLifeLinksApp>;
 
   fieldLedgerStoreContract(() => store);
+  routineStoreContract(() => store);
 
   describe("isolated saved-change parity", () => {
     let parityStore: PostgresLifeLinksStore;
@@ -207,7 +209,7 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(9);
+    expect(migrations.rows[0].count).toBe(10);
     const agentConnectionColumn = await adminPool.query(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -421,13 +423,32 @@ describe("Life Links Postgres integration", () => {
       media: 0,
       batches: 1,
       qrCodes: 8,
-      claimEvents: 0
+      claimEvents: 0,
+      routineGroups: 0,
+      routineActivities: 0,
+      routines: 0,
+      routineRevisions: 0,
+      routineSteps: 0,
+      routineContextBindings: 0,
+      routineSchedules: 0,
+      routineOccurrences: 0,
+      routineRuns: 0,
+      routineSessions: 0,
+      routineSessionStepResults: 0,
+      routineSessionAmendments: 0
     });
     expect(await store.getUserById(COMPETITION_OWNER_ID)).toBeNull();
 
     const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(firstApply.after).toEqual(firstApply.expected);
     expect(firstApply.shapeMatchesExpected).toBe(true);
+    const resetActivity = await store.createActivity({ id: `activity-${randomUUID()}`, ownerId: COMPETITION_OWNER_ID,
+      title: "Reset probe", createdAt: "2026-09-01T00:00:00.000Z" });
+    await store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
+      ownerId: COMPETITION_OWNER_ID, title: "Reset probe", createdAt: "2026-09-01T00:00:00.000Z",
+      steps: [{ id: `routine-step-${randomUUID()}`, activityId: resetActivity.id, activityTitle: resetActivity.title, position: 0 }] });
+    expect((await store.resetCompetitionFixture(options)).before).toMatchObject({ routines: 1, routineActivities: 1, routineRevisions: 1, routineSteps: 1 });
+    expect((await store.resetCompetitionFixture({ ...options, mode: "apply" })).after).toEqual(firstApply.expected);
     expect((await store.resetCompetitionFixture(options)).shapeMatchesExpected).toBe(true);
     expect((await store.resetCompetitionFixture({ ...options, password: "wrong-password" })).shapeMatchesExpected).toBe(false);
     expect((await store.listCollectionMembers(COMPETITION_OWNER_ID, COMPETITION_CAMPING_COLLECTION_ID, { limit: 100 }))?.items).toHaveLength(48);
@@ -1071,7 +1092,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(9);
+      expect(receiptCount.rows[0].count).toBe(10);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1097,7 +1118,8 @@ describe("Life Links Postgres integration", () => {
         "006_field_ledger_collections.sql",
         "007_remove_project_compat.sql",
         "008_saved_change_history.sql",
-        "009_document_attachments.sql"
+        "009_document_attachments.sql",
+        "010_general_routines.sql"
       ]);
     } finally {
       await concurrent.store.close();

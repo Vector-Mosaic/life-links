@@ -53,6 +53,9 @@
     },
     {
       "name": "browser"
+    },
+    {
+      "name": "routines"
     }
   ],
   "paths": {
@@ -2793,6 +2796,73 @@
           }
         }
       }
+    },
+    "/api/routine-groups": {
+      "get": { "operationId": "listRoutineGroups", "summary": "List owner Routine Groups", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/LifeLinkCursor"},{"$ref":"#/components/parameters/LifeLinkPageLimit"},{"$ref":"#/components/parameters/RoutineIncludeArchived"}], "responses": {"200":{"$ref":"#/components/responses/RoutineGroupPageOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "post": { "operationId": "createRoutineGroup", "summary": "Create an owner Routine Group", "description": "The optional stable prefixed UUID makes exact retries converge.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineGroupCreateRequest"}}}}, "responses": {"201":{"$ref":"#/components/responses/RoutineGroupOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-groups/{groupId}": {
+      "get": { "operationId": "getRoutineGroup", "summary": "Read an owner Routine Group", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineGroupId"}], "responses": {"200":{"$ref":"#/components/responses/RoutineGroupOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "patch": { "operationId": "updateRoutineGroup", "summary": "Revision-safely update or archive a Routine Group", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineGroupId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineGroupPatchRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/RoutineGroupOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-activities": {
+      "get": { "operationId": "listRoutineActivities", "summary": "List owner Routine Activities", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/LifeLinkCursor"},{"$ref":"#/components/parameters/LifeLinkPageLimit"},{"$ref":"#/components/parameters/RoutineIncludeArchived"}], "responses": {"200":{"$ref":"#/components/responses/ActivityPageOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "post": { "operationId": "createRoutineActivity", "summary": "Create an owner Routine Activity", "description": "The optional stable prefixed UUID makes exact retries converge.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ActivityCreateRequest"}}}}, "responses": {"201":{"$ref":"#/components/responses/ActivityOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-activities/{activityId}": {
+      "get": { "operationId": "getRoutineActivity", "summary": "Read an owner Routine Activity", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineActivityId"}], "responses": {"200":{"$ref":"#/components/responses/ActivityOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "patch": { "operationId": "updateRoutineActivity", "summary": "Revision-safely update or archive a Routine Activity", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineActivityId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ActivityPatchRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/ActivityOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routines": {
+      "get": { "operationId": "listRoutines", "summary": "List owner Routines", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/LifeLinkCursor"},{"$ref":"#/components/parameters/LifeLinkPageLimit"},{"$ref":"#/components/parameters/RoutineIncludeArchived"}], "responses": {"200":{"$ref":"#/components/responses/RoutinePageOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "post": { "operationId": "createRoutine", "summary": "Atomically create a Routine and immutable revision one", "description": "Optional stable Routine and revision identities make exact retries converge. Steps snapshot Activity titles and context bindings remain owner-private.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineCreateRequest"}}}}, "responses": {"201":{"$ref":"#/components/responses/RoutineDetailOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routines/{routineId}": {
+      "get": { "operationId": "getRoutine", "summary": "Read a Routine and its current immutable revision", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineId"}], "responses": {"200":{"$ref":"#/components/responses/RoutineDetailOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "patch": { "operationId": "updateRoutine", "summary": "Revision-safely change Routine grouping or archive state", "description": "This metadata mutation never rewrites an immutable Routine Revision.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutinePatchRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/RoutineDetailOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routines/{routineId}/active-run": {
+      "get": { "operationId": "getActiveRoutineRun", "summary": "Discover the active owner Run for a Routine after reload", "description": "Returns null when the owned Routine has no active Run; completed history remains available through Sessions.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineId"}], "responses": {"200":{"$ref":"#/components/responses/RoutineActiveRunOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routines/{routineId}/revisions": {
+      "post": { "operationId": "reviseRoutine", "summary": "Create a complete immutable replacement Routine Revision", "description": "expectedCurrentRevisionId protects the future definition; historical Sessions continue to point at their original revision.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineRevisionCreateRequest"}}}}, "responses": {"201":{"$ref":"#/components/responses/RoutineDetailOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routines/{routineId}/revisions/{revisionId}": {
+      "get": { "operationId": "getRoutineRevision", "summary": "Read one immutable Routine Revision", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineId"},{"$ref":"#/components/parameters/RoutineRevisionId"}], "responses": {"200":{"$ref":"#/components/responses/RoutineRevisionOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routines/{routineId}/schedules": {
+      "get": { "operationId": "listRoutineSchedules", "summary": "List schedules for one owner Routine", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineId"},{"$ref":"#/components/parameters/LifeLinkCursor"},{"$ref":"#/components/parameters/LifeLinkPageLimit"}], "responses": {"200":{"$ref":"#/components/responses/RoutineSchedulePageOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} },
+      "post": { "operationId": "createRoutineSchedule", "summary": "Create a revision-pinned Schedule and materialize its near-term Occurrences", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineScheduleCreateRequest"}}}}, "responses": {"201":{"$ref":"#/components/responses/RoutineScheduleOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-schedules/{scheduleId}": {
+      "patch": { "operationId": "updateRoutineSchedule", "summary": "Revision-safely update a Schedule and reconcile future Occurrences", "description": "Started and completed history is never rewritten.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineScheduleId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineSchedulePatchRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/RoutineScheduleOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-occurrences": {
+      "get": { "operationId": "listRoutineOccurrences", "summary": "List already materialized owner Routine Occurrences", "description": "GET never materializes new Occurrences.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/LifeLinkCursor"},{"$ref":"#/components/parameters/LifeLinkPageLimit"},{"$ref":"#/components/parameters/RoutineIdQuery"},{"$ref":"#/components/parameters/RoutineStartDate"},{"$ref":"#/components/parameters/RoutineEndDate"}], "responses": {"200":{"$ref":"#/components/responses/RoutineOccurrencePageOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-occurrences/{occurrenceId}": {
+      "get": { "operationId": "getRoutineOccurrence", "summary": "Read one materialized Routine Occurrence", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineOccurrenceId"}], "responses": {"200":{"$ref":"#/components/responses/RoutineOccurrenceOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routines/{routineId}/runs": {
+      "post": { "operationId": "startRoutineRun", "summary": "Start or exactly resume an owner Routine Run", "description": "A stable Run ID makes exact replay return the same Run. Only one active Run per owner and Routine and one Run per Occurrence are admitted.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineRunStartRequest"}}}}, "responses": {"201":{"$ref":"#/components/responses/RoutineRunOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-runs/{runId}": {
+      "get": { "operationId": "getRoutineRun", "summary": "Resume one owner Routine Run", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineRunId"}], "responses": {"200":{"$ref":"#/components/responses/RoutineRunOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-runs/{runId}/step-results/{routineStepId}": {
+      "put": { "operationId": "putRoutineRunStepResult", "summary": "Replace one Run Step result at an exact Run revision", "description": "Actual values, proposed future defaults, and notes remain distinct; exact target-state replay converges and never revises the Routine.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineRunId"},{"$ref":"#/components/parameters/RoutineStepId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineRunStepResultPutRequest"}}}}, "responses": {"200":{"$ref":"#/components/responses/RoutineRunOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-runs/{runId}/finalize": {
+      "post": { "operationId": "finalizeRoutineRun", "summary": "Atomically finalize a Run into an immutable Session", "description": "A stable Session ID makes exact replay converge. The Run revision must match; originals remain immutable.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineRunId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineRunFinalizeRequest"}}}}, "responses": {"201":{"$ref":"#/components/responses/RoutineFinalizeOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-sessions": {
+      "get": { "operationId": "listRoutineSessions", "summary": "List immutable owner Routine Sessions", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/LifeLinkCursor"},{"$ref":"#/components/parameters/LifeLinkPageLimit"},{"$ref":"#/components/parameters/RoutineIdQuery"}], "responses": {"200":{"$ref":"#/components/responses/RoutineSessionPageOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-sessions/{sessionId}": {
+      "get": { "operationId": "getRoutineSession", "summary": "Read immutable Routine history with append-only corrections", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineSessionId"}], "responses": {"200":{"$ref":"#/components/responses/RoutineSessionOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
+    },
+    "/api/routine-sessions/{sessionId}/amendments": {
+      "post": { "operationId": "appendRoutineSessionAmendment", "summary": "Append an owner-private immutable Session correction", "description": "A stable Amendment ID makes exact replay converge; original values and the full Amendment chain remain visible.", "tags": ["routines"], "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/RoutineSessionId"},{"$ref":"#/components/parameters/BrowserOrigin"}], "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RoutineSessionAmendmentCreateRequest"}}}}, "responses": {"201":{"$ref":"#/components/responses/RoutineAmendmentOk"},"400":{"$ref":"#/components/responses/RoutineBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/RoutineNotFound"},"409":{"$ref":"#/components/responses/RoutineConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}} }
     }
   },
   "components": {
@@ -2934,7 +3004,20 @@
           "type": "string",
           "format": "uri"
         }
-      }
+      },
+      "RoutineIncludeArchived": { "name":"includeArchived", "in":"query", "required":false, "schema":{"type":"boolean","default":false} },
+      "RoutineGroupId": { "name":"groupId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/RoutineGroupId"} },
+      "RoutineActivityId": { "name":"activityId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/RoutineActivityId"} },
+      "RoutineId": { "name":"routineId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/RoutineId"} },
+      "RoutineIdQuery": { "name":"routineId", "in":"query", "required":false, "schema":{"$ref":"#/components/schemas/RoutineId"} },
+      "RoutineRevisionId": { "name":"revisionId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/RoutineRevisionId"} },
+      "RoutineScheduleId": { "name":"scheduleId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/RoutineScheduleId"} },
+      "RoutineOccurrenceId": { "name":"occurrenceId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/RoutineOccurrenceId"} },
+      "RoutineRunId": { "name":"runId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/RoutineRunId"} },
+      "RoutineStepId": { "name":"routineStepId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/RoutineStepId"} },
+      "RoutineSessionId": { "name":"sessionId", "in":"path", "required":true, "schema":{"$ref":"#/components/schemas/RoutineSessionId"} },
+      "RoutineStartDate": { "name":"startDate", "in":"query", "required":false, "schema":{"type":"string","format":"date"} },
+      "RoutineEndDate": { "name":"endDate", "in":"query", "required":false, "schema":{"type":"string","format":"date"} }
     },
     "headers": {
       "RequestId": {
@@ -5946,9 +6029,192 @@
             }
           }
         }
-      }
+      },
+      "RoutineGroupId": { "type":"string", "pattern":"^routine-group-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineActivityId": { "type":"string", "pattern":"^activity-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineId": { "type":"string", "pattern":"^routine-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineRevisionId": { "type":"string", "pattern":"^routine-revision-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineStepId": { "type":"string", "pattern":"^routine-step-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineBindingId": { "type":"string", "pattern":"^routine-binding-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineScheduleId": { "type":"string", "pattern":"^routine-schedule-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineOccurrenceId": { "type":"string", "pattern":"^routine-occurrence-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineRunId": { "type":"string", "pattern":"^routine-run-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineSessionId": { "type":"string", "pattern":"^routine-session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineSessionResultId": { "type":"string", "pattern":"^routine-session-result-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineSessionAmendmentId": { "type":"string", "pattern":"^routine-session-amendment-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+      "RoutineNullableTimestamp": { "oneOf":[{"type":"string","format":"date-time"},{"type":"null"}] },
+      "RoutineValue": {
+        "oneOf": [
+          {"type":"object","additionalProperties":false,"required":["key","label","kind","value"],"properties":{"key":{"type":"string","pattern":"^[a-z][a-z0-9_-]{0,63}$"},"label":{"type":"string","minLength":1,"maxLength":120},"kind":{"const":"number"},"value":{"type":"number"}}},
+          {"type":"object","additionalProperties":false,"required":["key","label","kind","amount","unit"],"properties":{"key":{"type":"string","pattern":"^[a-z][a-z0-9_-]{0,63}$"},"label":{"type":"string","minLength":1,"maxLength":120},"kind":{"const":"quantity"},"amount":{"type":"number"},"unit":{"type":"string","minLength":1,"maxLength":32}}},
+          {"type":"object","additionalProperties":false,"required":["key","label","kind","seconds"],"properties":{"key":{"type":"string","pattern":"^[a-z][a-z0-9_-]{0,63}$"},"label":{"type":"string","minLength":1,"maxLength":120},"kind":{"const":"duration"},"seconds":{"type":"integer","minimum":0}}},
+          {"type":"object","additionalProperties":false,"required":["key","label","kind","text"],"properties":{"key":{"type":"string","pattern":"^[a-z][a-z0-9_-]{0,63}$"},"label":{"type":"string","minLength":1,"maxLength":120},"kind":{"const":"text"},"text":{"type":"string","maxLength":4000}}},
+          {"type":"object","additionalProperties":false,"required":["key","label","kind","value"],"properties":{"key":{"type":"string","pattern":"^[a-z][a-z0-9_-]{0,63}$"},"label":{"type":"string","minLength":1,"maxLength":120},"kind":{"const":"boolean"},"value":{"type":"boolean"}}}
+        ]
+      },
+      "RoutineGroup": { "type":"object", "additionalProperties":false, "required":["id","ownerId","title","notes","createdAt","updatedAt","archivedAt"], "properties":{"id":{"$ref":"#/components/schemas/RoutineGroupId"},"ownerId":{"type":"string","minLength":1},"title":{"type":"string","minLength":1,"maxLength":120},"notes":{"type":"string","maxLength":4000},"createdAt":{"type":"string","format":"date-time"},"updatedAt":{"type":"string","format":"date-time"},"archivedAt":{"$ref":"#/components/schemas/RoutineNullableTimestamp"}} },
+      "RoutineActivity": { "type":"object", "additionalProperties":false, "required":["id","ownerId","title","notes","createdAt","updatedAt","archivedAt"], "properties":{"id":{"$ref":"#/components/schemas/RoutineActivityId"},"ownerId":{"type":"string","minLength":1},"title":{"type":"string","minLength":1,"maxLength":120},"notes":{"type":"string","maxLength":4000},"createdAt":{"type":"string","format":"date-time"},"updatedAt":{"type":"string","format":"date-time"},"archivedAt":{"$ref":"#/components/schemas/RoutineNullableTimestamp"}} },
+      "Routine": { "type":"object", "additionalProperties":false, "required":["id","ownerId","groupId","currentRevisionId","createdAt","updatedAt","archivedAt"], "properties":{"id":{"$ref":"#/components/schemas/RoutineId"},"ownerId":{"type":"string","minLength":1},"groupId":{"oneOf":[{"$ref":"#/components/schemas/RoutineGroupId"},{"type":"null"}]},"currentRevisionId":{"$ref":"#/components/schemas/RoutineRevisionId"},"createdAt":{"type":"string","format":"date-time"},"updatedAt":{"type":"string","format":"date-time"},"archivedAt":{"$ref":"#/components/schemas/RoutineNullableTimestamp"}} },
+      "RoutineSummary": { "type":"object", "additionalProperties":false, "required":["id","ownerId","groupId","currentRevisionId","createdAt","updatedAt","archivedAt","revisionNumber","title","purpose"], "properties":{"id":{"$ref":"#/components/schemas/RoutineId"},"ownerId":{"type":"string","minLength":1},"groupId":{"oneOf":[{"$ref":"#/components/schemas/RoutineGroupId"},{"type":"null"}]},"currentRevisionId":{"$ref":"#/components/schemas/RoutineRevisionId"},"createdAt":{"type":"string","format":"date-time"},"updatedAt":{"type":"string","format":"date-time"},"archivedAt":{"$ref":"#/components/schemas/RoutineNullableTimestamp"},"revisionNumber":{"type":"integer","minimum":1},"title":{"type":"string","minLength":1,"maxLength":120},"purpose":{"type":"string","maxLength":500}} },
+      "RoutineRevision": { "type":"object", "additionalProperties":false, "required":["id","ownerId","routineId","revisionNumber","title","purpose","instructions","createdAt"], "properties":{"id":{"$ref":"#/components/schemas/RoutineRevisionId"},"ownerId":{"type":"string","minLength":1},"routineId":{"$ref":"#/components/schemas/RoutineId"},"revisionNumber":{"type":"integer","minimum":1},"title":{"type":"string","minLength":1,"maxLength":120},"purpose":{"type":"string","maxLength":500},"instructions":{"type":"string","maxLength":4000},"createdAt":{"type":"string","format":"date-time"}} },
+      "RoutineStep": { "type":"object", "additionalProperties":false, "required":["id","ownerId","routineRevisionId","activityId","activityTitle","position","instructions","optional","plannedValues"], "properties":{"id":{"$ref":"#/components/schemas/RoutineStepId"},"ownerId":{"type":"string","minLength":1},"routineRevisionId":{"$ref":"#/components/schemas/RoutineRevisionId"},"activityId":{"$ref":"#/components/schemas/RoutineActivityId"},"activityTitle":{"type":"string","minLength":1,"maxLength":120},"position":{"type":"integer","minimum":0},"instructions":{"type":"string","maxLength":4000},"optional":{"type":"boolean"},"plannedValues":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}}} },
+      "RoutineContextBinding": { "type":"object", "additionalProperties":false, "required":["id","ownerId","routineRevisionId","routineStepId","targetType","targetId"], "properties":{"id":{"$ref":"#/components/schemas/RoutineBindingId"},"ownerId":{"type":"string","minLength":1},"routineRevisionId":{"$ref":"#/components/schemas/RoutineRevisionId"},"routineStepId":{"oneOf":[{"$ref":"#/components/schemas/RoutineStepId"},{"type":"null"}]},"targetType":{"enum":["life_link","collection"]},"targetId":{"type":"string","minLength":1,"maxLength":200}} },
+      "RoutineRevisionSnapshot": { "type":"object", "additionalProperties":false, "required":["revision","steps","bindings"], "properties":{"revision":{"$ref":"#/components/schemas/RoutineRevision"},"steps":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/RoutineStep"}},"bindings":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/RoutineContextBinding"}}} },
+      "RoutineDetail": { "type":"object", "additionalProperties":false, "required":["routine","currentRevision"], "properties":{"routine":{"$ref":"#/components/schemas/Routine"},"currentRevision":{"$ref":"#/components/schemas/RoutineRevisionSnapshot"}} },
+      "RoutineScheduleRule": { "oneOf":[
+        {"type":"object","additionalProperties":false,"required":["kind","localDate","localTime","timeZone"],"properties":{"kind":{"const":"once"},"localDate":{"type":"string","format":"date"},"localTime":{"type":"string","pattern":"^(?:[01]\\d|2[0-3]):[0-5]\\d$"},"timeZone":{"type":"string","minLength":1}}},
+        {"type":"object","additionalProperties":false,"required":["kind","startDate","endDate","intervalDays","localTime","timeZone"],"properties":{"kind":{"const":"daily"},"startDate":{"type":"string","format":"date"},"endDate":{"oneOf":[{"type":"string","format":"date"},{"type":"null"}]},"intervalDays":{"type":"integer","minimum":1,"maximum":366},"localTime":{"type":"string","pattern":"^(?:[01]\\d|2[0-3]):[0-5]\\d$"},"timeZone":{"type":"string","minLength":1}}},
+        {"type":"object","additionalProperties":false,"required":["kind","startDate","endDate","intervalWeeks","weekdays","localTime","timeZone"],"properties":{"kind":{"const":"weekly"},"startDate":{"type":"string","format":"date"},"endDate":{"oneOf":[{"type":"string","format":"date"},{"type":"null"}]},"intervalWeeks":{"type":"integer","minimum":1,"maximum":366},"weekdays":{"type":"array","minItems":1,"maxItems":7,"uniqueItems":true,"items":{"enum":["monday","tuesday","wednesday","thursday","friday","saturday","sunday"]}},"localTime":{"type":"string","pattern":"^(?:[01]\\d|2[0-3]):[0-5]\\d$"},"timeZone":{"type":"string","minLength":1}}}
+      ] },
+      "RoutineSchedule": { "type":"object", "additionalProperties":false, "required":["id","ownerId","routineId","routineRevisionId","rule","revision","active","createdAt","updatedAt"], "properties":{"id":{"$ref":"#/components/schemas/RoutineScheduleId"},"ownerId":{"type":"string","minLength":1},"routineId":{"$ref":"#/components/schemas/RoutineId"},"routineRevisionId":{"$ref":"#/components/schemas/RoutineRevisionId"},"rule":{"$ref":"#/components/schemas/RoutineScheduleRule"},"revision":{"type":"integer","minimum":1},"active":{"type":"boolean"},"createdAt":{"type":"string","format":"date-time"},"updatedAt":{"type":"string","format":"date-time"}} },
+      "RoutineOccurrence": { "type":"object", "additionalProperties":false, "required":["id","ownerId","scheduleId","scheduleRevision","routineId","routineRevisionId","localDate","plannedFor","status","createdAt","updatedAt"], "properties":{"id":{"$ref":"#/components/schemas/RoutineOccurrenceId"},"ownerId":{"type":"string","minLength":1},"scheduleId":{"$ref":"#/components/schemas/RoutineScheduleId"},"scheduleRevision":{"type":"integer","minimum":1},"routineId":{"$ref":"#/components/schemas/RoutineId"},"routineRevisionId":{"$ref":"#/components/schemas/RoutineRevisionId"},"localDate":{"type":"string","format":"date"},"plannedFor":{"type":"string","format":"date-time"},"status":{"enum":["planned","canceled","skipped","started","completed"]},"createdAt":{"type":"string","format":"date-time"},"updatedAt":{"type":"string","format":"date-time"}} },
+      "RoutineContextSnapshotMember": { "type":"object", "additionalProperties":false, "required":["lifeLinkId","title","sourceUpdatedAt"], "properties":{"lifeLinkId":{"$ref":"#/components/schemas/LifeLinkId"},"title":{"type":"string","minLength":1,"maxLength":120},"sourceUpdatedAt":{"type":"string","format":"date-time"}} },
+      "RoutineContextSnapshot": { "type":"object", "additionalProperties":false, "required":["bindingId","routineStepId","targetType","targetId","targetTitle","targetSourceUpdatedAt","resolvedLifeLinks"], "properties":{"bindingId":{"$ref":"#/components/schemas/RoutineBindingId"},"routineStepId":{"oneOf":[{"$ref":"#/components/schemas/RoutineStepId"},{"type":"null"}]},"targetType":{"enum":["life_link","collection"]},"targetId":{"type":"string","minLength":1},"targetTitle":{"type":"string","minLength":1,"maxLength":120},"targetSourceUpdatedAt":{"type":"string","format":"date-time"},"resolvedLifeLinks":{"type":"array","items":{"$ref":"#/components/schemas/RoutineContextSnapshotMember"}}} },
+      "RoutineRunStepResult": { "type":"object", "additionalProperties":false, "required":["routineStepId","actualValues","proposedNextValues","notes"], "properties":{"routineStepId":{"$ref":"#/components/schemas/RoutineStepId"},"actualValues":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},"proposedNextValues":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},"notes":{"type":"string","maxLength":4000}} },
+      "RoutineRun": { "type":"object", "additionalProperties":false, "required":["id","ownerId","routineId","routineRevisionId","occurrenceId","status","contextSnapshot","stepResults","startedAt","updatedAt"], "properties":{"id":{"$ref":"#/components/schemas/RoutineRunId"},"ownerId":{"type":"string","minLength":1},"routineId":{"$ref":"#/components/schemas/RoutineId"},"routineRevisionId":{"$ref":"#/components/schemas/RoutineRevisionId"},"occurrenceId":{"oneOf":[{"$ref":"#/components/schemas/RoutineOccurrenceId"},{"type":"null"}]},"status":{"enum":["active","finalized"]},"contextSnapshot":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/RoutineContextSnapshot"}},"stepResults":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/RoutineRunStepResult"}},"startedAt":{"type":"string","format":"date-time"},"updatedAt":{"type":"string","format":"date-time"}} },
+      "RoutineSession": { "type":"object", "additionalProperties":false, "required":["id","ownerId","routineId","routineRevisionId","runId","occurrenceId","contextSnapshot","startedAt","completedAt"], "properties":{"id":{"$ref":"#/components/schemas/RoutineSessionId"},"ownerId":{"type":"string","minLength":1},"routineId":{"$ref":"#/components/schemas/RoutineId"},"routineRevisionId":{"$ref":"#/components/schemas/RoutineRevisionId"},"runId":{"$ref":"#/components/schemas/RoutineRunId"},"occurrenceId":{"oneOf":[{"$ref":"#/components/schemas/RoutineOccurrenceId"},{"type":"null"}]},"contextSnapshot":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/RoutineContextSnapshot"}},"startedAt":{"type":"string","format":"date-time"},"completedAt":{"type":"string","format":"date-time"}} },
+      "RoutineSessionStepResult": { "type":"object", "additionalProperties":false, "required":["id","ownerId","sessionId","routineStepId","actualValues","proposedNextValues","notes"], "properties":{"id":{"$ref":"#/components/schemas/RoutineSessionResultId"},"ownerId":{"type":"string","minLength":1},"sessionId":{"$ref":"#/components/schemas/RoutineSessionId"},"routineStepId":{"$ref":"#/components/schemas/RoutineStepId"},"actualValues":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},"proposedNextValues":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},"notes":{"type":"string","maxLength":4000}} },
+      "RoutineSessionAmendment": { "type":"object", "additionalProperties":false, "required":["id","ownerId","sessionId","stepResultId","note","correctedActualValues","correctedProposedNextValues","createdAt"], "properties":{"id":{"$ref":"#/components/schemas/RoutineSessionAmendmentId"},"ownerId":{"type":"string","minLength":1},"sessionId":{"$ref":"#/components/schemas/RoutineSessionId"},"stepResultId":{"oneOf":[{"$ref":"#/components/schemas/RoutineSessionResultId"},{"type":"null"}]},"note":{"type":"string","minLength":1,"maxLength":4000},"correctedActualValues":{"oneOf":[{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},{"type":"null"}]},"correctedProposedNextValues":{"oneOf":[{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},{"type":"null"}]},"createdAt":{"type":"string","format":"date-time"}} },
+      "EffectiveRoutineSessionStepResult": { "type":"object", "additionalProperties":false, "required":["original","effectiveActualValues","effectiveProposedNextValues","amendments"], "properties":{"original":{"$ref":"#/components/schemas/RoutineSessionStepResult"},"effectiveActualValues":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},"effectiveProposedNextValues":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},"amendments":{"type":"array","items":{"$ref":"#/components/schemas/RoutineSessionAmendment"}}} },
+      "RoutineSessionProjection": { "type":"object", "additionalProperties":false, "required":["session","stepResults","sessionAmendments"], "properties":{"session":{"$ref":"#/components/schemas/RoutineSession"},"stepResults":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/EffectiveRoutineSessionStepResult"}},"sessionAmendments":{"type":"array","items":{"$ref":"#/components/schemas/RoutineSessionAmendment"}}} },
+
+      "RoutineGroupCreateRequest": { "type":"object", "additionalProperties":false, "required":["title"], "properties":{"id":{"$ref":"#/components/schemas/RoutineGroupId"},"title":{"type":"string","minLength":1,"maxLength":120},"notes":{"type":"string","maxLength":4000}} },
+      "RoutineGroupPatchRequest": { "type":"object", "additionalProperties":false, "required":["expectedUpdatedAt"], "anyOf":[{"required":["title"]},{"required":["notes"]},{"required":["archivedAt"]}], "properties":{"expectedUpdatedAt":{"type":"string","format":"date-time"},"title":{"type":"string","minLength":1,"maxLength":120},"notes":{"type":"string","maxLength":4000},"archivedAt":{"$ref":"#/components/schemas/RoutineNullableTimestamp"}} },
+      "ActivityCreateRequest": { "type":"object", "additionalProperties":false, "required":["title"], "properties":{"id":{"$ref":"#/components/schemas/RoutineActivityId"},"title":{"type":"string","minLength":1,"maxLength":120},"notes":{"type":"string","maxLength":4000}} },
+      "ActivityPatchRequest": { "type":"object", "additionalProperties":false, "required":["expectedUpdatedAt"], "anyOf":[{"required":["title"]},{"required":["notes"]},{"required":["archivedAt"]}], "properties":{"expectedUpdatedAt":{"type":"string","format":"date-time"},"title":{"type":"string","minLength":1,"maxLength":120},"notes":{"type":"string","maxLength":4000},"archivedAt":{"$ref":"#/components/schemas/RoutineNullableTimestamp"}} },
+      "RoutineStepInput": { "type":"object", "additionalProperties":false, "required":["activityId","activityTitle","position"], "properties":{"id":{"$ref":"#/components/schemas/RoutineStepId"},"activityId":{"$ref":"#/components/schemas/RoutineActivityId"},"activityTitle":{"type":"string","minLength":1,"maxLength":120},"position":{"type":"integer","minimum":0},"instructions":{"type":"string","maxLength":4000},"optional":{"type":"boolean"},"plannedValues":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}}} },
+      "RoutineContextBindingInput": { "type":"object", "additionalProperties":false, "required":["targetType","targetId"], "properties":{"id":{"$ref":"#/components/schemas/RoutineBindingId"},"routineStepId":{"oneOf":[{"$ref":"#/components/schemas/RoutineStepId"},{"type":"null"}]},"targetType":{"enum":["life_link","collection"]},"targetId":{"type":"string","minLength":1,"maxLength":200}} },
+      "RoutineCreateRequest": { "type":"object", "additionalProperties":false, "required":["title","steps"], "properties":{"id":{"$ref":"#/components/schemas/RoutineId"},"revisionId":{"$ref":"#/components/schemas/RoutineRevisionId"},"groupId":{"oneOf":[{"$ref":"#/components/schemas/RoutineGroupId"},{"type":"null"}]},"title":{"type":"string","minLength":1,"maxLength":120},"purpose":{"type":"string","maxLength":500},"instructions":{"type":"string","maxLength":4000},"steps":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/RoutineStepInput"}},"bindings":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/RoutineContextBindingInput"}}} },
+      "RoutineRevisionCreateRequest": { "type":"object", "additionalProperties":false, "required":["expectedCurrentRevisionId","title","steps"], "properties":{"revisionId":{"$ref":"#/components/schemas/RoutineRevisionId"},"expectedCurrentRevisionId":{"$ref":"#/components/schemas/RoutineRevisionId"},"title":{"type":"string","minLength":1,"maxLength":120},"purpose":{"type":"string","maxLength":500},"instructions":{"type":"string","maxLength":4000},"steps":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/RoutineStepInput"}},"bindings":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/RoutineContextBindingInput"}}} },
+      "RoutinePatchRequest": { "type":"object", "additionalProperties":false, "required":["expectedUpdatedAt"], "anyOf":[{"required":["groupId"]},{"required":["archivedAt"]}], "properties":{"expectedUpdatedAt":{"type":"string","format":"date-time"},"groupId":{"oneOf":[{"$ref":"#/components/schemas/RoutineGroupId"},{"type":"null"}]},"archivedAt":{"$ref":"#/components/schemas/RoutineNullableTimestamp"}} },
+      "RoutineScheduleCreateRequest": { "type":"object", "additionalProperties":false, "required":["rule"], "properties":{"id":{"$ref":"#/components/schemas/RoutineScheduleId"},"rule":{"$ref":"#/components/schemas/RoutineScheduleRule"},"active":{"type":"boolean","default":true}} },
+      "RoutineSchedulePatchRequest": { "type":"object", "additionalProperties":false, "required":["expectedUpdatedAt"], "anyOf":[{"required":["rule"]},{"required":["active"]}], "properties":{"expectedUpdatedAt":{"type":"string","format":"date-time"},"rule":{"$ref":"#/components/schemas/RoutineScheduleRule"},"active":{"type":"boolean"}} },
+      "RoutineRunStartRequest": { "type":"object", "additionalProperties":false, "required":["id"], "properties":{"id":{"$ref":"#/components/schemas/RoutineRunId"},"occurrenceId":{"oneOf":[{"$ref":"#/components/schemas/RoutineOccurrenceId"},{"type":"null"}]}} },
+      "RoutineRunStepResultPutRequest": { "type":"object", "additionalProperties":false, "required":["expectedUpdatedAt","actualValues","proposedNextValues"], "properties":{"expectedUpdatedAt":{"type":"string","format":"date-time"},"actualValues":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},"proposedNextValues":{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},"notes":{"type":"string","maxLength":4000}} },
+      "RoutineRunFinalizeRequest": { "type":"object", "additionalProperties":false, "required":["sessionId","expectedUpdatedAt"], "properties":{"sessionId":{"$ref":"#/components/schemas/RoutineSessionId"},"expectedUpdatedAt":{"type":"string","format":"date-time"}} },
+      "RoutineSessionAmendmentCreateRequest": { "type":"object", "additionalProperties":false, "required":["id","note"], "properties":{"id":{"$ref":"#/components/schemas/RoutineSessionAmendmentId"},"stepResultId":{"oneOf":[{"$ref":"#/components/schemas/RoutineSessionResultId"},{"type":"null"}]},"note":{"type":"string","minLength":1,"maxLength":4000},"correctedActualValues":{"oneOf":[{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},{"type":"null"}]},"correctedProposedNextValues":{"oneOf":[{"type":"array","maxItems":32,"items":{"$ref":"#/components/schemas/RoutineValue"}},{"type":"null"}]}} },
+
+      "RoutineGroupResponse": { "type":"object", "additionalProperties":false, "required":["routineGroup"], "properties":{"routineGroup":{"$ref":"#/components/schemas/RoutineGroup"}} },
+      "RoutineGroupListResponse": { "type":"object", "additionalProperties":false, "required":["routineGroups","nextCursor","truncated"], "properties":{"routineGroups":{"type":"array","items":{"$ref":"#/components/schemas/RoutineGroup"}},"nextCursor":{"oneOf":[{"type":"string"},{"type":"null"}]},"truncated":{"type":"boolean"}} },
+      "ActivityResponse": { "type":"object", "additionalProperties":false, "required":["activity"], "properties":{"activity":{"$ref":"#/components/schemas/RoutineActivity"}} },
+      "ActivityListResponse": { "type":"object", "additionalProperties":false, "required":["activities","nextCursor","truncated"], "properties":{"activities":{"type":"array","items":{"$ref":"#/components/schemas/RoutineActivity"}},"nextCursor":{"oneOf":[{"type":"string"},{"type":"null"}]},"truncated":{"type":"boolean"}} },
+      "RoutineResponse": { "type":"object", "additionalProperties":false, "required":["routine"], "properties":{"routine":{"$ref":"#/components/schemas/RoutineDetail"}} },
+      "RoutineListResponse": { "type":"object", "additionalProperties":false, "required":["routines","nextCursor","truncated"], "properties":{"routines":{"type":"array","items":{"$ref":"#/components/schemas/RoutineSummary"}},"nextCursor":{"oneOf":[{"type":"string"},{"type":"null"}]},"truncated":{"type":"boolean"}} },
+      "RoutineRevisionResponse": { "type":"object", "additionalProperties":false, "required":["routineRevision"], "properties":{"routineRevision":{"$ref":"#/components/schemas/RoutineRevisionSnapshot"}} },
+      "RoutineScheduleResponse": { "type":"object", "additionalProperties":false, "required":["schedule"], "properties":{"schedule":{"$ref":"#/components/schemas/RoutineSchedule"}} },
+      "RoutineScheduleListResponse": { "type":"object", "additionalProperties":false, "required":["schedules","nextCursor","truncated"], "properties":{"schedules":{"type":"array","items":{"$ref":"#/components/schemas/RoutineSchedule"}},"nextCursor":{"oneOf":[{"type":"string"},{"type":"null"}]},"truncated":{"type":"boolean"}} },
+      "RoutineOccurrenceResponse": { "type":"object", "additionalProperties":false, "required":["occurrence"], "properties":{"occurrence":{"$ref":"#/components/schemas/RoutineOccurrence"}} },
+      "RoutineOccurrenceListResponse": { "type":"object", "additionalProperties":false, "required":["occurrences","nextCursor","truncated"], "properties":{"occurrences":{"type":"array","items":{"$ref":"#/components/schemas/RoutineOccurrence"}},"nextCursor":{"oneOf":[{"type":"string"},{"type":"null"}]},"truncated":{"type":"boolean"}} },
+      "RoutineRunResponse": { "type":"object", "additionalProperties":false, "required":["run"], "properties":{"run":{"$ref":"#/components/schemas/RoutineRun"}} },
+      "RoutineActiveRunResponse": { "type":"object", "additionalProperties":false, "required":["run"], "properties":{"run":{"oneOf":[{"$ref":"#/components/schemas/RoutineRun"},{"type":"null"}]}} },
+      "RoutineFinalizeResponse": { "type":"object", "additionalProperties":false, "required":["run","session"], "properties":{"run":{"$ref":"#/components/schemas/RoutineRun"},"session":{"$ref":"#/components/schemas/RoutineSessionProjection"}} },
+      "RoutineSessionResponse": { "type":"object", "additionalProperties":false, "required":["session"], "properties":{"session":{"$ref":"#/components/schemas/RoutineSessionProjection"}} },
+      "RoutineSessionListResponse": { "type":"object", "additionalProperties":false, "required":["sessions","nextCursor","truncated"], "properties":{"sessions":{"type":"array","items":{"$ref":"#/components/schemas/RoutineSessionProjection"}},"nextCursor":{"oneOf":[{"type":"string"},{"type":"null"}]},"truncated":{"type":"boolean"}} },
+      "RoutineAmendmentResponse": { "type":"object", "additionalProperties":false, "required":["amendment","session"], "properties":{"amendment":{"$ref":"#/components/schemas/RoutineSessionAmendment"},"session":{"$ref":"#/components/schemas/RoutineSessionProjection"}} },
+      "RoutineErrorCode": { "type":"string", "enum":["invalid_routine","routine_not_found","stale_routine","routine_conflict","routine_reference_conflict"] },
+      "RoutineErrorResponse": { "type":"object", "additionalProperties":false, "required":["error"], "properties":{"error":{"type":"object","additionalProperties":false,"required":["code","message","retryable"],"properties":{"code":{"$ref":"#/components/schemas/RoutineErrorCode"},"message":{"type":"string","minLength":1,"maxLength":240},"retryable":{"type":"boolean"},"reason":{"type":"string","minLength":1,"maxLength":120}}}} }
     },
     "responses": {
+      "RoutineGroupPageOk": {
+        "description": "Deterministically ordered, bounded page of owner Routine Groups.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineGroupListResponse" } } }
+      },
+      "RoutineGroupOk": {
+        "description": "Owner Routine Group.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineGroupResponse" } } }
+      },
+      "ActivityPageOk": {
+        "description": "Deterministically ordered, bounded page of owner Activities.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActivityListResponse" } } }
+      },
+      "ActivityOk": {
+        "description": "Owner Activity.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ActivityResponse" } } }
+      },
+      "RoutinePageOk": {
+        "description": "Deterministically ordered, bounded page of owner Routines.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineListResponse" } } }
+      },
+      "RoutineDetailOk": {
+        "description": "Owner Routine and its current immutable Revision.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineResponse" } } }
+      },
+      "RoutineRevisionOk": {
+        "description": "One immutable owner Routine Revision.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineRevisionResponse" } } }
+      },
+      "RoutineSchedulePageOk": {
+        "description": "Deterministically ordered, bounded page of owner Routine Schedules.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineScheduleListResponse" } } }
+      },
+      "RoutineScheduleOk": {
+        "description": "Owner Routine Schedule.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineScheduleResponse" } } }
+      },
+      "RoutineOccurrencePageOk": {
+        "description": "Deterministically ordered, bounded page of materialized owner Routine Occurrences.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineOccurrenceListResponse" } } }
+      },
+      "RoutineOccurrenceOk": {
+        "description": "One materialized owner Routine Occurrence.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineOccurrenceResponse" } } }
+      },
+      "RoutineRunOk": {
+        "description": "Owner Routine Run with its immutable start snapshot and current results.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineRunResponse" } } }
+      },
+      "RoutineActiveRunOk": {
+        "description": "The active owner Routine Run, or null when none is active.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineActiveRunResponse" } } }
+      },
+      "RoutineFinalizeOk": {
+        "description": "Finalized immutable Routine Session and finalized Run.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineFinalizeResponse" } } }
+      },
+      "RoutineSessionPageOk": {
+        "description": "Deterministically ordered, bounded page of immutable owner Routine Sessions.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineSessionListResponse" } } }
+      },
+      "RoutineSessionOk": {
+        "description": "Immutable owner Routine Session, append-only Amendments, and derived effective values.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineSessionResponse" } } }
+      },
+      "RoutineAmendmentOk": {
+        "description": "Appended immutable Routine Session Amendment and the resulting Session projection.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineAmendmentResponse" } } }
+      },
+      "RoutineBadRequest": {
+        "description": "Routine input, identifier, or bounded query is invalid.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineErrorResponse" } } }
+      },
+      "RoutineNotFound": {
+        "description": "The owner-scoped Routine resource does not exist. Foreign-owner resources are indistinguishable from missing resources.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineErrorResponse" } } }
+      },
+      "RoutineConflict": {
+        "description": "A stale Routine revision, stable-ID payload mismatch, active-Run invariant, or owner reference conflict prevented the mutation. Only stale_routine is retryable.",
+        "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/RoutineErrorResponse" } } }
+      },
       "HealthOk": {
         "description": "Process is live and reports the exact runtime release identity.",
         "headers": {

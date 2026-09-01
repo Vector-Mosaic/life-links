@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -24,12 +25,14 @@ import {
 import { ClaimIdempotencyConflictError, InMemoryLifeLinksStore } from "../src/store.js";
 import { fieldLedgerStoreContract } from "./field-ledger-contract.js";
 import { changeHistoryStoreContract } from "./change-history-contract.js";
+import { routineStoreContract } from "./routine-store-contract.js";
 
 describe("canonical Life Links store contract", () => {
   let store: InMemoryLifeLinksStore;
 
   fieldLedgerStoreContract(() => store);
   changeHistoryStoreContract(() => store);
+  routineStoreContract(() => store);
 
   beforeEach(async () => {
     store = new InMemoryLifeLinksStore();
@@ -103,13 +106,32 @@ describe("canonical Life Links store contract", () => {
       media: 0,
       batches: 1,
       qrCodes: 8,
-      claimEvents: 0
+      claimEvents: 0,
+      routineGroups: 0,
+      routineActivities: 0,
+      routines: 0,
+      routineRevisions: 0,
+      routineSteps: 0,
+      routineContextBindings: 0,
+      routineSchedules: 0,
+      routineOccurrences: 0,
+      routineRuns: 0,
+      routineSessions: 0,
+      routineSessionStepResults: 0,
+      routineSessionAmendments: 0
     });
     expect(await store.getUserById(COMPETITION_OWNER_ID)).toBeNull();
 
     const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(firstApply.after).toEqual(firstApply.expected);
     expect(firstApply.shapeMatchesExpected).toBe(true);
+    const resetActivity = await store.createActivity({ id: `activity-${randomUUID()}`, ownerId: COMPETITION_OWNER_ID,
+      title: "Reset probe", createdAt: "2026-09-01T00:00:00.000Z" });
+    await store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
+      ownerId: COMPETITION_OWNER_ID, title: "Reset probe", createdAt: "2026-09-01T00:00:00.000Z",
+      steps: [{ id: `routine-step-${randomUUID()}`, activityId: resetActivity.id, activityTitle: resetActivity.title, position: 0 }] });
+    expect((await store.resetCompetitionFixture(options)).before).toMatchObject({ routines: 1, routineActivities: 1, routineRevisions: 1, routineSteps: 1 });
+    expect((await store.resetCompetitionFixture({ ...options, mode: "apply" })).after).toEqual(firstApply.expected);
     expect((await store.resetCompetitionFixture(options)).shapeMatchesExpected).toBe(true);
     expect((await store.resetCompetitionFixture({ ...options, password: "wrong-password" })).shapeMatchesExpected).toBe(false);
     expect((await store.listCollectionMembers(COMPETITION_OWNER_ID, COMPETITION_CAMPING_COLLECTION_ID, { limit: 100 }))?.items).toHaveLength(48);

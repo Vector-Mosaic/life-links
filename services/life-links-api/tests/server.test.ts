@@ -228,6 +228,261 @@ describe("Life Links API", () => {
     return response;
   }
 
+  it("completes the owner-only general Routines journey with stable retries and immutable corrected history", async () => {
+    const events: LogEvent[] = [];
+    ctx = await createSeededAgent({
+      logger: createLogger("routine_http_test", { env: "ci", sink: (event) => events.push(event) })
+    });
+    await login();
+    const uuid = (suffix: number) => `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
+    const lifeLinkId = `life-link-${uuid(1)}`;
+    const collectionId = `collection-${uuid(2)}`;
+    const activityId = `activity-${uuid(3)}`;
+    const routineId = `routine-${uuid(4)}`;
+    const revisionId = `routine-revision-${uuid(5)}`;
+    const scheduleId = `routine-schedule-${uuid(6)}`;
+    const runId = `routine-run-${uuid(7)}`;
+    const sessionId = `routine-session-${uuid(8)}`;
+    const nextRevisionId = `routine-revision-${uuid(9)}`;
+    const amendmentId = `routine-session-amendment-${uuid(10)}`;
+
+    const lifeLink = await ctx.agent.post("/api/life-links").send({
+      id: lifeLinkId,
+      title: "Morning kit",
+      privacy: "private"
+    });
+    expect(lifeLink.status).toBe(201);
+    const collection = await ctx.agent.post("/api/collections").send({
+      id: collectionId,
+      title: "Ready for the day"
+    });
+    expect(collection.status).toBe(201);
+    const membership = await ctx.agent
+      .put(`/api/collections/${collectionId}/members/${lifeLinkId}`)
+      .send({ expectedUpdatedAt: collection.body.collection.updatedAt });
+    expect(membership.status).toBe(200);
+
+    const activityRequest = { id: activityId, title: "Prepare", notes: "General preparation" };
+    const activity = await ctx.agent.post("/api/routine-activities").send(activityRequest);
+    expect(activity.status).toBe(201);
+    const activityReplay = await ctx.agent.post("/api/routine-activities").send(activityRequest);
+    expect(activityReplay.status).toBe(201);
+    expect(activityReplay.body.activity).toEqual(activity.body.activity);
+
+    const planned = [{ key: "effort", label: "Effort", kind: "number", value: 3 }];
+    const routineRequest = {
+      id: routineId,
+      revisionId,
+      title: "Morning preparation",
+      purpose: "Start consistently",
+      steps: [{
+        activityId,
+        activityTitle: activity.body.activity.title,
+        position: 0,
+        plannedValues: planned
+      }],
+      bindings: [
+        { targetType: "life_link", targetId: lifeLinkId },
+        { targetType: "collection", targetId: collectionId }
+      ]
+    };
+    const created = await ctx.agent.post("/api/routines").send(routineRequest);
+    expect(created.status).toBe(201);
+    expect(created.body.routine.currentRevision.steps[0].id).toMatch(/^routine-step-/);
+    expect(created.body.routine.currentRevision.bindings.map((binding: { id: string }) => binding.id))
+      .toEqual([expect.stringMatching(/^routine-binding-/), expect.stringMatching(/^routine-binding-/)]);
+
+    const createReplay = await ctx.agent.post("/api/routines").send(routineRequest);
+    expect(createReplay.status).toBe(201);
+    expect(createReplay.body.routine).toEqual(created.body.routine);
+    const createConflict = await ctx.agent.post("/api/routines").send({ ...routineRequest, title: "Different request" });
+    expect(createConflict.status).toBe(409);
+    expect(createConflict.body.error).toMatchObject({ code: "routine_conflict", retryable: false });
+
+    const localDate = new Date().toISOString().slice(0, 10);
+    const schedule = await ctx.agent.post(`/api/routines/${routineId}/schedules`).send({
+      id: scheduleId,
+      rule: { kind: "once", localDate, localTime: "09:00", timeZone: "UTC" }
+    });
+    expect(schedule.status).toBe(201);
+    const impossibleDate = await ctx.agent.get("/api/routine-occurrences").query({ startDate: "2026-02-31" });
+    expect(impossibleDate.status).toBe(400);
+    expect(impossibleDate.body.error).toMatchObject({ code: "invalid_routine", retryable: false });
+
+    const occurrencePage = await ctx.agent.get("/api/routine-occurrences").query({
+      routineId,
+      startDate: localDate,
+      endDate: localDate
+    });
+    expect(occurrencePage.status).toBe(200);
+    expect(occurrencePage.body.occurrences).toHaveLength(1);
+    const occurrence = occurrencePage.body.occurrences[0];
+    expect(occurrence).toMatchObject({ routineId, routineRevisionId: revisionId, scheduleId, status: "planned" });
+
+    const runRequest = { id: runId, occurrenceId: occurrence.id };
+    const started = await ctx.agent.post(`/api/routines/${routineId}/runs`).send(runRequest);
+    expect(started.status).toBe(201);
+    expect(started.body.run.contextSnapshot).toHaveLength(2);
+    expect(started.body.run.contextSnapshot.find((item: { targetType: string }) => item.targetType === "collection")?.resolvedLifeLinks)
+      .toEqual([{ lifeLinkId, title: "Morning kit", sourceUpdatedAt: lifeLink.body.lifeLink.updatedAt }]);
+    const startReplay = await ctx.agent.post(`/api/routines/${routineId}/runs`).send(runRequest);
+    expect(startReplay.status).toBe(201);
+    expect(startReplay.body.run).toEqual(started.body.run);
+    const activeAfterReload = await ctx.agent.get(`/api/routines/${routineId}/active-run`);
+    expect(activeAfterReload.status).toBe(200);
+    expect(activeAfterReload.body.run).toEqual(started.body.run);
+    const startConflict = await ctx.agent.post(`/api/routines/${routineId}/runs`).send({ id: runId, occurrenceId: null });
+    expect(startConflict.status).toBe(409);
+    expect(startConflict.body.error).toMatchObject({ code: "routine_conflict", retryable: false });
+
+    const resumed = await ctx.agent.get(`/api/routine-runs/${runId}`);
+    expect(resumed.status).toBe(200);
+    expect(resumed.body.run).toEqual(started.body.run);
+    const stepId = created.body.routine.currentRevision.steps[0].id;
+    const resultRequest = {
+      expectedUpdatedAt: resumed.body.run.updatedAt,
+      actualValues: [{ key: "effort", label: "Effort", kind: "number", value: 4 }],
+      proposedNextValues: [{ key: "effort", label: "Effort", kind: "number", value: 5 }],
+      notes: "Keep actual history separate from the next default."
+    };
+    const recorded = await ctx.agent.put(`/api/routine-runs/${runId}/step-results/${stepId}`).send(resultRequest);
+    expect(recorded.status).toBe(200);
+    expect(recorded.body.run.stepResults[0]).toMatchObject({
+      actualValues: [{ value: 4 }],
+      proposedNextValues: [{ value: 5 }]
+    });
+    const resultReplay = await ctx.agent.put(`/api/routine-runs/${runId}/step-results/${stepId}`).send({
+      ...resultRequest,
+      expectedUpdatedAt: resumed.body.run.updatedAt
+    });
+    expect(resultReplay.status).toBe(200);
+    expect(resultReplay.body.run).toEqual(recorded.body.run);
+
+    const finalizeRequest = { sessionId, expectedUpdatedAt: recorded.body.run.updatedAt };
+    const finalized = await ctx.agent.post(`/api/routine-runs/${runId}/finalize`).send(finalizeRequest);
+    expect(finalized.status).toBe(201);
+    expect(finalized.body.run.status).toBe("finalized");
+    expect(finalized.body.session.session).toMatchObject({ id: sessionId, routineRevisionId: revisionId, runId });
+    const finalizeReplay = await ctx.agent.post(`/api/routine-runs/${runId}/finalize`).send(finalizeRequest);
+    expect(finalizeReplay.status).toBe(201);
+    expect(finalizeReplay.body).toEqual(finalized.body);
+    const noLongerActive = await ctx.agent.get(`/api/routines/${routineId}/active-run`);
+    expect(noLongerActive.status).toBe(200);
+    expect(noLongerActive.body).toEqual({ run: null });
+    const finalizeConflict = await ctx.agent.post(`/api/routine-runs/${runId}/finalize`).send({
+      sessionId: `routine-session-${uuid(11)}`,
+      expectedUpdatedAt: recorded.body.run.updatedAt
+    });
+    expect(finalizeConflict.status).toBe(409);
+    expect(finalizeConflict.body.error).toMatchObject({ code: "routine_conflict", retryable: false });
+
+    const loadedBeforeRevision = await ctx.agent.get(`/api/routine-sessions/${sessionId}`);
+    expect(loadedBeforeRevision.status).toBe(200);
+    const originalSession = loadedBeforeRevision.body.session.session;
+    const originalResult = loadedBeforeRevision.body.session.stepResults[0].original;
+    expect(originalResult.actualValues[0]).toMatchObject({ value: 4 });
+    expect(originalResult.proposedNextValues[0]).toMatchObject({ value: 5 });
+
+    const revised = await ctx.agent.post(`/api/routines/${routineId}/revisions`).send({
+      revisionId: nextRevisionId,
+      expectedCurrentRevisionId: revisionId,
+      title: "Morning preparation",
+      purpose: "Start consistently",
+      steps: [{
+        activityId,
+        activityTitle: activity.body.activity.title,
+        position: 0,
+        plannedValues: [{ key: "effort", label: "Effort", kind: "number", value: 5 }]
+      }],
+      bindings: [{ targetType: "life_link", targetId: lifeLinkId }]
+    });
+    expect(revised.status).toBe(201);
+    expect(revised.body.routine.currentRevision.revision).toMatchObject({ id: nextRevisionId, revisionNumber: 2 });
+    const loadedAfterRevision = await ctx.agent.get(`/api/routine-sessions/${sessionId}`);
+    expect(loadedAfterRevision.status).toBe(200);
+    expect(loadedAfterRevision.body.session.session).toEqual(originalSession);
+    expect(loadedAfterRevision.body.session.stepResults[0].original).toEqual(originalResult);
+
+    const amendmentRequest = {
+      id: amendmentId,
+      stepResultId: originalResult.id,
+      note: "Corrected after review",
+      correctedActualValues: [{ key: "effort", label: "Effort", kind: "number", value: 2 }]
+    };
+    const amended = await ctx.agent.post(`/api/routine-sessions/${sessionId}/amendments`).send(amendmentRequest);
+    expect(amended.status).toBe(201);
+    expect(amended.body.session.stepResults[0].original).toEqual(originalResult);
+    expect(amended.body.session.stepResults[0].effectiveActualValues[0]).toMatchObject({ value: 2 });
+    const amendmentReplay = await ctx.agent.post(`/api/routine-sessions/${sessionId}/amendments`).send(amendmentRequest);
+    expect(amendmentReplay.status).toBe(201);
+    expect(amendmentReplay.body).toEqual(amended.body);
+    const amendmentConflict = await ctx.agent.post(`/api/routine-sessions/${sessionId}/amendments`).send({
+      ...amendmentRequest,
+      note: "Different correction"
+    });
+    expect(amendmentConflict.status).toBe(409);
+    expect(amendmentConflict.body.error).toMatchObject({ code: "routine_conflict", retryable: false });
+
+    const finalHistory = await ctx.agent.get(`/api/routine-sessions/${sessionId}`);
+    expect(finalHistory.body.session.session).toEqual(originalSession);
+    expect(finalHistory.body.session.stepResults[0]).toMatchObject({
+      original: originalResult,
+      effectiveActualValues: [{ value: 2 }],
+      amendments: [{ id: amendmentId }]
+    });
+    const archivedActivity = await ctx.agent.patch(`/api/routine-activities/${activityId}`).send({
+      expectedUpdatedAt: activity.body.activity.updatedAt,
+      archivedAt: new Date().toISOString()
+    });
+    expect(archivedActivity.status).toBe(200);
+    const schedulesAfterArchive = await ctx.agent.get(`/api/routines/${routineId}/schedules`);
+    expect(schedulesAfterArchive.status).toBe(200);
+    expect(schedulesAfterArchive.body.schedules[0].active).toBe(false);
+    const disabledSchedule = await ctx.agent.patch(`/api/routine-schedules/${scheduleId}`).send({
+      expectedUpdatedAt: schedulesAfterArchive.body.schedules[0].updatedAt,
+      active: false
+    });
+    expect(disabledSchedule.status).toBe(200);
+    expect(disabledSchedule.body.schedule.active).toBe(false);
+    const summaries = await ctx.agent.get("/api/routines");
+    expect(summaries.status).toBe(200);
+    expect(summaries.body.routines).toContainEqual(expect.objectContaining({
+      id: routineId, revisionNumber: 2, title: "Morning preparation", purpose: "Start consistently"
+    }));
+    expect(summaries.body.routines.find((item: { id: string }) => item.id === routineId)).not.toHaveProperty("steps");
+    const latestRoutine = await ctx.agent.get(`/api/routines/${routineId}`);
+    const archivedRoutine = await ctx.agent.patch(`/api/routines/${routineId}`).send({
+      expectedUpdatedAt: latestRoutine.body.routine.routine.updatedAt,
+      archivedAt: new Date().toISOString()
+    });
+    expect(archivedRoutine.status).toBe(200);
+    expect((await ctx.agent.get("/api/routines")).body.routines.map((item: { id: string }) => item.id)).not.toContain(routineId);
+    expect((await ctx.agent.get("/api/routines").query({ includeArchived: true })).body.routines)
+      .toContainEqual(expect.objectContaining({ id: routineId, title: "Morning preparation", archivedAt: expect.any(String) }));
+    expect((await request(ctx.app).get("/api/routines")).status).toBe(401);
+    const guest = request.agent(ctx.app);
+    await login(guest, "guest@life-links.test");
+    for (const path of [`/api/routines/${routineId}`, `/api/routine-runs/${runId}`, `/api/routine-sessions/${sessionId}`]) {
+      const foreign = await guest.get(path);
+      expect(foreign.status).toBe(404);
+      expect(foreign.body.error).toMatchObject({ code: "routine_not_found", retryable: false });
+    }
+    expect(events.map((event) => event.event)).toEqual(expect.arrayContaining([
+      "life_links.routine.revised",
+      "life_links.routine.schedule_created",
+      "life_links.routine.schedule_updated",
+      "life_links.routine.run_started",
+      "life_links.routine.run_result_recorded",
+      "life_links.routine.run_finalized",
+      "life_links.routine.session_amendment_appended"
+    ]));
+    const serializedEvents = JSON.stringify(events);
+    for (const privateValue of [
+      "Morning preparation", "Start consistently", "General preparation",
+      "Keep actual history separate from the next default.", "Corrected after review"
+    ]) expect(serializedEvents).not.toContain(privateValue);
+  });
+
   it("delivers private revision-bound image descriptions, overviews and crops without editing records, bytes or Undo", async () => {
     const events: LogEvent[] = [];
     ctx = await createSeededAgent({ logger: createLogger("private_image_test", { env: "ci", sink: (event) => events.push(event) }) });

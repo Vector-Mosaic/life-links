@@ -2,10 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ApiError, addCollectionMember, attachQr, clearLifeLinkQrBinding, connectAgent, createCollection,
+  createRoutine, finalizeRoutineRun,
   createCollectionSection, createLifeLink, disconnectAgent, getCollection, listCollections,
+  getActiveRoutineRun, listRoutineGroups, listRoutines,
   listCollectionMembers, listLifeLinkCollectionMemberships, login, moveLifeLink, removeCollectionMember,
   removeCollectionSection, replaceCollectionSectionAssignments, setLifeLinkQrBinding,
-  updateCollection, updateCollectionSection, updateLifeLink, getLifeLinkAttachmentContent, getLifeLinkAttachmentImage
+  updateCollection, updateCollectionSection, updateLifeLink, getLifeLinkAttachmentContent, getLifeLinkAttachmentImage,
+  listRoutineOccurrences, putRoutineRunStepResult
 } from "./api";
 import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, ATTACHMENT_IMAGE_MAX_BYTES } from "@life-links/core";
 import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedImageFixture, attachmentTranscriptFixture } from "./attachmentImage.testFixtures";
@@ -204,6 +207,76 @@ describe("Life Links API error normalization", () => {
       reason: "expected_updated_at_mismatch",
       body
     });
+  });
+
+  it("carries stable Routine identities, revision guards, typed results and cancellation through the owner client", async () => {
+    const abort = new AbortController();
+    stubJsonResponse(201, { routine: { routine: { id: "routine-1" }, currentRevision: {} } });
+    await createRoutine({
+      id: "routine-00000000-0000-4000-8000-000000000001",
+      revisionId: "routine-revision-00000000-0000-4000-8000-000000000001",
+      title: "Morning reset",
+      steps: [{
+        id: "routine-step-00000000-0000-4000-8000-000000000001",
+        activityId: "activity-00000000-0000-4000-8000-000000000001",
+        activityTitle: "Prepare",
+        position: 0,
+        plannedValues: [{ key: "ready", label: "Ready", kind: "boolean", value: true }]
+      }]
+    }, abort.signal);
+    expect(vi.mocked(fetch)).toHaveBeenLastCalledWith("/api/routines", expect.objectContaining({ method: "POST", signal: abort.signal }));
+
+    stubJsonResponse(200, { run: { id: "routine-run-1" } });
+    await putRoutineRunStepResult(
+      "routine-run/1",
+      "routine-step/1",
+      {
+        expectedUpdatedAt: "2026-09-01T12:00:00.000Z",
+        actualValues: [{ key: "ready", label: "Ready", kind: "boolean", value: false }],
+        proposedNextValues: [{ key: "ready", label: "Ready", kind: "boolean", value: true }]
+      },
+      abort.signal
+    );
+    expect(vi.mocked(fetch)).toHaveBeenLastCalledWith(
+      "/api/routine-runs/routine-run%2F1/step-results/routine-step%2F1",
+      expect.objectContaining({ method: "PUT", signal: abort.signal })
+    );
+
+    stubJsonResponse(200, { occurrences: [], nextCursor: null, truncated: false });
+    await listRoutineOccurrences({ routineId: "routine/1", startDate: "2026-09-01", endDate: "2026-09-07", signal: abort.signal });
+    expect(vi.mocked(fetch)).toHaveBeenLastCalledWith(
+      "/api/routine-occurrences?routineId=routine%2F1&startDate=2026-09-01&endDate=2026-09-07",
+      expect.objectContaining({ signal: abort.signal })
+    );
+
+    stubJsonResponse(200, { routineGroups: [], nextCursor: null, truncated: false });
+    await listRoutineGroups({ cursor: "archive page", limit: 10, includeArchived: true, signal: abort.signal });
+    expect(vi.mocked(fetch)).toHaveBeenLastCalledWith(
+      "/api/routine-groups?cursor=archive+page&limit=10&includeArchived=true",
+      expect.objectContaining({ signal: abort.signal })
+    );
+    stubJsonResponse(200, { routines: [], nextCursor: null, truncated: false });
+    await listRoutines({ includeArchived: false, signal: abort.signal });
+    expect(vi.mocked(fetch)).toHaveBeenLastCalledWith(
+      "/api/routines?includeArchived=false",
+      expect.objectContaining({ signal: abort.signal })
+    );
+    stubJsonResponse(200, { run: null });
+    expect(await getActiveRoutineRun("routine/1", abort.signal)).toEqual({ run: null });
+    expect(vi.mocked(fetch)).toHaveBeenLastCalledWith(
+      "/api/routines/routine%2F1/active-run",
+      expect.objectContaining({ signal: abort.signal })
+    );
+  });
+
+  it("surfaces stale Routine conflicts as retryable without changing the caller's stable command", async () => {
+    const body = { error: { code: "stale_routine", message: "Routine state changed after it was read.", retryable: true } };
+    stubJsonResponse(409, body);
+    const error = await rejectedApiError(finalizeRoutineRun(
+      "routine-run-00000000-0000-4000-8000-000000000001",
+      { sessionId: "routine-session-00000000-0000-4000-8000-000000000001", expectedUpdatedAt: "2026-09-01T12:00:00.000Z" }
+    ));
+    expect(error).toMatchObject({ status: 409, code: "stale_routine", retryable: true, body });
   });
 
   it("normalizes the claim cross-owner outcome into a stable ApiError", async () => {

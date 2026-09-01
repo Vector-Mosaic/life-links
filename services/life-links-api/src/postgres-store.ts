@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import { Pool, type PoolClient } from "pg";
 import {
@@ -41,6 +42,37 @@ import {
   type ApplyLifeLinkChangeInput,
   type UndoChangeInput,
   type ChangeHistory,
+  type ActivityRecord,
+  type AppendRoutineSessionAmendmentCommand,
+  type BuiltRoutineSession,
+  type CanonicalRoutineCreation,
+  type CreateActivityCommand,
+  type CreateRoutineCommand,
+  type CreateRoutineGroupCommand,
+  type CreateRoutineScheduleCommand,
+  type FinalizeRoutineRunCommand,
+  type PutRoutineRunStepResultCommand,
+  type ReviseRoutineCommand,
+  type RoutineContextBindingRecord,
+  type RoutineContextSnapshot,
+  type RoutineGroupRecord,
+  type RoutineOccurrenceRecord,
+  type RoutineRecord,
+  type RoutineRevisionRecord,
+  type RoutineRevisionSnapshot,
+  type RoutineRunRecord,
+  type RoutineScheduleRecord,
+  type RoutineSummaryRecord,
+  type RoutineSessionAmendmentRecord,
+  type RoutineSessionProjection,
+  type RoutineSessionRecord,
+  type RoutineSessionStepResultRecord,
+  type RoutineStepRecord,
+  type StartRoutineRunCommand,
+  type UpdateActivityCommand,
+  type UpdateRoutineCommand,
+  type UpdateRoutineGroupCommand,
+  type UpdateRoutineScheduleCommand,
   resolveLifeLinkChangeScope,
   lifeLinkChangePreviewItem,
   stableChangeFingerprint,
@@ -58,6 +90,25 @@ import {
   createCanonicalLifeLink,
   createCanonicalCollection,
   createCanonicalCollectionSection,
+  createCanonicalActivity,
+  createCanonicalRoutine,
+  createCanonicalRoutineRevision,
+  createCanonicalRoutineGroup,
+  createCanonicalRoutineOccurrence,
+  createCanonicalRoutineRun,
+  createCanonicalRoutineSchedule,
+  createCanonicalRoutineSessionAmendment,
+  applyActivityPatch,
+  applyRoutineGroupPatch,
+  applyRoutinePatch,
+  applyRoutineRunStepResult,
+  applyRoutineSchedulePatch,
+  buildRoutineSessionFromRun,
+  routineScheduleMatchesLocalDate,
+  resolveRoutineSchedulePlannedFor,
+  listRoutineScheduleLocalDates,
+  projectRoutineSessionWithAmendments,
+  reviseCanonicalRoutine,
   createCompetitionFixtureData,
   createDemoSeedData,
   createLinkBodyDocFromPlainText,
@@ -102,6 +153,10 @@ import {
   type CompetitionFixtureResetReport,
   type LifeLinkMediaFile,
   type LifeLinksStore,
+  type MaterializeRoutineOccurrencesInput,
+  type RoutineDetail,
+  type RoutineOccurrencePageRequest,
+  type RoutinePageRequest,
   type LinkMediaFile,
   type LinkMediaInput,
   type SessionRecord,
@@ -405,10 +460,16 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
             WHERE id = $1 AND owner_id = $2 AND parent_id IS DISTINCT FROM $3`, [rootId, userId, preview.parentId]);
         }
       } else {
+        await this.assertNoCurrentRoutineLifeLinkBindings(client, userId, affectedIds);
         const collections = await client.query("SELECT DISTINCT collection_id FROM collection_memberships WHERE owner_id = $1 AND life_link_id = ANY($2::text[])", [userId, affectedIds]);
         await client.query("DELETE FROM life_link_qr_bindings WHERE life_link_id = ANY($1::text[])", [affectedIds]);
         await client.query("UPDATE life_links SET parent_id = NULL WHERE owner_id = $1 AND id = ANY($2::text[])", [userId, affectedIds]);
-        await client.query("DELETE FROM life_links WHERE owner_id = $1 AND id = ANY($2::text[])", [userId, affectedIds]);
+        try {
+          await client.query("DELETE FROM life_links WHERE owner_id = $1 AND id = ANY($2::text[])", [userId, affectedIds]);
+        } catch (error) {
+          if (isCurrentRoutineLifeLinkBindingError(error)) throw currentRoutineLifeLinkBindingError();
+          throw error;
+        }
         await client.query(`UPDATE collections SET updated_at = GREATEST(now(), updated_at + interval '1 millisecond')
           WHERE owner_id = $1 AND id = ANY($2::text[])`, [userId, collections.rows.map((row) => String(row.collection_id))]);
       }
@@ -426,7 +487,17 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     return this.withTransaction([`owner:${userId}`, `claim-command:${input.commandId}`], async (client) => {
       const replay = await this.readChangeReplay(client, userId, input.commandId, input.changeId, true);
       if (replay) return replay;
-      const affectedIds = await restoreOwnerChange(client, userId, input.changeId);
+      const deletions = await client.query(`SELECT item->'key'->>'id' AS id FROM saved_changes saved,
+        jsonb_array_elements(saved.inverse_rows) item
+        WHERE saved.id=$1 AND saved.owner_id=$2 AND item->>'table'='life_links' AND item->'before'='null'::jsonb`,[input.changeId,userId]);
+      await this.assertNoCurrentRoutineLifeLinkBindings(client,userId,deletions.rows.map((row)=>String(row.id)));
+      let affectedIds: string[];
+      try {
+        affectedIds = await restoreOwnerChange(client, userId, input.changeId);
+      } catch (error) {
+        if (isCurrentRoutineLifeLinkBindingError(error)) throw currentRoutineLifeLinkBindingError();
+        throw error;
+      }
       await this.saveChangeReceipt(client, userId, input.commandId, input.changeId, "undo", affectedIds);
       return { operation: "undo", affectedIds, history: await getPostgresChangeHistory(client, userId) };
     }, null);
@@ -440,6 +511,12 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     const memberships = state.collection_memberships.filter((row) => ids.has(String(row.life_link_id)));
     const assignments = state.collection_section_assignments.filter((row) => ids.has(String(row.life_link_id)));
     const media = state.link_media.filter((row) => ids.has(String(row.life_link_id)));
+    const routineBindingsResult = await client.query(`SELECT binding.id,binding.routine_revision_id,binding.target_id
+      FROM routine_context_bindings binding JOIN routines routine
+        ON routine.owner_id=binding.owner_id AND routine.current_revision_id=binding.routine_revision_id
+      WHERE binding.owner_id=$1 AND binding.target_type='life_link' AND binding.target_id=ANY($2::text[])
+      ORDER BY binding.id`,[userId,[...ids]]);
+    const routineBindings = routineBindingsResult.rows;
     const preview: LifeLinkChangePreview = {
       id: `preview-${randomUUID()}`, operation: input.operation, rootIds: scope.rootIds,
       items: scope.items.map(lifeLinkChangePreviewItem), parentId: scope.parentId,
@@ -448,8 +525,16 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         qrBindings: scope.items.filter((item) => item.qrId !== null).length,
         collectionMemberships: memberships.length, collectionSectionAssignments: assignments.length }
     };
-    const fingerprint = createHash("sha256").update(stableChangeFingerprint({ operation: input.operation, ...scope, memberships, assignments, media })).digest("hex");
+    const fingerprint = createHash("sha256").update(stableChangeFingerprint({ operation: input.operation, ...scope, memberships, assignments, media, routineBindings })).digest("hex");
     return { preview, fingerprint };
+  }
+
+  private async assertNoCurrentRoutineLifeLinkBindings(client: PoolClient,userId: string,lifeLinkIds: string[]): Promise<void>{
+    if(!lifeLinkIds.length)return;
+    const result=await client.query(`SELECT 1 FROM routine_context_bindings binding JOIN routines routine
+      ON routine.owner_id=binding.owner_id AND routine.current_revision_id=binding.routine_revision_id
+      WHERE binding.owner_id=$1 AND binding.target_type='life_link' AND binding.target_id=ANY($2::text[]) LIMIT 1`,[userId,lifeLinkIds]);
+    if(result.rowCount)throw currentRoutineLifeLinkBindingError();
   }
 
   private async readChangeReplay(client: PoolClient, userId: string, commandId: string, requestId: string, undo: boolean): Promise<LifeLinkChangeResult | null> {
@@ -1174,6 +1259,391 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     }
   }
 
+  async listRoutineGroups(userId: string, page: RoutinePageRequest = {}): Promise<LifeLinkPage<RoutineGroupRecord>> {
+    const result = await this.pool.query(`SELECT * FROM routine_groups WHERE owner_id = $1 ${page.includeArchived ? "" : "AND archived_at IS NULL"}`, [userId]);
+    return pageCollectionRecords(result.rows.map(mapRoutineGroup).sort(compareRoutineTitledRows), page);
+  }
+
+  async getRoutineGroup(userId: string, groupId: string): Promise<RoutineGroupRecord | null> {
+    const result = await this.pool.query("SELECT * FROM routine_groups WHERE id = $1 AND owner_id = $2", [groupId, userId]);
+    return result.rows[0] ? mapRoutineGroup(result.rows[0]) : null;
+  }
+
+  async createRoutineGroup(command: CreateRoutineGroupCommand): Promise<RoutineGroupRecord> {
+    const candidate = createCanonicalRoutineGroup(command);
+    return this.withTransaction([`routine-group-id:${candidate.id}`, `owner:${candidate.ownerId}`], async (client) => {
+      const existing = await client.query("SELECT * FROM routine_groups WHERE id = $1 FOR UPDATE", [candidate.id]);
+      if (existing.rows[0]) {
+        const row = mapRoutineGroup(existing.rows[0]);
+        if (sameRoutineCreatePayload(row, candidate)) return row;
+        return routineIdConflict();
+      }
+      await client.query(`INSERT INTO routine_groups(id,owner_id,title,notes,created_at,updated_at,archived_at)
+        VALUES($1,$2,$3,$4,$5,$5,NULL)`, [candidate.id, candidate.ownerId, candidate.title, candidate.notes, candidate.createdAt]);
+      return candidate;
+    }, null);
+  }
+
+  async updateRoutineGroup(userId: string, command: UpdateRoutineGroupCommand): Promise<RoutineGroupRecord | null> {
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const result = await client.query("SELECT * FROM routine_groups WHERE id = $1 AND owner_id = $2 FOR UPDATE", [command.groupId, userId]);
+      if (!result.rows[0]) return null;
+      const current = mapRoutineGroup(result.rows[0]);
+      const next = applyRoutineGroupPatch(current, command.patch, nextTimestamp(current.updatedAt));
+      if (sameRoutinePayload({ ...next, updatedAt: current.updatedAt }, current)) return current;
+      assertRoutineUpdatedAt(current.updatedAt, command.expectedUpdatedAt);
+      await client.query("UPDATE routine_groups SET title=$3,notes=$4,archived_at=$5,updated_at=$6 WHERE id=$1 AND owner_id=$2",
+        [current.id, userId, next.title, next.notes, next.archivedAt, next.updatedAt]);
+      return next;
+    }, null);
+  }
+
+  async listActivities(userId: string, page: RoutinePageRequest = {}): Promise<LifeLinkPage<ActivityRecord>> {
+    const result = await this.pool.query(`SELECT * FROM routine_activities WHERE owner_id = $1 ${page.includeArchived ? "" : "AND archived_at IS NULL"}`, [userId]);
+    return pageCollectionRecords(result.rows.map(mapRoutineActivity).sort(compareRoutineTitledRows), page);
+  }
+
+  async getActivity(userId: string, activityId: string): Promise<ActivityRecord | null> {
+    const result = await this.pool.query("SELECT * FROM routine_activities WHERE id = $1 AND owner_id = $2", [activityId, userId]);
+    return result.rows[0] ? mapRoutineActivity(result.rows[0]) : null;
+  }
+
+  async createActivity(command: CreateActivityCommand): Promise<ActivityRecord> {
+    const candidate = createCanonicalActivity(command);
+    return this.withTransaction([`routine-activity-id:${candidate.id}`, `owner:${candidate.ownerId}`], async (client) => {
+      const existing = await client.query("SELECT * FROM routine_activities WHERE id = $1 FOR UPDATE", [candidate.id]);
+      if (existing.rows[0]) {
+        const row = mapRoutineActivity(existing.rows[0]);
+        if (sameRoutineCreatePayload(row, candidate)) return row;
+        return routineIdConflict();
+      }
+      await client.query(`INSERT INTO routine_activities(id,owner_id,title,notes,created_at,updated_at,archived_at)
+        VALUES($1,$2,$3,$4,$5,$5,NULL)`, [candidate.id, candidate.ownerId, candidate.title, candidate.notes, candidate.createdAt]);
+      return candidate;
+    }, null);
+  }
+
+  async updateActivity(userId: string, command: UpdateActivityCommand): Promise<ActivityRecord | null> {
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const result = await client.query("SELECT * FROM routine_activities WHERE id = $1 AND owner_id = $2 FOR UPDATE", [command.activityId, userId]);
+      if (!result.rows[0]) return null;
+      const current = mapRoutineActivity(result.rows[0]);
+      const next = applyActivityPatch(current, command.patch, nextTimestamp(current.updatedAt));
+      if (sameRoutinePayload({ ...next, updatedAt: current.updatedAt }, current)) return current;
+      assertRoutineUpdatedAt(current.updatedAt, command.expectedUpdatedAt);
+      await client.query("UPDATE routine_activities SET title=$3,notes=$4,archived_at=$5,updated_at=$6 WHERE id=$1 AND owner_id=$2",
+        [current.id, userId, next.title, next.notes, next.archivedAt, next.updatedAt]);
+      if (current.archivedAt === null && next.archivedAt !== null) {
+        const scheduleIds = await loadPostgresRoutineScheduleIdsUsingActivity(client, userId, current.id);
+        await deactivatePostgresRoutineSchedulesById(client, userId, scheduleIds, next.updatedAt);
+      }
+      return next;
+    }, null);
+  }
+
+  async listRoutines(userId: string, page: RoutinePageRequest = {}): Promise<LifeLinkPage<RoutineSummaryRecord>> {
+    const result = await this.pool.query(`SELECT routine.*,revision.revision_number,revision.title,revision.purpose
+      FROM routines routine JOIN routine_revisions revision
+        ON revision.id=routine.current_revision_id AND revision.routine_id=routine.id AND revision.owner_id=routine.owner_id
+      WHERE routine.owner_id = $1 ${page.includeArchived ? "" : "AND routine.archived_at IS NULL"}`, [userId]);
+    return pageCollectionRecords(result.rows.map(mapRoutineSummary).sort(compareRoutineTitledRows), page);
+  }
+
+  async getRoutine(userId: string, routineId: string): Promise<RoutineDetail | null> {
+    const routineResult = await this.pool.query("SELECT * FROM routines WHERE id=$1 AND owner_id=$2", [routineId, userId]);
+    if (!routineResult.rows[0]) return null;
+    const routine = mapRoutine(routineResult.rows[0]);
+    return { routine, currentRevision: (await loadPostgresRoutineRevision(this.pool, userId, routine.id, routine.currentRevisionId))! };
+  }
+
+  async createRoutine(command: CreateRoutineCommand): Promise<CanonicalRoutineCreation> {
+    const candidate = createCanonicalRoutine(command);
+    return this.withTransaction([`routine-id:${candidate.routine.id}`, `routine-revision-id:${candidate.currentRevision.revision.id}`, `owner:${candidate.routine.ownerId}`], async (client) => {
+      const existing = await client.query("SELECT * FROM routines WHERE id=$1 FOR UPDATE", [candidate.routine.id]);
+      if (existing.rows[0]) {
+        const row = mapRoutine(existing.rows[0]);
+        const creation = { routine: row, currentRevision: (await loadPostgresRoutineRevision(client, row.ownerId, row.id, row.currentRevisionId))! };
+        if (sameRoutineCreatePayload(creation, candidate)) return creation;
+        return routineIdConflict();
+      }
+      await assertPostgresRoutineDefinitionReferences(client, candidate.routine.ownerId, candidate.routine.groupId, candidate.currentRevision);
+      try { await persistPostgresRoutineCreation(client, candidate, true); }
+      catch (error) { if (isPostgresUniqueViolation(error)) return routineIdConflict(); throw error; }
+      return candidate;
+    }, null);
+  }
+
+  async updateRoutine(userId: string, command: UpdateRoutineCommand): Promise<RoutineRecord | null> {
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const result = await client.query("SELECT * FROM routines WHERE id=$1 AND owner_id=$2 FOR UPDATE", [command.routineId, userId]);
+      if (!result.rows[0]) return null;
+      const current = mapRoutine(result.rows[0]);
+      const next = applyRoutinePatch(current, command.patch, nextTimestamp(current.updatedAt));
+      if (next.groupId) {
+        if (next.groupId === current.groupId) await assertPostgresRoutineGroupExists(client, userId, next.groupId);
+        else await assertActivePostgresRoutineGroup(client, userId, next.groupId);
+      }
+      if (sameRoutinePayload({ ...next, updatedAt: current.updatedAt }, current)) return current;
+      assertRoutineUpdatedAt(current.updatedAt, command.expectedUpdatedAt);
+      await client.query("UPDATE routines SET group_id=$3,archived_at=$4,updated_at=$5 WHERE id=$1 AND owner_id=$2", [current.id,userId,next.groupId,next.archivedAt,next.updatedAt]);
+      if (current.archivedAt === null && next.archivedAt !== null) {
+        await deactivatePostgresRoutineSchedules(client, userId, [current.id], next.updatedAt);
+      }
+      return next;
+    }, null);
+  }
+
+  async reviseRoutine(userId: string, command: ReviseRoutineCommand): Promise<RoutineRevisionSnapshot | null> {
+    return this.withTransaction([`owner:${userId}`, `routine-revision-id:${command.id}`], async (client) => {
+      const result = await client.query("SELECT * FROM routines WHERE id=$1 AND owner_id=$2 FOR UPDATE", [command.routineId,userId]);
+      if (!result.rows[0]) return null;
+      const current = mapRoutine(result.rows[0]);
+      const existing = await client.query("SELECT 1 FROM routine_revisions WHERE id=$1", [command.id]);
+      if (existing.rowCount) {
+        const snapshot = await loadPostgresRoutineRevision(client,userId,current.id,command.id);
+        const {expectedCurrentRevisionId:_expectedCurrentRevisionId,...revisionCommand}=command;
+        const desired = createCanonicalRoutineRevision(revisionCommand);
+        if (snapshot && current.currentRevisionId === command.id && sameRoutineCreatePayload(snapshot,desired)) return snapshot;
+        return routineIdConflict();
+      }
+      const candidate = reviseCanonicalRoutine(current, command);
+      const latest = await client.query("SELECT COALESCE(max(revision_number),0)::int AS revision_number FROM routine_revisions WHERE routine_id=$1", [current.id]);
+      if (candidate.currentRevision.revision.revisionNumber !== Number(latest.rows[0].revision_number)+1) throw new LifeLinkDomainError("routine_conflict","Routine revision number must follow the current history.");
+      await assertPostgresRoutineDefinitionReferences(client,userId,current.groupId,candidate.currentRevision,false);
+      try { await persistPostgresRoutineCreation(client,candidate,false); }
+      catch (error) { if (isPostgresUniqueViolation(error)) return routineIdConflict(); throw error; }
+      return candidate.currentRevision;
+    }, null);
+  }
+
+  async getRoutineRevision(userId: string, routineId: string, revisionId: string): Promise<RoutineRevisionSnapshot | null> {
+    return loadPostgresRoutineRevision(this.pool,userId,routineId,revisionId);
+  }
+
+  async listRoutineSchedules(userId: string, routineId: string, page: LifeLinkPageRequest = {}): Promise<LifeLinkPage<RoutineScheduleRecord> | null> {
+    if (!(await this.pool.query("SELECT 1 FROM routines WHERE id=$1 AND owner_id=$2",[routineId,userId])).rowCount) return null;
+    const result = await this.pool.query("SELECT * FROM routine_schedules WHERE owner_id=$1 AND routine_id=$2 ORDER BY updated_at DESC,id",[userId,routineId]);
+    return pageCollectionRecords(result.rows.map(mapRoutineSchedule),page);
+  }
+
+  async createRoutineSchedule(command: CreateRoutineScheduleCommand): Promise<RoutineScheduleRecord> {
+    const candidate = createCanonicalRoutineSchedule(command);
+    return this.withTransaction([`routine-schedule-id:${candidate.id}`,`owner:${candidate.ownerId}`],async(client)=>{
+      const existing = await client.query("SELECT * FROM routine_schedules WHERE id=$1 FOR UPDATE",[candidate.id]);
+      if(existing.rows[0]) { const row=mapRoutineSchedule(existing.rows[0]); if(sameRoutineCreatePayload(row,candidate)) return row; return routineIdConflict(); }
+      await assertPostgresRoutineScheduleReferences(client,candidate);
+      await insertPostgresRoutineSchedule(client,candidate);
+      return candidate;
+    },null);
+  }
+
+  async updateRoutineSchedule(userId: string, command: UpdateRoutineScheduleCommand): Promise<RoutineScheduleRecord | null> {
+    return this.withTransaction([`owner:${userId}`],async(client)=>{
+      const result=await client.query("SELECT * FROM routine_schedules WHERE id=$1 AND owner_id=$2 FOR UPDATE",[command.scheduleId,userId]);
+      if(!result.rows[0]) return null;
+      const current=mapRoutineSchedule(result.rows[0]);
+      const routineResult=await client.query("SELECT * FROM routines WHERE id=$1 AND owner_id=$2 FOR UPDATE",[current.routineId,userId]);
+      const routine=mapRoutine(routineResult.rows[0]);
+      const pinnedNext=applyRoutineSchedulePatch(current,current.routineRevisionId,command.patch,nextTimestamp(current.updatedAt));
+      const ruleChanged=!sameRoutinePayload(pinnedNext.rule,current.rule);
+      const safeDisable=command.patch.active===false&&!ruleChanged;
+      if(safeDisable){
+        const noOp=sameRoutinePayload({...pinnedNext,revision:current.revision,updatedAt:current.updatedAt},current);
+        if(noOp)return current;
+        assertRoutineUpdatedAt(current.updatedAt,command.expectedUpdatedAt);
+        await client.query("UPDATE routine_schedules SET revision=$3,active=false,updated_at=$4 WHERE id=$1 AND owner_id=$2",
+          [current.id,userId,pinnedNext.revision,pinnedNext.updatedAt]);
+        await client.query(`UPDATE routine_occurrences SET status='canceled',updated_at=$3 WHERE schedule_id=$1 AND owner_id=$2
+          AND status='planned' AND planned_for>$3`,[current.id,userId,pinnedNext.updatedAt]);
+        return pinnedNext;
+      }
+      if(routine.archivedAt) throw new LifeLinkDomainError("routine_conflict","Archived Routine schedule cannot be changed.");
+      await assertPostgresRoutineHasNoArchivedActivities(client,userId,routine.currentRevisionId);
+      const next=applyRoutineSchedulePatch(current,routine.currentRevisionId,command.patch,nextTimestamp(current.updatedAt));
+      const noOp=sameRoutinePayload({...next,revision:current.revision,updatedAt:current.updatedAt},current);
+      if(noOp) return current;
+      assertRoutineUpdatedAt(current.updatedAt,command.expectedUpdatedAt);
+      await client.query("UPDATE routine_schedules SET routine_revision_id=$3,rule=$4::jsonb,revision=$5,active=$6,updated_at=$7 WHERE id=$1 AND owner_id=$2",
+        [current.id,userId,next.routineRevisionId,JSON.stringify(next.rule),next.revision,next.active,next.updatedAt]);
+      const occurrenceRows=await client.query(`SELECT * FROM routine_occurrences WHERE schedule_id=$1 AND owner_id=$2
+        AND status IN ('planned','canceled') AND planned_for>$3 FOR UPDATE`,[current.id,userId,next.updatedAt]);
+      for(const row of occurrenceRows.rows){
+        const occurrence=mapRoutineOccurrence(row);
+        const matches=next.active&&routineScheduleMatchesLocalDate(next.rule,occurrence.localDate);
+        if(matches)await client.query(`UPDATE routine_occurrences SET schedule_revision=$3,routine_revision_id=$4,
+          planned_for=$5,status='planned',updated_at=$6 WHERE id=$1 AND owner_id=$2`,[occurrence.id,userId,next.revision,next.routineRevisionId,
+          resolveRoutineSchedulePlannedFor(next.rule,occurrence.localDate),next.updatedAt]);
+        else await client.query("UPDATE routine_occurrences SET status='canceled',updated_at=$3 WHERE id=$1 AND owner_id=$2",[occurrence.id,userId,next.updatedAt]);
+      }
+      return next;
+    },null);
+  }
+
+  async materializeRoutineOccurrences(userId: string, routineId: string, input: MaterializeRoutineOccurrencesInput): Promise<RoutineOccurrenceRecord[]> {
+    return this.withTransaction([`owner:${userId}`],async(client)=>{
+      const routineResult=await client.query("SELECT * FROM routines WHERE id=$1 AND owner_id=$2 FOR UPDATE",[routineId,userId]);
+      if(!routineResult.rows[0]) return [];
+      const routine=mapRoutine(routineResult.rows[0]);
+      if(routine.archivedAt) throw new LifeLinkDomainError("routine_conflict","Archived Routine cannot materialize occurrences.");
+      await assertPostgresRoutineHasNoArchivedActivities(client,userId,routine.currentRevisionId);
+      const schedules=await client.query("SELECT * FROM routine_schedules WHERE owner_id=$1 AND routine_id=$2 AND active=true ORDER BY id",[userId,routineId]);
+      const createdAt=new Date().toISOString();
+      const rows: RoutineOccurrenceRecord[]=[];
+      for(const scheduleRow of schedules.rows){
+        const schedule=mapRoutineSchedule(scheduleRow);
+        await assertPostgresRoutineHasNoArchivedActivities(client,userId,schedule.routineRevisionId);
+        for(const localDate of listRoutineScheduleLocalDates(schedule.rule,input.startDate,input.endDate)){
+          const occurrence=createCanonicalRoutineOccurrence(schedule,{id:`routine-occurrence-${randomUUID()}`,localDate,createdAt});
+          const inserted=await client.query(`INSERT INTO routine_occurrences
+            (id,owner_id,schedule_id,schedule_revision,routine_id,routine_revision_id,local_date,planned_for,status,created_at,updated_at)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)
+            ON CONFLICT(owner_id,schedule_id,local_date) DO NOTHING RETURNING *`,
+            [occurrence.id,occurrence.ownerId,occurrence.scheduleId,occurrence.scheduleRevision,occurrence.routineId,occurrence.routineRevisionId,occurrence.localDate,occurrence.plannedFor,occurrence.status,occurrence.createdAt]);
+          if(inserted.rows[0]) rows.push(mapRoutineOccurrence(inserted.rows[0]));
+          else {
+            const existing=await client.query("SELECT * FROM routine_occurrences WHERE owner_id=$1 AND schedule_id=$2 AND local_date=$3",[userId,schedule.id,localDate]);
+            rows.push(mapRoutineOccurrence(existing.rows[0]));
+          }
+        }
+      }
+      return rows.sort(compareRoutineOccurrenceOrder);
+    },null);
+  }
+
+  async listRoutineOccurrences(userId: string, page: RoutineOccurrencePageRequest = {}): Promise<LifeLinkPage<RoutineOccurrenceRecord>> {
+    const values: unknown[]=[userId];
+    const clauses=["owner_id=$1"];
+    if(page.routineId){ values.push(page.routineId); clauses.push(`routine_id=$${values.length}`); }
+    if(page.startDate){ values.push(page.startDate); clauses.push(`local_date>=$${values.length}::date`); }
+    if(page.endDate){ values.push(page.endDate); clauses.push(`local_date<=$${values.length}::date`); }
+    const result=await this.pool.query(`SELECT * FROM routine_occurrences WHERE ${clauses.join(" AND ")} ORDER BY planned_for,id`,values);
+    return pageCollectionRecords(result.rows.map(mapRoutineOccurrence),page);
+  }
+
+  async getRoutineOccurrence(userId: string, occurrenceId: string): Promise<RoutineOccurrenceRecord | null> {
+    const result=await this.pool.query("SELECT * FROM routine_occurrences WHERE id=$1 AND owner_id=$2",[occurrenceId,userId]);
+    return result.rows[0]?mapRoutineOccurrence(result.rows[0]):null;
+  }
+
+  async startRoutineRun(userId: string, command: StartRoutineRunCommand): Promise<RoutineRunRecord | null> {
+    return this.withTransaction([`owner:${userId}`,`routine-run-id:${command.id}`],async(client)=>{
+      const existing=await client.query("SELECT * FROM routine_runs WHERE id=$1 FOR UPDATE",[command.id]);
+      if(existing.rows[0]){
+        const row=mapRoutineRun(existing.rows[0]);
+        if(row.ownerId===userId&&row.routineId===command.routineId&&row.occurrenceId===(command.occurrenceId??null))return row;
+        return routineIdConflict();
+      }
+      const routineResult=await client.query("SELECT * FROM routines WHERE id=$1 AND owner_id=$2 FOR UPDATE",[command.routineId,userId]);
+      if(!routineResult.rows[0])return null;
+      const routine=mapRoutine(routineResult.rows[0]);
+      if(routine.archivedAt)throw new LifeLinkDomainError("routine_conflict","Archived Routine cannot start a Run.");
+      if((await client.query("SELECT 1 FROM routine_runs WHERE owner_id=$1 AND routine_id=$2 AND status='active'",[userId,routine.id])).rowCount)
+        throw new LifeLinkDomainError("routine_conflict","Routine already has an active Run.");
+      let occurrence: RoutineOccurrenceRecord|null=null;
+      if(command.occurrenceId){
+        const occurrenceResult=await client.query("SELECT * FROM routine_occurrences WHERE id=$1 AND owner_id=$2 FOR UPDATE",[command.occurrenceId,userId]);
+        if(!occurrenceResult.rows[0])return null;
+        occurrence=mapRoutineOccurrence(occurrenceResult.rows[0]);
+        if(occurrence.routineId!==routine.id)return null;
+        if(occurrence.status!=="planned")throw new LifeLinkDomainError("routine_conflict","Routine occurrence cannot start a Run.");
+      }
+      const revisionId=occurrence?.routineRevisionId??routine.currentRevisionId;
+      await assertPostgresRoutineHasNoArchivedActivities(client,userId,revisionId);
+      const revision=(await loadPostgresRoutineRevision(client,userId,routine.id,revisionId))!;
+      const contextSnapshot=await buildPostgresRoutineContextSnapshot(client,userId,revision);
+      const run=createCanonicalRoutineRun({id:command.id,ownerId:userId,routineId:routine.id,routineRevisionId:revisionId,
+        occurrenceId:occurrence?.id??null,contextSnapshot,startedAt:command.startedAt},revision);
+      await insertPostgresRoutineRun(client,run);
+      if(occurrence)await client.query("UPDATE routine_occurrences SET status='started',updated_at=$3 WHERE id=$1 AND owner_id=$2",[occurrence.id,userId,run.startedAt]);
+      return run;
+    },null);
+  }
+
+  async getRoutineRun(userId: string, runId: string): Promise<RoutineRunRecord | null> {
+    const result=await this.pool.query("SELECT * FROM routine_runs WHERE id=$1 AND owner_id=$2",[runId,userId]);
+    return result.rows[0]?mapRoutineRun(result.rows[0]):null;
+  }
+
+  async getActiveRoutineRun(userId: string, routineId: string): Promise<RoutineRunRecord | null> {
+    const result=await this.pool.query("SELECT * FROM routine_runs WHERE owner_id=$1 AND routine_id=$2 AND status='active'",[userId,routineId]);
+    return result.rows[0]?mapRoutineRun(result.rows[0]):null;
+  }
+
+  async putRoutineRunStepResult(userId: string, command: PutRoutineRunStepResultCommand): Promise<RoutineRunRecord | null> {
+    return this.withTransaction([`owner:${userId}`],async(client)=>{
+      const runResult=await client.query("SELECT * FROM routine_runs WHERE id=$1 AND owner_id=$2 FOR UPDATE",[command.runId,userId]);
+      if(!runResult.rows[0])return null;
+      const run=mapRoutineRun(runResult.rows[0]);
+      const stepResult=await client.query("SELECT * FROM routine_steps WHERE id=$1 AND owner_id=$2 AND routine_revision_id=$3",[command.routineStepId,userId,run.routineRevisionId]);
+      if(!stepResult.rows[0])return null;
+      const next=applyRoutineRunStepResult(run,mapRoutineStep(stepResult.rows[0]),command,nextTimestamp(run.updatedAt));
+      if(!sameRoutinePayload(next,run))await client.query("UPDATE routine_runs SET step_results=$3::jsonb,updated_at=$4 WHERE id=$1 AND owner_id=$2",[run.id,userId,JSON.stringify(next.stepResults),next.updatedAt]);
+      return next;
+    },null);
+  }
+
+  async finalizeRoutineRun(userId: string, command: FinalizeRoutineRunCommand): Promise<BuiltRoutineSession | null> {
+    return this.withTransaction([`owner:${userId}`,`routine-session-id:${command.sessionId}`],async(client)=>{
+      const replayResult=await client.query("SELECT * FROM routine_sessions WHERE owner_id=$1 AND run_id=$2",[userId,command.runId]);
+      if(replayResult.rows[0]){
+        const session=mapRoutineSession(replayResult.rows[0]);
+        if(session.id!==command.sessionId)return routineIdConflict();
+        return loadPostgresBuiltRoutineSession(client,session);
+      }
+      const runResult=await client.query("SELECT * FROM routine_runs WHERE id=$1 AND owner_id=$2 FOR UPDATE",[command.runId,userId]);
+      if(!runResult.rows[0])return null;
+      const run=mapRoutineRun(runResult.rows[0]);
+      assertRoutineUpdatedAt(run.updatedAt,command.expectedUpdatedAt);
+      const identities=run.stepResults.map(result=>({routineStepId:result.routineStepId,id:stableRoutineSessionResultId(command.sessionId,result.routineStepId)}));
+      const built=buildRoutineSessionFromRun(run,command.sessionId,identities,command.completedAt);
+      if((await client.query("SELECT 1 FROM routine_sessions WHERE id=$1",[built.session.id])).rowCount)return routineIdConflict();
+      await client.query("UPDATE routine_runs SET status='finalized',updated_at=$3 WHERE id=$1 AND owner_id=$2",[run.id,userId,built.finalizedRun.updatedAt]);
+      await insertPostgresRoutineSession(client,built);
+      if(run.occurrenceId)await client.query("UPDATE routine_occurrences SET status='completed',updated_at=$3 WHERE id=$1 AND owner_id=$2",[run.occurrenceId,userId,built.session.completedAt]);
+      return built;
+    },null);
+  }
+
+  async listRoutineSessions(userId: string, routineId: string | null, page: LifeLinkPageRequest = {}): Promise<LifeLinkPage<RoutineSessionRecord>> {
+    const result=await this.pool.query(`SELECT * FROM routine_sessions WHERE owner_id=$1 ${routineId?"AND routine_id=$2":""} ORDER BY completed_at DESC,id`,routineId?[userId,routineId]:[userId]);
+    return pageCollectionRecords(result.rows.map(mapRoutineSession),page);
+  }
+
+  async getRoutineSession(userId: string, sessionId: string): Promise<RoutineSessionProjection | null> {
+    const sessionResult=await this.pool.query("SELECT * FROM routine_sessions WHERE id=$1 AND owner_id=$2",[sessionId,userId]);
+    if(!sessionResult.rows[0])return null;
+    const session=mapRoutineSession(sessionResult.rows[0]);
+    const results=await this.pool.query("SELECT * FROM routine_session_step_results WHERE session_id=$1 AND owner_id=$2 ORDER BY routine_step_id",[sessionId,userId]);
+    const amendments=await this.pool.query("SELECT * FROM routine_session_amendments WHERE session_id=$1 AND owner_id=$2 ORDER BY created_at,id",[sessionId,userId]);
+    return projectRoutineSessionWithAmendments(session,results.rows.map(mapRoutineSessionStepResult),amendments.rows.map(mapRoutineSessionAmendment));
+  }
+
+  async appendRoutineSessionAmendment(userId: string, command: AppendRoutineSessionAmendmentCommand): Promise<RoutineSessionAmendmentRecord | null> {
+    return this.withTransaction([`owner:${userId}`,`routine-amendment-id:${command.id}`],async(client)=>{
+      const sessionResult=await client.query("SELECT * FROM routine_sessions WHERE id=$1 AND owner_id=$2",[command.sessionId,userId]);
+      if(!sessionResult.rows[0])return null;
+      const session=mapRoutineSession(sessionResult.rows[0]);
+      let stepResult: RoutineSessionStepResultRecord|null=null;
+      let plannedValues: RoutineStepRecord["plannedValues"]|undefined;
+      if(command.stepResultId){
+        const result=await client.query(`SELECT result.*,step.planned_values FROM routine_session_step_results result
+          JOIN routine_steps step ON step.id=result.routine_step_id AND step.owner_id=result.owner_id
+          WHERE result.id=$1 AND result.session_id=$2 AND result.owner_id=$3`,[command.stepResultId,session.id,userId]);
+        if(!result.rows[0])return null;
+        stepResult=mapRoutineSessionStepResult(result.rows[0]);
+        plannedValues=result.rows[0].planned_values as RoutineStepRecord["plannedValues"];
+      }
+      const candidate=createCanonicalRoutineSessionAmendment({ownerId:userId,session,stepResult,plannedValues,command});
+      const existing=await client.query("SELECT * FROM routine_session_amendments WHERE id=$1 FOR UPDATE",[candidate.id]);
+      if(existing.rows[0]){const row=mapRoutineSessionAmendment(existing.rows[0]);if(sameRoutineCreatePayload(row,candidate))return row;return routineIdConflict();}
+      await client.query(`INSERT INTO routine_session_amendments
+        (id,owner_id,session_id,step_result_id,note,corrected_actual_values,corrected_proposed_next_values,created_at)
+        VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)`,[candidate.id,candidate.ownerId,candidate.sessionId,candidate.stepResultId,candidate.note,
+        candidate.correctedActualValues===null?null:JSON.stringify(candidate.correctedActualValues),candidate.correctedProposedNextValues===null?null:JSON.stringify(candidate.correctedProposedNextValues),candidate.createdAt]);
+      return candidate;
+    },null);
+  }
+
   async resetCompetitionFixture(options: CompetitionFixtureResetOptions): Promise<CompetitionFixtureResetReport> {
     const fixture = createCompetitionFixtureData(options.password, options.qrBaseUrl);
     const mode = options.mode ?? "dry-run";
@@ -1391,7 +1861,19 @@ async function postgresCompetitionFixtureCounts(
        (SELECT count(*)::int FROM link_media WHERE owner_id = $1) AS media,
        (SELECT count(*)::int FROM owner_batches) AS batches,
        (SELECT count(*)::int FROM qr_codes WHERE batch_id IN (SELECT id FROM owner_batches)) AS qr_codes,
-       (SELECT count(*)::int FROM claim_events WHERE owner_id = $1) AS claim_events`,
+       (SELECT count(*)::int FROM claim_events WHERE owner_id = $1) AS claim_events,
+       (SELECT count(*)::int FROM routine_groups WHERE owner_id = $1) AS routine_groups,
+       (SELECT count(*)::int FROM routine_activities WHERE owner_id = $1) AS routine_activities,
+       (SELECT count(*)::int FROM routines WHERE owner_id = $1) AS routines,
+       (SELECT count(*)::int FROM routine_revisions WHERE owner_id = $1) AS routine_revisions,
+       (SELECT count(*)::int FROM routine_steps WHERE owner_id = $1) AS routine_steps,
+       (SELECT count(*)::int FROM routine_context_bindings WHERE owner_id = $1) AS routine_context_bindings,
+       (SELECT count(*)::int FROM routine_schedules WHERE owner_id = $1) AS routine_schedules,
+       (SELECT count(*)::int FROM routine_occurrences WHERE owner_id = $1) AS routine_occurrences,
+       (SELECT count(*)::int FROM routine_runs WHERE owner_id = $1) AS routine_runs,
+       (SELECT count(*)::int FROM routine_sessions WHERE owner_id = $1) AS routine_sessions,
+       (SELECT count(*)::int FROM routine_session_step_results WHERE owner_id = $1) AS routine_session_step_results,
+       (SELECT count(*)::int FROM routine_session_amendments WHERE owner_id = $1) AS routine_session_amendments`,
     [ownerId]
   );
   const row = result.rows[0];
@@ -1407,7 +1889,19 @@ async function postgresCompetitionFixtureCounts(
     media: Number(row.media),
     batches: Number(row.batches),
     qrCodes: Number(row.qr_codes),
-    claimEvents: Number(row.claim_events)
+    claimEvents: Number(row.claim_events),
+    routineGroups: Number(row.routine_groups),
+    routineActivities: Number(row.routine_activities),
+    routines: Number(row.routines),
+    routineRevisions: Number(row.routine_revisions),
+    routineSteps: Number(row.routine_steps),
+    routineContextBindings: Number(row.routine_context_bindings),
+    routineSchedules: Number(row.routine_schedules),
+    routineOccurrences: Number(row.routine_occurrences),
+    routineRuns: Number(row.routine_runs),
+    routineSessions: Number(row.routine_sessions),
+    routineSessionStepResults: Number(row.routine_session_step_results),
+    routineSessionAmendments: Number(row.routine_session_amendments)
   };
 }
 
@@ -1547,6 +2041,19 @@ async function replacePostgresCompetitionFixture(
   await client.query("DELETE FROM life_link_change_receipts WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM sessions WHERE user_id = $1", [ownerId]);
   await client.query("DELETE FROM claim_events WHERE owner_id = $1", [ownerId]);
+  await client.query("SET LOCAL life_links.allow_routine_delete = 'on'");
+  await client.query("DELETE FROM routine_session_amendments WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM routine_session_step_results WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM routine_sessions WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM routine_runs WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM routine_occurrences WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM routine_schedules WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM routine_context_bindings WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM routine_steps WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM routine_revisions WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM routines WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM routine_activities WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM routine_groups WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM collections WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM link_media WHERE owner_id = $1", [ownerId]);
   await client.query(
@@ -1795,6 +2302,19 @@ function stalePreview(): LifeLinkDomainError {
   return new LifeLinkDomainError("stale_life_link", "The preview is stale. Review a fresh preview before applying.", { reason: "stale_preview" });
 }
 
+function isCurrentRoutineLifeLinkBindingError(error: unknown): boolean {
+  const value = error as { code?: unknown; constraint?: unknown };
+  return value?.code === "23503" && value.constraint === "routine_current_life_link_binding";
+}
+
+function isPostgresUniqueViolation(error: unknown): boolean {
+  return (error as { code?: unknown })?.code === "23505";
+}
+
+function currentRoutineLifeLinkBindingError(): LifeLinkDomainError {
+  return new LifeLinkDomainError("routine_reference_conflict", "A current Routine revision still references this Life Link.");
+}
+
 async function loadCollection(
   queryable: Queryable, ownerId: string, collectionId: string, forUpdate = false
 ): Promise<CollectionRecord | null> {
@@ -1816,6 +2336,187 @@ async function touchCollection(
   await queryable.query("UPDATE collections SET updated_at = $3 WHERE id = $1 AND owner_id = $2", [current.id, current.ownerId, updatedAt]);
   return { ...current, updatedAt };
 }
+
+async function assertActivePostgresRoutineGroup(queryable: Queryable, ownerId: string, groupId: string): Promise<void> {
+  const result=await queryable.query("SELECT 1 FROM routine_groups WHERE id=$1 AND owner_id=$2 AND archived_at IS NULL",[groupId,ownerId]);
+  if(!result.rowCount)throw new LifeLinkDomainError("routine_reference_conflict","Routine Group was not found or is archived.");
+}
+
+async function assertPostgresRoutineGroupExists(queryable: Queryable, ownerId: string, groupId: string): Promise<void> {
+  const result=await queryable.query("SELECT 1 FROM routine_groups WHERE id=$1 AND owner_id=$2",[groupId,ownerId]);
+  if(!result.rowCount)throw new LifeLinkDomainError("routine_reference_conflict","Routine Group was not found for this owner.");
+}
+
+async function loadPostgresRoutineScheduleIdsUsingActivity(queryable: Queryable, ownerId: string, activityId: string): Promise<string[]> {
+  const result=await queryable.query(`SELECT DISTINCT schedule.id FROM routine_schedules schedule JOIN routine_steps step
+    ON step.owner_id=schedule.owner_id AND step.routine_revision_id=schedule.routine_revision_id
+    WHERE schedule.owner_id=$1 AND schedule.active=true AND step.activity_id=$2`,[ownerId,activityId]);
+  return result.rows.map((row)=>String(row.id));
+}
+
+async function deactivatePostgresRoutineSchedules(
+  queryable: Queryable, ownerId: string, routineIds: string[], changedAt: string
+): Promise<void> {
+  if(routineIds.length===0)return;
+  const result=await queryable.query(`SELECT id FROM routine_schedules WHERE owner_id=$1
+    AND routine_id=ANY($2::text[]) AND active=true`,[ownerId,routineIds]);
+  await deactivatePostgresRoutineSchedulesById(queryable,ownerId,result.rows.map((row)=>String(row.id)),changedAt);
+}
+
+async function deactivatePostgresRoutineSchedulesById(
+  queryable: Queryable, ownerId: string, scheduleIds: string[], changedAt: string
+): Promise<void> {
+  if(scheduleIds.length===0)return;
+  const result=await queryable.query(`SELECT * FROM routine_schedules WHERE owner_id=$1
+    AND id=ANY($2::text[]) AND active=true FOR UPDATE`,[ownerId,scheduleIds]);
+  for(const row of result.rows){
+    const schedule=mapRoutineSchedule(row);
+    const updatedAt=monotonicRoutineTimestamp(schedule.updatedAt,changedAt);
+    await queryable.query("UPDATE routine_schedules SET active=false,revision=revision+1,updated_at=$3 WHERE id=$1 AND owner_id=$2",
+      [schedule.id,ownerId,updatedAt]);
+    await queryable.query(`UPDATE routine_occurrences SET status='canceled',updated_at=$3 WHERE schedule_id=$1 AND owner_id=$2
+      AND status='planned' AND planned_for>$3`,[schedule.id,ownerId,updatedAt]);
+  }
+}
+
+async function assertPostgresRoutineDefinitionReferences(
+  queryable: Queryable, ownerId: string, groupId: string|null, snapshot: RoutineRevisionSnapshot, requireActiveGroup = true
+): Promise<void> {
+  if(groupId){
+    const result=await queryable.query(`SELECT 1 FROM routine_groups WHERE id=$1 AND owner_id=$2
+      ${requireActiveGroup?"AND archived_at IS NULL":""}`,[groupId,ownerId]);
+    if(!result.rowCount)throw new LifeLinkDomainError("routine_reference_conflict","Routine Group was not found for this owner or is unavailable for assignment.");
+  }
+  for(const step of snapshot.steps){
+    const result=await queryable.query("SELECT title FROM routine_activities WHERE id=$1 AND owner_id=$2 AND archived_at IS NULL",[step.activityId,ownerId]);
+    if(!result.rows[0]||String(result.rows[0].title)!==step.activityTitle)throw new LifeLinkDomainError("routine_reference_conflict","Routine Step Activity was not found, changed title, or is archived.");
+  }
+  for(const binding of snapshot.bindings){
+    const table=binding.targetType==="life_link"?"life_links":"collections";
+    const result=await queryable.query(`SELECT 1 FROM ${table} WHERE id=$1 AND owner_id=$2`,[binding.targetId,ownerId]);
+    if(!result.rowCount)throw new LifeLinkDomainError("routine_reference_conflict","Routine context target was not found for this owner.");
+  }
+}
+
+async function assertPostgresRoutineHasNoArchivedActivities(queryable: Queryable, ownerId: string, revisionId: string): Promise<void> {
+  const result=await queryable.query(`SELECT 1 FROM routine_steps step JOIN routine_activities activity
+    ON activity.id=step.activity_id AND activity.owner_id=step.owner_id
+    WHERE step.owner_id=$1 AND step.routine_revision_id=$2 AND activity.archived_at IS NOT NULL LIMIT 1`,[ownerId,revisionId]);
+  if(result.rowCount)throw new LifeLinkDomainError("routine_conflict","A Routine Activity is archived.");
+}
+
+async function assertPostgresRoutineScheduleReferences(queryable: Queryable,schedule: RoutineScheduleRecord): Promise<void>{
+  const result=await queryable.query("SELECT * FROM routines WHERE id=$1 AND owner_id=$2",[schedule.routineId,schedule.ownerId]);
+  if(!result.rows[0])throw new LifeLinkDomainError("routine_reference_conflict","Routine Schedule owner was not found.");
+  const routine=mapRoutine(result.rows[0]);
+  if(routine.archivedAt||routine.currentRevisionId!==schedule.routineRevisionId)throw new LifeLinkDomainError("routine_reference_conflict","Routine Schedule must use the active current Routine revision.");
+  await assertPostgresRoutineHasNoArchivedActivities(queryable,schedule.ownerId,schedule.routineRevisionId);
+}
+
+async function persistPostgresRoutineCreation(queryable: Queryable,candidate: CanonicalRoutineCreation,insertRoutine: boolean): Promise<void>{
+  const {routine,currentRevision}=candidate;
+  if(insertRoutine)await queryable.query(`INSERT INTO routines(id,owner_id,group_id,current_revision_id,created_at,updated_at,archived_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7)`,[routine.id,routine.ownerId,routine.groupId,routine.currentRevisionId,routine.createdAt,routine.updatedAt,routine.archivedAt]);
+  await queryable.query(`INSERT INTO routine_revisions(id,owner_id,routine_id,revision_number,title,purpose,instructions,created_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[currentRevision.revision.id,currentRevision.revision.ownerId,currentRevision.revision.routineId,currentRevision.revision.revisionNumber,
+    currentRevision.revision.title,currentRevision.revision.purpose,currentRevision.revision.instructions,currentRevision.revision.createdAt]);
+  for(const step of currentRevision.steps)await queryable.query(`INSERT INTO routine_steps
+    (id,owner_id,routine_revision_id,activity_id,activity_title,position,instructions,optional,planned_values)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,[step.id,step.ownerId,step.routineRevisionId,step.activityId,step.activityTitle,step.position,step.instructions,step.optional,JSON.stringify(step.plannedValues)]);
+  for(const binding of currentRevision.bindings)await queryable.query(`INSERT INTO routine_context_bindings
+    (id,owner_id,routine_revision_id,routine_step_id,target_type,target_id) VALUES($1,$2,$3,$4,$5,$6)`,
+    [binding.id,binding.ownerId,binding.routineRevisionId,binding.routineStepId,binding.targetType,binding.targetId]);
+  if(!insertRoutine)await queryable.query("UPDATE routines SET current_revision_id=$3,updated_at=$4 WHERE id=$1 AND owner_id=$2",
+    [routine.id,routine.ownerId,routine.currentRevisionId,routine.updatedAt]);
+}
+
+async function loadPostgresRoutineRevision(queryable: Queryable,ownerId: string,routineId: string,revisionId: string): Promise<RoutineRevisionSnapshot|null>{
+  const revisionResult=await queryable.query("SELECT * FROM routine_revisions WHERE id=$1 AND routine_id=$2 AND owner_id=$3",[revisionId,routineId,ownerId]);
+  if(!revisionResult.rows[0])return null;
+  const steps=await queryable.query("SELECT * FROM routine_steps WHERE routine_revision_id=$1 AND owner_id=$2 ORDER BY position,id",[revisionId,ownerId]);
+  const bindings=await queryable.query("SELECT * FROM routine_context_bindings WHERE routine_revision_id=$1 AND owner_id=$2 ORDER BY routine_step_id NULLS FIRST,target_type,target_id,id",[revisionId,ownerId]);
+  return {revision:mapRoutineRevision(revisionResult.rows[0]),steps:steps.rows.map(mapRoutineStep),bindings:bindings.rows.map(mapRoutineBinding)};
+}
+
+async function insertPostgresRoutineSchedule(queryable: Queryable,schedule: RoutineScheduleRecord): Promise<void>{
+  await queryable.query(`INSERT INTO routine_schedules(id,owner_id,routine_id,routine_revision_id,rule,revision,active,created_at,updated_at)
+    VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9)`,[schedule.id,schedule.ownerId,schedule.routineId,schedule.routineRevisionId,JSON.stringify(schedule.rule),schedule.revision,schedule.active,schedule.createdAt,schedule.updatedAt]);
+}
+
+async function buildPostgresRoutineContextSnapshot(queryable: Queryable,ownerId: string,revision: RoutineRevisionSnapshot): Promise<RoutineContextSnapshot[]>{
+  const result: RoutineContextSnapshot[]=[];
+  for(const binding of revision.bindings){
+    if(binding.targetType==="life_link"){
+      const targetResult=await queryable.query("SELECT id,title,updated_at FROM life_links WHERE id=$1 AND owner_id=$2",[binding.targetId,ownerId]);
+      if(!targetResult.rows[0])throw new LifeLinkDomainError("routine_reference_conflict","Routine Life Link context no longer exists.");
+      const target=targetResult.rows[0];
+      result.push({bindingId:binding.id,routineStepId:binding.routineStepId,targetType:binding.targetType,targetId:String(target.id),targetTitle:String(target.title),
+        targetSourceUpdatedAt:toIso(target.updated_at),resolvedLifeLinks:[{lifeLinkId:String(target.id),title:String(target.title),sourceUpdatedAt:toIso(target.updated_at)}]});
+    }else{
+      const targetResult=await queryable.query("SELECT id,title,updated_at FROM collections WHERE id=$1 AND owner_id=$2",[binding.targetId,ownerId]);
+      if(!targetResult.rows[0])throw new LifeLinkDomainError("routine_reference_conflict","Routine Collection context no longer exists.");
+      const members=await queryable.query(`SELECT link.id,link.title,link.updated_at FROM collection_memberships membership
+        JOIN life_links link ON link.id=membership.life_link_id AND link.owner_id=membership.owner_id
+        WHERE membership.owner_id=$1 AND membership.collection_id=$2 ORDER BY lower(link.title),link.id`,[ownerId,binding.targetId]);
+      const target=targetResult.rows[0];
+      result.push({bindingId:binding.id,routineStepId:binding.routineStepId,targetType:binding.targetType,targetId:String(target.id),targetTitle:String(target.title),
+        targetSourceUpdatedAt:toIso(target.updated_at),resolvedLifeLinks:members.rows.map(row=>({lifeLinkId:String(row.id),title:String(row.title),sourceUpdatedAt:toIso(row.updated_at)}))});
+    }
+  }
+  return result;
+}
+
+async function insertPostgresRoutineRun(queryable: Queryable,run: RoutineRunRecord): Promise<void>{
+  await queryable.query(`INSERT INTO routine_runs(id,owner_id,routine_id,routine_revision_id,occurrence_id,status,context_snapshot,step_results,started_at,updated_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9,$10)`,[run.id,run.ownerId,run.routineId,run.routineRevisionId,run.occurrenceId,run.status,JSON.stringify(run.contextSnapshot),JSON.stringify(run.stepResults),run.startedAt,run.updatedAt]);
+}
+
+async function insertPostgresRoutineSession(queryable: Queryable,built: BuiltRoutineSession): Promise<void>{
+  const session=built.session;
+  await queryable.query(`INSERT INTO routine_sessions(id,owner_id,routine_id,routine_revision_id,run_id,occurrence_id,context_snapshot,started_at,completed_at)
+    VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9)`,[session.id,session.ownerId,session.routineId,session.routineRevisionId,session.runId,session.occurrenceId,JSON.stringify(session.contextSnapshot),session.startedAt,session.completedAt]);
+  for(const result of built.stepResults)await queryable.query(`INSERT INTO routine_session_step_results
+    (id,owner_id,session_id,routine_revision_id,routine_step_id,actual_values,proposed_next_values,notes)
+    VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8)`,[result.id,result.ownerId,result.sessionId,session.routineRevisionId,result.routineStepId,JSON.stringify(result.actualValues),JSON.stringify(result.proposedNextValues),result.notes]);
+}
+
+async function loadPostgresBuiltRoutineSession(queryable: Queryable,session: RoutineSessionRecord): Promise<BuiltRoutineSession>{
+  const runResult=await queryable.query("SELECT * FROM routine_runs WHERE id=$1 AND owner_id=$2",[session.runId,session.ownerId]);
+  const resultRows=await queryable.query("SELECT * FROM routine_session_step_results WHERE session_id=$1 AND owner_id=$2 ORDER BY routine_step_id",[session.id,session.ownerId]);
+  return {finalizedRun:mapRoutineRun(runResult.rows[0]),session,stepResults:resultRows.rows.map(mapRoutineSessionStepResult)};
+}
+
+function mapRoutineGroup(row: Record<string,unknown>): RoutineGroupRecord{return {id:String(row.id),ownerId:String(row.owner_id),title:String(row.title),notes:String(row.notes),createdAt:toIso(row.created_at),updatedAt:toIso(row.updated_at),archivedAt:nullableIso(row.archived_at)};}
+function mapRoutineActivity(row: Record<string,unknown>): ActivityRecord{return {id:String(row.id),ownerId:String(row.owner_id),title:String(row.title),notes:String(row.notes),createdAt:toIso(row.created_at),updatedAt:toIso(row.updated_at),archivedAt:nullableIso(row.archived_at)};}
+function mapRoutine(row: Record<string,unknown>): RoutineRecord{return {id:String(row.id),ownerId:String(row.owner_id),groupId:nullableString(row.group_id),currentRevisionId:String(row.current_revision_id),createdAt:toIso(row.created_at),updatedAt:toIso(row.updated_at),archivedAt:nullableIso(row.archived_at)};}
+function mapRoutineSummary(row: Record<string,unknown>): RoutineSummaryRecord{return {...mapRoutine(row),revisionNumber:Number(row.revision_number),title:String(row.title),purpose:String(row.purpose)};}
+function mapRoutineRevision(row: Record<string,unknown>): RoutineRevisionRecord{return {id:String(row.id),ownerId:String(row.owner_id),routineId:String(row.routine_id),revisionNumber:Number(row.revision_number),title:String(row.title),purpose:String(row.purpose),instructions:String(row.instructions),createdAt:toIso(row.created_at)};}
+function mapRoutineStep(row: Record<string,unknown>): RoutineStepRecord{return {id:String(row.id),ownerId:String(row.owner_id),routineRevisionId:String(row.routine_revision_id),activityId:String(row.activity_id),activityTitle:String(row.activity_title),position:Number(row.position),instructions:String(row.instructions),optional:Boolean(row.optional),plannedValues:row.planned_values as RoutineStepRecord["plannedValues"]};}
+function mapRoutineBinding(row: Record<string,unknown>): RoutineContextBindingRecord{return {id:String(row.id),ownerId:String(row.owner_id),routineRevisionId:String(row.routine_revision_id),routineStepId:nullableString(row.routine_step_id),targetType:row.target_type as RoutineContextBindingRecord["targetType"],targetId:String(row.target_id)};}
+function mapRoutineSchedule(row: Record<string,unknown>): RoutineScheduleRecord{return {id:String(row.id),ownerId:String(row.owner_id),routineId:String(row.routine_id),routineRevisionId:String(row.routine_revision_id),rule:row.rule as RoutineScheduleRecord["rule"],revision:Number(row.revision),active:Boolean(row.active),createdAt:toIso(row.created_at),updatedAt:toIso(row.updated_at)};}
+function mapRoutineOccurrence(row: Record<string,unknown>): RoutineOccurrenceRecord{return {id:String(row.id),ownerId:String(row.owner_id),scheduleId:String(row.schedule_id),scheduleRevision:Number(row.schedule_revision),routineId:String(row.routine_id),routineRevisionId:String(row.routine_revision_id),localDate:toDateOnly(row.local_date),plannedFor:toIso(row.planned_for),status:row.status as RoutineOccurrenceRecord["status"],createdAt:toIso(row.created_at),updatedAt:toIso(row.updated_at)};}
+function mapRoutineRun(row: Record<string,unknown>): RoutineRunRecord{return {id:String(row.id),ownerId:String(row.owner_id),routineId:String(row.routine_id),routineRevisionId:String(row.routine_revision_id),occurrenceId:nullableString(row.occurrence_id),status:row.status as RoutineRunRecord["status"],contextSnapshot:row.context_snapshot as RoutineContextSnapshot[],stepResults:row.step_results as RoutineRunRecord["stepResults"],startedAt:toIso(row.started_at),updatedAt:toIso(row.updated_at)};}
+function mapRoutineSession(row: Record<string,unknown>): RoutineSessionRecord{return {id:String(row.id),ownerId:String(row.owner_id),routineId:String(row.routine_id),routineRevisionId:String(row.routine_revision_id),runId:String(row.run_id),occurrenceId:nullableString(row.occurrence_id),contextSnapshot:row.context_snapshot as RoutineContextSnapshot[],startedAt:toIso(row.started_at),completedAt:toIso(row.completed_at)};}
+function mapRoutineSessionStepResult(row: Record<string,unknown>): RoutineSessionStepResultRecord{return {id:String(row.id),ownerId:String(row.owner_id),sessionId:String(row.session_id),routineStepId:String(row.routine_step_id),actualValues:row.actual_values as RoutineSessionStepResultRecord["actualValues"],proposedNextValues:row.proposed_next_values as RoutineSessionStepResultRecord["proposedNextValues"],notes:String(row.notes)};}
+function mapRoutineSessionAmendment(row: Record<string,unknown>): RoutineSessionAmendmentRecord{return {id:String(row.id),ownerId:String(row.owner_id),sessionId:String(row.session_id),stepResultId:nullableString(row.step_result_id),note:String(row.note),correctedActualValues:row.corrected_actual_values as RoutineSessionAmendmentRecord["correctedActualValues"],correctedProposedNextValues:row.corrected_proposed_next_values as RoutineSessionAmendmentRecord["correctedProposedNextValues"],createdAt:toIso(row.created_at)};}
+
+function sameRoutinePayload(left: unknown,right: unknown): boolean{return isDeepStrictEqual(left,right);}
+function sameRoutineCreatePayload(left: unknown,right: unknown): boolean{return isDeepStrictEqual(withoutRoutineServerTimes(left),withoutRoutineServerTimes(right));}
+function withoutRoutineServerTimes(value: unknown): unknown{
+  if(Array.isArray(value))return value.map(withoutRoutineServerTimes);
+  if(!value||typeof value!=="object")return value;
+  return Object.fromEntries(Object.entries(value).filter(([key])=>!["createdAt","updatedAt","startedAt","completedAt"].includes(key))
+    .map(([key,item])=>[key,withoutRoutineServerTimes(item)]));
+}
+function routineIdConflict(): never{throw new LifeLinkDomainError("routine_conflict","Routine identity is already bound to another request.");}
+function assertRoutineUpdatedAt(actual: string,expected: string): void{if(actual!==expected)throw new LifeLinkDomainError("stale_routine","Routine state changed after it was read.",{retryable:true});}
+function stableRoutineSessionResultId(sessionId: string,routineStepId: string): string{
+  const hex=createHash("sha256").update(`${sessionId}\u0000${routineStepId}`).digest("hex").slice(0,32).split("");hex[12]="4";hex[16]=((Number.parseInt(hex[16],16)&3)|8).toString(16);
+  return `routine-session-result-${hex.slice(0,8).join("")}-${hex.slice(8,12).join("")}-${hex.slice(12,16).join("")}-${hex.slice(16,20).join("")}-${hex.slice(20).join("")}`;
+}
+function compareRoutineTitledRows(left:{id:string;title:string},right:{id:string;title:string}):number{return left.title.normalize("NFKC").toLowerCase().localeCompare(right.title.normalize("NFKC").toLowerCase())||left.id.localeCompare(right.id);}
+function compareRoutineOccurrenceOrder(left:RoutineOccurrenceRecord,right:RoutineOccurrenceRecord):number{return left.plannedFor.localeCompare(right.plannedFor)||left.id.localeCompare(right.id);}
+function toDateOnly(value:unknown):string{return value instanceof Date?value.toISOString().slice(0,10):String(value).slice(0,10);}
 
 function mapCollection(row: Record<string, unknown>): CollectionRecord {
   return {
@@ -1918,6 +2619,10 @@ function assertFresh(lifeLink: StoredLifeLink, expectedUpdatedAt: string): void 
 function nextTimestamp(previous: string): string {
   const now = new Date();
   return now.getTime() > Date.parse(previous) ? now.toISOString() : new Date(Date.parse(previous) + 1).toISOString();
+}
+
+function monotonicRoutineTimestamp(previous: string, candidate: string): string {
+  return Date.parse(candidate) > Date.parse(previous) ? candidate : new Date(Date.parse(previous) + 1).toISOString();
 }
 
 function lifeLinkMediaAsLinkMedia(media: LifeLinkMediaRecord, qrId: string): LinkMediaRecord {

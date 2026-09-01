@@ -20,6 +20,33 @@ const webClientPath = path.resolve(testDirectory, "../../../apps/life-links-demo
 const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/workspace/controller.ts");
 
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
+  "GET /api/routine-groups",
+  "POST /api/routine-groups",
+  "GET /api/routine-groups/{groupId}",
+  "PATCH /api/routine-groups/{groupId}",
+  "GET /api/routine-activities",
+  "POST /api/routine-activities",
+  "GET /api/routine-activities/{activityId}",
+  "PATCH /api/routine-activities/{activityId}",
+  "GET /api/routines",
+  "POST /api/routines",
+  "GET /api/routines/{routineId}",
+  "PATCH /api/routines/{routineId}",
+  "GET /api/routines/{routineId}/active-run",
+  "POST /api/routines/{routineId}/revisions",
+  "GET /api/routines/{routineId}/revisions/{revisionId}",
+  "GET /api/routines/{routineId}/schedules",
+  "POST /api/routines/{routineId}/schedules",
+  "PATCH /api/routine-schedules/{scheduleId}",
+  "GET /api/routine-occurrences",
+  "GET /api/routine-occurrences/{occurrenceId}",
+  "POST /api/routines/{routineId}/runs",
+  "GET /api/routine-runs/{runId}",
+  "PUT /api/routine-runs/{runId}/step-results/{routineStepId}",
+  "POST /api/routine-runs/{runId}/finalize",
+  "GET /api/routine-sessions",
+  "GET /api/routine-sessions/{sessionId}",
+  "POST /api/routine-sessions/{sessionId}/amendments",
   "GET /api/life-links/{lifeLinkId}/media/{mediaId}/image",
   "GET /api/life-links/{lifeLinkId}/media/{mediaId}/content",
   "POST /api/life-links/changes/preview",
@@ -411,14 +438,14 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(50);
+    expect(published).toHaveLength(77);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
     expect(schemas).not.toHaveProperty("Project");
     expect(objectValue(objectValue(schemas.Link, "Link").properties, "Link properties")).not.toHaveProperty("projectId");
     const operationIds = [...contractOperations(document).values()].map((operation) => operation.operationId);
-    expect(new Set(operationIds).size).toBe(50);
+    expect(new Set(operationIds).size).toBe(77);
     expect(operationIds.every((operationId) => typeof operationId === "string" && operationId.length > 0)).toBe(true);
   });
 
@@ -526,6 +553,33 @@ describe("Life Links OpenAPI v1", () => {
     expect(document.security).toEqual([{ CookieSession: [] }, { BearerSession: [] }]);
 
     const protectedOperationIds = [
+      "listRoutineGroups",
+      "createRoutineGroup",
+      "getRoutineGroup",
+      "updateRoutineGroup",
+      "listRoutineActivities",
+      "createRoutineActivity",
+      "getRoutineActivity",
+      "updateRoutineActivity",
+      "listRoutines",
+      "createRoutine",
+      "getRoutine",
+      "getActiveRoutineRun",
+      "updateRoutine",
+      "reviseRoutine",
+      "getRoutineRevision",
+      "listRoutineSchedules",
+      "createRoutineSchedule",
+      "updateRoutineSchedule",
+      "listRoutineOccurrences",
+      "getRoutineOccurrence",
+      "startRoutineRun",
+      "getRoutineRun",
+      "putRoutineRunStepResult",
+      "finalizeRoutineRun",
+      "listRoutineSessions",
+      "getRoutineSession",
+      "appendRoutineSessionAmendment",
       "listCanonicalLifeLinks",
       "createCanonicalLifeLink",
       "searchCanonicalLifeLinks",
@@ -637,6 +691,108 @@ describe("Life Links OpenAPI v1", () => {
     expect(String(operationById(operations, "logoutLifeLinksOwner").description)).toContain("idempotent");
     const responses = objectValue(objectValue(document.components, "components").responses, "responses");
     expect(String(objectValue(responses.LogoutNoContent, "LogoutNoContent").description)).toContain("agent connection");
+  });
+
+  it("publishes owner-only general Routines with closed typed values, immutable history, and bounded errors", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    const components = objectValue(document.components, "components");
+    const schemas = objectValue(components.schemas, "schemas");
+    const responses = objectValue(components.responses, "responses");
+    const routineOperations = EXPECTED_WEB_CLIENT_OPERATIONS.filter((key) => key.includes("/routine"));
+
+    expect(routineOperations).toHaveLength(27);
+    for (const key of routineOperations) {
+      const operation = operations.get(key);
+      expect(operation, key).toBeTruthy();
+      expect(operation?.security, `${key} must inherit owner session security`).toBeUndefined();
+      expect(objectValue(operation?.responses, `${key} responses`)).toHaveProperty("401");
+    }
+    expect([...operations.keys()].filter((key) => key.includes("routine") && !key.startsWith("GET /api/") && !/^(POST|PATCH|PUT) \/api\//.test(key))).toEqual([]);
+
+    expect(objectValue(schemas.RoutineErrorCode, "RoutineErrorCode").enum).toEqual([
+      "invalid_routine",
+      "routine_not_found",
+      "stale_routine",
+      "routine_conflict",
+      "routine_reference_conflict"
+    ]);
+    const errorEnvelope = objectValue(schemas.RoutineErrorResponse, "RoutineErrorResponse");
+    expect(errorEnvelope.additionalProperties).toBe(false);
+    const error = objectValue(objectValue(errorEnvelope.properties, "RoutineErrorResponse properties").error, "Routine error");
+    expect(error.additionalProperties).toBe(false);
+    expect(error.required).toEqual(["code", "message", "retryable"]);
+    expect(String(objectValue(responses.RoutineConflict, "RoutineConflict").description)).toContain("Only stale_routine is retryable");
+    for (const responseName of ["RoutineBadRequest", "RoutineNotFound", "RoutineConflict"]) {
+      expect(objectValue(responses[responseName], responseName)).toMatchObject({
+        content: { "application/json": { schema: { $ref: "#/components/schemas/RoutineErrorResponse" } } }
+      });
+    }
+
+    const routineValue = objectValue(schemas.RoutineValue, "RoutineValue");
+    const valueVariants = routineValue.oneOf as JsonObject[];
+    expect(valueVariants).toHaveLength(5);
+    expect(valueVariants.map((variant) => objectValue(objectValue(variant.properties, "value properties").kind, "value kind").const)).toEqual([
+      "number",
+      "quantity",
+      "duration",
+      "text",
+      "boolean"
+    ]);
+    expect(valueVariants.every((variant) => variant.additionalProperties === false)).toBe(true);
+
+    const scheduleVariants = objectValue(schemas.RoutineScheduleRule, "RoutineScheduleRule").oneOf as JsonObject[];
+    expect(scheduleVariants.map((variant) => objectValue(objectValue(variant.properties, "schedule properties").kind, "schedule kind").const)).toEqual([
+      "once",
+      "daily",
+      "weekly"
+    ]);
+    expect(scheduleVariants.every((variant) => variant.additionalProperties === false)).toBe(true);
+
+    const routineSummary = objectValue(schemas.RoutineSummary, "RoutineSummary");
+    expect(routineSummary.additionalProperties).toBe(false);
+    expect(routineSummary.required).toEqual([
+      "id", "ownerId", "groupId", "currentRevisionId", "createdAt", "updatedAt", "archivedAt",
+      "revisionNumber", "title", "purpose"
+    ]);
+    const routineList = objectValue(schemas.RoutineListResponse, "RoutineListResponse");
+    expect(objectValue(objectValue(objectValue(routineList.properties, "RoutineListResponse properties").routines, "routines").items, "routine items"))
+      .toEqual({ $ref: "#/components/schemas/RoutineSummary" });
+    const activeRun = operationById(operations, "getActiveRoutineRun");
+    expect(objectValue(activeRun.responses, "active Run responses")["200"]).toEqual({
+      $ref: "#/components/responses/RoutineActiveRunOk"
+    });
+    expect(objectValue(schemas.RoutineActiveRunResponse, "RoutineActiveRunResponse").required).toEqual(["run"]);
+
+    for (const name of [
+      "RoutineGroupCreateRequest",
+      "RoutineGroupPatchRequest",
+      "ActivityCreateRequest",
+      "ActivityPatchRequest",
+      "RoutineCreateRequest",
+      "RoutineRevisionCreateRequest",
+      "RoutinePatchRequest",
+      "RoutineScheduleCreateRequest",
+      "RoutineSchedulePatchRequest",
+      "RoutineRunStartRequest",
+      "RoutineRunStepResultPutRequest",
+      "RoutineRunFinalizeRequest",
+      "RoutineSessionAmendmentCreateRequest"
+    ]) {
+      expect(objectValue(schemas[name], name).additionalProperties, `${name} must reject unknown input`).toBe(false);
+    }
+    expect(objectValue(schemas.RoutineRunStartRequest, "RoutineRunStartRequest").required).toContain("id");
+    expect(objectValue(schemas.RoutineRunFinalizeRequest, "RoutineRunFinalizeRequest").required).toContain("sessionId");
+    expect(objectValue(schemas.RoutineSessionAmendmentCreateRequest, "RoutineSessionAmendmentCreateRequest").required).toContain("id");
+    for (const name of ["RoutineCreateRequest", "RoutineRevisionCreateRequest"]) {
+      const steps = objectValue(objectValue(objectValue(schemas[name], name).properties, `${name} properties`).steps, `${name} steps`);
+      expect(steps).not.toHaveProperty("minItems");
+    }
+    expect(objectValue(schemas.RoutineRunStepResultPutRequest, "RoutineRunStepResultPutRequest").required).toEqual([
+      "expectedUpdatedAt",
+      "actualValues",
+      "proposedNextValues"
+    ]);
   });
 
   it("pins the bounded canonical hierarchy contract and keeps public QR schemas compatibility-only", () => {

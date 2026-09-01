@@ -10,6 +10,12 @@ import multer from "multer";
 import QRCode from "qrcode";
 import {
   type ClaimQrCommand,
+  type AppendRoutineSessionAmendmentCommand,
+  type CreateActivityCommand,
+  type CreateRoutineCommand,
+  type CreateRoutineGroupCommand,
+  type CreateRoutineScheduleCommand,
+  type FinalizeRoutineRunCommand,
   type LifeLinkDomainErrorCode,
   type LifeLinkPageRequest,
   type PreviewLifeLinkChangeInput,
@@ -20,6 +26,15 @@ import {
   resolveAttachmentMimeType,
   type LinkRecord,
   type PrivacyStatus,
+  type PutRoutineRunStepResultCommand,
+  type ReviseRoutineCommand,
+  type RoutineScheduleRecord,
+  type RoutineScheduleRule,
+  type StartRoutineRunCommand,
+  type UpdateActivityCommand,
+  type UpdateRoutineCommand,
+  type UpdateRoutineGroupCommand,
+  type UpdateRoutineScheduleCommand,
   COMPETITION_FIXTURE_PROFILE,
   LINK_BODY_DOC_VERSION,
   MAX_BATCH_COUNT,
@@ -46,6 +61,24 @@ import {
   normalizeCollectionSectionTitle,
   normalizeCollectionSectionIds,
   normalizeSetLifeLinkQrBindingCommand,
+  normalizeActivityId,
+  normalizeActivityPatch,
+  normalizeRoutineBindingId,
+  normalizeRoutineGroupId,
+  normalizeRoutineGroupPatch,
+  normalizeRoutineId,
+  normalizeRoutineLocalDate,
+  normalizeRoutineOccurrenceId,
+  normalizeRoutinePatch,
+  normalizeRoutineRevisionId,
+  normalizeRoutineRunId,
+  normalizeRoutineScheduleId,
+  normalizeRoutineSchedulePatch,
+  normalizeRoutineScheduleRule,
+  normalizeRoutineSessionAmendmentId,
+  normalizeRoutineSessionId,
+  normalizeRoutineStepId,
+  normalizeRoutineValues,
   normalizeClearLifeLinkQrBindingCommand,
   normalizeBatchCount,
   parseQrId
@@ -54,7 +87,13 @@ import {
 import type { LifeLinksConfig } from "./config.js";
 import type { Logger } from "./logger.js";
 import { createSessionToken, hasSessionTokenShape, hashSessionToken, verifyPassword } from "./password.js";
-import { ClaimIdempotencyConflictError, type LifeLinksStore, type StoredUser } from "./store.js";
+import {
+  ClaimIdempotencyConflictError,
+  type LifeLinksStore,
+  type RoutineOccurrencePageRequest,
+  type RoutinePageRequest,
+  type StoredUser
+} from "./store.js";
 import { AttachmentContentReader, AttachmentContentRequestError } from "./attachment-content.js";
 
 const SESSION_COOKIE = "life_links_session";
@@ -1010,6 +1049,362 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
     response.json({ collection });
   });
 
+  app.get("/api/routine-groups", requireAuthenticated, async (request: AppRequest, response) => {
+    const page = readRoutinePageQuery(request, response, logger);
+    if (!page) return;
+    const result = await store.listRoutineGroups(request.user!.id, page);
+    response.json({ routineGroups: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
+  });
+
+  app.post("/api/routine-groups", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readRoutineBody(request, response, logger, ["id", "title", "notes"]);
+    if (!input) return;
+    const command = {
+      ...input,
+      id: normalizeRoutineGroupId(input.id ?? `routine-group-${randomUUID()}`),
+      ownerId: request.user!.id,
+      createdAt: new Date().toISOString()
+    } as unknown as CreateRoutineGroupCommand;
+    const routineGroup = await store.createRoutineGroup(command);
+    logger.info("life_links.routine.group_created", {
+      msg: "Owner Routine Group created", ...requestLogFields(request), routine_group_id: routineGroup.id
+    });
+    response.status(201).json({ routineGroup });
+  });
+
+  app.get("/api/routine-groups/:groupId", requireAuthenticated, async (request: AppRequest, response) => {
+    const routineGroup = await store.getRoutineGroup(request.user!.id, normalizeRoutineGroupId(paramValue(request.params.groupId)));
+    if (!routineGroup) { sendRoutineError(response, 404, "routine_not_found", { reason: "group_not_found" }); return; }
+    response.json({ routineGroup });
+  });
+
+  app.patch("/api/routine-groups/:groupId", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readRoutineRevisionMutation(request, response, logger, ["title", "notes", "archivedAt"]);
+    if (!input) return;
+    const { expectedUpdatedAt, ...patch } = input;
+    const routineGroup = await store.updateRoutineGroup(request.user!.id, {
+      groupId: normalizeRoutineGroupId(paramValue(request.params.groupId)),
+      expectedUpdatedAt,
+      patch: normalizeRoutineGroupPatch(patch)
+    } as UpdateRoutineGroupCommand);
+    if (!routineGroup) { sendRoutineError(response, 404, "routine_not_found", { reason: "group_not_found" }); return; }
+    response.json({ routineGroup });
+  });
+
+  app.get("/api/routine-activities", requireAuthenticated, async (request: AppRequest, response) => {
+    const page = readRoutinePageQuery(request, response, logger);
+    if (!page) return;
+    const result = await store.listActivities(request.user!.id, page);
+    response.json({ activities: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
+  });
+
+  app.post("/api/routine-activities", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readRoutineBody(request, response, logger, ["id", "title", "notes"]);
+    if (!input) return;
+    const command = {
+      ...input,
+      id: normalizeActivityId(input.id ?? `activity-${randomUUID()}`),
+      ownerId: request.user!.id,
+      createdAt: new Date().toISOString()
+    } as unknown as CreateActivityCommand;
+    const activity = await store.createActivity(command);
+    logger.info("life_links.routine.activity_created", {
+      msg: "Owner Routine Activity created", ...requestLogFields(request), activity_id: activity.id
+    });
+    response.status(201).json({ activity });
+  });
+
+  app.get("/api/routine-activities/:activityId", requireAuthenticated, async (request: AppRequest, response) => {
+    const activity = await store.getActivity(request.user!.id, normalizeActivityId(paramValue(request.params.activityId)));
+    if (!activity) { sendRoutineError(response, 404, "routine_not_found", { reason: "activity_not_found" }); return; }
+    response.json({ activity });
+  });
+
+  app.patch("/api/routine-activities/:activityId", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readRoutineRevisionMutation(request, response, logger, ["title", "notes", "archivedAt"]);
+    if (!input) return;
+    const { expectedUpdatedAt, ...patch } = input;
+    const activity = await store.updateActivity(request.user!.id, {
+      activityId: normalizeActivityId(paramValue(request.params.activityId)),
+      expectedUpdatedAt,
+      patch: normalizeActivityPatch(patch)
+    } as UpdateActivityCommand);
+    if (!activity) { sendRoutineError(response, 404, "routine_not_found", { reason: "activity_not_found" }); return; }
+    response.json({ activity });
+  });
+
+  app.get("/api/routines", requireAuthenticated, async (request: AppRequest, response) => {
+    const page = readRoutinePageQuery(request, response, logger);
+    if (!page) return;
+    const result = await store.listRoutines(request.user!.id, page);
+    response.json({ routines: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
+  });
+
+  app.post("/api/routines", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readRoutineBody(request, response, logger, [
+      "id", "revisionId", "groupId", "title", "purpose", "instructions", "steps", "bindings"
+    ]);
+    if (!input) return;
+    const routineId = normalizeRoutineId(input.id ?? `routine-${randomUUID()}`);
+    const revisionId = normalizeRoutineRevisionId(input.revisionId ?? `routine-revision-${randomUUID()}`);
+    const definition = routineDefinitionWithStableIds(input, revisionId);
+    const routine = await store.createRoutine({
+      ...definition,
+      id: routineId,
+      revisionId,
+      ownerId: request.user!.id,
+      createdAt: new Date().toISOString()
+    } as unknown as CreateRoutineCommand);
+    logger.info("life_links.routine.created", {
+      msg: "Owner Routine created", ...requestLogFields(request), routine_id: routine.routine.id,
+      routine_revision_id: routine.currentRevision.revision.id
+    });
+    response.status(201).json({ routine });
+  });
+
+  app.get("/api/routines/:routineId", requireAuthenticated, async (request: AppRequest, response) => {
+    const routine = await store.getRoutine(request.user!.id, normalizeRoutineId(paramValue(request.params.routineId)));
+    if (!routine) { sendRoutineError(response, 404, "routine_not_found"); return; }
+    response.json({ routine });
+  });
+
+  app.get("/api/routines/:routineId/active-run", requireAuthenticated, async (request: AppRequest, response) => {
+    const routineId = normalizeRoutineId(paramValue(request.params.routineId));
+    const routine = await store.getRoutine(request.user!.id, routineId);
+    if (!routine) { sendRoutineError(response, 404, "routine_not_found"); return; }
+    const run = await store.getActiveRoutineRun(request.user!.id, routineId);
+    response.json({ run });
+  });
+
+  app.patch("/api/routines/:routineId", requireAuthenticated, async (request: AppRequest, response) => {
+    const routineId = normalizeRoutineId(paramValue(request.params.routineId));
+    const input = readRoutineRevisionMutation(request, response, logger, ["groupId", "archivedAt"]);
+    if (!input) return;
+    const { expectedUpdatedAt, ...patch } = input;
+    const updated = await store.updateRoutine(request.user!.id, {
+      routineId, expectedUpdatedAt, patch: normalizeRoutinePatch(patch)
+    } as UpdateRoutineCommand);
+    if (!updated) { sendRoutineError(response, 404, "routine_not_found"); return; }
+    const routine = await store.getRoutine(request.user!.id, routineId);
+    if (!routine) { sendRoutineError(response, 404, "routine_not_found"); return; }
+    response.json({ routine });
+  });
+
+  app.post("/api/routines/:routineId/revisions", requireAuthenticated, async (request: AppRequest, response) => {
+    const routineId = normalizeRoutineId(paramValue(request.params.routineId));
+    const input = readRoutineBody(request, response, logger, [
+      "revisionId", "expectedCurrentRevisionId", "title", "purpose", "instructions", "steps", "bindings"
+    ]);
+    if (!input) return;
+    const current = await store.getRoutine(request.user!.id, routineId);
+    if (!current) { sendRoutineError(response, 404, "routine_not_found"); return; }
+    const revisionId = normalizeRoutineRevisionId(input.revisionId ?? `routine-revision-${randomUUID()}`);
+    const definition = routineDefinitionWithStableIds(input, revisionId);
+    const revision = await store.reviseRoutine(request.user!.id, {
+      ...definition,
+      id: revisionId,
+      ownerId: request.user!.id,
+      routineId,
+      revisionNumber: current.currentRevision.revision.revisionNumber + 1,
+      expectedCurrentRevisionId: normalizeRoutineRevisionId(input.expectedCurrentRevisionId),
+      createdAt: new Date().toISOString()
+    } as unknown as ReviseRoutineCommand);
+    if (!revision) { sendRoutineError(response, 404, "routine_not_found"); return; }
+    const routine = await store.getRoutine(request.user!.id, routineId);
+    if (!routine) { sendRoutineError(response, 404, "routine_not_found"); return; }
+    logger.info("life_links.routine.revised", {
+      msg: "Owner Routine revision created", ...requestLogFields(request), routine_id: routineId,
+      routine_revision_id: revision.revision.id, revision_number: revision.revision.revisionNumber
+    });
+    response.status(201).json({ routine });
+  });
+
+  app.get("/api/routines/:routineId/revisions/:revisionId", requireAuthenticated, async (request: AppRequest, response) => {
+    const routineRevision = await store.getRoutineRevision(
+      request.user!.id,
+      normalizeRoutineId(paramValue(request.params.routineId)),
+      normalizeRoutineRevisionId(paramValue(request.params.revisionId))
+    );
+    if (!routineRevision) { sendRoutineError(response, 404, "routine_not_found", { reason: "revision_not_found" }); return; }
+    response.json({ routineRevision });
+  });
+
+  app.get("/api/routines/:routineId/schedules", requireAuthenticated, async (request: AppRequest, response) => {
+    const routineId = normalizeRoutineId(paramValue(request.params.routineId));
+    const page = readLifeLinkPageQuery(request, response, logger, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
+    if (!page) return;
+    const result = await store.listRoutineSchedules(request.user!.id, routineId, page);
+    if (!result) { sendRoutineError(response, 404, "routine_not_found"); return; }
+    response.json({ schedules: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
+  });
+
+  app.post("/api/routines/:routineId/schedules", requireAuthenticated, async (request: AppRequest, response) => {
+    const routineId = normalizeRoutineId(paramValue(request.params.routineId));
+    const input = readRoutineBody(request, response, logger, ["id", "rule", "active"]);
+    if (!input) return;
+    const routine = await store.getRoutine(request.user!.id, routineId);
+    if (!routine) { sendRoutineError(response, 404, "routine_not_found"); return; }
+    const schedule = await store.createRoutineSchedule({
+      id: normalizeRoutineScheduleId(input.id ?? `routine-schedule-${randomUUID()}`),
+      ownerId: request.user!.id,
+      routineId,
+      routineRevisionId: routine.routine.currentRevisionId,
+      rule: normalizeRoutineScheduleRule(input.rule),
+      ...(input.active === undefined ? {} : { active: input.active }),
+      createdAt: new Date().toISOString()
+    } as CreateRoutineScheduleCommand);
+    if (schedule.active) await materializeRoutineScheduleWindow(store, request.user!.id, schedule);
+    logger.info("life_links.routine.schedule_created", {
+      msg: "Owner Routine Schedule created", ...requestLogFields(request), routine_id: routineId,
+      routine_schedule_id: schedule.id, routine_revision_id: schedule.routineRevisionId, schedule_revision: schedule.revision
+    });
+    response.status(201).json({ schedule });
+  });
+
+  app.patch("/api/routine-schedules/:scheduleId", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readRoutineRevisionMutation(request, response, logger, ["rule", "active"]);
+    if (!input) return;
+    const { expectedUpdatedAt, ...patch } = input;
+    const schedule = await store.updateRoutineSchedule(request.user!.id, {
+      scheduleId: normalizeRoutineScheduleId(paramValue(request.params.scheduleId)),
+      expectedUpdatedAt,
+      patch: normalizeRoutineSchedulePatch(patch)
+    } as UpdateRoutineScheduleCommand);
+    if (!schedule) { sendRoutineError(response, 404, "routine_not_found", { reason: "schedule_not_found" }); return; }
+    if (schedule.active) await materializeRoutineScheduleWindow(store, request.user!.id, schedule);
+    logger.info("life_links.routine.schedule_updated", {
+      msg: "Owner Routine Schedule updated", ...requestLogFields(request), routine_id: schedule.routineId,
+      routine_schedule_id: schedule.id, routine_revision_id: schedule.routineRevisionId, schedule_revision: schedule.revision
+    });
+    response.json({ schedule });
+  });
+
+  app.get("/api/routine-occurrences", requireAuthenticated, async (request: AppRequest, response) => {
+    const page = readRoutineOccurrencePageQuery(request, response, logger);
+    if (!page) return;
+    const result = await store.listRoutineOccurrences(request.user!.id, page);
+    response.json({ occurrences: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
+  });
+
+  app.get("/api/routine-occurrences/:occurrenceId", requireAuthenticated, async (request: AppRequest, response) => {
+    const occurrence = await store.getRoutineOccurrence(
+      request.user!.id, normalizeRoutineOccurrenceId(paramValue(request.params.occurrenceId))
+    );
+    if (!occurrence) { sendRoutineError(response, 404, "routine_not_found", { reason: "occurrence_not_found" }); return; }
+    response.json({ occurrence });
+  });
+
+  app.post("/api/routines/:routineId/runs", requireAuthenticated, async (request: AppRequest, response) => {
+    const routineId = normalizeRoutineId(paramValue(request.params.routineId));
+    const input = readRoutineBody(request, response, logger, ["id", "occurrenceId"]);
+    if (!input) return;
+    const run = await store.startRoutineRun(request.user!.id, {
+      id: normalizeRoutineRunId(input.id),
+      routineId,
+      occurrenceId: input.occurrenceId === undefined || input.occurrenceId === null
+        ? null : normalizeRoutineOccurrenceId(input.occurrenceId),
+      startedAt: new Date().toISOString()
+    } as StartRoutineRunCommand);
+    if (!run) { sendRoutineError(response, 404, "routine_not_found"); return; }
+    logger.info("life_links.routine.run_started", {
+      msg: "Owner Routine Run started or resumed", ...requestLogFields(request), routine_id: run.routineId,
+      routine_revision_id: run.routineRevisionId, routine_run_id: run.id, occurrence_id: run.occurrenceId,
+      routine_run_status: run.status
+    });
+    response.status(201).json({ run });
+  });
+
+  app.get("/api/routine-runs/:runId", requireAuthenticated, async (request: AppRequest, response) => {
+    const run = await store.getRoutineRun(request.user!.id, normalizeRoutineRunId(paramValue(request.params.runId)));
+    if (!run) { sendRoutineError(response, 404, "routine_not_found", { reason: "run_not_found" }); return; }
+    response.json({ run });
+  });
+
+  app.put("/api/routine-runs/:runId/step-results/:routineStepId", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readRoutineBody(request, response, logger, [
+      "expectedUpdatedAt", "actualValues", "proposedNextValues", "notes"
+    ]);
+    if (!input) return;
+    const run = await store.putRoutineRunStepResult(request.user!.id, {
+      runId: normalizeRoutineRunId(paramValue(request.params.runId)),
+      routineStepId: normalizeRoutineStepId(paramValue(request.params.routineStepId)),
+      expectedUpdatedAt: routineExpectedTimestamp(input.expectedUpdatedAt),
+      actualValues: normalizeRoutineValues(input.actualValues),
+      proposedNextValues: normalizeRoutineValues(input.proposedNextValues),
+      ...(input.notes === undefined ? {} : { notes: input.notes })
+    } as PutRoutineRunStepResultCommand);
+    if (!run) { sendRoutineError(response, 404, "routine_not_found", { reason: "run_not_found" }); return; }
+    logger.info("life_links.routine.run_result_recorded", {
+      msg: "Owner Routine Run Step result recorded", ...requestLogFields(request), routine_id: run.routineId,
+      routine_run_id: run.id, routine_step_id: normalizeRoutineStepId(paramValue(request.params.routineStepId)),
+      routine_run_status: run.status
+    });
+    response.json({ run });
+  });
+
+  app.post("/api/routine-runs/:runId/finalize", requireAuthenticated, async (request: AppRequest, response) => {
+    const runId = normalizeRoutineRunId(paramValue(request.params.runId));
+    const input = readRoutineBody(request, response, logger, ["sessionId", "expectedUpdatedAt"]);
+    if (!input) return;
+    const finalized = await store.finalizeRoutineRun(request.user!.id, {
+      runId,
+      sessionId: normalizeRoutineSessionId(input.sessionId),
+      expectedUpdatedAt: routineExpectedTimestamp(input.expectedUpdatedAt),
+      completedAt: new Date().toISOString()
+    } as FinalizeRoutineRunCommand);
+    if (!finalized) { sendRoutineError(response, 404, "routine_not_found", { reason: "run_not_found" }); return; }
+    const session = await store.getRoutineSession(request.user!.id, finalized.session.id);
+    if (!session) { sendRoutineError(response, 404, "routine_not_found", { reason: "session_not_found" }); return; }
+    logger.info("life_links.routine.run_finalized", {
+      msg: "Owner Routine Run finalized", ...requestLogFields(request), routine_id: finalized.session.routineId,
+      routine_revision_id: finalized.session.routineRevisionId, routine_run_id: finalized.finalizedRun.id,
+      routine_session_id: finalized.session.id, routine_run_status: finalized.finalizedRun.status
+    });
+    response.status(201).json({ run: finalized.finalizedRun, session });
+  });
+
+  app.get("/api/routine-sessions", requireAuthenticated, async (request: AppRequest, response) => {
+    const page = readLifeLinkPageQuery(request, response, logger, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
+    if (!page) return;
+    const routineIdValue = request.query.routineId;
+    if (routineIdValue !== undefined && typeof routineIdValue !== "string") {
+      sendRoutineError(response, 400, "invalid_routine", { reason: "invalid_routine_id" }); return;
+    }
+    const routineId = routineIdValue === undefined ? null : normalizeRoutineId(routineIdValue);
+    const result = await store.listRoutineSessions(request.user!.id, routineId, page);
+    const sessions = await Promise.all(result.items.map((item) => store.getRoutineSession(request.user!.id, item.id)));
+    response.json({ sessions: sessions.filter((item) => item !== null), nextCursor: result.nextCursor, truncated: result.truncated });
+  });
+
+  app.get("/api/routine-sessions/:sessionId", requireAuthenticated, async (request: AppRequest, response) => {
+    const session = await store.getRoutineSession(request.user!.id, normalizeRoutineSessionId(paramValue(request.params.sessionId)));
+    if (!session) { sendRoutineError(response, 404, "routine_not_found", { reason: "session_not_found" }); return; }
+    response.json({ session });
+  });
+
+  app.post("/api/routine-sessions/:sessionId/amendments", requireAuthenticated, async (request: AppRequest, response) => {
+    const sessionId = normalizeRoutineSessionId(paramValue(request.params.sessionId));
+    const input = readRoutineBody(request, response, logger, [
+      "id", "stepResultId", "note", "correctedActualValues", "correctedProposedNextValues"
+    ]);
+    if (!input) return;
+    const amendment = await store.appendRoutineSessionAmendment(request.user!.id, {
+      ...input,
+      id: normalizeRoutineSessionAmendmentId(input.id),
+      sessionId,
+      createdAt: new Date().toISOString()
+    } as unknown as AppendRoutineSessionAmendmentCommand);
+    if (!amendment) { sendRoutineError(response, 404, "routine_not_found", { reason: "session_not_found" }); return; }
+    const session = await store.getRoutineSession(request.user!.id, sessionId);
+    if (!session) { sendRoutineError(response, 404, "routine_not_found", { reason: "session_not_found" }); return; }
+    logger.info("life_links.routine.session_amendment_appended", {
+      msg: "Owner Routine Session Amendment appended", ...requestLogFields(request),
+      routine_session_id: sessionId, routine_session_amendment_id: amendment.id,
+      routine_session_result_id: amendment.stepResultId
+    });
+    response.status(201).json({ amendment, session });
+  });
+
   app.get("/api/links", requireAuthenticated, async (request: AppRequest, response) => {
     response.json({ links: await store.listLinks(request.user!.id) });
   });
@@ -1629,6 +2024,144 @@ function validateObjectFields(
   return false;
 }
 
+function readRoutineBody(
+  request: AppRequest,
+  response: Response,
+  logger: Logger,
+  fields: readonly string[]
+): Record<string, unknown> | undefined {
+  const input = readObjectBody(request, response, logger);
+  return input && validateObjectFields(request, response, logger, input, fields) ? input : undefined;
+}
+
+function readRoutineRevisionMutation(
+  request: AppRequest,
+  response: Response,
+  logger: Logger,
+  fields: readonly string[]
+): (Record<string, unknown> & { expectedUpdatedAt: string }) | undefined {
+  const input = readRoutineBody(request, response, logger, [...fields, "expectedUpdatedAt"]);
+  if (!input) return undefined;
+  const expectedUpdatedAt = validateExpectedUpdatedAt(request, response, logger, input.expectedUpdatedAt);
+  return expectedUpdatedAt === undefined ? undefined : { ...input, expectedUpdatedAt };
+}
+
+function readRoutinePageQuery(
+  request: AppRequest,
+  response: Response,
+  logger: Logger
+): RoutinePageRequest | undefined {
+  const page = readLifeLinkPageQuery(request, response, logger, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
+  if (!page) return undefined;
+  const includeArchivedValue = request.query.includeArchived;
+  if (includeArchivedValue === undefined) return page;
+  if (includeArchivedValue !== "true" && includeArchivedValue !== "false") {
+    rejectValidation(request, response, logger, "include_archived", "invalid_include_archived");
+    return undefined;
+  }
+  return { ...page, includeArchived: includeArchivedValue === "true" };
+}
+
+function readRoutineOccurrencePageQuery(
+  request: AppRequest,
+  response: Response,
+  logger: Logger
+): RoutineOccurrencePageRequest | undefined {
+  const page = readLifeLinkPageQuery(request, response, logger, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
+  if (!page) return undefined;
+  const routineIdValue = request.query.routineId;
+  const startDateValue = request.query.startDate;
+  const endDateValue = request.query.endDate;
+  if (routineIdValue !== undefined && typeof routineIdValue !== "string") {
+    rejectValidation(request, response, logger, "routine_id", "invalid_routine_id"); return undefined;
+  }
+  const startDate = startDateValue === undefined ? undefined : normalizeRoutineLocalDate(startDateValue);
+  const endDate = endDateValue === undefined ? undefined : normalizeRoutineLocalDate(endDateValue);
+  return {
+    ...page,
+    ...(routineIdValue === undefined ? {} : { routineId: normalizeRoutineId(routineIdValue) }),
+    ...(startDate === undefined ? {} : { startDate }),
+    ...(endDate === undefined ? {} : { endDate })
+  };
+}
+
+function routineDefinitionWithStableIds(input: Record<string, unknown>, revisionId: string): Record<string, unknown> {
+  if (!Array.isArray(input.steps) || (input.bindings !== undefined && !Array.isArray(input.bindings))) {
+    throw new LifeLinkDomainError("invalid_routine", "Routine definition Steps and bindings are invalid.", {
+      reason: "invalid_definition"
+    });
+  }
+  const steps = input.steps.map((value, index) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new LifeLinkDomainError("invalid_routine", "Routine Step is invalid.", { reason: "invalid_step" });
+    }
+    const step = value as Record<string, unknown>;
+    return { ...step, id: normalizeRoutineStepId(step.id ?? stableRoutineNestedId("routine-step-", revisionId, "step", index)) };
+  });
+  const bindings = (input.bindings as unknown[] | undefined)?.map((value, index) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new LifeLinkDomainError("invalid_routine", "Routine context binding is invalid.", { reason: "invalid_binding" });
+    }
+    const binding = value as Record<string, unknown>;
+    return {
+      ...binding,
+      id: normalizeRoutineBindingId(binding.id ?? stableRoutineNestedId("routine-binding-", revisionId, "binding", index))
+    };
+  });
+  const { id: _id, revisionId: _revisionId, expectedCurrentRevisionId: _expectedRevision, ...definition } = input;
+  return { ...definition, steps, ...(bindings === undefined ? {} : { bindings }) };
+}
+
+function stableRoutineNestedId(prefix: "routine-step-" | "routine-binding-", revisionId: string, kind: string, index: number): string {
+  const hex = createHash("sha256").update(`${revisionId}\u0000${kind}\u0000${index}`).digest("hex").slice(0, 32).split("");
+  hex[12] = "5";
+  hex[16] = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const uuid = `${hex.slice(0, 8).join("")}-${hex.slice(8, 12).join("")}-${hex.slice(12, 16).join("")}-${hex.slice(16, 20).join("")}-${hex.slice(20).join("")}`;
+  return `${prefix}${uuid}`;
+}
+
+function routineExpectedTimestamp(value: unknown): string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T/.test(value) || !Number.isFinite(Date.parse(value))) {
+    throw new LifeLinkDomainError("invalid_routine", "Routine expected revision timestamp is invalid.", {
+      reason: "invalid_expected_updated_at"
+    });
+  }
+  return value;
+}
+
+async function materializeRoutineScheduleWindow(
+  store: LifeLinksStore,
+  userId: string,
+  schedule: RoutineScheduleRecord
+): Promise<void> {
+  if (!schedule.active) return;
+  const [startDate, endDate] = nearTermRoutineWindow(schedule.rule);
+  if (endDate < startDate) return;
+  await store.materializeRoutineOccurrences(userId, schedule.routineId, { startDate, endDate });
+}
+
+function nearTermRoutineWindow(rule: RoutineScheduleRule): [string, string] {
+  if (rule.kind === "once") return [rule.localDate, rule.localDate];
+  const today = localIsoDate(new Date(), rule.timeZone);
+  const startDate = today < rule.startDate ? rule.startDate : today;
+  const horizon = addRoutineIsoDays(startDate, 60);
+  const endDate = rule.endDate !== null && rule.endDate < horizon ? rule.endDate : horizon;
+  return [startDate, endDate];
+}
+
+function localIsoDate(now: Date, timeZone: string): string {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA-u-ca-iso8601-nu-latn", {
+    timeZone, year: "numeric", month: "2-digit", day: "2-digit"
+  }).formatToParts(now).map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function addRoutineIsoDays(value: string, days: number): string {
+  return new Date(`${value}T00:00:00.000Z`).getTime() + days * 86_400_000 > 0
+    ? new Date(new Date(`${value}T00:00:00.000Z`).getTime() + days * 86_400_000).toISOString().slice(0, 10)
+    : value;
+}
+
 function isValidLifeLinkId(value: string): boolean {
   return value.length > 0 && value.length <= MAX_LIFE_LINK_ID_LENGTH && /^[A-Za-z0-9._:-]+$/.test(value);
 }
@@ -1950,6 +2483,11 @@ const LIFE_LINK_ERROR_MESSAGES: Record<LifeLinkDomainErrorCode, string> = {
   invalid_section: "Section request is invalid.",
   duplicate_section_id: "Section identity is already in use.",
   collection_membership_not_found: "Collection membership was not found.",
+  invalid_routine: "Routine request is invalid.",
+  routine_not_found: "Routine resource was not found.",
+  stale_routine: "Routine state changed after it was read.",
+  routine_conflict: "Routine operation conflicts with its current state.",
+  routine_reference_conflict: "Routine references conflict with owner state.",
   output_limit_exceeded: "Life Link result exceeds the supported limit."
 };
 
@@ -1957,6 +2495,7 @@ function canonicalLifeLinkErrorStatus(code: LifeLinkDomainErrorCode): number {
   if (["life_link_not_found", "qr_not_found", "collection_not_found", "section_not_found", "collection_membership_not_found"].includes(code)) {
     return 404;
   }
+  if (code === "routine_not_found") return 404;
   if (
     code === "duplicate_life_link_id" ||
     code === "invalid_parent" ||
@@ -1966,11 +2505,37 @@ function canonicalLifeLinkErrorStatus(code: LifeLinkDomainErrorCode): number {
     code === "life_link_already_tagged" ||
     code === "stale_collection" ||
     code === "duplicate_collection_id" ||
-    code === "duplicate_section_id"
+    code === "duplicate_section_id" ||
+    code === "stale_routine" ||
+    code === "routine_conflict" ||
+    code === "routine_reference_conflict"
   ) {
     return 409;
   }
   return 400;
+}
+
+type RoutinePublicErrorCode =
+  | "invalid_routine"
+  | "routine_not_found"
+  | "stale_routine"
+  | "routine_conflict"
+  | "routine_reference_conflict";
+
+function sendRoutineError(
+  response: Response,
+  status: number,
+  code: RoutinePublicErrorCode,
+  options: { retryable?: boolean; reason?: string } = {}
+): void {
+  sendCanonicalLifeLinkError(response, status, code, {
+    retryable: code === "stale_routine" ? true : options.retryable,
+    reason: options.reason
+  });
+}
+
+function isRoutineRoute(pathname: string): boolean {
+  return /^\/api\/(?:routines(?:\/|$)|routine-(?:groups|activities|schedules|occurrences|runs|sessions)(?:\/|$))/.test(pathname);
 }
 
 function sendCanonicalLifeLinkError(
@@ -2004,7 +2569,7 @@ function handleLifeLinkDomainError(
   }
 
   const isCanonicalRoute = request.path === "/api/life-links" || request.path.startsWith("/api/life-links/") ||
-    request.path === "/api/collections" || request.path.startsWith("/api/collections/");
+    request.path === "/api/collections" || request.path.startsWith("/api/collections/") || isRoutineRoute(request.path);
   const isAttachClaim =
     request.method === "POST" &&
     /^\/api\/qr\/[^/]+\/claim$/.test(request.path) &&
@@ -2017,8 +2582,8 @@ function handleLifeLinkDomainError(
   }
 
   const status = canonicalLifeLinkErrorStatus(error.code);
-  logger.warn("life_links.life_link.request_rejected", {
-    msg: "Canonical Life Link request rejected",
+  logger.warn(isRoutineRoute(request.path) ? "life_links.routine.request_rejected" : "life_links.life_link.request_rejected", {
+    msg: isRoutineRoute(request.path) ? "Owner Routine request rejected" : "Canonical Life Link request rejected",
     ...requestLogFields(request),
     ...routeLogFields(request.path),
     error_code: error.code,
@@ -2048,6 +2613,10 @@ function rejectValidation(request: AppRequest, response: Response, logger: Logge
   }
   if (request.path === "/api/collections" || request.path.startsWith("/api/collections/")) {
     sendCanonicalLifeLinkError(response, 400, "invalid_collection", { reason: error });
+    return;
+  }
+  if (isRoutineRoute(request.path)) {
+    sendRoutineError(response, 400, "invalid_routine", { reason: error });
     return;
   }
   response.status(400).json({ error });

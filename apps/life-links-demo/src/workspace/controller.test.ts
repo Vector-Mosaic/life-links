@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createLinkBodyDocFromPlainText,
+  createCanonicalActivity,
+  createCanonicalRoutine,
+  createCanonicalRoutineGroup,
+  createCanonicalRoutineSchedule,
   summarizeLifeLink,
   type CollectionRecord,
   type CollectionSectionRecord,
@@ -1454,6 +1458,408 @@ describe("LifeLinksWorkspaceController", () => {
   });
 });
 
+describe("Routine workspace controller contract", () => {
+  beforeEach(() => { vi.stubGlobal("window", { localStorage: new MemoryStorage() }); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  const createdAt = "2026-09-01T12:00:00.000Z";
+  const fixture = (suffix: number, title = "Morning reset") => {
+    const uuid = `00000000-0000-4000-8000-${String(suffix).padStart(12, "0")}`;
+    const group = createCanonicalRoutineGroup({
+      id: `routine-group-${uuid}`, ownerId: owner.id, title: `Home ${suffix}`, createdAt
+    });
+    const activity = createCanonicalActivity({
+      id: `activity-${uuid}`, ownerId: owner.id, title: `Prepare ${suffix}`, createdAt
+    });
+    const routine = createCanonicalRoutine({
+      id: `routine-${uuid}`, revisionId: `routine-revision-${uuid}`, ownerId: owner.id,
+      groupId: group.id, title, purpose: `Purpose ${suffix}`,
+      steps: [{
+        id: `routine-step-${uuid}`, activityId: activity.id, activityTitle: activity.title, position: 0,
+        plannedValues: [{ key: "ready", label: "Ready", kind: "boolean", value: true }]
+      }], createdAt
+    });
+    const summary = {
+      ...routine.routine,
+      revisionNumber: routine.currentRevision.revision.revisionNumber,
+      title: routine.currentRevision.revision.title,
+      purpose: routine.currentRevision.revision.purpose
+    };
+    const run = {
+      id: `routine-run-${uuid}`, ownerId: owner.id, routineId: routine.routine.id,
+      routineRevisionId: routine.currentRevision.revision.id, occurrenceId: null, status: "active" as const,
+      contextSnapshot: [], stepResults: [{
+        routineStepId: routine.currentRevision.steps[0].id,
+        actualValues: [{ key: "ready", label: "Ready", kind: "boolean" as const, value: false }],
+        proposedNextValues: [{ key: "ready", label: "Ready", kind: "boolean" as const, value: true }],
+        notes: "Keep the proposed default separate."
+      }], startedAt: createdAt, updatedAt: createdAt
+    };
+    const schedule = createCanonicalRoutineSchedule({
+      id: `routine-schedule-${uuid}`, ownerId: owner.id, routineId: routine.routine.id,
+      routineRevisionId: routine.currentRevision.revision.id,
+      rule: { kind: "once", localDate: "2026-09-01", localTime: "08:00", timeZone: "UTC" },
+      createdAt
+    });
+    const occurrence = {
+      id: `routine-occurrence-${uuid}`, ownerId: owner.id, scheduleId: schedule.id,
+      scheduleRevision: 1, routineId: routine.routine.id, routineRevisionId: routine.currentRevision.revision.id,
+      localDate: "2026-09-01", plannedFor: createdAt, status: "planned" as const, createdAt, updatedAt: createdAt
+    };
+    const session = {
+      session: {
+        id: `routine-session-${uuid}`, ownerId: owner.id, routineId: routine.routine.id,
+        routineRevisionId: routine.currentRevision.revision.id, runId: run.id, occurrenceId: null,
+        contextSnapshot: [], startedAt: createdAt, completedAt: createdAt
+      },
+      stepResults: [], sessionAmendments: []
+    };
+    return { group, activity, routine, summary, run, schedule, occurrence, session };
+  };
+
+  it("loads owner definitions/history, preserves Run result channels, and clears the nested slice on logout", async () => {
+    const { group, activity, routine, summary, run } = fixture(1);
+    const api = fakeApi();
+    api.listRoutineGroups.mockResolvedValue({ routineGroups: [group], nextCursor: null, truncated: false });
+    api.listRoutineActivities.mockResolvedValue({ activities: [activity], nextCursor: null, truncated: false });
+    api.listRoutines.mockResolvedValue({ routines: [summary], nextCursor: null, truncated: false });
+    api.getRoutine.mockResolvedValue({ routine });
+    api.startRoutineRun.mockResolvedValue({ run });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    await controller.loadRoutineWorkspace();
+    expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+      groups: [group], activities: [activity], routines: [summary], loading: false, error: ""
+    });
+    await controller.selectRoutine(routine.routine.id);
+    await controller.startRoutineRun(routine.routine.id, { id: run.id });
+    expect(controller.getSnapshot().routineWorkspace.activeRun?.stepResults[0]).toMatchObject({
+      actualValues: [{ value: false }], proposedNextValues: [{ value: true }]
+    });
+    await controller.logout();
+    expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+      groups: [], activities: [], routines: [], activeRun: null, sessions: []
+    });
+    controller.dispose();
+  });
+
+  it.each(["start", "resume"] as const)(
+    "does not restore a finalized Run as active when %s replays after finalization",
+    async (replay) => {
+      const current = fixture(replay === "start" ? 13 : 14, `${replay} replay`);
+      const finalizedRun = { ...current.run, status: "finalized" as const };
+      const api = fakeApi();
+      api.getRoutine.mockResolvedValue({ routine: current.routine });
+      api.startRoutineRun.mockResolvedValueOnce({ run: current.run });
+      api.finalizeRoutineRun.mockResolvedValue({ run: finalizedRun, session: current.session });
+      const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+      await controller.start();
+      await controller.selectRoutine(current.routine.routine.id);
+      await controller.startRoutineRun(current.routine.routine.id, { id: current.run.id });
+      await controller.finalizeRoutineRun(current.run.id, {
+        sessionId: current.session.session.id, expectedUpdatedAt: current.run.updatedAt
+      });
+      expect(controller.getSnapshot().routineWorkspace.activeRun).toBeNull();
+
+      if (replay === "start") {
+        api.startRoutineRun.mockResolvedValueOnce({ run: finalizedRun });
+        await controller.startRoutineRun(current.routine.routine.id, { id: current.run.id });
+      } else {
+        api.getRoutineRun.mockResolvedValueOnce({ run: finalizedRun });
+        await controller.resumeRoutineRun(current.run.id);
+      }
+
+      expect(controller.getSnapshot().routineWorkspace.activeRun).toBeNull();
+      controller.dispose();
+    }
+  );
+
+  it("refuses a delayed Routine mutation response after logout and account switch", async () => {
+    const delayed = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["createRoutineActivity"]>>>();
+    const old = fixture(2);
+    const nextOwner = { ...owner, id: "owner-2", email: "owner-2@example.test" };
+    const api = fakeApi();
+    api.createRoutineActivity.mockImplementationOnce(() => delayed.promise);
+    api.login.mockResolvedValueOnce({
+      user: nextOwner, qrBaseUrl: "https://example.test", agentConnection: disconnectedAgentConnection
+    });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    const pending = controller.createRoutineActivity({ id: old.activity.id, title: old.activity.title });
+    await vi.waitFor(() => expect(api.createRoutineActivity).toHaveBeenCalledOnce());
+    await controller.logout();
+    await controller.login(nextOwner.email, "test-password");
+    delayed.resolve({ activity: old.activity });
+    await pending;
+    expect(controller.getSnapshot().currentUser).toEqual(nextOwner);
+    expect(controller.getSnapshot().routineWorkspace.activities).toEqual([]);
+    controller.dispose();
+  });
+
+  it.each(["start", "resume", "result", "finalize"] as const)(
+    "does not let a delayed %s response replace a newly selected Routine or Run",
+    async (operation) => {
+      const first = fixture(7, "Selected first");
+      const second = fixture(8, "Selected second");
+      const api = fakeApi();
+      api.getRoutine.mockImplementation(async (routineId) => ({
+        routine: routineId === first.routine.routine.id ? first.routine : second.routine
+      }));
+      api.getActiveRoutineRun.mockImplementation(async (routineId) => ({
+        run: routineId === first.routine.routine.id ? first.run : second.run
+      }));
+      const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+      await controller.start();
+      await controller.selectRoutine(first.routine.routine.id);
+
+      let pending: Promise<void>;
+      let settle: () => void;
+      if (operation === "start") {
+        const response = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["startRoutineRun"]>>>();
+        api.startRoutineRun.mockImplementationOnce(() => response.promise);
+        pending = controller.startRoutineRun(first.routine.routine.id, { id: first.run.id });
+        settle = () => response.resolve({ run: first.run });
+      } else if (operation === "resume") {
+        const response = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["getRoutineRun"]>>>();
+        api.getRoutineRun.mockImplementationOnce(() => response.promise);
+        pending = controller.resumeRoutineRun(first.run.id);
+        settle = () => response.resolve({ run: first.run });
+      } else if (operation === "result") {
+        const response = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["putRoutineRunStepResult"]>>>();
+        api.putRoutineRunStepResult.mockImplementationOnce(() => response.promise);
+        pending = controller.putRoutineRunStepResult(first.run.id, first.routine.currentRevision.steps[0].id, {
+          expectedUpdatedAt: first.run.updatedAt,
+          actualValues: first.run.stepResults[0].actualValues,
+          proposedNextValues: first.run.stepResults[0].proposedNextValues
+        });
+        settle = () => response.resolve({ run: first.run });
+      } else {
+        const response = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["finalizeRoutineRun"]>>>();
+        api.finalizeRoutineRun.mockImplementationOnce(() => response.promise);
+        pending = controller.finalizeRoutineRun(first.run.id, {
+          sessionId: first.session.session.id,
+          expectedUpdatedAt: first.run.updatedAt
+        });
+        settle = () => response.resolve({ run: { ...first.run, status: "finalized" }, session: first.session });
+      }
+      await vi.waitFor(() => {
+        const method = operation === "start" ? api.startRoutineRun : operation === "resume" ? api.getRoutineRun :
+          operation === "result" ? api.putRoutineRunStepResult : api.finalizeRoutineRun;
+        expect(method).toHaveBeenCalledOnce();
+      });
+      await controller.selectRoutine(second.routine.routine.id);
+      settle();
+      await pending;
+      expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+        selectedRoutine: second.routine,
+        activeRun: second.run
+      });
+      expect(controller.getSnapshot().routineWorkspace.selectedSession).toBeNull();
+      controller.dispose();
+    }
+  );
+
+  it("keeps the newest same-owner Routine workspace, selection, occurrence, and Session reads", async () => {
+    const first = fixture(3, "First Routine");
+    const second = fixture(4, "Second Routine");
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+
+    const firstRoutine = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["getRoutine"]>>>();
+    const secondRoutine = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["getRoutine"]>>>();
+    api.getRoutine.mockImplementation((routineId) => routineId === first.routine.routine.id ? firstRoutine.promise : secondRoutine.promise);
+    api.getActiveRoutineRun.mockImplementation(async (routineId) => ({
+      run: routineId === first.routine.routine.id ? first.run : second.run
+    }));
+    const selectingFirst = controller.selectRoutine(first.routine.routine.id);
+    const selectingSecond = controller.selectRoutine(second.routine.routine.id);
+    secondRoutine.resolve({ routine: second.routine });
+    await selectingSecond;
+    firstRoutine.resolve({ routine: first.routine });
+    await selectingFirst;
+    expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+      selectedRoutine: second.routine,
+      activeRun: second.run
+    });
+
+    const firstOccurrences = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listRoutineOccurrences"]>>>();
+    const secondOccurrences = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listRoutineOccurrences"]>>>();
+    api.listRoutineOccurrences.mockImplementationOnce(() => firstOccurrences.promise).mockImplementationOnce(() => secondOccurrences.promise);
+    const loadingFirstOccurrences = controller.loadRoutineOccurrences({ routineId: first.routine.routine.id });
+    const loadingSecondOccurrences = controller.loadRoutineOccurrences({ routineId: second.routine.routine.id });
+    secondOccurrences.resolve({ occurrences: [second.occurrence], nextCursor: null, truncated: false });
+    await loadingSecondOccurrences;
+    firstOccurrences.resolve({ occurrences: [first.occurrence], nextCursor: null, truncated: false });
+    await loadingFirstOccurrences;
+    expect(controller.getSnapshot().routineWorkspace.occurrences).toEqual([second.occurrence]);
+
+    const firstSession = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["getRoutineSession"]>>>();
+    const secondSession = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["getRoutineSession"]>>>();
+    api.getRoutineSession.mockImplementation((sessionId) => sessionId === first.session.session.id ? firstSession.promise : secondSession.promise);
+    const selectingFirstSession = controller.selectRoutineSession(first.session.session.id);
+    const selectingSecondSession = controller.selectRoutineSession(second.session.session.id);
+    secondSession.resolve({ session: second.session });
+    await selectingSecondSession;
+    firstSession.resolve({ session: first.session });
+    await selectingFirstSession;
+    expect(controller.getSnapshot().routineWorkspace.selectedSession).toEqual(second.session);
+
+    const firstWorkspace = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listRoutines"]>>>();
+    const secondWorkspace = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listRoutines"]>>>();
+    api.listRoutines.mockImplementationOnce(() => firstWorkspace.promise).mockImplementationOnce(() => secondWorkspace.promise);
+    api.listRoutineOccurrences.mockResolvedValue({ occurrences: [], nextCursor: null, truncated: false });
+    api.listRoutineSessions.mockResolvedValue({ sessions: [], nextCursor: null, truncated: false });
+    const loadingFirstWorkspace = controller.loadRoutineWorkspace();
+    const loadingSecondWorkspace = controller.loadRoutineWorkspace();
+    secondWorkspace.resolve({ routines: [second.summary], nextCursor: null, truncated: false });
+    await loadingSecondWorkspace;
+    firstWorkspace.resolve({ routines: [first.summary], nextCursor: null, truncated: false });
+    await loadingFirstWorkspace;
+    expect(controller.getSnapshot().routineWorkspace.routines).toEqual([second.summary]);
+    controller.dispose();
+  });
+
+  it("reloads archived definitions and consumes every Routine cursor without replacing earlier pages", async () => {
+    const first = fixture(5, "First page");
+    const second = fixture(6, "Second page");
+    const api = fakeApi();
+    api.listRoutineGroups.mockResolvedValueOnce({ routineGroups: [first.group], nextCursor: "groups-next", truncated: true });
+    api.listRoutineActivities.mockResolvedValueOnce({ activities: [first.activity], nextCursor: "activities-next", truncated: true });
+    api.listRoutines.mockResolvedValueOnce({ routines: [first.summary], nextCursor: "routines-next", truncated: true });
+    api.listRoutineOccurrences.mockResolvedValueOnce({ occurrences: [first.occurrence], nextCursor: "occurrences-next", truncated: true });
+    api.listRoutineSessions.mockResolvedValueOnce({ sessions: [first.session], nextCursor: "sessions-next", truncated: true });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    await controller.loadRoutineWorkspace({ includeArchived: true });
+    expect(api.listRoutineGroups).toHaveBeenLastCalledWith({ includeArchived: true, signal: undefined });
+    expect(api.listRoutineActivities).toHaveBeenLastCalledWith({ includeArchived: true, signal: undefined });
+    expect(api.listRoutines).toHaveBeenLastCalledWith({ includeArchived: true, signal: undefined });
+
+    api.listRoutineGroups.mockResolvedValueOnce({ routineGroups: [second.group], nextCursor: null, truncated: false });
+    api.listRoutineActivities.mockResolvedValueOnce({ activities: [second.activity], nextCursor: null, truncated: false });
+    api.listRoutines.mockResolvedValueOnce({ routines: [second.summary], nextCursor: null, truncated: false });
+    await Promise.all([
+      controller.loadMoreRoutineGroups(), controller.loadMoreRoutineActivities(), controller.loadMoreRoutines()
+    ]);
+    expect(api.listRoutineGroups).toHaveBeenLastCalledWith({ cursor: "groups-next", includeArchived: true, signal: undefined });
+    expect(api.listRoutineActivities).toHaveBeenLastCalledWith({ cursor: "activities-next", includeArchived: true, signal: undefined });
+    expect(api.listRoutines).toHaveBeenLastCalledWith({ cursor: "routines-next", includeArchived: true, signal: undefined });
+
+    api.listRoutineOccurrences.mockResolvedValueOnce({ occurrences: [second.occurrence], nextCursor: null, truncated: false });
+    api.listRoutineSessions.mockResolvedValueOnce({ sessions: [second.session], nextCursor: null, truncated: false });
+    await controller.loadRoutineOccurrences({ cursor: "occurrences-next" });
+    await controller.loadRoutineSessions({ cursor: "sessions-next" });
+    expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+      groups: [first.group, second.group],
+      activities: [first.activity, second.activity],
+      routines: [first.summary, second.summary],
+      occurrences: [first.occurrence, second.occurrence],
+      sessions: [first.session, second.session],
+      includeArchived: true
+    });
+    controller.dispose();
+  });
+
+  it.each(["activity", "routine"] as const)(
+    "reloads selected planning state after archiving a Routine %s",
+    async (target) => {
+      const current = fixture(target === "activity" ? 9 : 10, `Archive ${target}`);
+      const inactiveSchedule = {
+        ...current.schedule, active: false, revision: current.schedule.revision + 1,
+        updatedAt: "2026-09-01T12:01:00.000Z"
+      };
+      const canceledOccurrence = {
+        ...current.occurrence, status: "canceled" as const, updatedAt: "2026-09-01T12:01:00.000Z"
+      };
+      const api = fakeApi();
+      api.getRoutine.mockResolvedValue({ routine: current.routine });
+      api.listRoutineSchedules
+        .mockResolvedValueOnce({ schedules: [current.schedule], nextCursor: null, truncated: false })
+        .mockResolvedValueOnce({ schedules: [inactiveSchedule], nextCursor: null, truncated: false });
+      api.listRoutineOccurrences
+        .mockResolvedValueOnce({ occurrences: [current.occurrence], nextCursor: null, truncated: false })
+        .mockResolvedValueOnce({ occurrences: [canceledOccurrence], nextCursor: null, truncated: false });
+      api.updateRoutineActivity.mockResolvedValue({
+        activity: { ...current.activity, archivedAt: "2026-09-01T12:01:00.000Z", updatedAt: "2026-09-01T12:01:00.000Z" }
+      });
+      api.updateRoutine.mockResolvedValue({
+        routine: {
+          ...current.routine,
+          routine: {
+            ...current.routine.routine, archivedAt: "2026-09-01T12:01:00.000Z",
+            updatedAt: "2026-09-01T12:01:00.000Z"
+          }
+        }
+      });
+      const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+      await controller.start();
+      await controller.selectRoutine(current.routine.routine.id);
+      await controller.loadRoutineOccurrences({ routineId: current.routine.routine.id });
+
+      if (target === "activity") {
+        await controller.updateRoutineActivity(current.activity.id, current.activity.updatedAt, {
+          archivedAt: "2026-09-01T12:01:00.000Z"
+        });
+      } else {
+        await controller.updateRoutine(current.routine.routine.id, current.routine.routine.updatedAt, {
+          archivedAt: "2026-09-01T12:01:00.000Z"
+        });
+      }
+
+      expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+        schedules: [inactiveSchedule], occurrences: [canceledOccurrence]
+      });
+      expect(api.listRoutineSchedules).toHaveBeenCalledTimes(2);
+      expect(api.listRoutineOccurrences).toHaveBeenCalledTimes(2);
+      controller.dispose();
+    }
+  );
+
+  it("replaces selected occurrences after schedule creation and reconciliation", async () => {
+    const current = fixture(11, "Schedule reconciliation");
+    const createdOccurrence = {
+      ...current.occurrence,
+      id: current.occurrence.id.replace(/11$/, "12"),
+      localDate: "2026-09-02",
+      plannedFor: "2026-09-02T08:00:00.000Z"
+    };
+    const reconciledOccurrence = {
+      ...createdOccurrence, status: "canceled" as const, updatedAt: "2026-09-01T12:02:00.000Z"
+    };
+    const revisedSchedule = {
+      ...current.schedule, active: false, revision: 2, updatedAt: "2026-09-01T12:02:00.000Z"
+    };
+    const api = fakeApi();
+    api.getRoutine.mockResolvedValue({ routine: current.routine });
+    api.listRoutineSchedules.mockResolvedValue({ schedules: [], nextCursor: null, truncated: false });
+    api.listRoutineOccurrences
+      .mockResolvedValueOnce({ occurrences: [current.occurrence], nextCursor: "stale-next", truncated: true })
+      .mockResolvedValueOnce({ occurrences: [createdOccurrence], nextCursor: null, truncated: false })
+      .mockResolvedValueOnce({ occurrences: [reconciledOccurrence], nextCursor: null, truncated: false });
+    api.createRoutineSchedule.mockResolvedValue({ schedule: current.schedule });
+    api.updateRoutineSchedule.mockResolvedValue({ schedule: revisedSchedule });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    await controller.selectRoutine(current.routine.routine.id);
+    await controller.loadRoutineOccurrences({ routineId: current.routine.routine.id });
+
+    await controller.createRoutineSchedule(current.routine.routine.id, {
+      id: current.schedule.id, rule: current.schedule.rule
+    });
+    expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+      schedules: [current.schedule], occurrences: [createdOccurrence], occurrencesNextCursor: null
+    });
+
+    await controller.updateRoutineSchedule(current.schedule.id, current.schedule.updatedAt, { active: false });
+    expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+      schedules: [revisedSchedule], occurrences: [reconciledOccurrence], occurrencesNextCursor: null
+    });
+    expect(api.listRoutineOccurrences).toHaveBeenCalledTimes(3);
+    controller.dispose();
+  });
+});
+
 class FakeRoute implements WorkspaceBrowserRoute {
   private listeners = new Set<() => void>();
   readonly pushes: string[] = [];
@@ -1505,6 +1911,29 @@ function fakeApi() {
     replaceCollectionSectionAssignments: vi.fn<LifeLinksWorkspaceApi["replaceCollectionSectionAssignments"]>(async () => ({ collection })),
     setLifeLinkQrBinding: vi.fn<LifeLinksWorkspaceApi["setLifeLinkQrBinding"]>(async () => ({ lifeLink: canonicalLink })),
     clearLifeLinkQrBinding: vi.fn<LifeLinksWorkspaceApi["clearLifeLinkQrBinding"]>(async () => ({ lifeLink: { ...canonicalLink, qrId: null } })),
+    appendRoutineSessionAmendment: vi.fn<LifeLinksWorkspaceApi["appendRoutineSessionAmendment"]>(),
+    createRoutine: vi.fn<LifeLinksWorkspaceApi["createRoutine"]>(),
+    createRoutineActivity: vi.fn<LifeLinksWorkspaceApi["createRoutineActivity"]>(),
+    createRoutineGroup: vi.fn<LifeLinksWorkspaceApi["createRoutineGroup"]>(),
+    createRoutineSchedule: vi.fn<LifeLinksWorkspaceApi["createRoutineSchedule"]>(),
+    finalizeRoutineRun: vi.fn<LifeLinksWorkspaceApi["finalizeRoutineRun"]>(),
+    getRoutine: vi.fn<LifeLinksWorkspaceApi["getRoutine"]>(),
+    getRoutineRun: vi.fn<LifeLinksWorkspaceApi["getRoutineRun"]>(),
+    getRoutineSession: vi.fn<LifeLinksWorkspaceApi["getRoutineSession"]>(),
+    getActiveRoutineRun: vi.fn<LifeLinksWorkspaceApi["getActiveRoutineRun"]>(async () => ({ run: null })),
+    listRoutineActivities: vi.fn<LifeLinksWorkspaceApi["listRoutineActivities"]>(async () => ({ activities: [], nextCursor: null, truncated: false })),
+    listRoutineGroups: vi.fn<LifeLinksWorkspaceApi["listRoutineGroups"]>(async () => ({ routineGroups: [], nextCursor: null, truncated: false })),
+    listRoutineOccurrences: vi.fn<LifeLinksWorkspaceApi["listRoutineOccurrences"]>(async () => ({ occurrences: [], nextCursor: null, truncated: false })),
+    listRoutines: vi.fn<LifeLinksWorkspaceApi["listRoutines"]>(async () => ({ routines: [], nextCursor: null, truncated: false })),
+    listRoutineSchedules: vi.fn<LifeLinksWorkspaceApi["listRoutineSchedules"]>(async () => ({ schedules: [], nextCursor: null, truncated: false })),
+    listRoutineSessions: vi.fn<LifeLinksWorkspaceApi["listRoutineSessions"]>(async () => ({ sessions: [], nextCursor: null, truncated: false })),
+    putRoutineRunStepResult: vi.fn<LifeLinksWorkspaceApi["putRoutineRunStepResult"]>(),
+    reviseRoutine: vi.fn<LifeLinksWorkspaceApi["reviseRoutine"]>(),
+    startRoutineRun: vi.fn<LifeLinksWorkspaceApi["startRoutineRun"]>(),
+    updateRoutine: vi.fn<LifeLinksWorkspaceApi["updateRoutine"]>(),
+    updateRoutineActivity: vi.fn<LifeLinksWorkspaceApi["updateRoutineActivity"]>(),
+    updateRoutineGroup: vi.fn<LifeLinksWorkspaceApi["updateRoutineGroup"]>(),
+    updateRoutineSchedule: vi.fn<LifeLinksWorkspaceApi["updateRoutineSchedule"]>(),
     getConfig: vi.fn(async () => ({ qrBaseUrl: "https://example.test", maxBatchCount: 10000 })),
     getMe: vi.fn(async () => ({
       user: owner,

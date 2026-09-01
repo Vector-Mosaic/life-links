@@ -851,6 +851,11 @@ export const LIFE_LINK_DOMAIN_ERROR_CODES = [
   "invalid_section",
   "duplicate_section_id",
   "collection_membership_not_found",
+  "invalid_routine",
+  "routine_not_found",
+  "stale_routine",
+  "routine_conflict",
+  "routine_reference_conflict",
   "output_limit_exceeded"
 ] as const;
 
@@ -1667,3 +1672,4 @@ function compareCanonicalText(left: string, right: string): number {
 
 export * from "./competitionFixture.js";
 export * from "./attachments.js";
+export * from "./routines.js";

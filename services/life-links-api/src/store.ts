@@ -44,6 +44,37 @@ import {
   type UpdateCollectionSectionCommand,
   type UpdateLifeLinkCommand,
   type UserRecord,
+  type ActivityRecord,
+  type AppendRoutineSessionAmendmentCommand,
+  type BuiltRoutineSession,
+  type CanonicalRoutineCreation,
+  type CreateActivityCommand,
+  type CreateRoutineCommand,
+  type CreateRoutineGroupCommand,
+  type CreateRoutineScheduleCommand,
+  type PutRoutineRunStepResultCommand,
+  type ReviseRoutineCommand,
+  type RoutineContextBindingRecord,
+  type RoutineContextSnapshot,
+  type RoutineGroupRecord,
+  type RoutineOccurrenceRecord,
+  type RoutineRecord,
+  type RoutineRevisionRecord,
+  type RoutineRevisionSnapshot,
+  type RoutineRunRecord,
+  type RoutineScheduleRecord,
+  type RoutineSummaryRecord,
+  type RoutineSessionAmendmentRecord,
+  type RoutineSessionProjection,
+  type RoutineSessionRecord,
+  type RoutineSessionStepResultRecord,
+  type RoutineStepRecord,
+  type StartRoutineRunCommand,
+  type UpdateActivityCommand,
+  type UpdateRoutineCommand,
+  type UpdateRoutineGroupCommand,
+  type UpdateRoutineScheduleCommand,
+  type FinalizeRoutineRunCommand,
   LINK_BODY_DOC_VERSION,
   MAX_MEDIA_PER_LINK,
   assertLifeLinkMediaBytes,
@@ -58,6 +89,25 @@ import {
   createCanonicalLifeLink,
   createCanonicalCollection,
   createCanonicalCollectionSection,
+  createCanonicalActivity,
+  createCanonicalRoutine,
+  createCanonicalRoutineGroup,
+  createCanonicalRoutineOccurrence,
+  createCanonicalRoutineRevision,
+  createCanonicalRoutineRun,
+  createCanonicalRoutineSchedule,
+  createCanonicalRoutineSessionAmendment,
+  applyActivityPatch,
+  applyRoutineGroupPatch,
+  applyRoutineRunStepResult,
+  applyRoutineSchedulePatch,
+  applyRoutinePatch,
+  buildRoutineSessionFromRun,
+  routineScheduleMatchesLocalDate,
+  resolveRoutineSchedulePlannedFor,
+  listRoutineScheduleLocalDates,
+  projectRoutineSessionWithAmendments,
+  reviseCanonicalRoutine,
   createCompetitionFixtureData,
   createDemoSeedData,
   createLinkBodyDocFromPlainText,
@@ -164,7 +214,28 @@ export type CompetitionFixtureCounts = {
   batches: number;
   qrCodes: number;
   claimEvents: number;
+  routineGroups: number;
+  routineActivities: number;
+  routines: number;
+  routineRevisions: number;
+  routineSteps: number;
+  routineContextBindings: number;
+  routineSchedules: number;
+  routineOccurrences: number;
+  routineRuns: number;
+  routineSessions: number;
+  routineSessionStepResults: number;
+  routineSessionAmendments: number;
 };
+
+export type RoutinePageRequest = LifeLinkPageRequest & { includeArchived?: boolean };
+export type RoutineDetail = { routine: RoutineRecord; currentRevision: RoutineRevisionSnapshot };
+export type RoutineOccurrencePageRequest = LifeLinkPageRequest & {
+  routineId?: string;
+  startDate?: string;
+  endDate?: string;
+};
+export type MaterializeRoutineOccurrencesInput = { startDate: string; endDate: string };
 
 export type CompetitionFixtureResetReport = {
   profile: string;
@@ -228,6 +299,35 @@ export type LifeLinksStore = {
   replaceCollectionSectionAssignments(userId: string, command: ReplaceCollectionSectionAssignmentsCommand): Promise<CollectionRecord | null>;
   listLifeLinkCollectionMemberships(userId: string, lifeLinkId: string, page?: LifeLinkPageRequest): Promise<LifeLinkPage<LifeLinkCollectionMembership> | null>;
 
+  listRoutineGroups(userId: string, page?: RoutinePageRequest): Promise<LifeLinkPage<RoutineGroupRecord>>;
+  getRoutineGroup(userId: string, groupId: string): Promise<RoutineGroupRecord | null>;
+  createRoutineGroup(command: CreateRoutineGroupCommand): Promise<RoutineGroupRecord>;
+  updateRoutineGroup(userId: string, command: UpdateRoutineGroupCommand): Promise<RoutineGroupRecord | null>;
+  listActivities(userId: string, page?: RoutinePageRequest): Promise<LifeLinkPage<ActivityRecord>>;
+  getActivity(userId: string, activityId: string): Promise<ActivityRecord | null>;
+  createActivity(command: CreateActivityCommand): Promise<ActivityRecord>;
+  updateActivity(userId: string, command: UpdateActivityCommand): Promise<ActivityRecord | null>;
+  listRoutines(userId: string, page?: RoutinePageRequest): Promise<LifeLinkPage<RoutineSummaryRecord>>;
+  getRoutine(userId: string, routineId: string): Promise<RoutineDetail | null>;
+  createRoutine(command: CreateRoutineCommand): Promise<CanonicalRoutineCreation>;
+  updateRoutine(userId: string, command: UpdateRoutineCommand): Promise<RoutineRecord | null>;
+  reviseRoutine(userId: string, command: ReviseRoutineCommand): Promise<RoutineRevisionSnapshot | null>;
+  getRoutineRevision(userId: string, routineId: string, revisionId: string): Promise<RoutineRevisionSnapshot | null>;
+  listRoutineSchedules(userId: string, routineId: string, page?: LifeLinkPageRequest): Promise<LifeLinkPage<RoutineScheduleRecord> | null>;
+  createRoutineSchedule(command: CreateRoutineScheduleCommand): Promise<RoutineScheduleRecord>;
+  updateRoutineSchedule(userId: string, command: UpdateRoutineScheduleCommand): Promise<RoutineScheduleRecord | null>;
+  materializeRoutineOccurrences(userId: string, routineId: string, input: MaterializeRoutineOccurrencesInput): Promise<RoutineOccurrenceRecord[]>;
+  listRoutineOccurrences(userId: string, page?: RoutineOccurrencePageRequest): Promise<LifeLinkPage<RoutineOccurrenceRecord>>;
+  getRoutineOccurrence(userId: string, occurrenceId: string): Promise<RoutineOccurrenceRecord | null>;
+  startRoutineRun(userId: string, command: StartRoutineRunCommand): Promise<RoutineRunRecord | null>;
+  getRoutineRun(userId: string, runId: string): Promise<RoutineRunRecord | null>;
+  getActiveRoutineRun(userId: string, routineId: string): Promise<RoutineRunRecord | null>;
+  putRoutineRunStepResult(userId: string, command: PutRoutineRunStepResultCommand): Promise<RoutineRunRecord | null>;
+  finalizeRoutineRun(userId: string, command: FinalizeRoutineRunCommand): Promise<BuiltRoutineSession | null>;
+  listRoutineSessions(userId: string, routineId: string | null, page?: LifeLinkPageRequest): Promise<LifeLinkPage<RoutineSessionRecord>>;
+  getRoutineSession(userId: string, sessionId: string): Promise<RoutineSessionProjection | null>;
+  appendRoutineSessionAmendment(userId: string, command: AppendRoutineSessionAmendmentCommand): Promise<RoutineSessionAmendmentRecord | null>;
+
   listLinks(userId: string): Promise<LinkRecord[]>;
   createQrBatch(userId: string, count: number, qrBaseUrl: string): Promise<BatchCreateResult>;
   listBatchLinks(userId: string, batchId: string): Promise<LinkRecord[]>;
@@ -275,6 +375,18 @@ type InMemoryStoreSnapshot = {
   batches: Map<string, ExportBatchRecord>;
   batchQrIds: Map<string, string[]>;
   claimEvents: Map<string, ClaimEventRecord>;
+  routineGroups: Map<string, RoutineGroupRecord>;
+  routineActivities: Map<string, ActivityRecord>;
+  routines: Map<string, RoutineRecord>;
+  routineRevisions: Map<string, RoutineRevisionRecord>;
+  routineSteps: Map<string, RoutineStepRecord>;
+  routineContextBindings: Map<string, RoutineContextBindingRecord>;
+  routineSchedules: Map<string, RoutineScheduleRecord>;
+  routineOccurrences: Map<string, RoutineOccurrenceRecord>;
+  routineRuns: Map<string, RoutineRunRecord>;
+  routineSessions: Map<string, RoutineSessionRecord>;
+  routineSessionStepResults: Map<string, RoutineSessionStepResultRecord>;
+  routineSessionAmendments: Map<string, RoutineSessionAmendmentRecord>;
 };
 
 type ChangeTable = "lifeLinks" | "collections" | "collectionMemberships" | "collectionSections" | "collectionSectionAssignments" | "qrBindings" | "media";
@@ -299,6 +411,18 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   private batches = new Map<string, ExportBatchRecord>();
   private batchQrIds = new Map<string, string[]>();
   private claimEvents = new Map<string, ClaimEventRecord>();
+  private routineGroups = new Map<string, RoutineGroupRecord>();
+  private routineActivities = new Map<string, ActivityRecord>();
+  private routines = new Map<string, RoutineRecord>();
+  private routineRevisions = new Map<string, RoutineRevisionRecord>();
+  private routineSteps = new Map<string, RoutineStepRecord>();
+  private routineContextBindings = new Map<string, RoutineContextBindingRecord>();
+  private routineSchedules = new Map<string, RoutineScheduleRecord>();
+  private routineOccurrences = new Map<string, RoutineOccurrenceRecord>();
+  private routineRuns = new Map<string, RoutineRunRecord>();
+  private routineSessions = new Map<string, RoutineSessionRecord>();
+  private routineSessionStepResults = new Map<string, RoutineSessionStepResultRecord>();
+  private routineSessionAmendments = new Map<string, RoutineSessionAmendmentRecord>();
   private ownerLocks = new Map<string, Promise<void>>();
   private changeHistory = new Map<string, MemoryHistoryEntry[]>();
   private changePreviews = new Map<string, Map<string, MemoryPreview>>();
@@ -359,6 +483,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
             this.lifeLinks.set(id, { ...row, parentId: scope.parentId, updatedAt: changedAt, placementConfirmedAt: changedAt });
           }
         } else {
+          this.assertLifeLinksNotCurrentRoutineContext(userId, ids);
           const collectionIds = new Set([...this.collectionMemberships.values()].filter((row) => ids.has(row.lifeLinkId)).map((row) => row.collectionId));
           removeMapEntries(this.collectionSectionAssignments, (row) => ids.has(row.lifeLinkId));
           removeMapEntries(this.collectionMemberships, (row) => ids.has(row.lifeLinkId));
@@ -387,6 +512,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       for (const delta of entry.deltas) {
         if (!sameChangeRow(tables[delta.table].get(delta.key), delta.after)) throw new LifeLinkDomainError("stale_life_link", "The changed data no longer matches this Undo.");
         if (delta.table === "qrBindings" && delta.before) this.assertQrHistoryAvailable(userId, delta.key);
+        if (delta.table === "lifeLinks" && delta.before === undefined) this.assertLifeLinksNotCurrentRoutineContext(userId, new Set([delta.key]));
       }
       for (const delta of entry.deltas) {
         if (delta.before === undefined) {
@@ -912,6 +1038,349 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     };
   }
 
+  async listRoutineGroups(userId: string, page: RoutinePageRequest = {}): Promise<LifeLinkPage<RoutineGroupRecord>> {
+    return pageCollectionRecords(this.ownerRoutineRows(this.routineGroups, userId, page.includeArchived).sort(compareRoutineTitledRows), page);
+  }
+
+  async getRoutineGroup(userId: string, groupId: string): Promise<RoutineGroupRecord | null> {
+    return copyOwned(this.routineGroups.get(groupId), userId);
+  }
+
+  async createRoutineGroup(command: CreateRoutineGroupCommand): Promise<RoutineGroupRecord> {
+    const candidate = createCanonicalRoutineGroup(command);
+    return this.withLocks([`routine-group-id:${candidate.id}`, candidate.ownerId], async () => {
+      this.assertRoutineOwner(candidate.ownerId);
+      const existing = this.routineGroups.get(candidate.id);
+      if (existing) return sameRoutineCreatePayload(existing, candidate) ? structuredClone(existing) : routineIdConflict();
+      this.routineGroups.set(candidate.id, candidate);
+      return structuredClone(candidate);
+    });
+  }
+
+  async updateRoutineGroup(userId: string, command: UpdateRoutineGroupCommand): Promise<RoutineGroupRecord | null> {
+    return this.withOwnerLock(userId, async () => {
+      const current = this.routineGroups.get(command.groupId);
+      if (!current || current.ownerId !== userId) return null;
+      const candidate = applyRoutineGroupPatch(current, command.patch, nextTimestamp(current.updatedAt));
+      if (sameRoutinePayload({ ...candidate, updatedAt: current.updatedAt }, current)) return structuredClone(current);
+      assertRoutineUpdatedAt(current.updatedAt, command.expectedUpdatedAt);
+      this.routineGroups.set(current.id, candidate);
+      return structuredClone(candidate);
+    });
+  }
+
+  async listActivities(userId: string, page: RoutinePageRequest = {}): Promise<LifeLinkPage<ActivityRecord>> {
+    return pageCollectionRecords(this.ownerRoutineRows(this.routineActivities, userId, page.includeArchived).sort(compareRoutineTitledRows), page);
+  }
+
+  async getActivity(userId: string, activityId: string): Promise<ActivityRecord | null> {
+    return copyOwned(this.routineActivities.get(activityId), userId);
+  }
+
+  async createActivity(command: CreateActivityCommand): Promise<ActivityRecord> {
+    const candidate = createCanonicalActivity(command);
+    return this.withLocks([`routine-activity-id:${candidate.id}`, candidate.ownerId], async () => {
+      this.assertRoutineOwner(candidate.ownerId);
+      const existing = this.routineActivities.get(candidate.id);
+      if (existing) return sameRoutineCreatePayload(existing, candidate) ? structuredClone(existing) : routineIdConflict();
+      this.routineActivities.set(candidate.id, candidate);
+      return structuredClone(candidate);
+    });
+  }
+
+  async updateActivity(userId: string, command: UpdateActivityCommand): Promise<ActivityRecord | null> {
+    return this.withOwnerLock(userId, async () => {
+      const current = this.routineActivities.get(command.activityId);
+      if (!current || current.ownerId !== userId) return null;
+      const candidate = applyActivityPatch(current, command.patch, nextTimestamp(current.updatedAt));
+      if (sameRoutinePayload({ ...candidate, updatedAt: current.updatedAt }, current)) return structuredClone(current);
+      assertRoutineUpdatedAt(current.updatedAt, command.expectedUpdatedAt);
+      this.routineActivities.set(current.id, candidate);
+      if (current.archivedAt === null && candidate.archivedAt !== null) {
+        const affectedScheduleIds = new Set(
+          [...this.routineSchedules.values()].filter((schedule) => schedule.ownerId === userId && schedule.active &&
+            [...this.routineSteps.values()].some((step) => step.ownerId === userId &&
+              step.routineRevisionId === schedule.routineRevisionId && step.activityId === current.id)
+          ).map((schedule) => schedule.id)
+        );
+        this.deactivateRoutineSchedulesById(userId, affectedScheduleIds, candidate.updatedAt);
+      }
+      return structuredClone(candidate);
+    });
+  }
+
+  async listRoutines(userId: string, page: RoutinePageRequest = {}): Promise<LifeLinkPage<RoutineSummaryRecord>> {
+    const rows = this.ownerRoutineRows(this.routines, userId, page.includeArchived).map((routine): RoutineSummaryRecord => {
+      const revision = this.routineRevisions.get(routine.currentRevisionId)!;
+      return { ...routine, revisionNumber: revision.revisionNumber, title: revision.title, purpose: revision.purpose };
+    }).sort(compareRoutineTitledRows);
+    return pageCollectionRecords(rows, page);
+  }
+
+  async getRoutine(userId: string, routineId: string): Promise<RoutineDetail | null> {
+    const routine = this.routines.get(routineId);
+    if (!routine || routine.ownerId !== userId) return null;
+    return { routine: structuredClone(routine), currentRevision: this.memoryRoutineRevisionSnapshot(userId, routine.id, routine.currentRevisionId)! };
+  }
+
+  async createRoutine(command: CreateRoutineCommand): Promise<CanonicalRoutineCreation> {
+    const candidate = createCanonicalRoutine(command);
+    return this.withLocks([`routine-id:${candidate.routine.id}`, `routine-revision-id:${candidate.currentRevision.revision.id}`, candidate.routine.ownerId], async () => {
+      this.assertRoutineOwner(candidate.routine.ownerId);
+      const existing = this.routines.get(candidate.routine.id);
+      if (existing) {
+        const detail = this.memoryRoutineCreation(existing);
+        return sameRoutineCreatePayload(detail, candidate) ? structuredClone(detail) : routineIdConflict();
+      }
+      this.assertRoutineDefinitionReferences(candidate.routine.ownerId, candidate.routine.groupId, candidate.currentRevision);
+      if (this.routineRevisions.has(candidate.currentRevision.revision.id) || candidate.currentRevision.steps.some((step) => this.routineSteps.has(step.id)) || candidate.currentRevision.bindings.some((binding) => this.routineContextBindings.has(binding.id))) routineIdConflict();
+      this.persistMemoryRoutineCreation(candidate);
+      return structuredClone(candidate);
+    });
+  }
+
+  async updateRoutine(userId: string, command: UpdateRoutineCommand): Promise<RoutineRecord | null> {
+    return this.withOwnerLock(userId, async () => {
+      const current = this.routines.get(command.routineId);
+      if (!current || current.ownerId !== userId) return null;
+      const candidate = applyRoutinePatch(current, command.patch, nextTimestamp(current.updatedAt));
+      if (candidate.groupId) {
+        if (candidate.groupId === current.groupId) this.assertRoutineGroupExists(userId, candidate.groupId);
+        else this.assertActiveRoutineGroup(userId, candidate.groupId);
+      }
+      if (sameRoutinePayload({ ...candidate, updatedAt: current.updatedAt }, current)) return structuredClone(current);
+      assertRoutineUpdatedAt(current.updatedAt, command.expectedUpdatedAt);
+      this.routines.set(current.id, candidate);
+      if (current.archivedAt === null && candidate.archivedAt !== null) {
+        this.deactivateRoutineSchedules(userId, new Set([current.id]), candidate.updatedAt);
+      }
+      return structuredClone(candidate);
+    });
+  }
+
+  async reviseRoutine(userId: string, command: ReviseRoutineCommand): Promise<RoutineRevisionSnapshot | null> {
+    return this.withOwnerLock(userId, async () => {
+      const current = this.routines.get(command.routineId);
+      if (!current || current.ownerId !== userId) return null;
+      const existing = this.routineRevisions.get(command.id);
+      if (existing) {
+        const snapshot = this.memoryRoutineRevisionSnapshot(userId, current.id, existing.id);
+        const { expectedCurrentRevisionId: _expectedCurrentRevisionId, ...revisionCommand } = command;
+        const desired = createCanonicalRoutineRevision(revisionCommand);
+        if (snapshot && current.currentRevisionId === existing.id && sameRoutineCreatePayload(snapshot, desired)) return structuredClone(snapshot);
+        routineIdConflict();
+      }
+      const candidate = reviseCanonicalRoutine(current, command);
+      this.assertRoutineDefinitionReferences(userId, current.groupId, candidate.currentRevision, false);
+      const history = [...this.routineRevisions.values()].filter((item) => item.routineId === current.id);
+      if (candidate.currentRevision.revision.revisionNumber !== history.length + 1) throw new LifeLinkDomainError("routine_conflict", "Routine revision number must follow the current history.");
+      this.persistMemoryRoutineCreation(candidate);
+      return structuredClone(candidate.currentRevision);
+    });
+  }
+
+  async getRoutineRevision(userId: string, routineId: string, revisionId: string): Promise<RoutineRevisionSnapshot | null> {
+    return this.memoryRoutineRevisionSnapshot(userId, routineId, revisionId);
+  }
+
+  async listRoutineSchedules(userId: string, routineId: string, page: LifeLinkPageRequest = {}): Promise<LifeLinkPage<RoutineScheduleRecord> | null> {
+    const routine = this.routines.get(routineId);
+    if (!routine || routine.ownerId !== userId) return null;
+    const rows = [...this.routineSchedules.values()].filter((item) => item.ownerId === userId && item.routineId === routineId)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.id.localeCompare(right.id)).map((item) => structuredClone(item));
+    return pageCollectionRecords(rows, page);
+  }
+
+  async createRoutineSchedule(command: CreateRoutineScheduleCommand): Promise<RoutineScheduleRecord> {
+    const candidate = createCanonicalRoutineSchedule(command);
+    return this.withLocks([`routine-schedule-id:${candidate.id}`, candidate.ownerId], async () => {
+      const existing = this.routineSchedules.get(candidate.id);
+      if (existing) return sameRoutineCreatePayload(existing, candidate) ? structuredClone(existing) : routineIdConflict();
+      this.assertRoutineScheduleReferences(candidate);
+      this.routineSchedules.set(candidate.id, candidate);
+      return structuredClone(candidate);
+    });
+  }
+
+  async updateRoutineSchedule(userId: string, command: UpdateRoutineScheduleCommand): Promise<RoutineScheduleRecord | null> {
+    return this.withOwnerLock(userId, async () => {
+      const current = this.routineSchedules.get(command.scheduleId);
+      if (!current || current.ownerId !== userId) return null;
+      const routine = this.routines.get(current.routineId)!;
+      const pinnedCandidate = applyRoutineSchedulePatch(current, current.routineRevisionId, command.patch, nextTimestamp(current.updatedAt));
+      const ruleChanged = !sameRoutinePayload(pinnedCandidate.rule, current.rule);
+      const safeDisable = command.patch.active === false && !ruleChanged;
+      if (safeDisable) {
+        const noOp = sameRoutinePayload({ ...pinnedCandidate, revision: current.revision, updatedAt: current.updatedAt }, current);
+        if (noOp) return structuredClone(current);
+        assertRoutineUpdatedAt(current.updatedAt, command.expectedUpdatedAt);
+        this.routineSchedules.set(current.id, pinnedCandidate);
+        for (const [id, occurrence] of this.routineOccurrences) {
+          if (occurrence.scheduleId === current.id && occurrence.status === "planned" && occurrence.plannedFor > pinnedCandidate.updatedAt) {
+            this.routineOccurrences.set(id, { ...occurrence, status: "canceled", updatedAt: pinnedCandidate.updatedAt });
+          }
+        }
+        return structuredClone(pinnedCandidate);
+      }
+      if (routine.archivedAt) throw new LifeLinkDomainError("routine_conflict", "Archived Routine schedule cannot be changed.");
+      this.assertRoutineRevisionActivitiesActive(userId, routine.currentRevisionId);
+      const desired = applyRoutineSchedulePatch(current, routine.currentRevisionId, command.patch, nextTimestamp(current.updatedAt));
+      const noOp = sameRoutinePayload({ ...desired, revision: current.revision, updatedAt: current.updatedAt }, current);
+      if (noOp) return structuredClone(current);
+      assertRoutineUpdatedAt(current.updatedAt, command.expectedUpdatedAt);
+      this.routineSchedules.set(current.id, desired);
+      for (const [id, occurrence] of this.routineOccurrences) {
+        if (occurrence.scheduleId !== current.id || !["planned", "canceled"].includes(occurrence.status) || occurrence.plannedFor <= desired.updatedAt) continue;
+        const matches = desired.active && routineScheduleMatchesLocalDate(desired.rule, occurrence.localDate);
+        this.routineOccurrences.set(id, matches ? {
+          ...occurrence, scheduleRevision: desired.revision, routineRevisionId: desired.routineRevisionId,
+          plannedFor: resolveRoutineSchedulePlannedFor(desired.rule, occurrence.localDate), status: "planned", updatedAt: desired.updatedAt
+        } : { ...occurrence, status: "canceled", updatedAt: desired.updatedAt });
+      }
+      return structuredClone(desired);
+    });
+  }
+
+  async materializeRoutineOccurrences(userId: string, routineId: string, input: MaterializeRoutineOccurrencesInput): Promise<RoutineOccurrenceRecord[]> {
+    return this.withOwnerLock(userId, async () => {
+      const routine = this.routines.get(routineId);
+      if (!routine || routine.ownerId !== userId) return [];
+      if (routine.archivedAt) throw new LifeLinkDomainError("routine_conflict", "Archived Routine cannot materialize occurrences.");
+      this.assertRoutineRevisionActivitiesActive(userId, routine.currentRevisionId);
+      const createdAt = new Date().toISOString();
+      const result: RoutineOccurrenceRecord[] = [];
+      for (const schedule of [...this.routineSchedules.values()].filter((item) => item.ownerId === userId && item.routineId === routineId && item.active)) {
+        this.assertRoutineRevisionActivitiesActive(userId, schedule.routineRevisionId);
+        for (const localDate of listRoutineScheduleLocalDates(schedule.rule, input.startDate, input.endDate)) {
+          const existing = [...this.routineOccurrences.values()].find((item) => item.ownerId === userId && item.scheduleId === schedule.id && item.localDate === localDate);
+          if (existing) { result.push(structuredClone(existing)); continue; }
+          const occurrence = createCanonicalRoutineOccurrence(schedule, { id: `routine-occurrence-${randomUUID()}`, localDate, createdAt });
+          this.routineOccurrences.set(occurrence.id, occurrence);
+          result.push(structuredClone(occurrence));
+        }
+      }
+      return result.sort(compareRoutineOccurrenceOrder);
+    });
+  }
+
+  async listRoutineOccurrences(userId: string, page: RoutineOccurrencePageRequest = {}): Promise<LifeLinkPage<RoutineOccurrenceRecord>> {
+    let rows = [...this.routineOccurrences.values()].filter((item) => item.ownerId === userId);
+    if (page.routineId) rows = rows.filter((item) => item.routineId === page.routineId);
+    if (page.startDate) rows = rows.filter((item) => item.localDate >= page.startDate!);
+    if (page.endDate) rows = rows.filter((item) => item.localDate <= page.endDate!);
+    return pageCollectionRecords(rows.sort(compareRoutineOccurrenceOrder).map((item) => structuredClone(item)), page);
+  }
+
+  async getRoutineOccurrence(userId: string, occurrenceId: string): Promise<RoutineOccurrenceRecord | null> {
+    return copyOwned(this.routineOccurrences.get(occurrenceId), userId);
+  }
+
+  async startRoutineRun(userId: string, command: StartRoutineRunCommand): Promise<RoutineRunRecord | null> {
+    return this.withOwnerLock(userId, async () => {
+      const existing = this.routineRuns.get(command.id);
+      if (existing) {
+        if (existing.ownerId === userId && existing.routineId === command.routineId && existing.occurrenceId === (command.occurrenceId ?? null)) return structuredClone(existing);
+        routineIdConflict();
+      }
+      const routine = this.routines.get(command.routineId);
+      if (!routine || routine.ownerId !== userId) return null;
+      if (routine.archivedAt) throw new LifeLinkDomainError("routine_conflict", "Archived Routine cannot start a Run.");
+      if ([...this.routineRuns.values()].some((run) => run.ownerId === userId && run.routineId === routine.id && run.status === "active")) throw new LifeLinkDomainError("routine_conflict", "Routine already has an active Run.");
+      const occurrence = command.occurrenceId ? this.routineOccurrences.get(command.occurrenceId) : null;
+      if (command.occurrenceId && (!occurrence || occurrence.ownerId !== userId || occurrence.routineId !== routine.id)) return null;
+      if (occurrence && occurrence.status !== "planned") throw new LifeLinkDomainError("routine_conflict", "Routine occurrence cannot start a Run.");
+      const revisionId = occurrence?.routineRevisionId ?? routine.currentRevisionId;
+      this.assertRoutineRevisionActivitiesActive(userId, revisionId);
+      const revision = this.memoryRoutineRevisionSnapshot(userId, routine.id, revisionId)!;
+      const run = createCanonicalRoutineRun({ id: command.id, ownerId: userId, routineId: routine.id, routineRevisionId: revisionId,
+        occurrenceId: occurrence?.id ?? null, contextSnapshot: this.memoryRoutineContextSnapshot(userId, revision), startedAt: command.startedAt }, revision);
+      this.routineRuns.set(run.id, run);
+      if (occurrence) this.routineOccurrences.set(occurrence.id, { ...occurrence, status: "started", updatedAt: run.startedAt });
+      return structuredClone(run);
+    });
+  }
+
+  async getRoutineRun(userId: string, runId: string): Promise<RoutineRunRecord | null> {
+    return copyOwned(this.routineRuns.get(runId), userId);
+  }
+
+  async getActiveRoutineRun(userId: string, routineId: string): Promise<RoutineRunRecord | null> {
+    const run = [...this.routineRuns.values()].find((item) => item.ownerId === userId && item.routineId === routineId && item.status === "active");
+    return run ? structuredClone(run) : null;
+  }
+
+  async putRoutineRunStepResult(userId: string, command: PutRoutineRunStepResultCommand): Promise<RoutineRunRecord | null> {
+    return this.withOwnerLock(userId, async () => {
+      const run = this.routineRuns.get(command.runId);
+      if (!run || run.ownerId !== userId) return null;
+      const step = this.routineSteps.get(command.routineStepId);
+      if (!step || step.ownerId !== userId || step.routineRevisionId !== run.routineRevisionId) return null;
+      const next = applyRoutineRunStepResult(run, step, command, nextTimestamp(run.updatedAt));
+      this.routineRuns.set(run.id, next);
+      return structuredClone(next);
+    });
+  }
+
+  async finalizeRoutineRun(userId: string, command: FinalizeRoutineRunCommand): Promise<BuiltRoutineSession | null> {
+    return this.withOwnerLock(userId, async () => {
+      const replaySession = [...this.routineSessions.values()].find((item) => item.ownerId === userId && item.runId === command.runId);
+      if (replaySession) {
+        if (replaySession.id !== command.sessionId) routineIdConflict();
+        return this.memoryBuiltSession(replaySession);
+      }
+      const run = this.routineRuns.get(command.runId);
+      if (!run || run.ownerId !== userId) return null;
+      assertRoutineUpdatedAt(run.updatedAt, command.expectedUpdatedAt);
+      const identities = run.stepResults.map((result) => ({ routineStepId: result.routineStepId, id: stableRoutineSessionResultId(command.sessionId, result.routineStepId) }));
+      const built = buildRoutineSessionFromRun(run, command.sessionId, identities, command.completedAt);
+      if (this.routineSessions.has(built.session.id) || built.stepResults.some((result) => this.routineSessionStepResults.has(result.id))) routineIdConflict();
+      this.routineRuns.set(run.id, built.finalizedRun);
+      this.routineSessions.set(built.session.id, built.session);
+      for (const result of built.stepResults) this.routineSessionStepResults.set(result.id, result);
+      if (run.occurrenceId) {
+        const occurrence = this.routineOccurrences.get(run.occurrenceId)!;
+        this.routineOccurrences.set(occurrence.id, { ...occurrence, status: "completed", updatedAt: built.session.completedAt });
+      }
+      return structuredClone(built);
+    });
+  }
+
+  async listRoutineSessions(userId: string, routineId: string | null, page: LifeLinkPageRequest = {}): Promise<LifeLinkPage<RoutineSessionRecord>> {
+    const rows = [...this.routineSessions.values()].filter((item) => item.ownerId === userId && (!routineId || item.routineId === routineId))
+      .sort((left, right) => right.completedAt.localeCompare(left.completedAt) || left.id.localeCompare(right.id)).map((item) => structuredClone(item));
+    return pageCollectionRecords(rows, page);
+  }
+
+  async getRoutineSession(userId: string, sessionId: string): Promise<RoutineSessionProjection | null> {
+    const session = this.routineSessions.get(sessionId);
+    if (!session || session.ownerId !== userId) return null;
+    const results = [...this.routineSessionStepResults.values()].filter((item) => item.ownerId === userId && item.sessionId === sessionId);
+    const amendments = [...this.routineSessionAmendments.values()].filter((item) => item.ownerId === userId && item.sessionId === sessionId);
+    return projectRoutineSessionWithAmendments(session, results, amendments);
+  }
+
+  async appendRoutineSessionAmendment(userId: string, command: AppendRoutineSessionAmendmentCommand): Promise<RoutineSessionAmendmentRecord | null> {
+    return this.withOwnerLock(userId, async () => {
+      const existing = this.routineSessionAmendments.get(command.id);
+      if (existing) {
+        const session = this.routineSessions.get(command.sessionId);
+        const stepResult = command.stepResultId ? this.routineSessionStepResults.get(command.stepResultId) : null;
+        const step = stepResult ? this.routineSteps.get(stepResult.routineStepId) : null;
+        const candidate = session?.ownerId === userId ? createCanonicalRoutineSessionAmendment({ ownerId: userId, session, stepResult, plannedValues: step?.plannedValues, command }) : null;
+        if (candidate && sameRoutineCreatePayload(candidate, existing)) return structuredClone(existing);
+        routineIdConflict();
+      }
+      const session = this.routineSessions.get(command.sessionId);
+      if (!session || session.ownerId !== userId) return null;
+      const stepResult = command.stepResultId ? this.routineSessionStepResults.get(command.stepResultId) : null;
+      if (command.stepResultId && (!stepResult || stepResult.ownerId !== userId || stepResult.sessionId !== session.id)) return null;
+      const step = stepResult ? this.routineSteps.get(stepResult.routineStepId) : null;
+      const amendment = createCanonicalRoutineSessionAmendment({ ownerId: userId, session, stepResult, plannedValues: step?.plannedValues, command });
+      this.routineSessionAmendments.set(amendment.id, amendment);
+      return structuredClone(amendment);
+    });
+  }
+
   async listLinks(userId: string): Promise<LinkRecord[]> {
     const claimed = Array.from(this.qrBindings.values())
       .map((binding) => this.lifeLinks.get(binding.lifeLinkId))
@@ -1217,6 +1686,136 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     return undefined;
   }
 
+  private ownerRoutineRows<T extends { ownerId: string; archivedAt: string | null }>(
+    rows: Map<string, T>, userId: string, includeArchived = false
+  ): T[] {
+    return [...rows.values()].filter((item) => item.ownerId === userId && (includeArchived || item.archivedAt === null))
+      .map((item) => structuredClone(item));
+  }
+
+  private assertRoutineOwner(ownerId: string): void {
+    if (!this.users.has(ownerId)) throw new LifeLinkDomainError("routine_reference_conflict", "Routine owner was not found.");
+  }
+
+  private assertActiveRoutineGroup(ownerId: string, groupId: string): void {
+    const group = this.routineGroups.get(groupId);
+    if (!group || group.ownerId !== ownerId || group.archivedAt !== null) {
+      throw new LifeLinkDomainError("routine_reference_conflict", "Routine Group was not found or is archived.");
+    }
+  }
+
+  private assertRoutineGroupExists(ownerId: string, groupId: string): void {
+    const group = this.routineGroups.get(groupId);
+    if (!group || group.ownerId !== ownerId) {
+      throw new LifeLinkDomainError("routine_reference_conflict", "Routine Group was not found for this owner.");
+    }
+  }
+
+  private assertRoutineDefinitionReferences(
+    ownerId: string, groupId: string | null, snapshot: RoutineRevisionSnapshot, requireActiveGroup = true
+  ): void {
+    if (groupId) {
+      const group = this.routineGroups.get(groupId);
+      if (!group || group.ownerId !== ownerId || (requireActiveGroup && group.archivedAt !== null)) {
+        throw new LifeLinkDomainError("routine_reference_conflict", "Routine Group was not found for this owner or is unavailable for assignment.");
+      }
+    }
+    for (const step of snapshot.steps) {
+      const activity = this.routineActivities.get(step.activityId);
+      if (!activity || activity.ownerId !== ownerId || activity.archivedAt !== null || activity.title !== step.activityTitle) {
+        throw new LifeLinkDomainError("routine_reference_conflict", "Routine Step Activity was not found, changed title, or is archived.");
+      }
+    }
+    for (const binding of snapshot.bindings) {
+      const target = binding.targetType === "life_link" ? this.lifeLinks.get(binding.targetId) : this.collections.get(binding.targetId);
+      if (!target || target.ownerId !== ownerId) throw new LifeLinkDomainError("routine_reference_conflict", "Routine context target was not found for this owner.");
+    }
+  }
+
+  private assertRoutineScheduleReferences(schedule: RoutineScheduleRecord): void {
+    const routine = this.routines.get(schedule.routineId);
+    if (!routine || routine.ownerId !== schedule.ownerId || routine.archivedAt !== null || routine.currentRevisionId !== schedule.routineRevisionId) {
+      throw new LifeLinkDomainError("routine_reference_conflict", "Routine Schedule must use the owner's active current Routine revision.");
+    }
+    this.assertRoutineRevisionActivitiesActive(schedule.ownerId, schedule.routineRevisionId);
+  }
+
+  private assertRoutineRevisionActivitiesActive(ownerId: string, revisionId: string): void {
+    const archived = [...this.routineSteps.values()].some((step) => {
+      if (step.ownerId !== ownerId || step.routineRevisionId !== revisionId) return false;
+      return this.routineActivities.get(step.activityId)?.archivedAt !== null;
+    });
+    if (archived) throw new LifeLinkDomainError("routine_conflict", "A Routine Activity is archived.");
+  }
+
+  private deactivateRoutineSchedules(ownerId: string, routineIds: Set<string>, changedAt: string): void {
+    const scheduleIds = new Set([...this.routineSchedules.values()]
+      .filter((schedule) => schedule.ownerId === ownerId && schedule.active && routineIds.has(schedule.routineId))
+      .map((schedule) => schedule.id));
+    this.deactivateRoutineSchedulesById(ownerId, scheduleIds, changedAt);
+  }
+
+  private deactivateRoutineSchedulesById(ownerId: string, scheduleIds: Set<string>, changedAt: string): void {
+    for (const [scheduleId, schedule] of this.routineSchedules) {
+      if (schedule.ownerId !== ownerId || !schedule.active || !scheduleIds.has(scheduleId)) continue;
+      const updatedAt = monotonicRoutineTimestamp(schedule.updatedAt, changedAt);
+      this.routineSchedules.set(scheduleId, { ...schedule, active: false, revision: schedule.revision + 1, updatedAt });
+      for (const [occurrenceId, occurrence] of this.routineOccurrences) {
+        if (occurrence.ownerId === ownerId && occurrence.scheduleId === scheduleId && occurrence.status === "planned" && occurrence.plannedFor > updatedAt) {
+          this.routineOccurrences.set(occurrenceId, { ...occurrence, status: "canceled", updatedAt });
+        }
+      }
+    }
+  }
+
+  private persistMemoryRoutineCreation(candidate: CanonicalRoutineCreation): void {
+    this.routines.set(candidate.routine.id, candidate.routine);
+    this.routineRevisions.set(candidate.currentRevision.revision.id, candidate.currentRevision.revision);
+    for (const step of candidate.currentRevision.steps) this.routineSteps.set(step.id, step);
+    for (const binding of candidate.currentRevision.bindings) this.routineContextBindings.set(binding.id, binding);
+  }
+
+  private memoryRoutineCreation(routine: RoutineRecord): CanonicalRoutineCreation {
+    return { routine: structuredClone(routine), currentRevision: this.memoryRoutineRevisionSnapshot(routine.ownerId, routine.id, routine.currentRevisionId)! };
+  }
+
+  private memoryRoutineRevisionSnapshot(userId: string, routineId: string, revisionId: string): RoutineRevisionSnapshot | null {
+    const revision = this.routineRevisions.get(revisionId);
+    if (!revision || revision.ownerId !== userId || revision.routineId !== routineId) return null;
+    return {
+      revision: structuredClone(revision),
+      steps: [...this.routineSteps.values()].filter((item) => item.ownerId === userId && item.routineRevisionId === revisionId)
+        .sort((left, right) => left.position - right.position || left.id.localeCompare(right.id)).map((item) => structuredClone(item)),
+      bindings: [...this.routineContextBindings.values()].filter((item) => item.ownerId === userId && item.routineRevisionId === revisionId)
+        .sort(compareRoutineBindingRows).map((item) => structuredClone(item))
+    };
+  }
+
+  private memoryRoutineContextSnapshot(userId: string, revision: RoutineRevisionSnapshot): RoutineContextSnapshot[] {
+    return revision.bindings.map((binding) => {
+      if (binding.targetType === "life_link") {
+        const target = this.lifeLinks.get(binding.targetId);
+        if (!target || target.ownerId !== userId) throw new LifeLinkDomainError("routine_reference_conflict", "Routine Life Link context no longer exists.");
+        return { bindingId: binding.id, routineStepId: binding.routineStepId, targetType: binding.targetType,
+          targetId: target.id, targetTitle: target.title, targetSourceUpdatedAt: target.updatedAt,
+          resolvedLifeLinks: [{ lifeLinkId: target.id, title: target.title, sourceUpdatedAt: target.updatedAt }] };
+      }
+      const collection = this.collections.get(binding.targetId);
+      if (!collection || collection.ownerId !== userId) throw new LifeLinkDomainError("routine_reference_conflict", "Routine Collection context no longer exists.");
+      const memberIds = new Set([...this.collectionMemberships.values()].filter((item) => item.ownerId === userId && item.collectionId === collection.id).map((item) => item.lifeLinkId));
+      const resolvedLifeLinks = [...this.lifeLinks.values()].filter((item) => item.ownerId === userId && memberIds.has(item.id))
+        .sort(compareRoutineTitledRows).map((item) => ({ lifeLinkId: item.id, title: item.title, sourceUpdatedAt: item.updatedAt }));
+      return { bindingId: binding.id, routineStepId: binding.routineStepId, targetType: binding.targetType,
+        targetId: collection.id, targetTitle: collection.title, targetSourceUpdatedAt: collection.updatedAt, resolvedLifeLinks };
+    });
+  }
+
+  private memoryBuiltSession(session: RoutineSessionRecord): BuiltRoutineSession {
+    const run = this.routineRuns.get(session.runId)!;
+    return { finalizedRun: structuredClone(run), session: structuredClone(session),
+      stepResults: [...this.routineSessionStepResults.values()].filter((item) => item.sessionId === session.id).map((item) => structuredClone(item)) };
+  }
+
   private hydrateOwnerLifeLinks(userId: string): LifeLinkRecord[] {
     return Array.from(this.lifeLinks.values())
       .filter((lifeLink) => lifeLink.ownerId === userId)
@@ -1334,7 +1933,19 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       media: new Map(this.media),
       batches: new Map(this.batches),
       batchQrIds: new Map(Array.from(this.batchQrIds, ([batchId, qrIds]) => [batchId, [...qrIds]])),
-      claimEvents: new Map(this.claimEvents)
+      claimEvents: new Map(this.claimEvents),
+      routineGroups: new Map(this.routineGroups),
+      routineActivities: new Map(this.routineActivities),
+      routines: new Map(this.routines),
+      routineRevisions: new Map(this.routineRevisions),
+      routineSteps: new Map(this.routineSteps),
+      routineContextBindings: new Map(this.routineContextBindings),
+      routineSchedules: new Map(this.routineSchedules),
+      routineOccurrences: new Map(this.routineOccurrences),
+      routineRuns: new Map(this.routineRuns),
+      routineSessions: new Map(this.routineSessions),
+      routineSessionStepResults: new Map(this.routineSessionStepResults),
+      routineSessionAmendments: new Map(this.routineSessionAmendments)
     };
   }
 
@@ -1353,6 +1964,18 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     this.batches = snapshot.batches;
     this.batchQrIds = snapshot.batchQrIds;
     this.claimEvents = snapshot.claimEvents;
+    this.routineGroups = snapshot.routineGroups;
+    this.routineActivities = snapshot.routineActivities;
+    this.routines = snapshot.routines;
+    this.routineRevisions = snapshot.routineRevisions;
+    this.routineSteps = snapshot.routineSteps;
+    this.routineContextBindings = snapshot.routineContextBindings;
+    this.routineSchedules = snapshot.routineSchedules;
+    this.routineOccurrences = snapshot.routineOccurrences;
+    this.routineRuns = snapshot.routineRuns;
+    this.routineSessions = snapshot.routineSessions;
+    this.routineSessionStepResults = snapshot.routineSessionStepResults;
+    this.routineSessionAmendments = snapshot.routineSessionAmendments;
   }
 
   private competitionFixtureCounts(ownerId: string): CompetitionFixtureCounts {
@@ -1378,7 +2001,19 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       media: Array.from(this.media.values()).filter((item) => item.ownerId === ownerId).length,
       batches: batchIds.size,
       qrCodes: Array.from(this.qrInventory.values()).filter((qr) => Boolean(qr.batchId && batchIds.has(qr.batchId))).length,
-      claimEvents: Array.from(this.claimEvents.values()).filter((event) => event.ownerId === ownerId).length
+      claimEvents: Array.from(this.claimEvents.values()).filter((event) => event.ownerId === ownerId).length,
+      routineGroups: Array.from(this.routineGroups.values()).filter((item) => item.ownerId === ownerId).length,
+      routineActivities: Array.from(this.routineActivities.values()).filter((item) => item.ownerId === ownerId).length,
+      routines: Array.from(this.routines.values()).filter((item) => item.ownerId === ownerId).length,
+      routineRevisions: Array.from(this.routineRevisions.values()).filter((item) => item.ownerId === ownerId).length,
+      routineSteps: Array.from(this.routineSteps.values()).filter((item) => item.ownerId === ownerId).length,
+      routineContextBindings: Array.from(this.routineContextBindings.values()).filter((item) => item.ownerId === ownerId).length,
+      routineSchedules: Array.from(this.routineSchedules.values()).filter((item) => item.ownerId === ownerId).length,
+      routineOccurrences: Array.from(this.routineOccurrences.values()).filter((item) => item.ownerId === ownerId).length,
+      routineRuns: Array.from(this.routineRuns.values()).filter((item) => item.ownerId === ownerId).length,
+      routineSessions: Array.from(this.routineSessions.values()).filter((item) => item.ownerId === ownerId).length,
+      routineSessionStepResults: Array.from(this.routineSessionStepResults.values()).filter((item) => item.ownerId === ownerId).length,
+      routineSessionAmendments: Array.from(this.routineSessionAmendments.values()).filter((item) => item.ownerId === ownerId).length
     };
   }
 
@@ -1485,6 +2120,18 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     );
     removeMapEntries(this.sessions, (session) => session.userId === ownerId);
     removeMapEntries(this.claimEvents, (event) => event.ownerId === ownerId);
+    removeMapEntries(this.routineSessionAmendments, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.routineSessionStepResults, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.routineSessions, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.routineRuns, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.routineOccurrences, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.routineSchedules, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.routineContextBindings, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.routineSteps, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.routineRevisions, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.routines, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.routineActivities, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.routineGroups, (item) => item.ownerId === ownerId);
     removeMapEntries(this.collectionSectionAssignments, (assignment) => assignment.ownerId === ownerId);
     removeMapEntries(this.collectionMemberships, (membership) => membership.ownerId === ownerId);
     removeMapEntries(this.collectionSections, (section) => section.ownerId === ownerId);
@@ -1599,6 +2246,21 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     return resolveLifeLinkChangeScope(this.hydrateOwnerLifeLinks(userId), userId, input);
   }
 
+  private assertLifeLinksNotCurrentRoutineContext(userId: string, lifeLinkIds: Set<string>): void {
+    const currentRevisionIds = new Set(
+      [...this.routines.values()]
+        .filter((routine) => routine.ownerId === userId)
+        .map((routine) => routine.currentRevisionId)
+    );
+    const blocked = [...this.routineContextBindings.values()].some((binding) =>
+      binding.ownerId === userId && binding.targetType === "life_link" &&
+      currentRevisionIds.has(binding.routineRevisionId) && lifeLinkIds.has(binding.targetId)
+    );
+    if (blocked) {
+      throw new LifeLinkDomainError("routine_reference_conflict", "A current Routine revision still references this Life Link.");
+    }
+  }
+
   private changeSideEffects(ids: string[]) {
     const selected = new Set(ids);
     return {
@@ -1614,9 +2276,13 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     const scope = this.changeScope(userId, input);
     const ids = new Set(scope.items.map((row) => row.id));
     const related = <T extends { lifeLinkId: string }>(map: Map<string, T>) => [...map].filter(([, row]) => ids.has(row.lifeLinkId)).sort(([a], [b]) => a.localeCompare(b));
+    const routineBindings = [...this.routineContextBindings]
+      .filter(([, row]) => row.ownerId === userId && row.targetType === "life_link" && ids.has(row.targetId) &&
+        [...this.routines.values()].some((routine) => routine.ownerId === userId && routine.currentRevisionId === row.routineRevisionId))
+      .sort(([left], [right]) => left.localeCompare(right));
     return createHash("sha256").update(stableChangeFingerprint({ ...scope,
       memberships: related(this.collectionMemberships), assignments: related(this.collectionSectionAssignments),
-      bindings: related(this.qrBindings)
+      bindings: related(this.qrBindings), routineBindings
     })).digest("hex");
   }
 
@@ -1779,7 +2445,19 @@ export function expectedCompetitionFixtureCounts(fixture: CompetitionFixtureData
     media: 0,
     batches: 1,
     qrCodes: fixture.qrInventory.length,
-    claimEvents: 0
+    claimEvents: 0,
+    routineGroups: 0,
+    routineActivities: 0,
+    routines: 0,
+    routineRevisions: 0,
+    routineSteps: 0,
+    routineContextBindings: 0,
+    routineSchedules: 0,
+    routineOccurrences: 0,
+    routineRuns: 0,
+    routineSessions: 0,
+    routineSessionStepResults: 0,
+    routineSessionAmendments: 0
   };
 }
 
@@ -1814,6 +2492,56 @@ function removeMapEntries<K, V>(map: Map<K, V>, predicate: (value: V) => boolean
   }
 }
 
+function copyOwned<T extends { ownerId: string }>(value: T | undefined, ownerId: string): T | null {
+  return value?.ownerId === ownerId ? structuredClone(value) : null;
+}
+
+function sameRoutinePayload(left: unknown, right: unknown): boolean {
+  return isDeepStrictEqual(left, right);
+}
+
+function sameRoutineCreatePayload(left: unknown, right: unknown): boolean {
+  return isDeepStrictEqual(withoutRoutineServerTimes(left), withoutRoutineServerTimes(right));
+}
+
+function withoutRoutineServerTimes(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutRoutineServerTimes);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !["createdAt", "updatedAt", "startedAt", "completedAt"].includes(key))
+    .map(([key, item]) => [key, withoutRoutineServerTimes(item)]));
+}
+
+function routineIdConflict(): never {
+  throw new LifeLinkDomainError("routine_conflict", "Routine identity is already bound to another request.");
+}
+
+function assertRoutineUpdatedAt(actualUpdatedAt: string, expectedUpdatedAt: string): void {
+  if (actualUpdatedAt !== expectedUpdatedAt) {
+    throw new LifeLinkDomainError("stale_routine", "Routine state changed after it was read.", { retryable: true });
+  }
+}
+
+function stableRoutineSessionResultId(sessionId: string, routineStepId: string): string {
+  const hex = createHash("sha256").update(`${sessionId}\u0000${routineStepId}`).digest("hex").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const uuid = `${hex.slice(0, 8).join("")}-${hex.slice(8, 12).join("")}-${hex.slice(12, 16).join("")}-${hex.slice(16, 20).join("")}-${hex.slice(20).join("")}`;
+  return `routine-session-result-${uuid}`;
+}
+
+function compareRoutineTitledRows(left: { id: string; title: string }, right: { id: string; title: string }): number {
+  return left.title.normalize("NFKC").toLowerCase().localeCompare(right.title.normalize("NFKC").toLowerCase()) || left.id.localeCompare(right.id);
+}
+
+function compareRoutineOccurrenceOrder(left: RoutineOccurrenceRecord, right: RoutineOccurrenceRecord): number {
+  return left.plannedFor.localeCompare(right.plannedFor) || left.id.localeCompare(right.id);
+}
+
+function compareRoutineBindingRows(left: RoutineContextBindingRecord, right: RoutineContextBindingRecord): number {
+  return (left.routineStepId ?? "").localeCompare(right.routineStepId ?? "") || left.targetType.localeCompare(right.targetType) ||
+    left.targetId.localeCompare(right.targetId) || left.id.localeCompare(right.id);
+}
+
 function assertFresh(lifeLink: StoredLifeLink, expectedUpdatedAt: string): void {
   if (lifeLink.updatedAt !== expectedUpdatedAt) {
     throw new LifeLinkDomainError("stale_life_link", "Life Link changed after it was read.", { retryable: true });
@@ -1841,6 +2569,10 @@ function assertCollectionFresh(collection: CollectionRecord, expectedUpdatedAt: 
 function nextTimestamp(previous: string): string {
   const now = new Date();
   return now.getTime() > Date.parse(previous) ? now.toISOString() : new Date(Date.parse(previous) + 1).toISOString();
+}
+
+function monotonicRoutineTimestamp(previous: string, candidate: string): string {
+  return Date.parse(candidate) > Date.parse(previous) ? candidate : new Date(Date.parse(previous) + 1).toISOString();
 }
 
 function lifeLinkMediaAsLinkMedia(media: LifeLinkMediaRecord, qrId: string): LinkMediaRecord {

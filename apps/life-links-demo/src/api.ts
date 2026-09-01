@@ -3,7 +3,11 @@ import type {
   AttachmentContentReadOptions,
   AttachmentImageReadOptions,
   AttachmentImageResult,
+  ActivityPatch,
+  ActivityRecord,
+  AppendRoutineSessionAmendmentCommand,
   ChangeHistory,
+  CanonicalRoutineCreation,
   LifeLinkChangePreview,
   LifeLinkChangeResult,
   PreviewLifeLinkChangeInput,
@@ -12,6 +16,8 @@ import type {
   CollectionSectionMutationResult,
   CollectionSectionRecord,
   CreateCollectionCommand,
+  CreateRoutineContextBindingInput,
+  CreateRoutineStepInput,
   CreateLifeLinkInput,
   ExportBatchRecord,
   LifeLinkDetail,
@@ -22,6 +28,19 @@ import type {
   LifeLinkSummary,
   LinkRecord,
   QrViewState,
+  RoutineGroupPatch,
+  RoutineGroupRecord,
+  RoutineOccurrenceRecord,
+  RoutinePatch,
+  RoutineSummaryRecord,
+  RoutineRevisionSnapshot,
+  RoutineRunRecord,
+  RoutineSchedulePatch,
+  RoutineScheduleRecord,
+  RoutineScheduleRule,
+  RoutineSessionAmendmentRecord,
+  RoutineSessionProjection,
+  RoutineValue,
   UpdateLifeLinkPatch,
   UserRecord
 } from "@life-links/core";
@@ -264,6 +283,7 @@ export async function createLifeLink(input: CreateLifeLinkInput & { id?: string 
 }
 
 export type PageOptions = { cursor?: string | null; limit?: number; signal?: AbortSignal };
+export type RoutinePageOptions = PageOptions & { includeArchived?: boolean };
 export type CollectionCreateInput = Pick<CreateCollectionCommand, "title" | "purpose" | "notes"> & { id?: string };
 export type CollectionPageResponse = { collections: CollectionRecord[]; nextCursor: string | null; truncated: boolean };
 export type CollectionDetailResponse = {
@@ -274,11 +294,213 @@ export type CollectionDetailResponse = {
 export type CollectionMembersResponse = { lifeLinks: LifeLinkRecord[]; nextCursor: string | null; truncated: boolean };
 export type LifeLinkMembershipsResponse = { memberships: LifeLinkCollectionMembership[]; nextCursor: string | null; truncated: boolean };
 
-function pageSuffix(options: PageOptions): string {
+function pageSuffix(options: RoutinePageOptions): string {
   const query = new URLSearchParams();
   if (options.cursor) query.set("cursor", options.cursor);
   if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.includeArchived !== undefined) query.set("includeArchived", String(options.includeArchived));
   return query.size ? `?${query.toString()}` : "";
+}
+
+export type RoutineGroupCreateInput = { id?: string; title: string; notes?: string };
+export type ActivityCreateInput = { id?: string; title: string; notes?: string };
+export type RoutineStepInput = Omit<CreateRoutineStepInput, "id"> & { id?: string };
+export type RoutineContextBindingInput = Omit<CreateRoutineContextBindingInput, "id"> & { id?: string };
+export type RoutineCreateInput = {
+  id?: string;
+  revisionId?: string;
+  groupId?: string | null;
+  title: string;
+  purpose?: string;
+  instructions?: string;
+  steps: RoutineStepInput[];
+  bindings?: RoutineContextBindingInput[];
+};
+export type RoutineRevisionCreateInput = Omit<RoutineCreateInput, "id" | "groupId"> & {
+  expectedCurrentRevisionId: string;
+};
+export type RoutineScheduleCreateInput = { id?: string; rule: RoutineScheduleRule; active?: boolean };
+export type RoutineGroupPageResponse = { routineGroups: RoutineGroupRecord[]; nextCursor: string | null; truncated: boolean };
+export type ActivityPageResponse = { activities: ActivityRecord[]; nextCursor: string | null; truncated: boolean };
+export type RoutinePageResponse = { routines: RoutineSummaryRecord[]; nextCursor: string | null; truncated: boolean };
+export type RoutineSchedulePageResponse = { schedules: RoutineScheduleRecord[]; nextCursor: string | null; truncated: boolean };
+export type RoutineOccurrencePageResponse = { occurrences: RoutineOccurrenceRecord[]; nextCursor: string | null; truncated: boolean };
+export type RoutineSessionPageResponse = { sessions: RoutineSessionProjection[]; nextCursor: string | null; truncated: boolean };
+
+export function listRoutineGroups(options: RoutinePageOptions = {}) {
+  return apiFetch<RoutineGroupPageResponse>(`/api/routine-groups${pageSuffix(options)}`, { signal: options.signal });
+}
+
+export function getRoutineGroup(groupId: string, signal?: AbortSignal) {
+  return apiFetch<{ routineGroup: RoutineGroupRecord }>(`/api/routine-groups/${encodeURIComponent(groupId)}`, { signal });
+}
+
+export function createRoutineGroup(input: RoutineGroupCreateInput, signal?: AbortSignal) {
+  return apiFetch<{ routineGroup: RoutineGroupRecord }>("/api/routine-groups", {
+    method: "POST", body: JSON.stringify(input), signal
+  });
+}
+
+export function updateRoutineGroup(groupId: string, expectedUpdatedAt: string, patch: RoutineGroupPatch, signal?: AbortSignal) {
+  return apiFetch<{ routineGroup: RoutineGroupRecord }>(`/api/routine-groups/${encodeURIComponent(groupId)}`, {
+    method: "PATCH", body: JSON.stringify({ ...patch, expectedUpdatedAt }), signal
+  });
+}
+
+export function listRoutineActivities(options: RoutinePageOptions = {}) {
+  return apiFetch<ActivityPageResponse>(`/api/routine-activities${pageSuffix(options)}`, { signal: options.signal });
+}
+
+export function getRoutineActivity(activityId: string, signal?: AbortSignal) {
+  return apiFetch<{ activity: ActivityRecord }>(`/api/routine-activities/${encodeURIComponent(activityId)}`, { signal });
+}
+
+export function createRoutineActivity(input: ActivityCreateInput, signal?: AbortSignal) {
+  return apiFetch<{ activity: ActivityRecord }>("/api/routine-activities", {
+    method: "POST", body: JSON.stringify(input), signal
+  });
+}
+
+export function updateRoutineActivity(activityId: string, expectedUpdatedAt: string, patch: ActivityPatch, signal?: AbortSignal) {
+  return apiFetch<{ activity: ActivityRecord }>(`/api/routine-activities/${encodeURIComponent(activityId)}`, {
+    method: "PATCH", body: JSON.stringify({ ...patch, expectedUpdatedAt }), signal
+  });
+}
+
+export function listRoutines(options: RoutinePageOptions = {}) {
+  return apiFetch<RoutinePageResponse>(`/api/routines${pageSuffix(options)}`, { signal: options.signal });
+}
+
+export function getRoutine(routineId: string, signal?: AbortSignal) {
+  return apiFetch<{ routine: CanonicalRoutineCreation }>(`/api/routines/${encodeURIComponent(routineId)}`, { signal });
+}
+
+export function createRoutine(input: RoutineCreateInput, signal?: AbortSignal) {
+  return apiFetch<{ routine: CanonicalRoutineCreation }>("/api/routines", {
+    method: "POST", body: JSON.stringify(input), signal
+  });
+}
+
+export function updateRoutine(routineId: string, expectedUpdatedAt: string, patch: RoutinePatch, signal?: AbortSignal) {
+  return apiFetch<{ routine: CanonicalRoutineCreation }>(`/api/routines/${encodeURIComponent(routineId)}`, {
+    method: "PATCH", body: JSON.stringify({ ...patch, expectedUpdatedAt }), signal
+  });
+}
+
+export function reviseRoutine(routineId: string, input: RoutineRevisionCreateInput, signal?: AbortSignal) {
+  return apiFetch<{ routine: CanonicalRoutineCreation }>(`/api/routines/${encodeURIComponent(routineId)}/revisions`, {
+    method: "POST", body: JSON.stringify(input), signal
+  });
+}
+
+export function getRoutineRevision(routineId: string, revisionId: string, signal?: AbortSignal) {
+  return apiFetch<{ routineRevision: RoutineRevisionSnapshot }>(
+    `/api/routines/${encodeURIComponent(routineId)}/revisions/${encodeURIComponent(revisionId)}`,
+    { signal }
+  );
+}
+
+export function listRoutineSchedules(routineId: string, options: PageOptions = {}) {
+  return apiFetch<RoutineSchedulePageResponse>(
+    `/api/routines/${encodeURIComponent(routineId)}/schedules${pageSuffix(options)}`,
+    { signal: options.signal }
+  );
+}
+
+export function createRoutineSchedule(routineId: string, input: RoutineScheduleCreateInput, signal?: AbortSignal) {
+  return apiFetch<{ schedule: RoutineScheduleRecord }>(`/api/routines/${encodeURIComponent(routineId)}/schedules`, {
+    method: "POST", body: JSON.stringify(input), signal
+  });
+}
+
+export function updateRoutineSchedule(scheduleId: string, expectedUpdatedAt: string, patch: RoutineSchedulePatch, signal?: AbortSignal) {
+  return apiFetch<{ schedule: RoutineScheduleRecord }>(`/api/routine-schedules/${encodeURIComponent(scheduleId)}`, {
+    method: "PATCH", body: JSON.stringify({ ...patch, expectedUpdatedAt }), signal
+  });
+}
+
+export type RoutineOccurrenceListOptions = PageOptions & {
+  routineId?: string;
+  startDate?: string;
+  endDate?: string;
+};
+
+export function listRoutineOccurrences(options: RoutineOccurrenceListOptions = {}) {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set("cursor", options.cursor);
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.routineId) query.set("routineId", options.routineId);
+  if (options.startDate) query.set("startDate", options.startDate);
+  if (options.endDate) query.set("endDate", options.endDate);
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return apiFetch<RoutineOccurrencePageResponse>(`/api/routine-occurrences${suffix}`, {
+    signal: options.signal
+  });
+}
+
+export function getRoutineOccurrence(occurrenceId: string, signal?: AbortSignal) {
+  return apiFetch<{ occurrence: RoutineOccurrenceRecord }>(
+    `/api/routine-occurrences/${encodeURIComponent(occurrenceId)}`,
+    { signal }
+  );
+}
+
+export function startRoutineRun(routineId: string, input: { id: string; occurrenceId?: string | null }, signal?: AbortSignal) {
+  return apiFetch<{ run: RoutineRunRecord }>(`/api/routines/${encodeURIComponent(routineId)}/runs`, {
+    method: "POST", body: JSON.stringify(input), signal
+  });
+}
+
+export function getRoutineRun(runId: string, signal?: AbortSignal) {
+  return apiFetch<{ run: RoutineRunRecord }>(`/api/routine-runs/${encodeURIComponent(runId)}`, { signal });
+}
+
+export function getActiveRoutineRun(routineId: string, signal?: AbortSignal) {
+  return apiFetch<{ run: RoutineRunRecord | null }>(
+    `/api/routines/${encodeURIComponent(routineId)}/active-run`,
+    { signal }
+  );
+}
+
+export function putRoutineRunStepResult(
+  runId: string,
+  routineStepId: string,
+  input: { expectedUpdatedAt: string; actualValues: RoutineValue[]; proposedNextValues: RoutineValue[]; notes?: string },
+  signal?: AbortSignal
+) {
+  return apiFetch<{ run: RoutineRunRecord }>(
+    `/api/routine-runs/${encodeURIComponent(runId)}/step-results/${encodeURIComponent(routineStepId)}`,
+    { method: "PUT", body: JSON.stringify(input), signal }
+  );
+}
+
+export function finalizeRoutineRun(runId: string, input: { sessionId: string; expectedUpdatedAt: string }, signal?: AbortSignal) {
+  return apiFetch<{ run: RoutineRunRecord; session: RoutineSessionProjection }>(
+    `/api/routine-runs/${encodeURIComponent(runId)}/finalize`,
+    { method: "POST", body: JSON.stringify(input), signal }
+  );
+}
+
+export function listRoutineSessions(options: PageOptions & { routineId?: string } = {}) {
+  const query = new URLSearchParams();
+  if (options.cursor) query.set("cursor", options.cursor);
+  if (options.limit !== undefined) query.set("limit", String(options.limit));
+  if (options.routineId) query.set("routineId", options.routineId);
+  const suffix = query.size ? `?${query.toString()}` : "";
+  return apiFetch<RoutineSessionPageResponse>(`/api/routine-sessions${suffix}`, { signal: options.signal });
+}
+
+export function getRoutineSession(sessionId: string, signal?: AbortSignal) {
+  return apiFetch<{ session: RoutineSessionProjection }>(`/api/routine-sessions/${encodeURIComponent(sessionId)}`, { signal });
+}
+
+export type RoutineSessionAmendmentInput = Omit<AppendRoutineSessionAmendmentCommand, "sessionId" | "createdAt">;
+
+export function appendRoutineSessionAmendment(sessionId: string, input: RoutineSessionAmendmentInput, signal?: AbortSignal) {
+  return apiFetch<{ amendment: RoutineSessionAmendmentRecord; session: RoutineSessionProjection }>(
+    `/api/routine-sessions/${encodeURIComponent(sessionId)}/amendments`,
+    { method: "POST", body: JSON.stringify(input), signal }
+  );
 }
 
 export async function listCollections(options: PageOptions = {}) {

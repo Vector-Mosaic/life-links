@@ -2,6 +2,8 @@ import type {
   AttachmentContentPage,
   AttachmentImageReadOptions,
   AttachmentImageResult,
+  ActivityRecord,
+  CanonicalRoutineCreation,
   LifeLinkMediaRecord,
   ChangeHistory,
   LifeLinkChangePreview,
@@ -16,6 +18,12 @@ import type {
   PublicFieldKey,
   LinkRecord,
   QrViewState,
+  RoutineGroupRecord,
+  RoutineOccurrenceRecord,
+  RoutineSummaryRecord,
+  RoutineRunRecord,
+  RoutineScheduleRecord,
+  RoutineSessionProjection,
   UpdateLifeLinkPatch
 } from "@life-links/core";
 
@@ -130,9 +138,31 @@ export type AgentCollectionListResult =
   | { ok: true; collections: CollectionRecord[]; nextCursor: string | null; truncated: boolean }
   | Exclude<AgentToolControllerActionResult, { ok: true }>;
 
+export type RoutineWorkspaceState = {
+  groups: RoutineGroupRecord[];
+  groupsNextCursor: string | null;
+  activities: ActivityRecord[];
+  activitiesNextCursor: string | null;
+  routines: RoutineSummaryRecord[];
+  routinesNextCursor: string | null;
+  selectedRoutine: CanonicalRoutineCreation | null;
+  schedules: RoutineScheduleRecord[];
+  schedulesNextCursor: string | null;
+  occurrences: RoutineOccurrenceRecord[];
+  occurrencesNextCursor: string | null;
+  activeRun: RoutineRunRecord | null;
+  sessions: RoutineSessionProjection[];
+  sessionsNextCursor: string | null;
+  selectedSession: RoutineSessionProjection | null;
+  includeArchived: boolean;
+  loading: boolean;
+  error: string;
+};
+
 export type LifeLinksWorkspaceSnapshot = {
   changeHistory: ChangeHistory;
   agentChangeConfirmation: LifeLinkChangePreview | null;
+  routineWorkspace: RoutineWorkspaceState;
   workspaceMode: "hierarchies" | "collections";
   hierarchyParentId: string | null;
   hierarchyParentDetail: LifeLinkDetail | null;

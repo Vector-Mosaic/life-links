@@ -11,6 +11,9 @@ import {
   parseQrId,
   summarizeLifeLink,
   type CollectionPatch,
+  type ActivityPatch,
+  type ActivityRecord,
+  type CanonicalRoutineCreation,
   type ChangeHistory,
   type LifeLinkChangePreview,
   type LifeLinkChangeResult,
@@ -25,6 +28,12 @@ import {
   type LifeLinkSummary,
   type LinkRecord,
   type QrViewState,
+  type RoutineGroupPatch,
+  type RoutineGroupRecord,
+  type RoutinePatch,
+  type RoutineSchedulePatch,
+  type RoutineSessionProjection,
+  type RoutineValue,
   type UpdateLifeLinkPatch
 } from "@life-links/core";
 
@@ -36,20 +45,49 @@ import {
   getChangeHistory,
   undoChange,
   addCollectionMember,
+  appendRoutineSessionAmendment,
   clearLifeLinkQrBinding,
   createCollection,
+  createRoutine,
+  createRoutineActivity,
+  createRoutineGroup,
+  createRoutineSchedule,
   createCollectionSection,
   getCollection,
+  getActiveRoutineRun,
+  getRoutine,
+  getRoutineRun,
+  getRoutineSession,
   listCollections,
+  listRoutineActivities,
+  listRoutineGroups,
+  listRoutineOccurrences,
+  listRoutines,
+  listRoutineSchedules,
+  listRoutineSessions,
   listCollectionMembers,
   listLifeLinkCollectionMemberships,
   removeCollectionMember,
   removeCollectionSection,
+  finalizeRoutineRun,
+  putRoutineRunStepResult,
+  reviseRoutine,
   replaceCollectionSectionAssignments,
   setLifeLinkQrBinding,
   updateCollection,
   updateCollectionSection,
+  updateRoutine,
+  updateRoutineActivity,
+  updateRoutineGroup,
+  updateRoutineSchedule,
+  startRoutineRun,
+  type ActivityCreateInput,
   type CollectionCreateInput,
+  type RoutineCreateInput,
+  type RoutineOccurrenceListOptions,
+  type RoutineRevisionCreateInput,
+  type RoutineScheduleCreateInput,
+  type RoutineSessionAmendmentInput,
   attachQr,
   claimQr,
   connectAgent,
@@ -108,6 +146,7 @@ import type {
   InventoryFilter,
   LifeLinkBranchState,
   LifeLinksWorkspaceSnapshot,
+  RoutineWorkspaceState,
   ThemeMode,
   WorkspaceView
 } from "./types";
@@ -118,6 +157,7 @@ export type LifeLinksWorkspaceApi = {
   applyLifeLinkChange: typeof applyLifeLinkChange;
   getChangeHistory: typeof getChangeHistory;
   undoChange: typeof undoChange;
+  appendRoutineSessionAmendment: typeof appendRoutineSessionAmendment;
   addCollectionMember: typeof addCollectionMember;
   clearLifeLinkQrBinding: typeof clearLifeLinkQrBinding;
   createCollection: typeof createCollection;
@@ -132,6 +172,28 @@ export type LifeLinksWorkspaceApi = {
   setLifeLinkQrBinding: typeof setLifeLinkQrBinding;
   updateCollection: typeof updateCollection;
   updateCollectionSection: typeof updateCollectionSection;
+  createRoutine: typeof createRoutine;
+  createRoutineActivity: typeof createRoutineActivity;
+  createRoutineGroup: typeof createRoutineGroup;
+  createRoutineSchedule: typeof createRoutineSchedule;
+  finalizeRoutineRun: typeof finalizeRoutineRun;
+  getRoutine: typeof getRoutine;
+  getActiveRoutineRun: typeof getActiveRoutineRun;
+  getRoutineRun: typeof getRoutineRun;
+  getRoutineSession: typeof getRoutineSession;
+  listRoutineActivities: typeof listRoutineActivities;
+  listRoutineGroups: typeof listRoutineGroups;
+  listRoutineOccurrences: typeof listRoutineOccurrences;
+  listRoutines: typeof listRoutines;
+  listRoutineSchedules: typeof listRoutineSchedules;
+  listRoutineSessions: typeof listRoutineSessions;
+  putRoutineRunStepResult: typeof putRoutineRunStepResult;
+  reviseRoutine: typeof reviseRoutine;
+  startRoutineRun: typeof startRoutineRun;
+  updateRoutine: typeof updateRoutine;
+  updateRoutineActivity: typeof updateRoutineActivity;
+  updateRoutineGroup: typeof updateRoutineGroup;
+  updateRoutineSchedule: typeof updateRoutineSchedule;
   getConfig: typeof getConfig;
   getMe: typeof getMe;
   login: typeof login;
@@ -164,6 +226,7 @@ const defaultApi: LifeLinksWorkspaceApi = {
   applyLifeLinkChange,
   getChangeHistory,
   undoChange,
+  appendRoutineSessionAmendment,
   addCollectionMember,
   clearLifeLinkQrBinding,
   createCollection,
@@ -178,6 +241,28 @@ const defaultApi: LifeLinksWorkspaceApi = {
   setLifeLinkQrBinding,
   updateCollection,
   updateCollectionSection,
+  createRoutine,
+  createRoutineActivity,
+  createRoutineGroup,
+  createRoutineSchedule,
+  finalizeRoutineRun,
+  getRoutine,
+  getActiveRoutineRun,
+  getRoutineRun,
+  getRoutineSession,
+  listRoutineActivities,
+  listRoutineGroups,
+  listRoutineOccurrences,
+  listRoutines,
+  listRoutineSchedules,
+  listRoutineSessions,
+  putRoutineRunStepResult,
+  reviseRoutine,
+  startRoutineRun,
+  updateRoutine,
+  updateRoutineActivity,
+  updateRoutineGroup,
+  updateRoutineSchedule,
   getConfig,
   getMe,
   login,
@@ -216,6 +301,31 @@ export interface LifeLinksWorkspaceActions {
   previewLifeLinkChange(input: PreviewLifeLinkChangeInput): Promise<LifeLinkChangePreview>;
   applyLifeLinkChange(previewId: string): Promise<LifeLinkChangeResult>;
   undoLastChange(): Promise<LifeLinkChangeResult>;
+  loadRoutineWorkspace(options?: { includeArchived?: boolean; signal?: AbortSignal }): Promise<void>;
+  loadMoreRoutineGroups(signal?: AbortSignal): Promise<void>;
+  loadMoreRoutineActivities(signal?: AbortSignal): Promise<void>;
+  loadMoreRoutines(signal?: AbortSignal): Promise<void>;
+  createRoutineGroup(input: { id?: string; title: string; notes?: string }, signal?: AbortSignal): Promise<RoutineGroupRecord>;
+  updateRoutineGroup(groupId: string, expectedUpdatedAt: string, patch: RoutineGroupPatch, signal?: AbortSignal): Promise<RoutineGroupRecord>;
+  createRoutineActivity(input: ActivityCreateInput, signal?: AbortSignal): Promise<ActivityRecord>;
+  updateRoutineActivity(activityId: string, expectedUpdatedAt: string, patch: ActivityPatch, signal?: AbortSignal): Promise<ActivityRecord>;
+  createRoutine(input: RoutineCreateInput, signal?: AbortSignal): Promise<void>;
+  selectRoutine(routineId: string, signal?: AbortSignal): Promise<void>;
+  loadActiveRoutineRun(routineId: string, signal?: AbortSignal): Promise<void>;
+  updateRoutine(routineId: string, expectedUpdatedAt: string, patch: RoutinePatch, signal?: AbortSignal): Promise<void>;
+  reviseRoutine(routineId: string, input: RoutineRevisionCreateInput, signal?: AbortSignal): Promise<void>;
+  createRoutineSchedule(routineId: string, input: RoutineScheduleCreateInput, signal?: AbortSignal): Promise<void>;
+  updateRoutineSchedule(scheduleId: string, expectedUpdatedAt: string, patch: RoutineSchedulePatch, signal?: AbortSignal): Promise<void>;
+  loadRoutineOccurrences(options?: RoutineOccurrenceListOptions): Promise<void>;
+  startRoutineRun(routineId: string, input: { id: string; occurrenceId?: string | null }, signal?: AbortSignal): Promise<void>;
+  resumeRoutineRun(runId: string, signal?: AbortSignal): Promise<void>;
+  putRoutineRunStepResult(runId: string, routineStepId: string, input: {
+    expectedUpdatedAt: string; actualValues: RoutineValue[]; proposedNextValues: RoutineValue[]; notes?: string;
+  }, signal?: AbortSignal): Promise<void>;
+  finalizeRoutineRun(runId: string, input: { sessionId: string; expectedUpdatedAt: string }, signal?: AbortSignal): Promise<void>;
+  loadRoutineSessions(options?: { cursor?: string | null; limit?: number; routineId?: string; signal?: AbortSignal }): Promise<void>;
+  selectRoutineSession(sessionId: string, signal?: AbortSignal): Promise<void>;
+  appendRoutineSessionAmendment(sessionId: string, input: RoutineSessionAmendmentInput, signal?: AbortSignal): Promise<void>;
   confirmAgentChange(confirmed: boolean): void;
   openHierarchy(parentId?: string | null): Promise<void>;
   activateLifeLink(lifeLinkId: string): Promise<void>;
@@ -303,6 +413,15 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private lifecycle = 0;
   private navigationRevision = 0;
   private ownerRevision = 0;
+  private routineWorkspaceLoadRevision = 0;
+  private routineGroupListRevision = 0;
+  private routineActivityListRevision = 0;
+  private routineListRevision = 0;
+  private routineSelectionRevision = 0;
+  private routineRunLookupRevision = 0;
+  private routineOccurrenceListRevision = 0;
+  private routineSessionListRevision = 0;
+  private routineSessionSelectionRevision = 0;
   private searchRevision = 0;
   private selectionRevision = 0;
   private readonly pendingCreateIds = new Map<string, string>();
@@ -369,6 +488,396 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   getSnapshot = () => this.snapshot;
+
+  async loadRoutineWorkspace(options: { includeArchived?: boolean; signal?: AbortSignal } = {}): Promise<void> {
+    const ownerId = this.snapshot.currentUser?.id;
+    if (!ownerId) return;
+    const ownerRevision = this.ownerRevision;
+    const loadRevision = ++this.routineWorkspaceLoadRevision;
+    const groupListRevision = ++this.routineGroupListRevision;
+    const activityListRevision = ++this.routineActivityListRevision;
+    const routineListRevision = ++this.routineListRevision;
+    const occurrenceListRevision = ++this.routineOccurrenceListRevision;
+    const sessionListRevision = ++this.routineSessionListRevision;
+    const includeArchived = options.includeArchived ?? false;
+    this.updateRoutineWorkspace({ loading: true, error: "", includeArchived });
+    try {
+      const [groups, activities, routines, occurrences, sessions] = await Promise.all([
+        this.api.listRoutineGroups({ includeArchived, signal: options.signal }),
+        this.api.listRoutineActivities({ includeArchived, signal: options.signal }),
+        this.api.listRoutines({ includeArchived, signal: options.signal }),
+        this.api.listRoutineOccurrences({ signal: options.signal }),
+        this.api.listRoutineSessions({ signal: options.signal })
+      ]);
+      options.signal?.throwIfAborted();
+      if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
+          loadRevision !== this.routineWorkspaceLoadRevision) return;
+      this.updateRoutineWorkspace({
+        ...(groupListRevision === this.routineGroupListRevision ? {
+          groups: groups.routineGroups, groupsNextCursor: groups.nextCursor
+        } : {}),
+        ...(activityListRevision === this.routineActivityListRevision ? {
+          activities: activities.activities, activitiesNextCursor: activities.nextCursor
+        } : {}),
+        ...(routineListRevision === this.routineListRevision ? {
+          routines: routines.routines, routinesNextCursor: routines.nextCursor
+        } : {}),
+        ...(occurrenceListRevision === this.routineOccurrenceListRevision ? {
+          occurrences: occurrences.occurrences, occurrencesNextCursor: occurrences.nextCursor
+        } : {}),
+        ...(sessionListRevision === this.routineSessionListRevision ? {
+          sessions: sessions.sessions, sessionsNextCursor: sessions.nextCursor
+        } : {}),
+        loading: false, error: ""
+      });
+    } catch (error) {
+      if (ownerRevision === this.ownerRevision && ownerId === this.snapshot.currentUser?.id &&
+          loadRevision === this.routineWorkspaceLoadRevision) {
+        this.updateRoutineWorkspace({ loading: false, error: messageFromError(error) });
+      }
+      throw error;
+    }
+  }
+
+  async loadMoreRoutineGroups(signal?: AbortSignal): Promise<void> {
+    const cursor = this.snapshot.routineWorkspace.groupsNextCursor;
+    if (!cursor) return;
+    const sameOwner = this.captureRoutineOwner();
+    const revision = ++this.routineGroupListRevision;
+    const page = await this.api.listRoutineGroups({
+      cursor, includeArchived: this.snapshot.routineWorkspace.includeArchived, signal
+    });
+    signal?.throwIfAborted();
+    if (!sameOwner() || revision !== this.routineGroupListRevision) return;
+    this.updateRoutineWorkspace((current) => ({
+      groups: mergeById(current.groups, page.routineGroups), groupsNextCursor: page.nextCursor, error: ""
+    }));
+  }
+
+  async loadMoreRoutineActivities(signal?: AbortSignal): Promise<void> {
+    const cursor = this.snapshot.routineWorkspace.activitiesNextCursor;
+    if (!cursor) return;
+    const sameOwner = this.captureRoutineOwner();
+    const revision = ++this.routineActivityListRevision;
+    const page = await this.api.listRoutineActivities({
+      cursor, includeArchived: this.snapshot.routineWorkspace.includeArchived, signal
+    });
+    signal?.throwIfAborted();
+    if (!sameOwner() || revision !== this.routineActivityListRevision) return;
+    this.updateRoutineWorkspace((current) => ({
+      activities: mergeById(current.activities, page.activities), activitiesNextCursor: page.nextCursor, error: ""
+    }));
+  }
+
+  async loadMoreRoutines(signal?: AbortSignal): Promise<void> {
+    const cursor = this.snapshot.routineWorkspace.routinesNextCursor;
+    if (!cursor) return;
+    const sameOwner = this.captureRoutineOwner();
+    const revision = ++this.routineListRevision;
+    const page = await this.api.listRoutines({
+      cursor, includeArchived: this.snapshot.routineWorkspace.includeArchived, signal
+    });
+    signal?.throwIfAborted();
+    if (!sameOwner() || revision !== this.routineListRevision) return;
+    this.updateRoutineWorkspace((current) => ({
+      routines: mergeById(current.routines, page.routines), routinesNextCursor: page.nextCursor, error: ""
+    }));
+  }
+
+  async createRoutineGroup(input: { id?: string; title: string; notes?: string }, signal?: AbortSignal): Promise<RoutineGroupRecord> {
+    const sameOwner = this.captureRoutineOwner();
+    const { routineGroup } = await this.api.createRoutineGroup(input, signal);
+    signal?.throwIfAborted();
+    if (sameOwner()) this.updateRoutineWorkspace((current) => ({ groups: mergeById(current.groups, [routineGroup]), error: "" }));
+    return routineGroup;
+  }
+
+  async updateRoutineGroup(
+    groupId: string, expectedUpdatedAt: string, patch: RoutineGroupPatch, signal?: AbortSignal
+  ): Promise<RoutineGroupRecord> {
+    const sameOwner = this.captureRoutineOwner();
+    const { routineGroup } = await this.api.updateRoutineGroup(groupId, expectedUpdatedAt, patch, signal);
+    signal?.throwIfAborted();
+    if (sameOwner()) this.updateRoutineWorkspace((current) => ({ groups: mergeById(current.groups, [routineGroup]), error: "" }));
+    return routineGroup;
+  }
+
+  async createRoutineActivity(input: ActivityCreateInput, signal?: AbortSignal): Promise<ActivityRecord> {
+    const sameOwner = this.captureRoutineOwner();
+    const { activity } = await this.api.createRoutineActivity(input, signal);
+    signal?.throwIfAborted();
+    if (sameOwner()) this.updateRoutineWorkspace((current) => ({ activities: mergeById(current.activities, [activity]), error: "" }));
+    return activity;
+  }
+
+  async updateRoutineActivity(
+    activityId: string, expectedUpdatedAt: string, patch: ActivityPatch, signal?: AbortSignal
+  ): Promise<ActivityRecord> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = this.routineSelectionRevision;
+    const selectedRoutineId = this.snapshot.routineWorkspace.selectedRoutine?.currentRevision.steps
+      .some((step) => step.activityId === activityId)
+      ? this.snapshot.routineWorkspace.selectedRoutine.routine.id
+      : null;
+    const { activity } = await this.api.updateRoutineActivity(activityId, expectedUpdatedAt, patch, signal);
+    signal?.throwIfAborted();
+    if (sameOwner()) {
+      this.updateRoutineWorkspace((current) => ({ activities: mergeById(current.activities, [activity]), error: "" }));
+      if (activity.archivedAt && selectedRoutineId && selectionRevision === this.routineSelectionRevision) {
+        this.clearSelectedRoutinePlanningState(selectedRoutineId);
+        await this.refreshSelectedRoutineOperationalState(selectedRoutineId, selectionRevision, signal, true)
+          .catch(() => undefined);
+      }
+    }
+    return activity;
+  }
+
+  async createRoutine(input: RoutineCreateInput, signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = ++this.routineSelectionRevision;
+    const { routine } = await this.api.createRoutine(input, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || selectionRevision !== this.routineSelectionRevision) return;
+    this.updateRoutineWorkspace((current) => ({
+      routines: mergeById(current.routines, [routineSummaryFromDetail(routine)]),
+      selectedRoutine: routine,
+      schedules: [], schedulesNextCursor: null, activeRun: null, error: ""
+    }));
+  }
+
+  async selectRoutine(routineId: string, signal?: AbortSignal): Promise<void> {
+    const ownerId = this.snapshot.currentUser?.id;
+    if (!ownerId) return;
+    const ownerRevision = this.ownerRevision;
+    const selectionRevision = ++this.routineSelectionRevision;
+    const runLookupRevision = ++this.routineRunLookupRevision;
+    const [routine, schedules, activeRun] = await Promise.all([
+      this.api.getRoutine(routineId, signal),
+      this.api.listRoutineSchedules(routineId, { signal }),
+      this.api.getActiveRoutineRun(routineId, signal)
+    ]);
+    signal?.throwIfAborted();
+    if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
+        selectionRevision !== this.routineSelectionRevision) return;
+    this.updateRoutineWorkspace((current) => ({
+      routines: mergeById(current.routines, [routineSummaryFromDetail(routine.routine)]),
+      selectedRoutine: routine.routine,
+      schedules: schedules.schedules,
+      schedulesNextCursor: schedules.nextCursor,
+      activeRun: runLookupRevision === this.routineRunLookupRevision ? activeRun.run : current.activeRun,
+      error: ""
+    }));
+  }
+
+  async loadActiveRoutineRun(routineId: string, signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureRoutineOwner();
+    const revision = ++this.routineRunLookupRevision;
+    const { run } = await this.api.getActiveRoutineRun(routineId, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || revision !== this.routineRunLookupRevision) return;
+    this.updateRoutineWorkspace((current) => current.selectedRoutine?.routine.id === routineId
+      ? { activeRun: run, error: "" }
+      : {});
+  }
+
+  async updateRoutine(
+    routineId: string, expectedUpdatedAt: string, patch: RoutinePatch, signal?: AbortSignal
+  ): Promise<void> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = ++this.routineSelectionRevision;
+    const { routine } = await this.api.updateRoutine(routineId, expectedUpdatedAt, patch, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || selectionRevision !== this.routineSelectionRevision) return;
+    this.updateRoutineWorkspace((current) => ({
+      routines: mergeById(current.routines, [routineSummaryFromDetail(routine)]),
+      selectedRoutine: current.selectedRoutine?.routine.id === routine.routine.id ? routine : current.selectedRoutine,
+      error: ""
+    }));
+    if (routine.routine.archivedAt && this.snapshot.routineWorkspace.selectedRoutine?.routine.id === routineId) {
+      this.clearSelectedRoutinePlanningState(routineId);
+      await this.refreshSelectedRoutineOperationalState(routineId, selectionRevision, signal, true)
+        .catch(() => undefined);
+    }
+  }
+
+  async reviseRoutine(routineId: string, input: RoutineRevisionCreateInput, signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = ++this.routineSelectionRevision;
+    const { routine } = await this.api.reviseRoutine(routineId, input, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || selectionRevision !== this.routineSelectionRevision) return;
+    this.updateRoutineWorkspace((current) => ({
+      routines: mergeById(current.routines, [routineSummaryFromDetail(routine)]), selectedRoutine: routine, error: ""
+    }));
+  }
+
+  async createRoutineSchedule(routineId: string, input: RoutineScheduleCreateInput, signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = ++this.routineSelectionRevision;
+    const { schedule } = await this.api.createRoutineSchedule(routineId, input, signal);
+    signal?.throwIfAborted();
+    if (sameOwner() && selectionRevision === this.routineSelectionRevision) {
+      ++this.routineOccurrenceListRevision;
+      this.updateRoutineWorkspace((current) => current.selectedRoutine?.routine.id === routineId
+        ? {
+            schedules: mergeById(current.schedules, [schedule]),
+            occurrences: [], occurrencesNextCursor: null, error: ""
+          }
+        : {});
+      await this.refreshSelectedRoutineOperationalState(routineId, selectionRevision, signal, false)
+        .catch(() => undefined);
+    }
+  }
+
+  async updateRoutineSchedule(
+    scheduleId: string, expectedUpdatedAt: string, patch: RoutineSchedulePatch, signal?: AbortSignal
+  ): Promise<void> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = ++this.routineSelectionRevision;
+    const { schedule } = await this.api.updateRoutineSchedule(scheduleId, expectedUpdatedAt, patch, signal);
+    signal?.throwIfAborted();
+    if (sameOwner() && selectionRevision === this.routineSelectionRevision) {
+      ++this.routineOccurrenceListRevision;
+      this.updateRoutineWorkspace((current) => current.selectedRoutine?.routine.id === schedule.routineId
+        ? {
+            schedules: mergeById(current.schedules, [schedule]),
+            occurrences: [], occurrencesNextCursor: null, error: ""
+          }
+        : {});
+      await this.refreshSelectedRoutineOperationalState(schedule.routineId, selectionRevision, signal, false)
+        .catch(() => undefined);
+    }
+  }
+
+  async loadRoutineOccurrences(options: RoutineOccurrenceListOptions = {}): Promise<void> {
+    const ownerId = this.snapshot.currentUser?.id;
+    if (!ownerId) return;
+    const ownerRevision = this.ownerRevision;
+    const listRevision = ++this.routineOccurrenceListRevision;
+    const page = await this.api.listRoutineOccurrences(options);
+    options.signal?.throwIfAborted();
+    if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
+        listRevision !== this.routineOccurrenceListRevision) return;
+    this.updateRoutineWorkspace((current) => ({
+      occurrences: options.cursor ? mergeById(current.occurrences, page.occurrences) : page.occurrences,
+      occurrencesNextCursor: page.nextCursor, error: ""
+    }));
+  }
+
+  async startRoutineRun(
+    routineId: string, input: { id: string; occurrenceId?: string | null }, signal?: AbortSignal
+  ): Promise<void> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = this.routineSelectionRevision;
+    const revision = ++this.routineRunLookupRevision;
+    const { run } = await this.api.startRoutineRun(routineId, input, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || revision !== this.routineRunLookupRevision || selectionRevision !== this.routineSelectionRevision) return;
+    this.updateRoutineWorkspace((current) => current.selectedRoutine?.routine.id === routineId && run.routineId === routineId
+      ? { activeRun: run.status === "active" ? run : null, error: "" }
+      : {});
+  }
+
+  async resumeRoutineRun(runId: string, signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = this.routineSelectionRevision;
+    const selectedRoutineId = this.snapshot.routineWorkspace.selectedRoutine?.routine.id;
+    const revision = ++this.routineRunLookupRevision;
+    const { run } = await this.api.getRoutineRun(runId, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || revision !== this.routineRunLookupRevision || selectionRevision !== this.routineSelectionRevision) return;
+    this.updateRoutineWorkspace((current) => selectedRoutineId && current.selectedRoutine?.routine.id === selectedRoutineId &&
+      run.routineId === selectedRoutineId && run.id === runId
+      ? { activeRun: run.status === "active" ? run : null, error: "" }
+      : {});
+  }
+
+  async putRoutineRunStepResult(
+    runId: string,
+    routineStepId: string,
+    input: { expectedUpdatedAt: string; actualValues: RoutineValue[]; proposedNextValues: RoutineValue[]; notes?: string },
+    signal?: AbortSignal
+  ): Promise<void> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = this.routineSelectionRevision;
+    const activeRunId = this.snapshot.routineWorkspace.activeRun?.id;
+    const revision = ++this.routineRunLookupRevision;
+    const { run } = await this.api.putRoutineRunStepResult(runId, routineStepId, input, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || revision !== this.routineRunLookupRevision || selectionRevision !== this.routineSelectionRevision) return;
+    this.updateRoutineWorkspace((current) => activeRunId === runId && current.activeRun?.id === runId && run.id === runId &&
+      current.selectedRoutine?.routine.id === run.routineId ? { activeRun: run, error: "" } : {});
+  }
+
+  async finalizeRoutineRun(
+    runId: string, input: { sessionId: string; expectedUpdatedAt: string }, signal?: AbortSignal
+  ): Promise<void> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = this.routineSelectionRevision;
+    const selectedRoutineId = this.snapshot.routineWorkspace.selectedRoutine?.routine.id;
+    const activeRunId = this.snapshot.routineWorkspace.activeRun?.id;
+    const runRevision = ++this.routineRunLookupRevision;
+    const sessionSelectionRevision = ++this.routineSessionSelectionRevision;
+    const { session } = await this.api.finalizeRoutineRun(runId, input, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner()) return;
+    this.updateRoutineWorkspace((current) => ({
+      activeRun: runRevision === this.routineRunLookupRevision && selectionRevision === this.routineSelectionRevision &&
+        activeRunId === runId && current.activeRun?.id === runId && selectedRoutineId === session.session.routineId &&
+        current.selectedRoutine?.routine.id === selectedRoutineId ? null : current.activeRun,
+      sessions: mergeRoutineSessions(current.sessions, [session]),
+      selectedSession: sessionSelectionRevision === this.routineSessionSelectionRevision &&
+        selectionRevision === this.routineSelectionRevision && activeRunId === runId &&
+        selectedRoutineId === session.session.routineId && current.selectedRoutine?.routine.id === selectedRoutineId
+        ? session : current.selectedSession,
+      error: ""
+    }));
+  }
+
+  async loadRoutineSessions(options: { cursor?: string | null; limit?: number; routineId?: string; signal?: AbortSignal } = {}): Promise<void> {
+    const ownerId = this.snapshot.currentUser?.id;
+    if (!ownerId) return;
+    const ownerRevision = this.ownerRevision;
+    const listRevision = ++this.routineSessionListRevision;
+    const page = await this.api.listRoutineSessions(options);
+    options.signal?.throwIfAborted();
+    if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
+        listRevision !== this.routineSessionListRevision) return;
+    this.updateRoutineWorkspace((current) => ({
+      sessions: options.cursor ? mergeRoutineSessions(current.sessions, page.sessions) : page.sessions,
+      sessionsNextCursor: page.nextCursor, error: ""
+    }));
+  }
+
+  async selectRoutineSession(sessionId: string, signal?: AbortSignal): Promise<void> {
+    const ownerId = this.snapshot.currentUser?.id;
+    if (!ownerId) return;
+    const ownerRevision = this.ownerRevision;
+    const selectionRevision = ++this.routineSessionSelectionRevision;
+    const { session } = await this.api.getRoutineSession(sessionId, signal);
+    signal?.throwIfAborted();
+    if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
+        selectionRevision !== this.routineSessionSelectionRevision) return;
+    this.updateRoutineWorkspace((current) => ({
+      sessions: mergeRoutineSessions(current.sessions, [session]), selectedSession: session, error: ""
+    }));
+  }
+
+  async appendRoutineSessionAmendment(
+    sessionId: string, input: RoutineSessionAmendmentInput, signal?: AbortSignal
+  ): Promise<void> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = ++this.routineSessionSelectionRevision;
+    const { session } = await this.api.appendRoutineSessionAmendment(sessionId, input, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner()) return;
+    this.updateRoutineWorkspace((current) => ({
+      sessions: mergeRoutineSessions(current.sessions, [session]),
+      selectedSession: selectionRevision === this.routineSessionSelectionRevision &&
+        current.selectedSession?.session.id === sessionId ? session : current.selectedSession,
+      error: ""
+    }));
+  }
 
   async getChangeHistory(): Promise<ChangeHistory> {
     const ownerId = this.snapshot.currentUser?.id;
@@ -2488,6 +2997,52 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     return this.active && this.lifecycle === lifecycle;
   }
 
+  private updateRoutineWorkspace(
+    patch: Partial<RoutineWorkspaceState> | ((current: RoutineWorkspaceState) => Partial<RoutineWorkspaceState>)
+  ) {
+    this.update((current) => {
+      const routinePatch = typeof patch === "function" ? patch(current.routineWorkspace) : patch;
+      return { routineWorkspace: { ...current.routineWorkspace, ...routinePatch } };
+    });
+  }
+
+  private captureRoutineOwner(): () => boolean {
+    const ownerId = this.snapshot.currentUser?.id;
+    const ownerRevision = this.ownerRevision;
+    return () => Boolean(ownerId) && ownerRevision === this.ownerRevision && ownerId === this.snapshot.currentUser?.id;
+  }
+
+  private clearSelectedRoutinePlanningState(routineId: string) {
+    ++this.routineOccurrenceListRevision;
+    this.updateRoutineWorkspace((current) => current.selectedRoutine?.routine.id === routineId
+      ? { schedules: [], schedulesNextCursor: null, occurrences: [], occurrencesNextCursor: null }
+      : {});
+  }
+
+  private async refreshSelectedRoutineOperationalState(
+    routineId: string,
+    selectionRevision: number,
+    signal: AbortSignal | undefined,
+    includeSchedules: boolean
+  ) {
+    const sameOwner = this.captureRoutineOwner();
+    const occurrenceRevision = ++this.routineOccurrenceListRevision;
+    const [occurrences, schedules] = await Promise.all([
+      this.api.listRoutineOccurrences({ routineId, signal }),
+      includeSchedules ? this.api.listRoutineSchedules(routineId, { signal }) : Promise.resolve(null)
+    ]);
+    signal?.throwIfAborted();
+    if (!sameOwner() || selectionRevision !== this.routineSelectionRevision ||
+        occurrenceRevision !== this.routineOccurrenceListRevision ||
+        this.snapshot.routineWorkspace.selectedRoutine?.routine.id !== routineId) return;
+    this.updateRoutineWorkspace({
+      occurrences: occurrences.occurrences,
+      occurrencesNextCursor: occurrences.nextCursor,
+      ...(schedules ? { schedules: schedules.schedules, schedulesNextCursor: schedules.nextCursor } : {}),
+      error: ""
+    });
+  }
+
   private update(
     patch:
       | Partial<LifeLinksWorkspaceSnapshot>
@@ -2519,7 +3074,18 @@ function emptyFieldLedgerState() {
     selectedCollection: null, collectionMembers: [], collectionSections: [], collectionMemberMemberships: {},
     collectionMemberDetails: {}, collectionLoading: false, collectionComplete: false,
     selectedLifeLinkMemberships: [], membershipsLoading: false, membershipsComplete: false,
-    lifeLinkMemberships: {}, lifeLinkMembershipsComplete: {}, collectionSearchResults: [], collectionSearchComplete: false
+    lifeLinkMemberships: {}, lifeLinkMembershipsComplete: {}, collectionSearchResults: [], collectionSearchComplete: false,
+    routineWorkspace: emptyRoutineWorkspaceState()
+  };
+}
+
+function emptyRoutineWorkspaceState(): RoutineWorkspaceState {
+  return {
+    groups: [], groupsNextCursor: null, activities: [], activitiesNextCursor: null,
+    routines: [], routinesNextCursor: null, selectedRoutine: null,
+    schedules: [], schedulesNextCursor: null, occurrences: [], occurrencesNextCursor: null,
+    activeRun: null, sessions: [], sessionsNextCursor: null, selectedSession: null,
+    includeArchived: false, loading: false, error: ""
   };
 }
 
@@ -2542,6 +3108,23 @@ async function readAllPages<T>(read: (cursor: string | null) => Promise<{ items:
 function mergeById<T extends { id: string }>(existing: T[], incoming: T[]): T[] {
   const records = new Map(existing.map((item) => [item.id, item]));
   for (const item of incoming) records.set(item.id, item);
+  return [...records.values()];
+}
+
+function routineSummaryFromDetail(detail: CanonicalRoutineCreation) {
+  return {
+    ...detail.routine,
+    revisionNumber: detail.currentRevision.revision.revisionNumber,
+    title: detail.currentRevision.revision.title,
+    purpose: detail.currentRevision.revision.purpose
+  };
+}
+
+function mergeRoutineSessions(
+  existing: RoutineSessionProjection[], incoming: RoutineSessionProjection[]
+): RoutineSessionProjection[] {
+  const records = new Map(existing.map((item) => [item.session.id, item]));
+  for (const item of incoming) records.set(item.session.id, item);
   return [...records.values()];
 }
 
