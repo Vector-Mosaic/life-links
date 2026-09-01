@@ -123,9 +123,12 @@ import {
   collectionMemberIdFromPath,
   createWindowWorkspaceRoute,
   isCollectionsPath,
+  isRoutinesPath,
   ownerCollectionPath,
   ownerLifeLinkPath,
+  ownerRoutinePath,
   qrIdFromPath,
+  routineIdFromPath,
   type WorkspaceBrowserRoute
 } from "./routes";
 import type {
@@ -330,6 +333,8 @@ export interface LifeLinksWorkspaceActions {
   openHierarchy(parentId?: string | null): Promise<void>;
   activateLifeLink(lifeLinkId: string): Promise<void>;
   openCollections(): Promise<void>;
+  openRoutines(updateHistory?: boolean): Promise<void>;
+  openRoutine(routineId: string, updateHistory?: boolean): Promise<void>;
   loadCollections(): Promise<void>;
   openCollection(collectionId: string, selectedLifeLinkId?: string): Promise<void>;
   selectCollectionMember(lifeLinkId: string): Promise<void>;
@@ -651,10 +656,19 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const ownerRevision = this.ownerRevision;
     const selectionRevision = ++this.routineSelectionRevision;
     const runLookupRevision = ++this.routineRunLookupRevision;
-    const [routine, schedules, activeRun] = await Promise.all([
+    const occurrenceListRevision = ++this.routineOccurrenceListRevision;
+    const sessionListRevision = ++this.routineSessionListRevision;
+    ++this.routineSessionSelectionRevision;
+    this.updateRoutineWorkspace({
+      occurrences: [], occurrencesNextCursor: null,
+      sessions: [], sessionsNextCursor: null, selectedSession: null
+    });
+    const [routine, schedules, activeRun, occurrences, sessions] = await Promise.all([
       this.api.getRoutine(routineId, signal),
       this.api.listRoutineSchedules(routineId, { signal }),
-      this.api.getActiveRoutineRun(routineId, signal)
+      this.api.getActiveRoutineRun(routineId, signal),
+      this.api.listRoutineOccurrences({ routineId, signal }),
+      this.api.listRoutineSessions({ routineId, signal })
     ]);
     signal?.throwIfAborted();
     if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
@@ -665,6 +679,12 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       schedules: schedules.schedules,
       schedulesNextCursor: schedules.nextCursor,
       activeRun: runLookupRevision === this.routineRunLookupRevision ? activeRun.run : current.activeRun,
+      ...(occurrenceListRevision === this.routineOccurrenceListRevision ? {
+        occurrences: occurrences.occurrences, occurrencesNextCursor: occurrences.nextCursor
+      } : {}),
+      ...(sessionListRevision === this.routineSessionListRevision ? {
+        sessions: sessions.sessions, sessionsNextCursor: sessions.nextCursor
+      } : {}),
       error: ""
     }));
   }
@@ -947,6 +967,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const selectedId = this.snapshot.selectedLifeLinkId;
     const parentId = this.snapshot.hierarchyParentId;
     const collectionId = this.snapshot.selectedCollection?.id;
+    const routineId = this.snapshot.routineWorkspace.selectedRoutine?.routine.id;
     const mode = this.snapshot.workspaceMode;
     const detailsOpen = this.snapshot.detailsOpen;
     this.update({ lifeLinkChildren: {}, lifeLinkMemberships: {}, lifeLinkMembershipsComplete: {},
@@ -955,7 +976,10 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       collectionMemberMemberships: {}, collectionsComplete: false, collectionComplete: false });
     await this.refreshOwnerLibrary();
     if (!current()) return;
-    if (mode === "collections") {
+    if (mode === "routines") {
+      if (routineId) await restore(this.openRoutine(routineId, false));
+      else await restore(this.openRoutines(false));
+    } else if (mode === "collections") {
       await this.loadCollections();
       if (!current()) return;
       if (collectionId && this.snapshot.collections.some((collection) => collection.id === collectionId)) {
@@ -1153,6 +1177,9 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async openHierarchy(parentId: string | null = null, updateHistory = true) {
+    ++this.routineSelectionRevision;
+    ++this.routineRunLookupRevision;
+    ++this.routineSessionSelectionRevision;
     if (parentId) {
       await this.selectLifeLink({ lifeLinkId: parentId, source: "route" }, updateHistory);
       if (this.snapshot.selectedLifeLinkId === parentId && this.snapshot.selectedLifeLinkDetail?.lifeLink.browsingRole === "container") {
@@ -1179,6 +1206,9 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
 
   async openCollections(updateHistory = true, options: WorkspaceCommandOptions = {}) {
     this.assertCommandActive(options);
+    ++this.routineSelectionRevision;
+    ++this.routineRunLookupRevision;
+    ++this.routineSessionSelectionRevision;
     const navigation = ++this.navigationRevision;
     this.update({
       workspaceMode: "collections", selectedCollection: null, collectionMembers: [], collectionSections: [],
@@ -1193,6 +1223,66 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     catch (error) {
       if (this.navigationRevision === navigation) this.update({ error: messageFromError(error) });
       if (options.throwOnError) throw error;
+    }
+  }
+
+  async openRoutines(updateHistory = true) {
+    ++this.navigationRevision;
+    ++this.routineSelectionRevision;
+    ++this.routineRunLookupRevision;
+    ++this.routineSessionSelectionRevision;
+    this.update({
+      workspaceMode: "routines", selectedCollection: null, collectionMembers: [], collectionSections: [],
+      collectionMemberDetails: {}, collectionMemberMemberships: {}, collectionComplete: false, collectionLoading: false,
+      selectedLifeLinkId: null, selectedLifeLinkDetail: null, selectedLifeLinkMemberships: [],
+      membershipsComplete: true, membershipsLoading: false, detailsOpen: false,
+      activeView: "workspace", routePathname: "/routines", routeQrId: null, routeLifeLinkId: null,
+      publicQrState: null, canonicalEditingId: null, error: ""
+    });
+    this.updateRoutineWorkspace({
+      selectedRoutine: null, schedules: [], schedulesNextCursor: null, activeRun: null,
+      occurrences: [], occurrencesNextCursor: null,
+      sessions: [], sessionsNextCursor: null, selectedSession: null
+    });
+    if (updateHistory && this.route.pathname() !== "/routines") this.route.push("/routines");
+    await this.loadRoutineWorkspace().catch((error) => {
+      if (this.snapshot.workspaceMode === "routines" && this.snapshot.routePathname === "/routines") {
+        this.updateRoutineWorkspace({ error: messageFromError(error), loading: false });
+      }
+    });
+  }
+
+  async openRoutine(routineId: string, updateHistory = true) {
+    const navigation = ++this.navigationRevision;
+    ++this.routineSelectionRevision;
+    ++this.routineRunLookupRevision;
+    ++this.routineSessionSelectionRevision;
+    const pathname = ownerRoutinePath(routineId);
+    this.update({
+      workspaceMode: "routines", selectedCollection: null, collectionMembers: [], collectionSections: [],
+      collectionMemberDetails: {}, collectionMemberMemberships: {}, collectionComplete: false, collectionLoading: false,
+      selectedLifeLinkId: null, selectedLifeLinkDetail: null, selectedLifeLinkMemberships: [],
+      membershipsComplete: true, membershipsLoading: false, detailsOpen: false,
+      activeView: "workspace", routePathname: pathname, routeQrId: null, routeLifeLinkId: null,
+      publicQrState: null, canonicalEditingId: null, error: ""
+    });
+    this.updateRoutineWorkspace({
+      selectedRoutine: null, schedules: [], schedulesNextCursor: null,
+      occurrences: [], occurrencesNextCursor: null, activeRun: null,
+      sessions: [], sessionsNextCursor: null, selectedSession: null
+    });
+    if (updateHistory && this.route.pathname() !== pathname) this.route.push(pathname);
+    try {
+      await this.loadRoutineWorkspace();
+      if (navigation !== this.navigationRevision) return;
+      await this.selectRoutine(routineId);
+      if (navigation === this.navigationRevision && this.snapshot.routineWorkspace.selectedRoutine?.routine.id === routineId) {
+        this.update({ detailsOpen: true });
+      }
+    } catch (error) {
+      if (navigation === this.navigationRevision) {
+        this.updateRoutineWorkspace({ error: messageFromError(error), loading: false });
+      }
     }
   }
 
@@ -2154,9 +2244,13 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       if (nextRoute.surface === "public-qr") {
         await this.refreshActiveQr(nextRoute.qrId);
       } else {
-        if (!isCollectionsPath(this.route.pathname())) await this.refreshOwnerLibrary(result.user);
+        if (!isCollectionsPath(this.route.pathname()) && !isRoutinesPath(this.route.pathname())) {
+          await this.refreshOwnerLibrary(result.user);
+        }
       }
-      if (nextRoute.surface === "owner-workspace" && (nextRoute.lifeLinkId || isCollectionsPath(this.route.pathname()) || this.route.pathname() === "/life-links")) {
+      if (nextRoute.surface === "owner-workspace" &&
+          (nextRoute.lifeLinkId || isCollectionsPath(this.route.pathname()) || isRoutinesPath(this.route.pathname()) ||
+            this.route.pathname() === "/life-links")) {
         await this.restoreOwnerRoute(this.route.pathname());
       } else if (nextRoute.surface !== "public-qr" && activeQrId) {
         await this.refreshActiveQr(activeQrId);
@@ -2845,7 +2939,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         routeLifeLinkId: routeState.lifeLinkId
       });
 
-      if (me.user && routeState.surface !== "public-qr" && !isCollectionsPath(routePathname)) {
+      if (me.user && routeState.surface !== "public-qr" &&
+          !isCollectionsPath(routePathname) && !isRoutinesPath(routePathname)) {
         await this.refreshOwnerLibrary(me.user);
         if (!this.isCurrent(lifecycle)) {
           return;
@@ -2902,6 +2997,12 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   private async restoreOwnerRoute(pathname: string) {
+    if (isRoutinesPath(pathname)) {
+      const routineId = routineIdFromPath(pathname);
+      if (routineId) await this.openRoutine(routineId, false);
+      else await this.openRoutines(false);
+      return;
+    }
     if (isCollectionsPath(pathname)) {
       const collectionId = collectionIdFromPath(pathname);
       if (collectionId) await this.openCollection(collectionId, collectionMemberIdFromPath(pathname) ?? undefined, false);

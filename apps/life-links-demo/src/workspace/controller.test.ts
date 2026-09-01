@@ -19,7 +19,15 @@ import {
 import { LifeLinksWorkspaceController, type LifeLinksWorkspaceApi } from "./controller";
 import { ApiError, type ApiAgentConnection } from "../api";
 import { writeCanonicalLifeLinkDraft } from "./editorSession";
-import { classifyLifeLinksRoute, lifeLinkIdFromPath, qrIdFromPath, type WorkspaceBrowserRoute } from "./routes";
+import {
+  classifyLifeLinksRoute,
+  isRoutinesPath,
+  lifeLinkIdFromPath,
+  ownerRoutinePath,
+  qrIdFromPath,
+  routineIdFromPath,
+  type WorkspaceBrowserRoute
+} from "./routes";
 import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedImageFixture, attachmentTranscriptFixture } from "../attachmentImage.testFixtures";
 import { validateAttachmentImageResult } from "../attachmentImage";
 
@@ -124,6 +132,11 @@ describe("Life Links route classification", () => {
     expect(qrIdFromPath("/qr/Shelf%201/")).toBe("Shelf 1");
     expect(qrIdFromPath("/")).toBeNull();
     expect(lifeLinkIdFromPath("/life-links/life-link-shelf-1")).toBe("life-link-shelf-1");
+    expect(isRoutinesPath("/routines")).toBe(true);
+    expect(isRoutinesPath("/routines/Tuesday%20reset/")).toBe(true);
+    expect(isRoutinesPath("/routines/one/more")).toBe(false);
+    expect(routineIdFromPath("/routines/Tuesday%20reset/")).toBe("Tuesday reset");
+    expect(ownerRoutinePath("routine/one")).toBe("/routines/routine%2Fone");
     expect(classifyLifeLinksRoute("/qr/LL-DEMO-00001", false)).toEqual({
       surface: "public-qr",
       qrId: "LL-DEMO-00001",
@@ -1517,6 +1530,116 @@ describe("Routine workspace controller contract", () => {
     return { group, activity, routine, summary, run, schedule, occurrence, session };
   };
 
+  it("boots and navigates the additive Routines routes without loading the Life Link library", async () => {
+    const current = fixture(15, "Tuesday reset");
+    const route = new FakeRoute(ownerRoutinePath(current.routine.routine.id));
+    const api = fakeApi();
+    api.listRoutineGroups.mockResolvedValue({ routineGroups: [current.group], nextCursor: null, truncated: false });
+    api.listRoutineActivities.mockResolvedValue({ activities: [current.activity], nextCursor: null, truncated: false });
+    api.listRoutines.mockResolvedValue({ routines: [current.summary], nextCursor: null, truncated: false });
+    api.getRoutine.mockResolvedValue({ routine: current.routine });
+    api.listRoutineSchedules.mockResolvedValue({ schedules: [current.schedule], nextCursor: null, truncated: false });
+    api.getActiveRoutineRun.mockResolvedValue({ run: current.run });
+    api.listRoutineOccurrences.mockImplementation(async (options = {}) => ({
+      occurrences: options.routineId === current.routine.routine.id ? [current.occurrence] : [],
+      nextCursor: null,
+      truncated: false
+    }));
+    api.listRoutineSessions.mockImplementation(async (options = {}) => ({
+      sessions: options.routineId === current.routine.routine.id ? [current.session] : [],
+      nextCursor: null,
+      truncated: false
+    }));
+    const controller = new LifeLinksWorkspaceController({ api, route });
+
+    await controller.start();
+
+    expect(api.listLinks).not.toHaveBeenCalled();
+    expect(api.listLifeLinks).not.toHaveBeenCalled();
+    expect(api.listRoutineOccurrences).toHaveBeenLastCalledWith({
+      routineId: current.routine.routine.id,
+      signal: undefined
+    });
+    expect(api.listRoutineSessions).toHaveBeenLastCalledWith({
+      routineId: current.routine.routine.id,
+      signal: undefined
+    });
+    expect(controller.getSnapshot()).toMatchObject({
+      workspaceMode: "routines",
+      activeView: "workspace",
+      routePathname: ownerRoutinePath(current.routine.routine.id),
+      detailsOpen: true,
+      routineWorkspace: {
+        selectedRoutine: current.routine,
+        occurrences: [current.occurrence],
+        sessions: [current.session],
+        selectedSession: null
+      }
+    });
+
+    await controller.openRoutines();
+    expect(route.pushes).toEqual(["/routines"]);
+    expect(controller.getSnapshot()).toMatchObject({
+      workspaceMode: "routines",
+      routePathname: "/routines",
+      detailsOpen: false,
+      routineWorkspace: { selectedRoutine: null, selectedSession: null }
+    });
+
+    route.pop(ownerRoutinePath(current.routine.routine.id));
+    await vi.waitFor(() => expect(controller.getSnapshot().routineWorkspace.selectedRoutine).toEqual(current.routine));
+    expect(controller.getSnapshot()).toMatchObject({
+      workspaceMode: "routines",
+      routePathname: ownerRoutinePath(current.routine.routine.id),
+      detailsOpen: true
+    });
+    expect(route.pushes).toEqual(["/routines"]);
+    controller.dispose();
+  });
+
+  it("replaces occurrences and Sessions with the newly selected Routine and clears stale Session detail", async () => {
+    const first = fixture(16, "First reset");
+    const second = fixture(17, "Second reset");
+    const api = fakeApi();
+    api.getRoutine.mockImplementation(async (routineId) => ({
+      routine: routineId === first.routine.routine.id ? first.routine : second.routine
+    }));
+    api.listRoutineSchedules.mockImplementation(async (routineId) => ({
+      schedules: [routineId === first.routine.routine.id ? first.schedule : second.schedule],
+      nextCursor: null,
+      truncated: false
+    }));
+    api.getActiveRoutineRun.mockImplementation(async (routineId) => ({
+      run: routineId === first.routine.routine.id ? first.run : second.run
+    }));
+    api.listRoutineOccurrences.mockImplementation(async ({ routineId } = {}) => ({
+      occurrences: routineId === first.routine.routine.id ? [first.occurrence] : [second.occurrence],
+      nextCursor: null,
+      truncated: false
+    }));
+    api.listRoutineSessions.mockImplementation(async ({ routineId } = {}) => ({
+      sessions: routineId === first.routine.routine.id ? [first.session] : [second.session],
+      nextCursor: null,
+      truncated: false
+    }));
+    api.getRoutineSession.mockResolvedValue({ session: first.session });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+
+    await controller.selectRoutine(first.routine.routine.id);
+    await controller.selectRoutineSession(first.session.session.id);
+    expect(controller.getSnapshot().routineWorkspace.selectedSession).toEqual(first.session);
+
+    await controller.selectRoutine(second.routine.routine.id);
+    expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+      selectedRoutine: second.routine,
+      occurrences: [second.occurrence],
+      sessions: [second.session],
+      selectedSession: null
+    });
+    controller.dispose();
+  });
+
   it("loads owner definitions/history, preserves Run result channels, and clears the nested slice on logout", async () => {
     const { group, activity, routine, summary, run } = fixture(1);
     const api = fakeApi();
@@ -1795,7 +1918,6 @@ describe("Routine workspace controller contract", () => {
       const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
       await controller.start();
       await controller.selectRoutine(current.routine.routine.id);
-      await controller.loadRoutineOccurrences({ routineId: current.routine.routine.id });
 
       if (target === "activity") {
         await controller.updateRoutineActivity(current.activity.id, current.activity.updatedAt, {
@@ -1842,7 +1964,6 @@ describe("Routine workspace controller contract", () => {
     const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
     await controller.start();
     await controller.selectRoutine(current.routine.routine.id);
-    await controller.loadRoutineOccurrences({ routineId: current.routine.routine.id });
 
     await controller.createRoutineSchedule(current.routine.routine.id, {
       id: current.schedule.id, rule: current.schedule.rule

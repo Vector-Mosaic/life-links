@@ -50,6 +50,20 @@ export function ownerCollectionPath(collectionId: string, lifeLinkId?: string): 
   return lifeLinkId ? `${path}?${new URLSearchParams({ lifeLinkId })}` : path;
 }
 
+export function isRoutinesPath(pathname: string): boolean {
+  return /^\/routines(?:\/[^/]+)?\/?$/i.test(pathname.split("?")[0]);
+}
+
+export function routineIdFromPath(pathname: string): string | null {
+  const match = pathname.split("?")[0].match(/^\/routines\/([^/]+)\/?$/i);
+  if (!match) return null;
+  try { return decodeURIComponent(match[1]); } catch { return match[1]; }
+}
+
+export function ownerRoutinePath(routineId: string): string {
+  return `/routines/${encodeURIComponent(routineId)}`;
+}
+
 export function classifyLifeLinksRoute(pathname: string, authenticated: boolean): LifeLinksRoute {
   const qrId = qrIdFromPath(pathname);
   if (qrId) {

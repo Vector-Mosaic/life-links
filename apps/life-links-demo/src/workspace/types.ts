@@ -163,7 +163,7 @@ export type LifeLinksWorkspaceSnapshot = {
   changeHistory: ChangeHistory;
   agentChangeConfirmation: LifeLinkChangePreview | null;
   routineWorkspace: RoutineWorkspaceState;
-  workspaceMode: "hierarchies" | "collections";
+  workspaceMode: "hierarchies" | "collections" | "routines";
   hierarchyParentId: string | null;
   hierarchyParentDetail: LifeLinkDetail | null;
   detailsOpen: boolean;
