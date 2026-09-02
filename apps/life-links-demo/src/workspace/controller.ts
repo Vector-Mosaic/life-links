@@ -1435,10 +1435,10 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         loading: false, loaded: true, error: ""
       } });
     } catch (error) {
-      if (current()) this.updateCalendarWorkspace({ connectionManagement: {
-        providers: [], connections: [], calendars: [], loading: false, loaded: false,
+      if (current()) this.updateCalendarWorkspace((workspace) => ({ connectionManagement: {
+        ...workspace.connectionManagement, loading: false, loaded: false,
         error: signal?.aborted ? "" : messageFromError(error)
-      } });
+      } }));
       if (!signal?.aborted) throw error;
     }
   }
@@ -1447,12 +1447,24 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const sameOwner = this.captureCalendarOwner();
     const { calendar } = await this.api.updateConnectedCalendar(connectionId, calendarId, expectedUpdatedAt, patch, signal);
     signal?.throwIfAborted();
+    if (calendar.connectionId !== connectionId || calendar.calendar.id !== calendarId) throw new Error("The provider returned a different Calendar.");
     if (sameOwner()) {
+      if (calendar.calendar.ownerId !== this.snapshot.currentUser?.id) throw new Error("Calendar settings could not be verified for this account.");
+      // The PATCH response is the committed settings. Publish it directly so an
+      // unrelated follow-up read cannot turn a successful save into a failed one.
       this.updateCalendarWorkspace((current) => ({ calendars: mergeById(current.calendars, [calendar.calendar]),
+        connectionManagement: { ...current.connectionManagement, error: "", calendars: current.connectionManagement.calendars.map((entry) =>
+          entry.connectionId === connectionId && entry.calendar.id === calendarId ? calendar : entry) },
         providerBindings: current.providerBindings.map((binding) => binding.connectionId === connectionId && binding.calendarId === calendarId ? { ...binding, visible: calendar.visible, capabilities: calendar.capabilities } : binding) }));
       if (calendar.calendar.agentAccess !== "write") this.invalidateCalendarAgentPreviews(calendarId);
-      await this.loadCalendarConnections(signal);
-      if (patch.visible && this.snapshot.calendarWorkspace.range) await this.loadCalendarWindow({ ...this.snapshot.calendarWorkspace.range, signal });
+      if (patch.visible && this.snapshot.calendarWorkspace.range) {
+        try { await this.loadCalendarWindow({ ...this.snapshot.calendarWorkspace.range, signal }); }
+        catch {
+          if (sameOwner() && !signal?.aborted) this.updateCalendarWorkspace((current) => ({ connectionManagement: {
+            ...current.connectionManagement, error: "Settings saved, but events could not be refreshed. Try Refresh events."
+          } }));
+        }
+      }
     }
     return calendar;
   }

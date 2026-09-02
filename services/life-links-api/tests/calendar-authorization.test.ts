@@ -138,13 +138,16 @@ describe("Google authorization through the shared Calendar service", () => {
     const discover = h.adapter.discover.bind(h.adapter);
     vi.spyOn(h.adapter, "discover").mockImplementation(async (input) => {
       const result = await discover(input);
-      return { ...result, calendars: result.calendars.map((calendar) => ({ ...calendar, timeZone: "America/New_York" })) };
+      return { ...result, accountEmail: "connected-owner@example.test",
+        calendars: result.calendars.map((calendar) => ({ ...calendar, timeZone: "America/New_York" })) };
     });
     expect((await h.service.discover("owner-one", "session-one", id)).calendars[0].timeZone).toBe("America/New_York");
+    expect((await h.service.discover("owner-one", "session-one", id)).accountEmail).toBe("connected-owner@example.test");
     await expect(h.service.complete("owner-one", "session-one", id, ["foreign-calendar"])).rejects.toThrow("calendar_selection_invalid");
     expect(await h.gateway.listConnections("owner-one")).toEqual([]);
     const completed = await h.service.complete("owner-one", "session-one", id, ["agent-tests"]);
     expect(completed.connection).toMatchObject({ providerKey: "google-calendar", providerAccountId: "google-sub-one", status: "active" });
+    expect(completed.connection.accountEmail).toBe("connected-owner@example.test");
     expect(completed.calendars).toHaveLength(1);
     const calendarId = calendarProviderLocalCalendarId(completed.connection.connectionId, "agent-tests");
     expect(completed.calendars[0]).toMatchObject({ providerCalendarId: "agent-tests", calendar: { id: calendarId, agentAccess: "none", timeZone: "America/New_York" } });

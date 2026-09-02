@@ -75,6 +75,26 @@ function timed(title: string): ProviderEventContent {
 }
 
 describe("Microsoft Graph Calendar provider adapter", () => {
+  it("reads optional account email from same-account Graph metadata without replacing the stable ID", async () => {
+    const http = new HttpHarness(); const graph = adapter(http);
+    for (const [metadata, expected] of [
+      [{ mail: "mailbox@example.test", userPrincipalName: "signin@example.test" }, "mailbox@example.test"],
+      [{ mail: null, userPrincipalName: "signin@example.test" }, "signin@example.test"],
+      [{ mail: null, userPrincipalName: "guest_example.test#EXT#@tenant.example.test" }, undefined],
+      [{ mail: "guest@example.test", userPrincipalName: "guest_example.test#EXT#@tenant.example.test" }, "guest@example.test"],
+      [{}, undefined], [{ mail: "bad\nlabel@example.test", userPrincipalName: 12 }, undefined]
+    ] as const) {
+      http.enqueue({ id: ACCOUNT_ID, ...metadata }); http.enqueue({ value: [] });
+      const result = await graph.discover({ credentialHandle: HANDLE });
+      expect(result.providerAccountId).toBe(ACCOUNT_ID);
+      expect(result.accountEmail).toBe(expected);
+    }
+    expect(new URL(http.calls[0].url).searchParams.get("$select")).toBe("id,mail,userPrincipalName");
+    http.enqueue({ id: "different-account", mail: "mailbox@example.test" });
+    await expect(graph.discover({ credentialHandle: HANDLE })).rejects.toThrow("did not match the credential binding");
+    expect(http.responders).toHaveLength(0);
+  });
+
   it("records one secret-safe renewal-use observation for the exact credential despite multiple Graph requests", async () => {
     const http = new HttpHarness(); const logs: LogEvent[] = [];
     const logger = createLogger("calendar-test", { sink: event => logs.push(event) });

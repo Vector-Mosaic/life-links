@@ -128,6 +128,7 @@ export type CalendarProviderDiscoveredCalendar = {
 };
 
 export type CalendarProviderDiscovery = ProviderAccountIdentity & {
+  accountEmail?: string;
   calendars: CalendarProviderDiscoveredCalendar[];
 };
 
@@ -489,6 +490,7 @@ export class CalendarProviderGateway {
       connectionId: input.connectionId,
       providerKey: input.providerKey,
       providerAccountId: discovery.providerAccountId,
+      ...(discovery.accountEmail === undefined ? {} : { accountEmail: discovery.accountEmail }),
       status: "provisioning",
       credentialHandle: input.credentialHandle,
       connectedAt,
@@ -520,7 +522,7 @@ export class CalendarProviderGateway {
           allowProvisioning: true
         });
       }
-      const active: CalendarProviderConnectionRecord = { ...connection, status: "active" };
+      const active: CalendarProviderConnectionRecord = { ...connection, status: "active", accountEmail: discovery.accountEmail ?? connection.accountEmail };
       if (!await this.store.transitionConnection(active, connection)) {
         const latest = await this.store.getConnection(connection.connectionId);
         if (!latest || latest.status !== "active" || latest.credentialHandle !== connection.credentialHandle) {
@@ -557,8 +559,15 @@ export class CalendarProviderGateway {
 
   async discoverConnectionCalendars(input: { ownerId: string; connectionId: string }): Promise<CalendarProviderDiscovery> {
     const connection = await this.#ownedConnection(input.ownerId, input.connectionId, false);
-    return this.discoverExternalCalendars({ ...input, providerKey: connection.providerKey,
+    const discovery = await this.discoverExternalCalendars({ ...input, providerKey: connection.providerKey,
       expectedProviderAccountId: connection.providerAccountId, credentialHandle: requiredCredential(connection) });
+    const current = await this.#ownedConnection(input.ownerId, input.connectionId, false);
+    if (current.providerKey !== connection.providerKey || current.providerAccountId !== connection.providerAccountId
+      || current.credentialHandle !== connection.credentialHandle
+      || !await this.store.transitionConnection({ ...current, accountEmail: discovery.accountEmail ?? current.accountEmail }, current)) {
+      throw new CalendarProviderGatewayError("connection_inactive", "The account connection changed during discovery.");
+    }
+    return discovery;
   }
 
   async selectExternalCalendars(input: {
@@ -645,6 +654,7 @@ export class CalendarProviderGateway {
       }
     }
     const reconnecting: CalendarProviderConnectionRecord = { ...previous, status: "provisioning", credentialHandle: input.credentialHandle,
+      accountEmail: discovery.accountEmail ?? previous.accountEmail,
       connectedAt: previous.status === "provisioning" ? previous.connectedAt : this.#now().toISOString(),
       disconnectedAt: null, remoteRevocationStatus: "not_required", remoteRevocationAttemptedAt: null, remoteRevocationErrorCode: null };
     if (!await this.store.transitionConnection(reconnecting, previous)) {
@@ -1814,8 +1824,9 @@ export function assertCalendarProvisioningPair(
 }
 
 function safeConnection(connection: CalendarProviderConnectionRecord): CalendarProviderConnectionView {
-  const { credentialHandle: _credentialHandle, ...safe } = connection;
-  return { ...safe };
+  const { credentialHandle: _credentialHandle, accountEmail: storedEmail, ...safe } = connection;
+  const accountEmail = normalizeProviderAccountEmail(storedEmail);
+  return { ...safe, ...(accountEmail === undefined ? {} : { accountEmail }) };
 }
 
 function nextCalendarSettingsTimestamp(now: string, previous: string): string {
@@ -1884,7 +1895,15 @@ function normalizeDiscovery(input: CalendarProviderDiscovery): CalendarProviderD
   if (new Set(calendars.map((calendar) => calendar.providerCalendarId)).size !== calendars.length) {
     throw new CalendarProviderGatewayError("provider_identity_mismatch", "Provider discovery returned duplicate Calendar identities.");
   }
-  return { providerKey: input.providerKey, providerAccountId: input.providerAccountId, calendars };
+  const accountEmail = normalizeProviderAccountEmail(input.accountEmail);
+  return { providerKey: input.providerKey, providerAccountId: input.providerAccountId,
+    ...(accountEmail === undefined ? {} : { accountEmail }), calendars };
+}
+
+/** Provider-supplied owner display metadata only. Missing/malformed labels never redefine account identity. */
+export function normalizeProviderAccountEmail(value: unknown): string | undefined {
+  return typeof value === "string" && value.length <= 320 && /^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/u.test(value)
+    ? value : undefined;
 }
 
 function normalizeSyncBatch(input: CalendarProviderSyncBatch): CalendarProviderSyncBatch {

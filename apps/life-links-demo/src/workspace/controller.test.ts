@@ -2823,6 +2823,61 @@ describe("Outlook provider workspace", () => {
     await controller.start(); await controller.connectAgent();
     return { api, controller, route };
   }
+  async function setupManagedCalendar() {
+    const context = await setup();
+    const view = { calendar: externalCalendar, connectionId: binding.connectionId, providerCalendarId: binding.providerCalendarId,
+      providerDisplayName: externalCalendar.title, capabilities: binding.capabilities, visible: true };
+    context.api.listCalendarConnections.mockResolvedValue({ connections: [{ ownerId: owner.id, connectionId: binding.connectionId,
+      providerKey: binding.providerKey, providerAccountId: binding.providerAccountId, status: "active", connectedAt: nativeCalendar.updatedAt,
+      disconnectedAt: null, remoteRevocationStatus: "not_required", remoteRevocationAttemptedAt: null, remoteRevocationErrorCode: null }] });
+    context.api.listConnectedCalendars.mockResolvedValue({ calendars: [view] });
+    await context.controller.loadCalendarConnections();
+    return { ...context, view };
+  }
+  it("publishes acknowledged connected settings without a redundant management read", async () => {
+    const { api, controller, view } = await setupManagedCalendar();
+    const saved = { ...view, visible: false, calendar: { ...externalCalendar, agentAccess: "read" as const, updatedAt: "2026-09-02T18:00:00.000Z" } };
+    api.updateConnectedCalendar.mockResolvedValue({ calendar: saved });
+    api.listCalendarConnections.mockClear();
+    await expect(controller.updateConnectedCalendar(binding.connectionId, externalCalendar.id, externalCalendar.updatedAt, { visible: false, agentAccess: "read" })).resolves.toEqual(saved);
+    expect(api.updateConnectedCalendar).toHaveBeenCalledWith(binding.connectionId, externalCalendar.id, externalCalendar.updatedAt, { visible: false, agentAccess: "read" }, undefined);
+    expect(api.listCalendarConnections).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement.calendars).toEqual([saved]);
+    expect(controller.getSnapshot().calendarWorkspace.calendars.find((entry) => entry.id === externalCalendar.id)?.agentAccess).toBe("read");
+    expect(controller.getSnapshot().calendarWorkspace.providerBindings[0].visible).toBe(false);
+    controller.dispose();
+  });
+  it("keeps a committed connected-settings save successful when event refresh fails", async () => {
+    const { api, controller, view } = await setupManagedCalendar();
+    await controller.loadCalendarWindow({ startDate: "2026-09-01", endDate: "2026-10-01" });
+    const saved = { ...view, calendar: { ...externalCalendar, agentAccess: "none" as const, updatedAt: "2026-09-02T18:00:00.000Z" } };
+    api.updateConnectedCalendar.mockResolvedValue({ calendar: saved });
+    api.listCalendarEvents.mockRejectedValueOnce(new Error("Event service unavailable"));
+    await expect(controller.updateConnectedCalendar(binding.connectionId, externalCalendar.id, externalCalendar.updatedAt, { visible: true, agentAccess: "none" })).resolves.toEqual(saved);
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement.calendars).toEqual([saved]);
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement.error).toContain("Settings saved, but events could not be refreshed");
+    controller.dispose();
+  });
+  it("does not publish rejected or wrong-identity connected-settings writes", async () => {
+    const { api, controller, view } = await setupManagedCalendar();
+    api.updateConnectedCalendar.mockRejectedValueOnce(new Error("stale_calendar"));
+    await expect(controller.updateConnectedCalendar(binding.connectionId, externalCalendar.id, externalCalendar.updatedAt, { visible: false })).rejects.toThrow("stale_calendar");
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement.calendars).toEqual([view]);
+    api.updateConnectedCalendar.mockResolvedValueOnce({ calendar: { ...view, connectionId: "another-connection" } });
+    await expect(controller.updateConnectedCalendar(binding.connectionId, externalCalendar.id, externalCalendar.updatedAt, { visible: false })).rejects.toThrow("different Calendar");
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement.calendars).toEqual([view]);
+    controller.dispose();
+  });
+  it("keeps last known connected settings visible but unverified after a failed reload", async () => {
+    const { api, controller, view } = await setupManagedCalendar();
+    api.listCalendarConnections.mockRejectedValueOnce(new Error("Connection read unavailable"));
+    await expect(controller.loadCalendarConnections()).rejects.toThrow("Connection read unavailable");
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement).toMatchObject({
+      loaded: false, loading: false, error: "Connection read unavailable", calendars: [view]
+    });
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement.connections[0].connectionId).toBe(binding.connectionId);
+    controller.dispose();
+  });
   it("keeps Outlook authorization drafts explicit, validates exact selection, and cancels without creating a connection", async () => {
     const authorizationId = "11111111-1111-4111-8111-111111111111";
     const { api, controller, route } = await setup(`/calendar?calendarAuthorization=${authorizationId}`);

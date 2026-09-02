@@ -112,6 +112,7 @@ export function createCalendarConnectionRouter(deps: {
   router.get("/api/calendar-connections/:connectionId/available-calendars", deps.requireAuthenticated, route(async (request, response, ownerId) => {
     const discovery = await deps.gateway.discoverConnectionCalendars({ ownerId, connectionId: routeId(request.params.connectionId) });
     response.json({ providerKey: calendarAuthorizationProvider(discovery.providerKey), providerAccountId: discovery.providerAccountId,
+      ...(discovery.accountEmail === undefined ? {} : { accountEmail: discovery.accountEmail }),
       calendars: discovery.calendars.map((calendar) => ({ ...calendar, isDefault: calendar.isDefault === true })) });
   }));
   router.post("/api/calendar-connections/:connectionId/select", deps.requireAuthenticated, route(async (request, response, ownerId) => {
@@ -135,6 +136,7 @@ export function createCalendarConnectionRouter(deps: {
     }
     const window = request.body.windowStart === undefined && request.body.windowEnd === undefined
       ? authorization().initialWindow() : { startUtc: request.body.windowStart, endUtc: request.body.windowEnd };
+    await deps.gateway.discoverConnectionCalendars({ ownerId, connectionId });
     for (const entry of await deps.gateway.listManagedCalendars(ownerId, connectionId)) {
       await deps.gateway.synchronizeCalendar({ ownerId, connectionId, calendarId: entry.calendar.id, window });
     }

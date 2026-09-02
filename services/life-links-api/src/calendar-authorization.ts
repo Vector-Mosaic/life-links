@@ -133,6 +133,7 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
     const discovery = await this.gateway().discoverExternalCalendars({ ownerId, providerKey: PROVIDERS[provider],
       expectedProviderAccountId: state.providerAccountId!, credentialHandle: calendarProviderCredentialHandle(state.credentialId) });
     return { providerKey: provider, providerAccountId: discovery.providerAccountId,
+      ...(discovery.accountEmail === undefined ? {} : { accountEmail: discovery.accountEmail }),
       calendars: discovery.calendars.map((calendar) => ({ ...calendar, isDefault: calendar.isDefault === true })) };
   }
 

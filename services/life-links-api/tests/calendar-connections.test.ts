@@ -67,6 +67,30 @@ async function fixture(options: { readOnly?: boolean; adapterAvailable?: boolean
 const basePath = `/api/calendar-connections/${connectionId}`;
 
 describe("owner Calendar connection management", () => {
+  it("enriches active account email through normal refresh and exposes it only to the owner manager", async () => {
+    const { app, gateway, adapter, logs } = await fixture({ googleAuthorization: true });
+    const discover = adapter.discover.bind(adapter);
+    const accountEmail = "private-owner@example.test";
+    const observed = vi.spyOn(adapter, "discover").mockImplementation(async (input) => ({ ...await discover(input), accountEmail }));
+    const headers = { "X-Test-Owner": ownerId };
+    expect((await gateway.getConnection(ownerId, connectionId)).accountEmail).toBeUndefined();
+    const refresh = await request(app).post(`${basePath}/refresh`).set(headers).send({});
+    expect(refresh.status).toBe(200);
+    expect(refresh.body).toEqual({ refreshed: true });
+    const listed = await request(app).get("/api/calendar-connections").set(headers);
+    expect(listed.body.connections[0]).toMatchObject({ providerAccountId: "synthetic-provider-account", accountEmail });
+    const discovery = await request(app).get(`${basePath}/available-calendars`).set(headers);
+    expect(discovery.body.accountEmail).toBe(accountEmail);
+    expect((await request(app).get("/api/calendar-connections").set({ "X-Test-Owner": "other-owner" })).body.connections).toEqual([]);
+    expect((await request(app).get("/api/calendar-connections").set(headers).set("X-Life-Links-Actor", "agent")).status).toBe(403);
+    expect(JSON.stringify(logs)).not.toContain(accountEmail);
+    await gateway.disconnectConnection({ ownerId, connectionId, localProjectionDisposition: "purge" });
+    const calls = observed.mock.calls.length;
+    const disconnected = await request(app).get("/api/calendar-connections").set(headers);
+    expect(disconnected.body.connections[0]).toMatchObject({ status: "disconnected", accountEmail });
+    expect(observed).toHaveBeenCalledTimes(calls);
+  });
+
   it("refreshes supplied provider timezone on existing selection without resetting settings or inventing missing metadata", async () => {
     const { app, gateway, adapter } = await fixture({ googleAuthorization: true });
     const initial = (await gateway.listManagedCalendars(ownerId, connectionId))[0];

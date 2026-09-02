@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import {
   assertStandaloneProviderWrite,
+  normalizeProviderAccountEmail,
   CalendarProviderGatewayError,
   ProviderCursorExpiredError,
   ProviderRevisionConflictError,
@@ -114,11 +115,14 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       credentialHandle: input.credentialHandle,
       providerKey: this.providerKey
     });
-    const identityResponse = await this.#request(`${this.#apiBase}/me?$select=id`, credential);
+    const identityResponse = await this.#request(`${this.#apiBase}/me?$select=id,mail,userPrincipalName`, credential);
     const identity = await jsonObject(identityResponse);
     if (requiredString(identity.id) !== credential.providerAccountId) {
       throw new ProviderTransientError("Microsoft Graph returned an account identity that did not match the credential binding.");
     }
+    const signInEmail = normalizeProviderAccountEmail(identity.userPrincipalName);
+    const accountEmail = normalizeProviderAccountEmail(identity.mail)
+      ?? (signInEmail?.toUpperCase().includes("#EXT#") ? undefined : signInEmail);
 
     const calendars: CalendarProviderDiscovery["calendars"] = [];
     let url: string | null = `${this.#apiBase}/me/calendars?$top=100`;
@@ -143,7 +147,8 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       }
       url = optionalString(body["@odata.nextLink"]);
     }
-    return { providerKey: this.providerKey, providerAccountId: credential.providerAccountId, calendars };
+    return { providerKey: this.providerKey, providerAccountId: credential.providerAccountId,
+      ...(accountEmail === undefined ? {} : { accountEmail }), calendars };
   }
 
   async fetchChanges(input: Parameters<CalendarProviderAdapter["fetchChanges"]>[0]): Promise<CalendarProviderSyncBatch> {

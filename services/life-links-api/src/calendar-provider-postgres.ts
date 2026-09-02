@@ -24,6 +24,7 @@ type ProviderConnectionRow = QueryResultRow & {
   owner_id: string;
   provider_key: string;
   provider_account_id: string;
+  account_email: string | null;
   status: CalendarProviderConnectionRecord["status"];
   credential_handle: string | null;
   connected_at: Date | string;
@@ -164,8 +165,8 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
       `INSERT INTO calendar_provider_connections (
          connection_id, owner_id, provider_key, provider_account_id, status,
          credential_handle, connected_at, disconnected_at,
-         remote_revocation_status, remote_revocation_attempted_at, remote_revocation_error_code
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+         remote_revocation_status, remote_revocation_attempted_at, remote_revocation_error_code, account_email
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        ON CONFLICT (connection_id) DO UPDATE SET
          status = EXCLUDED.status,
          credential_handle = EXCLUDED.credential_handle,
@@ -173,7 +174,8 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
          disconnected_at = EXCLUDED.disconnected_at,
          remote_revocation_status = EXCLUDED.remote_revocation_status,
          remote_revocation_attempted_at = EXCLUDED.remote_revocation_attempted_at,
-         remote_revocation_error_code = EXCLUDED.remote_revocation_error_code
+         remote_revocation_error_code = EXCLUDED.remote_revocation_error_code,
+         account_email = EXCLUDED.account_email
        WHERE calendar_provider_connections.owner_id = EXCLUDED.owner_id
          AND calendar_provider_connections.provider_key = EXCLUDED.provider_key
          AND calendar_provider_connections.provider_account_id = EXCLUDED.provider_account_id
@@ -189,7 +191,8 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
         connection.disconnectedAt,
         connection.remoteRevocationStatus,
         connection.remoteRevocationAttemptedAt,
-        connection.remoteRevocationErrorCode
+        connection.remoteRevocationErrorCode,
+        connection.accountEmail ?? null
       ]
     );
     assertOwnedWrite(result.rowCount, "The provider connection identity belongs to another owner.");
@@ -206,11 +209,11 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
   async reserveConnection(connection: CalendarProviderConnectionRecord) {
     const insert = await this.pool.query(
       `INSERT INTO calendar_provider_connections (connection_id, owner_id, provider_key, provider_account_id, status,
-         credential_handle, connected_at, disconnected_at, remote_revocation_status, remote_revocation_attempted_at, remote_revocation_error_code)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (connection_id) DO NOTHING RETURNING connection_id`,
+         credential_handle, connected_at, disconnected_at, remote_revocation_status, remote_revocation_attempted_at, remote_revocation_error_code, account_email)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (connection_id) DO NOTHING RETURNING connection_id`,
       [connection.connectionId, connection.ownerId, connection.providerKey, connection.providerAccountId, connection.status,
         connection.credentialHandle, connection.connectedAt, connection.disconnectedAt, connection.remoteRevocationStatus,
-        connection.remoteRevocationAttemptedAt, connection.remoteRevocationErrorCode]
+        connection.remoteRevocationAttemptedAt, connection.remoteRevocationErrorCode, connection.accountEmail ?? null]
     );
     const record = await this.getConnection(connection.connectionId);
     if (!record) throw new Error("The reserved provider connection is not readable.");
@@ -222,12 +225,12 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`owner:${connection.ownerId}`]);
       const result = await client.query(
         `UPDATE calendar_provider_connections SET status=$5, credential_handle=$6, connected_at=$7, disconnected_at=$8,
-           remote_revocation_status=$9, remote_revocation_attempted_at=$10, remote_revocation_error_code=$11
+           remote_revocation_status=$9, remote_revocation_attempted_at=$10, remote_revocation_error_code=$11, account_email=$14
          WHERE connection_id=$1 AND owner_id=$2 AND provider_key=$3 AND provider_account_id=$4
            AND status=$12 AND credential_handle IS NOT DISTINCT FROM $13`,
         [connection.connectionId, connection.ownerId, connection.providerKey, connection.providerAccountId, connection.status,
           connection.credentialHandle, connection.connectedAt, connection.disconnectedAt, connection.remoteRevocationStatus,
-          connection.remoteRevocationAttemptedAt, connection.remoteRevocationErrorCode, expected.status, expected.credentialHandle]
+          connection.remoteRevocationAttemptedAt, connection.remoteRevocationErrorCode, expected.status, expected.credentialHandle, connection.accountEmail ?? null]
       );
       return result.rowCount === 1;
     });
@@ -751,6 +754,7 @@ function mapConnection(row: ProviderConnectionRow): CalendarProviderConnectionRe
     connectionId: row.connection_id,
     providerKey: row.provider_key,
     providerAccountId: row.provider_account_id,
+    ...(row.account_email == null ? {} : { accountEmail: row.account_email }),
     status: row.status,
     credentialHandle: row.credential_handle === null ? null : calendarProviderCredentialHandle(row.credential_handle),
     connectedAt: iso(row.connected_at),

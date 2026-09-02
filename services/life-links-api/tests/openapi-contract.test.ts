@@ -464,6 +464,20 @@ function responseFor(document: JsonObject, operation: JsonObject, status: string
 }
 
 describe("Life Links OpenAPI v1", () => {
+  it("keeps optional account email in owner connection/discovery metadata, not agent event content", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    for (const name of ["CalendarConnectionView", "CalendarAuthorizationDiscovery"]) {
+      const schema = objectValue(schemas[name], name);
+      expect(schema.required).toContain("providerAccountId");
+      expect(schema.required).not.toContain("accountEmail");
+      expect(objectValue(schema.properties, name).accountEmail).toEqual({ $ref: "#/components/schemas/CalendarAccountEmail" });
+    }
+    expect(objectValue(schemas.CalendarAccountEmail, "account email")).toMatchObject({ type: "string", format: "email", maxLength: 320 });
+    expect(objectValue(objectValue(schemas.ProviderEventWritableContent, "provider content").properties, "provider properties"))
+      .not.toHaveProperty("accountEmail");
+  });
+
   it("publishes optional provider Calendar timezone metadata without requiring invented zones", () => {
     const document = parseStrictJson(readSource(contractPath));
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");

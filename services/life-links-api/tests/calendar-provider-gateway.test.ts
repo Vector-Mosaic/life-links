@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createCanonicalCalendar, createCanonicalExternalCalendar } from "@life-links/core";
 
 import {
@@ -153,6 +153,48 @@ async function connected(input: {
 }
 
 describe("provider-neutral Calendar gateway", () => {
+  it("enriches legacy active connections with display email without changing identity, grants or event projections", async () => {
+    const h = await connected({ agentGrant: "write" });
+    const initial = await h.gateway.getConnection(OWNER_ID, CONNECTION_ID);
+    expect(initial).not.toHaveProperty("accountEmail");
+    const calendars = await h.gateway.listManagedCalendars(OWNER_ID, CONNECTION_ID);
+    const discover = h.adapter.discover.bind(h.adapter);
+    let email = "first@example.test";
+    const discovery = vi.spyOn(h.adapter, "discover").mockImplementation(async (input) => ({ ...await discover(input), accountEmail: email }));
+    expect((await h.gateway.discoverConnectionCalendars({ ownerId: OWNER_ID, connectionId: CONNECTION_ID })).accountEmail).toBe(email);
+    const reloaded = new CalendarProviderGateway([], h.store);
+    expect(await reloaded.getConnection(OWNER_ID, CONNECTION_ID)).toEqual({ ...initial, accountEmail: email });
+    email = "renamed@example.test";
+    await h.gateway.discoverConnectionCalendars({ ownerId: OWNER_ID, connectionId: CONNECTION_ID });
+    expect((await reloaded.getConnection(OWNER_ID, CONNECTION_ID)).accountEmail).toBe(email);
+    expect(await h.gateway.listManagedCalendars(OWNER_ID, CONNECTION_ID)).toEqual(calendars);
+    discovery.mockImplementationOnce(discover);
+    await h.gateway.discoverConnectionCalendars({ ownerId: OWNER_ID, connectionId: CONNECTION_ID });
+    expect((await reloaded.getConnection(OWNER_ID, CONNECTION_ID)).accountEmail).toBe(email);
+    expect(JSON.stringify(await h.store.listProjections(CONNECTION_ID, CALENDAR_ID))).not.toContain(email);
+    discovery.mockImplementationOnce(async (input) => ({ ...await discover(input), providerAccountId: "different-account", accountEmail: email }));
+    await expect(h.gateway.discoverConnectionCalendars({ ownerId: OWNER_ID, connectionId: CONNECTION_ID })).rejects.toThrow("did not match");
+    expect((await reloaded.getConnection(OWNER_ID, CONNECTION_ID)).providerAccountId).toBe(PROVIDER_ACCOUNT_ID);
+    await h.gateway.disconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, localProjectionDisposition: "purge" });
+    const count = discovery.mock.calls.length;
+    expect((await reloaded.getConnection(OWNER_ID, CONNECTION_ID)).accountEmail).toBe(email);
+    await expect(h.gateway.discoverConnectionCalendars({ ownerId: OWNER_ID, connectionId: CONNECTION_ID })).rejects.toThrow();
+    expect(discovery).toHaveBeenCalledTimes(count);
+  });
+
+  it("does not revive or enrich a connection disconnected while email discovery was in flight", async () => {
+    const h = await connected();
+    const discover = h.adapter.discover.bind(h.adapter);
+    vi.spyOn(h.adapter, "discover").mockImplementation(async (input) => {
+      const result = await discover(input);
+      await h.gateway.disconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, localProjectionDisposition: "purge" });
+      return { ...result, accountEmail: "late@example.test" };
+    });
+    await expect(h.gateway.discoverConnectionCalendars({ ownerId: OWNER_ID, connectionId: CONNECTION_ID })).rejects.toThrow();
+    expect(await h.gateway.getConnection(OWNER_ID, CONNECTION_ID)).toMatchObject({ status: "disconnected" });
+    expect(await h.gateway.getConnection(OWNER_ID, CONNECTION_ID)).not.toHaveProperty("accountEmail");
+  });
+
   it("stages discovery without a connection and retries completed selection without resetting grants", async () => {
     const adapter = fake();
     const store = new InMemoryCalendarProviderStateStore();

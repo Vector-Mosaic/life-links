@@ -10,7 +10,7 @@ type Flow = LifeLinksWorkspaceSnapshot["calendarWorkspace"]["connectionFlow"];
 type Management = LifeLinksWorkspaceSnapshot["calendarWorkspace"]["connectionManagement"];
 const capabilities = { read: true, create: true, update: true, delete: true };
 const discovery: NonNullable<Flow["discovery"]> = {
-  providerKey: "google", providerAccountId: "private-numeric-account-identity",
+  providerKey: "google", providerAccountId: "private-numeric-account-identity", accountEmail: "chosen-calendar-owner@example.test",
   calendars: [
     { providerCalendarId: "work/exact+calendar=", displayName: "Work", isDefault: true, capabilities },
     { providerCalendarId: "holidays/exact=", displayName: "Holidays", isDefault: false, capabilities: { read: true, create: false, update: false, delete: false } }
@@ -72,6 +72,7 @@ describe("compact Calendar connection selection", () => {
     const accountDetails = dialog.querySelector<HTMLDetailsElement>(".ll-calendar-selection-account")!;
     expect(accountDetails.open).toBe(false);
     expect(accountDetails.textContent).toContain("private-numeric-account-identity");
+    expect(dialog.querySelector(".ll-calendar-account-identity")?.textContent).toBe("chosen-calendar-owner@example.test");
     expect(dialog.textContent).not.toContain("Your Life Links calendars");
     const close = dialog.querySelector<HTMLButtonElement>("header button")!;
     expect(document.activeElement).toBe(close);

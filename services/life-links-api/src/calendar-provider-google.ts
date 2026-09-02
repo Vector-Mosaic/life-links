@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import {
   assertStandaloneProviderWrite,
+  normalizeProviderAccountEmail,
   CalendarProviderGatewayError,
   ProviderCursorExpiredError,
   ProviderRevisionConflictError,
@@ -24,6 +25,7 @@ import {
 
 export const GOOGLE_CALENDAR_PROVIDER_KEY = "google-calendar";
 const GOOGLE_API_BASE = "https://www.googleapis.com/calendar/v3";
+const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 const MAX_DISCOVERY_CALENDARS = 1_000;
 const CURSOR_PREFIX = "gcal1.";
 
@@ -95,6 +97,19 @@ export class GoogleCalendarProviderAdapter implements CalendarProviderAdapter {
       credentialHandle: input.credentialHandle,
       providerKey: this.providerKey
     });
+    let identity: Record<string, unknown> | undefined;
+    try {
+      identity = await jsonObject(await this.#request(GOOGLE_USERINFO_URL, credential.accessToken, { redirect: "error" }));
+    } catch (error) {
+      // Email is optional display metadata. A transient profile lookup failure
+      // must not block otherwise authorized Calendar discovery. Never adopt an
+      // address without a successfully read, matching authenticated subject.
+      if (!(error instanceof ProviderTransientError)) throw error;
+    }
+    if (identity && requiredString(identity.sub) !== credential.providerAccountId) {
+      throw new ProviderTransientError("Google returned an account identity that did not match the credential binding.");
+    }
+    const accountEmail = identity?.email_verified === true ? normalizeProviderAccountEmail(identity.email) : undefined;
     const calendars: CalendarProviderDiscovery["calendars"] = [];
     let pageToken: string | null = null;
     do {
@@ -124,7 +139,8 @@ export class GoogleCalendarProviderAdapter implements CalendarProviderAdapter {
       }
       pageToken = optionalString(body.nextPageToken);
     } while (pageToken);
-    return { providerKey: this.providerKey, providerAccountId: credential.providerAccountId, calendars };
+    return { providerKey: this.providerKey, providerAccountId: credential.providerAccountId,
+      ...(accountEmail === undefined ? {} : { accountEmail }), calendars };
   }
 
   async fetchChanges(input: Parameters<CalendarProviderAdapter["fetchChanges"]>[0]): Promise<CalendarProviderSyncBatch> {

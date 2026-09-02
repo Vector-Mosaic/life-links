@@ -65,7 +65,7 @@ describe("Calendar manager permission presentation", () => {
     expect(markup).toContain('<option value="write" disabled="">Read and allowed changes</option>');
     expect(markup).toContain('type="checkbox" checked=""');
     expect(markup).toContain("Visibility does not change agent access");
-    expect(markup).toContain("Choose additional calendars");
+    expect(markup).toContain("Add calendars from this account");
     expect(markup).toContain("Refresh events");
     expect(markup).toContain("Disconnect account");
   });
@@ -88,12 +88,13 @@ describe("Calendar manager permission presentation", () => {
     const markup = calendarManagerMarkup([], {
       providers: [{ providerKey: "microsoft", displayName: "Microsoft Outlook", authorizationAvailable: true }]
     }, { authorizationId: "11111111-1111-4111-8111-111111111111", connectionId: null, loading: false, error: "", feedback: "",
-      discovery: { providerKey: "microsoft", providerAccountId: "exact-test-account", calendars: [
+      discovery: { providerKey: "microsoft", providerAccountId: "exact-test-account", accountEmail: "calendar-owner@example.test", calendars: [
         { providerCalendarId: "provider/exact+id=", displayName: "Work Calendar", isDefault: true, capabilities: { read: true, create: true, update: true, delete: true } }
       ] } });
     expect(markup).toContain('aria-label="Finish connecting Outlook" data-wide="false"');
     expect(markup).toContain('<details class="ll-calendar-selection-account"><summary>Account details</summary>');
     expect(markup).toContain("exact-test-account"); expect(markup).toContain("Work Calendar");
+    expect(markup).toContain('<p class="ll-calendar-account-identity"><strong>calendar-owner@example.test</strong></p>');
     expect(markup).not.toMatch(/<details[^>]*\bopen(?:=|>)/);
     expect(markup).toContain("Default calendar");
     expect(markup).toContain("Outlook sign-in successful.");
@@ -126,7 +127,7 @@ describe("Calendar manager permission presentation", () => {
     expect(buttons.find((button) => button.includes("Connect Microsoft Outlook"))).toContain("disabled");
     expect(markup).toContain("Reconnect Google Calendar");
     expect(markup).not.toContain("Reconnect Outlook");
-    expect(markup).toContain("Choose additional calendars");
+    expect(markup).toContain("Add calendars from this account");
     expect(markup).toContain("Refresh events");
     expect(markup).toContain("This account needs to reconnect");
     expect(markup).not.toContain("No external accounts are connected");
@@ -143,6 +144,16 @@ describe("Calendar manager permission presentation", () => {
     expect(markup).toContain("saved credentials were removed");
     expect(markup).not.toContain("provider access was revoked");
     expect(markup).not.toContain("Disconnect account");
+    expect(markup).toContain('<p class="ll-calendar-account-identity"><strong>Account email unavailable</strong></p>');
+    expect(markup).toContain('<details class="ll-calendar-selection-account"><summary>Account details</summary><small>Provider account ID: synthetic-provider-account</small></details>');
+  });
+
+  it("labels a connected account with its actual supplied email, keeping the provider ID in optional details", () => {
+    const markup = calendarManagerMarkup([], { connections: [connection({ accountEmail: "other-calendar-owner@example.test" })] });
+    expect(markup).toContain('<p class="ll-calendar-account-identity"><strong>other-calendar-owner@example.test</strong></p>');
+    expect(markup).not.toContain("Account: synthetic-provider-account");
+    expect(markup).toContain('<details class="ll-calendar-selection-account"><summary>Account details</summary><small>Provider account ID: synthetic-provider-account</small></details>');
+    expect(markup).not.toMatch(/<details[^>]*\bopen(?:=|>)/);
   });
 
   it("does not turn Microsoft availability into Google reconnect authority", () => {

@@ -75,8 +75,28 @@ function timed(title: string): ProviderEventContent {
 }
 
 describe("Google Calendar provider adapter", () => {
+  it("keeps account identity separate from optional verified email and rejects a mismatched userinfo subject", async () => {
+    const http = new HttpHarness(); const google = adapter(http);
+    for (const metadata of [{}, { email: "unverified@example.test", email_verified: false },
+      { email: "bad\nlabel@example.test", email_verified: true }, { email: "a".repeat(321), email_verified: true }]) {
+      http.enqueue({ sub: ACCOUNT_ID, ...metadata }); http.enqueue({ items: [] });
+      expect(await google.discover({ credentialHandle: HANDLE })).toEqual({
+        providerKey: GOOGLE_CALENDAR_PROVIDER_KEY, providerAccountId: ACCOUNT_ID, calendars: []
+      });
+    }
+    http.enqueue({ sub: "different-account", email: "owner-account@example.test", email_verified: true });
+    await expect(google.discover({ credentialHandle: HANDLE })).rejects.toThrow("did not match the credential binding");
+    expect(http.responders).toHaveLength(0);
+    http.enqueue({}, 503); http.enqueue({ items: [{ id: "existing-calendar", summary: "Still usable", accessRole: "owner" }] });
+    const afterTransient = await google.discover({ credentialHandle: HANDLE });
+    expect(afterTransient.providerAccountId).toBe(ACCOUNT_ID);
+    expect(afterTransient).not.toHaveProperty("accountEmail");
+    expect(afterTransient.calendars[0].providerCalendarId).toBe("existing-calendar");
+  });
+
   it("discovers exact calendar capabilities and maps complete timed/all-day synchronization", async () => {
     const http = new HttpHarness();
+    http.enqueue({ sub: ACCOUNT_ID, email: "owner-account@example.test", email_verified: true });
     http.enqueue({
       items: [
         { id: "primary@example.test", summary: "Primary", accessRole: "owner", primary: true, timeZone: "America/New_York" },
@@ -89,6 +109,7 @@ describe("Google Calendar provider adapter", () => {
     expect(discovery).toEqual({
       providerKey: GOOGLE_CALENDAR_PROVIDER_KEY,
       providerAccountId: ACCOUNT_ID,
+      accountEmail: "owner-account@example.test",
       calendars: [
         {
           providerCalendarId: "primary@example.test",
@@ -106,6 +127,8 @@ describe("Google Calendar provider adapter", () => {
       ]
     });
     expect(JSON.stringify(discovery)).not.toContain("secret-google-access-token");
+    expect(http.calls[0].url).toBe("https://openidconnect.googleapis.com/v1/userinfo");
+    expect(http.calls[0].init.redirect).toBe("error");
 
     http.enqueue({
       items: [
@@ -165,7 +188,7 @@ describe("Google Calendar provider adapter", () => {
         })
       })
     ]);
-    const initialUrl = new URL(http.calls[1]!.url);
+    const initialUrl = new URL(http.calls[2]!.url);
     expect(initialUrl.searchParams.get("timeMin")).toBe(WINDOW.startUtc);
     expect(initialUrl.searchParams.get("timeMax")).toBe(WINDOW.endUtc);
     expect(initialUrl.searchParams.get("singleEvents")).toBe("true");
@@ -186,7 +209,7 @@ describe("Google Calendar provider adapter", () => {
       completeWindowSnapshot: false,
       deletions: [{ providerEventId: "timed-one", providerRevision: "\"r3\"" }]
     });
-    const incrementalUrl = new URL(http.calls[2]!.url);
+    const incrementalUrl = new URL(http.calls[3]!.url);
     expect(incrementalUrl.searchParams.get("syncToken")).toBe("sync-token-one");
     expect(incrementalUrl.searchParams.has("timeMin")).toBe(false);
 
@@ -428,7 +451,9 @@ describe("Google Calendar provider adapter", () => {
     const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
     try {
       const http = new HttpHarness(); const google = adapter(http);
-      http.responders.push((_url, init) => { init.signal?.throwIfAborted(); throw new Error("Expected aborted signal"); });
+      for (let index = 0; index < 2; index++) {
+        http.responders.push((_url, init) => { init.signal?.throwIfAborted(); throw new Error("Expected aborted signal"); });
+      }
       await expect(google.discover({ credentialHandle: HANDLE })).rejects.toThrow("Google Calendar did not complete the request reliably.");
       expect(timeout).toHaveBeenCalledWith(20_000);
       expect(http.calls[0].init.signal).toBe(controller.signal);

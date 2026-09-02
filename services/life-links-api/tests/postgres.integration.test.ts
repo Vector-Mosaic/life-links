@@ -128,6 +128,8 @@ describe("Life Links Postgres integration", () => {
     });
     const initial = (await gateway.listManagedCalendars(DEMO_OWNER_ID, connectionId))[0];
     expect(initial.calendar.agentAccess).toBe("none");
+    expect((await postgresPool.query("SELECT account_email FROM calendar_provider_connections WHERE connection_id=$1", [connectionId])).rows)
+      .toEqual([{ account_email: null }]);
     const changed = await gateway.updateCalendarSettings({ ownerId: DEMO_OWNER_ID, connectionId, calendarId,
       expectedUpdatedAt: initial.calendar.updatedAt, patch: { visible: false, agentAccess: "read" } });
     expect(changed).toMatchObject({ visible: false, calendar: { agentAccess: "read" } });
@@ -149,12 +151,15 @@ describe("Life Links Postgres integration", () => {
     let timeZone: string | undefined = "America/New_York";
     vi.spyOn(adapter, "discover").mockImplementation(async (input) => {
       const result = await discover(input);
-      return { ...result, calendars: result.calendars.map((calendar) => ({ ...calendar, ...(timeZone === undefined ? {} : { timeZone }) })) };
+      return { ...result, accountEmail: "postgres-owner@example.test",
+        calendars: result.calendars.map((calendar) => ({ ...calendar, ...(timeZone === undefined ? {} : { timeZone }) })) };
     });
     const selection = { ownerId: DEMO_OWNER_ID, connectionId,
       calendars: [{ calendarId, providerCalendarId, title: "Ignored replacement title", color: "#abcdef", timeZone: "UTC", isDefault: false }],
       initialWindow: { startUtc: "2026-09-01T00:00:00.000Z", endUtc: "2026-09-03T00:00:00.000Z" } };
     const [refreshed] = await gateway.selectExternalCalendars(selection);
+    const reloadedProviderStore = new PostgresCalendarProviderStateStore(postgresPool);
+    expect((await reloadedProviderStore.getConnection(connectionId))?.accountEmail).toBe("postgres-owner@example.test");
     expect(refreshed).toEqual({ ...beforeZone, calendar: { ...beforeZone.calendar, timeZone, updatedAt: expect.any(String) } });
     expect((await store.getCalendar(DEMO_OWNER_ID, calendarId))?.timeZone).toBe(timeZone);
     expect((await gateway.selectExternalCalendars(selection))[0]).toEqual(refreshed);
@@ -172,6 +177,7 @@ describe("Life Links Postgres integration", () => {
     expect((await providerStore.getCalendar(connectionId, calendarId))?.visible).toBe(false);
     expect(adapter.eventCount(providerCalendarId)).toBe(1);
     expect(adapter.metrics().revokeCalls).toBe(0);
+    expect((await reloadedProviderStore.getConnection(connectionId))?.accountEmail).toBe("postgres-owner@example.test");
   });
 
   describe("isolated saved-change parity", () => {
@@ -305,7 +311,7 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(13);
+    expect(migrations.rows[0].count).toBe(14);
     const agentConnectionColumn = await adminPool.query(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -1221,7 +1227,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(13);
+      expect(receiptCount.rows[0].count).toBe(14);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1251,7 +1257,8 @@ describe("Life Links Postgres integration", () => {
         "010_general_routines.sql",
         "011_calendar.sql",
         "012_calendar_permissions.sql",
-        "013_calendar_authorization.sql"
+        "013_calendar_authorization.sql",
+        "014_calendar_account_email.sql"
       ]);
     } finally {
       await concurrent.store.close();

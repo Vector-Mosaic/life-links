@@ -3912,6 +3912,10 @@ textarea {
 .ll-calendar-connection > header > div { min-width: 0; }
 .ll-calendar-connection h4 { margin: 0; font-size: 14px; }
 .ll-calendar-connection .ll-calendar-account-identity { margin: 4px 0 0; overflow-wrap: anywhere; }
+.ll-calendar-account-identity strong { color: var(--ll-ink); font-weight: 600; }
+.ll-calendar-account-identity + .ll-calendar-selection-account { margin-top: 6px; }
+.ll-calendar-settings-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.ll-calendar-connections .ll-calendar-settings-actions .ll-button { margin: 0; }
 .ll-calendar-connection .ll-chip { flex: none; }
 .ll-connected-calendar-list { display: flex; flex-direction: column; }
 .ll-connected-calendar { display: grid; grid-template-columns: minmax(0,1fr) minmax(170px,.55fr); gap: 12px; align-items: start; padding: 12px 0; border-bottom: 1px solid var(--ll-line-soft); }

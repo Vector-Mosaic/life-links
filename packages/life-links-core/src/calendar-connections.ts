@@ -6,6 +6,8 @@ export type CalendarConnectionView = {
   connectionId: string;
   providerKey: string;
   providerAccountId: string;
+  /** Authenticated provider email for owner-only display; never an identity or permission key. */
+  accountEmail?: string;
   status: "provisioning" | "active" | "disconnected";
   connectedAt: string;
   disconnectedAt: string | null;
@@ -55,6 +57,8 @@ export type CalendarProviderAvailability = {
 export type CalendarAuthorizationDiscovery = {
   providerKey: "microsoft" | "google";
   providerAccountId: string;
+  /** Optional owner-private label, not a substitute for providerAccountId. */
+  accountEmail?: string;
   calendars: Array<{
     providerCalendarId: string;
     displayName: string;
