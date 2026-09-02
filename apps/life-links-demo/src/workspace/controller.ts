@@ -13,6 +13,9 @@ import {
   parseQrId,
   summarizeLifeLink,
   type CollectionPatch,
+  type CollectionChangeInput,
+  type CollectionChangePreview,
+  type CollectionChangeResult,
   type ActivityPatch,
   type ActivityRecord,
   type CalendarActor,
@@ -56,6 +59,8 @@ import {
 import {
   ApiError,
   previewLifeLinkChange,
+  previewCollectionChange,
+  applyCollectionChange,
   getLifeLinkChangePreview,
   applyLifeLinkChange,
   getChangeHistory,
@@ -195,6 +200,7 @@ import {
   isCalendarPath,
   isCollectionsPath,
   isRoutinesPath,
+  lifeLinkIdFromPath,
   ownerCollectionPath,
   ownerCalendarEventPath,
   ownerLifeLinkPath,
@@ -222,6 +228,10 @@ import type {
   InventoryFilter,
   LifeLinkBranchState,
   LifeLinksWorkspaceSnapshot,
+  WorkspacePeer,
+  WorkspacePresentation,
+  CalendarPresentation,
+  CollectionPresentation,
   RoutineWorkspaceState,
   ThemeMode,
   WorkspaceView
@@ -247,6 +257,8 @@ export type LifeLinksWorkspaceApi = {
   updateConnectedCalendar: typeof updateConnectedCalendar;
   disconnectCalendarConnection: typeof disconnectCalendarConnection;
   previewLifeLinkChange: typeof previewLifeLinkChange;
+  previewCollectionChange: typeof previewCollectionChange;
+  applyCollectionChange: typeof applyCollectionChange;
   getLifeLinkChangePreview: typeof getLifeLinkChangePreview;
   applyLifeLinkChange: typeof applyLifeLinkChange;
   getChangeHistory: typeof getChangeHistory;
@@ -348,6 +360,8 @@ const defaultApi: LifeLinksWorkspaceApi = {
   updateConnectedCalendar,
   disconnectCalendarConnection,
   previewLifeLinkChange,
+  previewCollectionChange,
+  applyCollectionChange,
   getLifeLinkChangePreview,
   applyLifeLinkChange,
   getChangeHistory,
@@ -442,6 +456,8 @@ export interface LifeLinksWorkspaceActions {
   applyLifeLinkChange(previewId: string): Promise<LifeLinkChangeResult>;
   undoLastChange(): Promise<LifeLinkChangeResult>;
   loadRoutineWorkspace(options?: { includeArchived?: boolean; signal?: AbortSignal }): Promise<void>;
+  setRoutinePresentation(patch: Partial<RoutineWorkspaceState["presentation"]>): void;
+  loadRoutineHistory(options?: { cursor?: string | null; signal?: AbortSignal }): Promise<void>;
   loadMoreRoutineGroups(signal?: AbortSignal): Promise<void>;
   loadMoreRoutineActivities(signal?: AbortSignal): Promise<void>;
   loadMoreRoutines(signal?: AbortSignal): Promise<void>;
@@ -578,6 +594,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private routineOccurrenceListRevision = 0;
   private routineCalendarLoadRevision = 0;
   private routineSessionListRevision = 0;
+  private routineHistoryListRevision = 0;
   private routineSessionSelectionRevision = 0;
   private calendarWorkspaceLoadRevision = 0;
   private calendarClockLoadRevision = 0;
@@ -607,6 +624,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }>();
   private settleAgentCalendarDeletion: ((confirmed: boolean) => void) | null = null;
   private historyRevision = 0;
+  private pendingWorkspaceResume: { peer: WorkspacePeer; pathname: string } | null = null;
   private snapshot: LifeLinksWorkspaceSnapshot;
 
   constructor(options: LifeLinksWorkspaceControllerOptions = {}) {
@@ -674,7 +692,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const routineListRevision = ++this.routineListRevision;
     const occurrenceListRevision = ++this.routineOccurrenceListRevision;
     const sessionListRevision = ++this.routineSessionListRevision;
-    const includeArchived = options.includeArchived ?? false;
+    const includeArchived = options.includeArchived ?? this.snapshot.routineWorkspace.presentation.showRemoved;
     this.updateRoutineWorkspace({ loading: true, error: "", includeArchived });
     try {
       const [groups, activities, routines, occurrences, sessions] = await Promise.all([
@@ -877,10 +895,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const selectionRevision = ++this.routineSelectionRevision;
     const { routine } = await this.api.updateRoutine(routineId, expectedUpdatedAt, patch, signal);
     signal?.throwIfAborted();
-    if (!sameOwner() || selectionRevision !== this.routineSelectionRevision) return;
+    if (!sameOwner()) return;
     this.updateRoutineWorkspace((current) => ({
       routines: mergeById(current.routines, [routineSummaryFromDetail(routine)]),
-      selectedRoutine: current.selectedRoutine?.routine.id === routine.routine.id ? routine : current.selectedRoutine,
+      selectedRoutine: selectionRevision === this.routineSelectionRevision && current.selectedRoutine?.routine.id === routine.routine.id
+        ? routine : current.selectedRoutine,
       error: ""
     }));
     if (routine.routine.archivedAt && this.snapshot.routineWorkspace.selectedRoutine?.routine.id === routineId) {
@@ -1058,6 +1077,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         activeRunId === runId && current.activeRun?.id === runId && selectedRoutineId === session.session.routineId &&
         current.selectedRoutine?.routine.id === selectedRoutineId ? null : current.activeRun,
       sessions: mergeRoutineSessions(current.sessions, [session]),
+      history: current.history.loaded && (!current.history.routineId || current.history.routineId === session.session.routineId)
+        ? { ...current.history, sessions: mergeRoutineSessions(current.history.sessions, [session]) } : current.history,
       selectedSession: sessionSelectionRevision === this.routineSessionSelectionRevision &&
         selectionRevision === this.routineSelectionRevision && activeRunId === runId &&
         selectedRoutineId === session.session.routineId && current.selectedRoutine?.routine.id === selectedRoutineId
@@ -1079,6 +1100,44 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       sessions: options.cursor ? mergeRoutineSessions(current.sessions, page.sessions) : page.sessions,
       sessionsNextCursor: page.nextCursor, error: ""
     }));
+  }
+
+  setRoutinePresentation(patch: Partial<RoutineWorkspaceState["presentation"]>): void {
+    const current = this.snapshot.routineWorkspace;
+    const presentation = { ...current.presentation, ...patch };
+    const scopeChanged = presentation.historyRoutineId !== current.presentation.historyRoutineId;
+    if (scopeChanged) ++this.routineHistoryListRevision;
+    this.updateRoutineWorkspace({ presentation, ...(scopeChanged ? { history: {
+      routineId: presentation.historyRoutineId, sessions: [], nextCursor: null, loaded: false, loading: false, error: ""
+    } } : {}) });
+  }
+
+  async loadRoutineHistory(options: { cursor?: string | null; signal?: AbortSignal } = {}): Promise<void> {
+    const ownerId = this.snapshot.currentUser?.id;
+    if (!ownerId) return;
+    const ownerRevision = this.ownerRevision;
+    const routineId = this.snapshot.routineWorkspace.presentation.historyRoutineId;
+    const history = this.snapshot.routineWorkspace.history;
+    if (options.cursor && (history.routineId !== routineId || history.nextCursor !== options.cursor)) return;
+    const revision = ++this.routineHistoryListRevision;
+    const isCurrent = () => ownerId === this.snapshot.currentUser?.id && ownerRevision === this.ownerRevision &&
+      revision === this.routineHistoryListRevision && routineId === this.snapshot.routineWorkspace.presentation.historyRoutineId;
+    this.updateRoutineWorkspace({ history: { ...history, routineId, loading: true, error: "" } });
+    try {
+      const page = await this.api.listRoutineSessions({
+        ...(routineId ? { routineId } : {}), ...(options.cursor ? { cursor: options.cursor } : {}), signal: options.signal
+      });
+      options.signal?.throwIfAborted();
+      if (!isCurrent()) return;
+      this.updateRoutineWorkspace((current) => ({ history: {
+        routineId, sessions: options.cursor ? mergeRoutineSessions(current.history.sessions, page.sessions) : page.sessions,
+        nextCursor: page.nextCursor, loaded: true, loading: false, error: ""
+      } }));
+    } catch (error) {
+      if (isCurrent()) this.updateRoutineWorkspace((current) => ({ history: {
+        ...current.history, loading: false, error: options.signal?.aborted ? "" : messageFromError(error)
+      } }));
+    }
   }
 
   async selectRoutineSession(sessionId: string, signal?: AbortSignal): Promise<void> {
@@ -1105,6 +1164,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     if (!sameOwner()) return;
     this.updateRoutineWorkspace((current) => ({
       sessions: mergeRoutineSessions(current.sessions, [session]),
+      history: { ...current.history, sessions: current.history.sessions.map((entry) => entry.session.id === sessionId ? session : entry) },
       selectedSession: selectionRevision === this.routineSessionSelectionRevision &&
         current.selectedSession?.session.id === sessionId ? session : current.selectedSession,
       error: ""
@@ -1327,9 +1387,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
 
   async openProviderCalendarEvent(reference: ProviderCalendarEventReference, updateHistory = true, actor: CalendarActor = "human", signal?: AbortSignal): Promise<void> {
     const sameOwner = this.captureCalendarOwner();
-    await this.openCalendar(false);
+    const opening = this.openCalendar(false);
+    const navigation = this.navigationRevision;
+    await opening;
     signal?.throwIfAborted();
-    if (!sameOwner()) return;
+    if (!sameOwner() || navigation !== this.navigationRevision) return;
     const selection = ++this.calendarSelectionRevision;
     const pathname = `${ownerCalendarEventPath(reference.providerEventId)}?${new URLSearchParams({ authority: "provider", connectionId: reference.connectionId, calendarId: reference.calendarId })}`;
     if (updateHistory && this.route.pathname() !== pathname) this.route.push(pathname);
@@ -1338,12 +1400,12 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     try {
       const { providerEvent } = await this.api.getProviderCalendarEvent(reference, signal, actor);
       signal?.throwIfAborted();
-      if (!sameOwner() || selection !== this.calendarSelectionRevision) return;
+      if (!sameOwner() || navigation !== this.navigationRevision || selection !== this.calendarSelectionRevision) return;
       if (!sameProviderReference(reference, providerEvent) || providerEvent.ownerId !== this.snapshot.currentUser?.id) throw new Error("The provider returned a different event identity.");
       this.updateCalendarWorkspace((current) => ({ providerEvents: mergeProviderEvents(current.providerEvents, [providerEvent]), selectedProviderEvent: providerEvent, loading: false, error: "" }));
       this.update({ detailsOpen: true });
     } catch (error) {
-      if (sameOwner() && selection === this.calendarSelectionRevision && !signal?.aborted) this.updateCalendarWorkspace({ loading: false, error: messageFromError(error) });
+      if (sameOwner() && navigation === this.navigationRevision && selection === this.calendarSelectionRevision && !signal?.aborted) this.updateCalendarWorkspace({ loading: false, error: messageFromError(error) });
       throw error;
     }
   }
@@ -2172,13 +2234,26 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     return this.commitOwnerChange(`preview:${previewId}`, (commandId) => this.api.applyLifeLinkChange(previewId, commandId, signal));
   }
 
+  async previewCollectionChange(input: CollectionChangeInput, signal?: AbortSignal): Promise<CollectionChangePreview> {
+    if (!this.snapshot.currentUser || this.snapshot.guestView || this.snapshot.routeQrId) throw new Error("Open your private workspace to edit Collections.");
+    return this.api.previewCollectionChange(input, signal);
+  }
+
+  async applyCollectionChange(previewId: string, signal?: AbortSignal): Promise<CollectionChangeResult> {
+    return this.commitOwnerChange(`collection-preview:${previewId}`, (commandId) => this.api.applyCollectionChange(previewId, commandId, signal));
+  }
+
+  async loadCollectionMoveTarget(collectionId: string, signal?: AbortSignal) {
+    return this.readCollectionSections(collectionId, signal);
+  }
+
   async undoLastChange(): Promise<LifeLinkChangeResult> {
     const entry = this.snapshot.changeHistory.entries[0];
     if (!entry) throw new Error("There are no saved changes to undo.");
     return this.commitOwnerChange(`undo:${entry.id}`, (commandId) => this.api.undoChange(entry.id, commandId));
   }
 
-  private async commitOwnerChange(key: string, commit: (commandId: string) => Promise<LifeLinkChangeResult>): Promise<LifeLinkChangeResult> {
+  private async commitOwnerChange<T extends LifeLinkChangeResult | CollectionChangeResult>(key: string, commit: (commandId: string) => Promise<T>): Promise<T> {
     const ownerId = this.snapshot.currentUser?.id;
     const continuation = { owner: this.ownerRevision, navigation: this.navigationRevision };
     const sameOwner = () => continuation.owner === this.ownerRevision && this.snapshot.currentUser?.id === ownerId;
@@ -2206,15 +2281,16 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
   }
 
-  private async reconcileOwnerChange(result: LifeLinkChangeResult, continuation: { owner: number; navigation: number }) {
+  private async reconcileOwnerChange(result: LifeLinkChangeResult | CollectionChangeResult, continuation: { owner: number; navigation: number }) {
     const current = () => continuation.owner === this.ownerRevision && continuation.navigation === this.navigationRevision;
     // These existing route methods synchronously claim a navigation revision.
     const restore = (action: Promise<void>) => { continuation.navigation = this.navigationRevision; return action; };
-    const removed = new Set(result.operation === "delete" ? result.affectedIds : []);
+    const removed = new Set(result.operation === "delete" && "affectedIds" in result ? result.affectedIds : []);
     const selectedId = this.snapshot.selectedLifeLinkId;
     const parentId = this.snapshot.hierarchyParentId;
     const collectionId = this.snapshot.selectedCollection?.id;
     const routineId = this.snapshot.routineWorkspace.selectedRoutine?.routine.id;
+    const routineSessionId = this.snapshot.presentation.routineDetails.kind === "session" ? this.snapshot.routineWorkspace.selectedSession?.session.id : undefined;
     const calendarEventId = this.snapshot.calendarWorkspace.selectedEvent?.event.id;
     const mode = this.snapshot.workspaceMode;
     const detailsOpen = this.snapshot.detailsOpen;
@@ -2230,11 +2306,15 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     } else if (mode === "routines") {
       if (routineId) await restore(this.openRoutine(routineId, false));
       else await restore(this.openRoutines(false));
+      if (current() && routineSessionId) await this.selectRoutineSession(routineSessionId);
     } else if (mode === "collections") {
       await this.loadCollections();
       if (!current()) return;
       if (collectionId && this.snapshot.collections.some((collection) => collection.id === collectionId)) {
-        await restore(this.openCollection(collectionId, selectedId && !removed.has(selectedId) ? selectedId : undefined, false));
+        await restore(this.openCollection(collectionId, undefined, false));
+        if (current() && selectedId && !removed.has(selectedId) && this.snapshot.collectionMembers.some((member) => member.id === selectedId)) {
+          await this.selectCollectionMember(selectedId, false);
+        }
       } else await restore(this.openCollections(false));
     } else if (selectedId && !removed.has(selectedId)) {
       try {
@@ -2429,6 +2509,89 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
 
   setDetailsOpen(detailsOpen: boolean) {
     this.update({ detailsOpen });
+  }
+
+  setMiddleCollapsed(middleCollapsed: boolean) {
+    this.update({ middleCollapsed, ...(middleCollapsed ? { detailsOpen: true } : {}) });
+  }
+
+  setWorkspaceScroll(panel: "middle" | "details", scrollTop: number, pathname = this.snapshot.routePathname) {
+    if (!this.snapshot.currentUser || this.snapshot.routeQrId || this.snapshot.activeView !== "workspace") return;
+    if (pathname !== this.snapshot.routePathname || (this.pendingWorkspaceResume?.peer === this.snapshot.workspaceMode &&
+        this.pendingWorkspaceResume.pathname === workspaceBookmarkPath(this.snapshot.workspaceMode, pathname))) return;
+    const peer = this.snapshot.workspaceMode;
+    const key = panel === "middle" ? "middleScrollTop" : "detailsScrollTop";
+    const value = Math.max(0, Number.isFinite(scrollTop) ? scrollTop : 0);
+    if (this.snapshot.presentation.peers[peer][key] === value) return;
+    this.update({ presentation: { ...this.snapshot.presentation, peers: {
+      ...this.snapshot.presentation.peers,
+      [peer]: { ...this.snapshot.presentation.peers[peer], [key]: value }
+    } } });
+  }
+
+  setCollectionPresentation(collectionId: string, patch: Partial<CollectionPresentation>) {
+    if (!this.snapshot.currentUser || this.snapshot.routeQrId) return;
+    this.update({ presentation: { ...this.snapshot.presentation, collections: {
+      ...this.snapshot.presentation.collections,
+      [collectionId]: { ...(this.snapshot.presentation.collections[collectionId] ?? { view: "sections", expandedGroups: [] }), ...patch }
+    } } });
+  }
+
+  setCalendarPresentation(patch: Partial<CalendarPresentation>) {
+    if (!this.snapshot.currentUser || this.snapshot.routeQrId) return;
+    this.update({ presentation: { ...this.snapshot.presentation, calendar: { ...this.snapshot.presentation.calendar, ...patch } } });
+  }
+
+  setRoutineDetailPresentation(kind: "routine" | "session") {
+    if (!this.snapshot.currentUser || this.snapshot.routeQrId) return;
+    this.update({ presentation: { ...this.snapshot.presentation, routineDetails: {
+      kind, sessionId: kind === "session" ? this.snapshot.routineWorkspace.selectedSession?.session.id ?? null : null
+    } } });
+  }
+
+  /** Rail-only navigation. Root breadcrumbs and explicit routes retain their existing meaning. */
+  async resumeWorkspace(peer: WorkspacePeer): Promise<void> {
+    const ownerId = this.snapshot.currentUser?.id;
+    if (!ownerId || this.snapshot.routeQrId) return;
+    const ownerRevision = this.ownerRevision;
+    const remembered = { ...this.snapshot.presentation.peers[peer] };
+    const routineDetails = { ...this.snapshot.presentation.routineDetails };
+    const pathname = remembered.pathname ?? workspaceRootPath(peer);
+    const pending = { peer, pathname };
+    this.pendingWorkspaceResume = pending;
+    if (this.route.pathname() !== pathname) this.route.push(pathname);
+    // Never show a previously selected private object as the requested hierarchy while it reloads.
+    if (peer === "hierarchies") this.update({
+      workspaceMode: peer, activeView: "workspace", routePathname: pathname, routeQrId: null,
+      routeLifeLinkId: lifeLinkIdFromPath(pathname), hierarchyParentId: null, hierarchyParentDetail: null,
+      selectedCollection: null, selectedLifeLinkId: null, selectedLifeLinkDetail: null,
+      selectedLifeLinkMemberships: [], membershipsComplete: false, detailsOpen: false
+    });
+    const opening = this.restoreOwnerRoute(pathname);
+    const navigation = this.navigationRevision;
+    const current = () => ownerRevision === this.ownerRevision && ownerId === this.snapshot.currentUser?.id &&
+      navigation === this.navigationRevision && this.snapshot.workspaceMode === peer && !this.snapshot.routeQrId;
+    try { await opening; }
+    catch (error) {
+      if (this.pendingWorkspaceResume === pending) this.pendingWorkspaceResume = null;
+      if (current()) this.update({ error: messageFromError(error) });
+      return;
+    }
+    if (this.pendingWorkspaceResume === pending) this.pendingWorkspaceResume = null;
+    if (!current()) return;
+    if (peer === "routines" && routineDetails.kind === "session" && routineDetails.sessionId) {
+      try { await this.selectRoutineSession(routineDetails.sessionId); }
+      catch (error) { if (current()) this.updateRoutineWorkspace({ selectedSession: null, error: messageFromError(error) }); }
+      if (!current()) return;
+    }
+    this.update({
+      middleCollapsed: remembered.middleCollapsed,
+      detailsOpen: remembered.detailsOpen,
+      presentation: { ...this.snapshot.presentation,
+        peers: { ...this.snapshot.presentation.peers, [peer]: { ...remembered, pathname } },
+        restoreRevision: this.snapshot.presentation.restoreRevision + 1
+      }
+    });
   }
 
   async openHierarchy(parentId: string | null = null, updateHistory = true) {
@@ -3972,7 +4135,27 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     return { collection: collection!, sections };
   }
 
-  private async readCollectionWorkspace(collectionId: string, signal?: AbortSignal) {
+  async loadCollectionMemberDetails(memberIds: readonly string[]) {
+    const collectionId = this.snapshot.selectedCollection?.id;
+    const ownerRevision = this.ownerRevision;
+    const navigation = this.navigationRevision;
+    if (!collectionId) return;
+    const isCurrent = () => ownerRevision === this.ownerRevision && navigation === this.navigationRevision
+      && this.snapshot.selectedCollection?.id === collectionId;
+    const members = this.snapshot.collectionMembers.filter((member) => memberIds.includes(member.id)
+      && !this.snapshot.collectionMemberDetails[member.id]);
+    try {
+      await forEachCollectionMember(members, async (member) => {
+        if (!isCurrent()) return;
+        const { detail } = await this.api.getLifeLinkDetail(member.id);
+        if (isCurrent()) this.update((current) => ({ collectionMemberDetails: { ...current.collectionMemberDetails, [member.id]: detail } }));
+      });
+    } catch (error) {
+      if (isCurrent()) this.update({ error: `Collection locations could not be fully loaded: ${messageFromError(error)}` });
+    }
+  }
+
+  private async readCollectionWorkspace(collectionId: string, signal?: AbortSignal, selectedId?: string | null) {
     const { collection, sections } = await this.readCollectionSections(collectionId, signal);
     const members = await readAllPages(async (cursor) => {
       const page = await this.api.listCollectionMembers(collectionId, { cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal });
@@ -3980,12 +4163,13 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     });
     const details: Record<string, LifeLinkDetail> = {};
     const memberships: Record<string, LifeLinkCollectionMembership[]> = {};
-    for (const member of members) {
-      const [detail, memberMemberships] = await Promise.all([
-        this.api.getLifeLinkDetail(member.id, { signal }), this.readMemberships(member.id, signal)
-      ]);
-      details[member.id] = detail.detail;
-      memberships[member.id] = memberMemberships;
+    // Section membership is sufficient to display the collapsed overview. Full
+    // canonical Details (including attachment metadata) load only on demand.
+    await forEachCollectionMember(members, async (member) => {
+      memberships[member.id] = await this.readMemberships(member.id, signal);
+    });
+    if (selectedId && members.some((member) => member.id === selectedId)) {
+      details[selectedId] = (await this.api.getLifeLinkDetail(selectedId, { signal })).detail;
     }
     const latest = await this.api.getCollection(collectionId, { limit: 1, signal });
     if (latest.collection.updatedAt !== collection.updatedAt) throw new Error("Collection changed while loading. Open it again to refresh.");
@@ -4043,7 +4227,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       }
       // Keep the committed revision visible if the subsequent read fails.
       this.update({ selectedCollection: result.collection, collectionComplete: false, collectionLoading: true });
-      const workspace = await this.readCollectionWorkspace(collection.id, options.signal);
+      const workspace = await this.readCollectionWorkspace(collection.id, options.signal, this.snapshot.selectedLifeLinkId);
       this.assertCommandActive(options);
       if (ownerRevision !== this.ownerRevision || navigation !== this.navigationRevision) return;
       this.update({ selectedCollection: workspace.collection, collectionMembers: workspace.members,
@@ -4454,7 +4638,31 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const next = typeof patch === "function" ? patch(this.snapshot) : patch;
     const finishedMutation = this.snapshot.busy && next.busy === false;
     const loadedOwner = !this.snapshot.currentUser && next.currentUser;
-    this.snapshot = { ...this.snapshot, ...next };
+    const ownerChanged = next.currentUser !== undefined && next.currentUser?.id !== this.snapshot.currentUser?.id;
+    const previous = this.snapshot;
+    let updated = { ...previous, ...next };
+    if (ownerChanged) {
+      this.pendingWorkspaceResume = null;
+      updated = { ...updated, presentation: emptyWorkspacePresentation(), middleCollapsed: false,
+        expandedLifeLinkIds: [], routineWorkspace: { ...updated.routineWorkspace, presentation: emptyRoutineWorkspaceState().presentation } };
+    }
+    // One content pane must remain available. Explicitly closing Details restores the middle pane.
+    if (updated.middleCollapsed && !updated.detailsOpen) updated.middleCollapsed = false;
+    if (updated.currentUser && !updated.routeQrId && updated.activeView === "workspace") {
+      const peer = updated.workspaceMode;
+      const pathname = workspaceBookmarkPath(peer, updated.routePathname);
+      if (pathname) {
+        const remembered = updated.presentation.peers[peer];
+        if (peer === "routines" && remembered.pathname !== pathname) {
+          updated.presentation = { ...updated.presentation, routineDetails: { kind: "routine", sessionId: null } };
+        }
+        updated.presentation = { ...updated.presentation, peers: { ...updated.presentation.peers, [peer]: {
+          ...remembered, pathname, middleCollapsed: updated.middleCollapsed, detailsOpen: updated.detailsOpen,
+          ...(remembered.pathname !== pathname ? { middleScrollTop: 0, detailsScrollTop: 0 } : {})
+        } } };
+      }
+    }
+    this.snapshot = updated;
     for (const listener of this.listeners) {
       listener();
     }
@@ -4471,6 +4679,7 @@ function emptyLifeLinkBranch(): LifeLinkBranchState {
 
 function emptyFieldLedgerState() {
   return {
+    presentation: emptyWorkspacePresentation(), middleCollapsed: false,
     changeHistory: { limit: 5 as const, entries: [] }, agentChangeConfirmation: null,
     agentCalendarDeletionConfirmation: null,
     workspaceMode: "hierarchies" as const, hierarchyParentId: null, hierarchyParentDetail: null,
@@ -4484,8 +4693,44 @@ function emptyFieldLedgerState() {
   };
 }
 
+function workspaceRootPath(peer: WorkspacePeer): string {
+  return peer === "hierarchies" ? "/life-links" : `/${peer}`;
+}
+
+function workspaceBookmarkPath(peer: WorkspacePeer, pathname: string): string | null {
+  const base = pathname.split("?")[0];
+  if (peer === "hierarchies") return base === "/life-links" || lifeLinkIdFromPath(base) ? base : null;
+  if (peer === "collections") {
+    if (!isCollectionsPath(base)) return null;
+    const id = collectionIdFromPath(base);
+    return id ? ownerCollectionPath(id, collectionMemberIdFromPath(pathname) ?? undefined) : "/collections";
+  }
+  if (peer === "routines") return isRoutinesPath(base) ? base : null;
+  if (!isCalendarPath(base)) return null;
+  const eventId = calendarEventIdFromPath(base);
+  if (!eventId) return "/calendar"; // OAuth drafts and callback errors are never navigation bookmarks.
+  const query = new URLSearchParams(pathname.split("?")[1] ?? "");
+  if (query.get("authority") === "provider" && query.get("connectionId") && query.get("calendarId")) {
+    return `${ownerCalendarEventPath(eventId)}?${new URLSearchParams({ authority: "provider", connectionId: query.get("connectionId")!, calendarId: query.get("calendarId")! })}`;
+  }
+  return ownerCalendarEventPath(eventId);
+}
+
+function emptyWorkspacePresentation(): WorkspacePresentation {
+  const peer = () => ({ pathname: null, middleCollapsed: false, detailsOpen: false, middleScrollTop: 0, detailsScrollTop: 0 });
+  return {
+    peers: { hierarchies: peer(), collections: peer(), routines: peer(), calendar: peer() },
+    collections: {},
+    calendar: { view: "month", timeZone: null, anchorDate: null, selectedDate: null, hiddenNativeCalendarIds: [], selectedEventKey: null },
+    routineDetails: { kind: "routine", sessionId: null },
+    restoreRevision: 0
+  };
+}
+
 function emptyRoutineWorkspaceState(): RoutineWorkspaceState {
   return {
+    presentation: { tab: "routines", historyRoutineId: null, showRemoved: false, collapsedGroupIds: [] },
+    history: { routineId: null, sessions: [], nextCursor: null, loaded: false, loading: false, error: "" },
     groups: [], groupsNextCursor: null, activities: [], activitiesNextCursor: null,
     routines: [], routinesNextCursor: null, selectedRoutine: null,
     schedules: [], schedulesNextCursor: null, occurrences: [], occurrencesNextCursor: null,
@@ -4505,6 +4750,17 @@ function emptyCalendarWorkspaceState(): CalendarWorkspaceState {
     events: [], eventsNextCursor: null, eventsComplete: false, range: null,
     selectedEvent: null, latestTombstone: null, loading: false, error: ""
   };
+}
+
+/** Bound network concurrency without serializing a Collection's entire index. */
+async function forEachCollectionMember<T>(items: readonly T[], visit: (item: T) => Promise<void>) {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
+    while (next < items.length) {
+      const item = items[next++];
+      await visit(item);
+    }
+  }));
 }
 
 /** Exhaust every cursor; an interrupted/invalid page is not an exhaustive result. */

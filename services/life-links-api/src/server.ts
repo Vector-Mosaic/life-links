@@ -24,6 +24,7 @@ import {
   type LifeLinkDomainErrorCode,
   type LifeLinkPageRequest,
   type PreviewLifeLinkChangeInput,
+  normalizeCollectionChangeInput,
   LifeLinkDomainError,
   CalendarDomainError,
   type LinkBodyDoc,
@@ -419,6 +420,32 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
       user_id: user.id
     });
     response.json({ agentConnection: agentConnectionForUser(user) });
+  });
+
+  app.post("/api/collections/changes/preview", requireAuthenticated, async (request: AppRequest, response) => {
+    const body = readObjectBody(request, response, logger);
+    if (!body) return;
+    const preview = await store.previewCollectionChange(request.user!.id, normalizeCollectionChangeInput(body));
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ preview });
+  });
+
+  app.get("/api/collections/changes/:previewId", requireAuthenticated, async (request: AppRequest, response) => {
+    const preview = await store.getCollectionChangePreview(request.user!.id, paramValue(request.params.previewId));
+    if (!preview) { sendCanonicalLifeLinkError(response, 404, "collection_not_found"); return; }
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ preview });
+  });
+
+  app.post("/api/collections/changes/apply", requireAuthenticated, async (request: AppRequest, response) => {
+    const input = readObjectBody(request, response, logger);
+    if (!input || !validateObjectFields(request, response, logger, input, ["previewId", "commandId"])) return;
+    if (!validChangeCommandField(input.previewId, 200) || !validChangeCommandField(input.commandId, 128)) {
+      sendCanonicalLifeLinkError(response, 400, "invalid_collection", { reason: "invalid_change_command" }); return;
+    }
+    const result = await store.applyCollectionChange(request.user!.id, { previewId: input.previewId, commandId: input.commandId });
+    logger.info("life_links.collection.change_applied", { msg: "Owner Collection selection changed", ...requestLogFields(request), operation: result.operation, collection_count: result.collectionIds.length, member_count: result.lifeLinkIds.length });
+    response.json(result);
   });
 
   app.post("/api/life-links/changes/preview", requireAuthenticated, async (request: AppRequest, response) => {

@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import { Pool, type PoolClient } from "pg";
 import {
+  planCollectionChange, type CollectionChangeInput, type CollectionChangePreview, type CollectionChangeResult, type CollectionChangeState,
   type ClaimQrCommand,
   type ClaimResult,
   type CompetitionFixtureData,
@@ -465,6 +466,73 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     return pageCollectionRecords(result.rows.map(mapCollection).sort(compareTitledRecords), page);
   }
 
+  private async collectionChangeState(client: PoolClient, userId: string): Promise<CollectionChangeState> {
+    const rows = await loadOwnerContentRows(client, userId);
+    return { collections: rows.collections.map(mapCollection), sections: rows.collection_sections.map(mapCollectionSection),
+      memberships: rows.collection_memberships.map((row) => ({ ownerId: String(row.owner_id), collectionId: String(row.collection_id), lifeLinkId: String(row.life_link_id), createdAt: toIso(row.created_at) })),
+      assignments: rows.collection_section_assignments.map((row) => ({ ownerId: String(row.owner_id), collectionId: String(row.collection_id), lifeLinkId: String(row.life_link_id), sectionId: String(row.section_id), createdAt: toIso(row.created_at) })),
+      lifeLinks: rows.life_links.map((row) => ({ id: String(row.id), ownerId: String(row.owner_id), title: String(row.title) })) };
+  }
+
+  async previewCollectionChange(userId: string, input: CollectionChangeInput): Promise<CollectionChangePreview> {
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      const plan = planCollectionChange(await this.collectionChangeState(client, userId), userId, input, new Date().toISOString());
+      await this.assertNoCurrentRoutineCollectionBindings(client, userId, plan.deletedCollectionIds);
+      const preview: CollectionChangePreview = { ...plan.preview, id: `preview-${randomUUID()}`, createdAt: new Date().toISOString() };
+      await client.query("DELETE FROM life_link_change_previews WHERE owner_id=$1 AND created_at < now() - interval '15 minutes'", [userId]);
+      await client.query("INSERT INTO life_link_change_previews(id,owner_id,preview,fingerprint) VALUES($1,$2,$3::jsonb,$4)", [preview.id,userId,JSON.stringify(preview),createHash("sha256").update(stableChangeFingerprint(plan.preview)).digest("hex")]);
+      await client.query(`DELETE FROM life_link_change_previews WHERE owner_id=$1 AND id NOT IN
+        (SELECT id FROM life_link_change_previews WHERE owner_id=$1 ORDER BY created_at DESC,id DESC LIMIT 5)`, [userId]);
+      return preview;
+    }, null);
+  }
+
+  async getCollectionChangePreview(userId: string, previewId: string): Promise<CollectionChangePreview | null> {
+    const result = await this.pool.query(`SELECT preview FROM life_link_change_previews WHERE id=$1 AND owner_id=$2
+      AND created_at >= now() - interval '15 minutes' AND preview->>'domain'='collections'`, [previewId,userId]);
+    return result.rows[0]?.preview ?? null;
+  }
+
+  async applyCollectionChange(userId: string, input: ApplyLifeLinkChangeInput): Promise<CollectionChangeResult> {
+    assertChangeCommandId(input.commandId);
+    return this.withTransaction([`owner:${userId}`, `claim-command:${input.commandId}`], async (client) => {
+      const replay = (await client.query("SELECT * FROM life_link_change_receipts WHERE command_id=$1", [input.commandId])).rows[0];
+      if (replay) {
+        if (replay.owner_id !== userId || replay.request_id !== input.previewId || replay.collection_ids == null || replay.operation === "undo") throw new ClaimIdempotencyConflictError();
+        return { operation: replay.operation, collectionIds: replay.collection_ids, lifeLinkIds: replay.affected_ids, history: await getPostgresChangeHistory(client,userId) };
+      }
+      const saved = (await client.query(`SELECT preview,fingerprint FROM life_link_change_previews WHERE id=$1 AND owner_id=$2
+        AND created_at >= now() - interval '15 minutes' AND preview->>'domain'='collections'`, [input.previewId,userId])).rows[0];
+      if (!saved) throw new LifeLinkDomainError("collection_not_found", "Collection change preview is unavailable or expired.");
+      const state = await this.collectionChangeState(client,userId);
+      const plan = planCollectionChange(state,userId,(saved.preview as CollectionChangePreview).input,new Date().toISOString());
+      if (createHash("sha256").update(stableChangeFingerprint(plan.preview)).digest("hex") !== saved.fingerprint) throw new LifeLinkDomainError("stale_collection", "The selection changed. Review a fresh preview.");
+      await this.assertNoCurrentRoutineCollectionBindings(client,userId,plan.deletedCollectionIds);
+      const before = await loadOwnerContentRows(client,userId);
+      const memberKey = (row: CollectionChangeState["memberships"][number]) => JSON.stringify([row.collectionId,row.lifeLinkId]);
+      const assignmentKey = (row: CollectionChangeState["assignments"][number]) => JSON.stringify([row.collectionId,row.lifeLinkId,row.sectionId]);
+      const nextMembers = new Set(plan.next.memberships.map(memberKey));
+      const nextAssignments = new Set(plan.next.assignments.map(assignmentKey));
+      const oldMembers = new Set(state.memberships.map(memberKey));
+      const oldAssignments = new Set(state.assignments.map(assignmentKey));
+      for (const row of state.assignments) if (!nextAssignments.has(assignmentKey(row))) await client.query("DELETE FROM collection_section_assignments WHERE owner_id=$1 AND collection_id=$2 AND life_link_id=$3 AND section_id=$4", [userId,row.collectionId,row.lifeLinkId,row.sectionId]);
+      for (const row of state.memberships) if (!nextMembers.has(memberKey(row))) await client.query("DELETE FROM collection_memberships WHERE owner_id=$1 AND collection_id=$2 AND life_link_id=$3", [userId,row.collectionId,row.lifeLinkId]);
+      for (const row of state.sections) {
+        const updated = plan.next.sections.find((section) => section.id === row.id);
+        if (!updated) await client.query("DELETE FROM collection_sections WHERE id=$1 AND owner_id=$2", [row.id,userId]);
+        else if (updated.collectionId !== row.collectionId) await client.query("UPDATE collection_sections SET collection_id=$3,position=$4,updated_at=$5 WHERE id=$1 AND owner_id=$2", [row.id,userId,updated.collectionId,updated.position,updated.updatedAt]);
+      }
+      for (const row of plan.next.memberships) if (!oldMembers.has(memberKey(row))) await client.query("INSERT INTO collection_memberships(owner_id,collection_id,life_link_id,created_at) VALUES($1,$2,$3,$4)", [userId,row.collectionId,row.lifeLinkId,row.createdAt]);
+      for (const row of plan.next.assignments) if (!oldAssignments.has(assignmentKey(row))) await client.query("INSERT INTO collection_section_assignments(owner_id,collection_id,life_link_id,section_id,created_at) VALUES($1,$2,$3,$4,$5)", [userId,row.collectionId,row.lifeLinkId,row.sectionId,row.createdAt]);
+      for (const id of plan.deletedCollectionIds) await client.query("DELETE FROM collections WHERE id=$1 AND owner_id=$2", [id,userId]);
+      for (const row of plan.next.collections) if (plan.collectionIds.includes(row.id)) await client.query("UPDATE collections SET updated_at=$3 WHERE id=$1 AND owner_id=$2", [row.id,userId,row.updatedAt]);
+      await recordOwnerChange(client,userId,`${plan.preview.input.operation === "delete" ? "Remove" : "Move"} Collection selection`,before);
+      await client.query("INSERT INTO life_link_change_receipts(command_id,owner_id,operation,request_id,affected_ids,collection_ids) VALUES($1,$2,$3,$4,$5,$6)", [input.commandId,userId,plan.preview.input.operation,input.previewId,plan.lifeLinkIds,plan.collectionIds]);
+      await client.query("DELETE FROM life_link_change_previews WHERE id=$1 AND owner_id=$2", [input.previewId,userId]);
+      return { operation: plan.preview.input.operation, collectionIds: plan.collectionIds, lifeLinkIds: plan.lifeLinkIds, history: await getPostgresChangeHistory(client,userId) };
+    }, null);
+  }
+
   async previewLifeLinkChange(userId: string, input: PreviewLifeLinkChangeInput): Promise<LifeLinkChangePreview> {
     return this.withTransaction([`owner:${userId}`], async (client) => {
       const { preview, fingerprint } = await this.buildLifeLinkChangePreview(client, userId, input);
@@ -481,7 +549,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     return this.withTransaction([`owner:${userId}`], async (client) => {
       await client.query("DELETE FROM life_link_change_previews WHERE owner_id = $1 AND created_at < now() - interval '15 minutes'", [userId]);
       const result = await client.query("SELECT preview FROM life_link_change_previews WHERE id = $1 AND owner_id = $2", [previewId, userId]);
-      return result.rows[0]?.preview ?? null;
+      return result.rows[0]?.preview?.domain === "collections" ? null : result.rows[0]?.preview ?? null;
     }, null);
   }
 
@@ -494,6 +562,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         WHERE id = $1 AND owner_id = $2 AND created_at >= now() - interval '15 minutes'`, [input.previewId, userId]);
       if (!stored.rows[0]) throw new LifeLinkDomainError("life_link_not_found", "Change preview is unavailable or expired.");
       const preview = stored.rows[0].preview as LifeLinkChangePreview;
+      if ("domain" in preview) throw new LifeLinkDomainError("life_link_not_found", "Life Link change preview is unavailable.");
       const request: PreviewLifeLinkChangeInput = preview.operation === "move"
         ? { operation: "move", lifeLinkIds: preview.rootIds, parentId: preview.parentId }
         : { operation: "delete", lifeLinkIds: preview.rootIds };
@@ -547,6 +616,10 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         jsonb_array_elements(saved.inverse_rows) item
         WHERE saved.id=$1 AND saved.owner_id=$2 AND item->>'table'='life_links' AND item->'before'='null'::jsonb`,[input.changeId,userId]);
       await this.assertNoCurrentRoutineLifeLinkBindings(client,userId,deletions.rows.map((row)=>String(row.id)));
+      const collectionDeletions = await client.query(`SELECT item->'key'->>'id' AS id FROM saved_changes saved,
+        jsonb_array_elements(saved.inverse_rows) item WHERE saved.id=$1 AND saved.owner_id=$2
+        AND item->>'table'='collections' AND item->'before'='null'::jsonb`, [input.changeId,userId]);
+      await this.assertNoCurrentRoutineCollectionBindings(client,userId,collectionDeletions.rows.map((row)=>String(row.id)));
       let affectedIds: string[];
       try {
         affectedIds = await restoreOwnerChange(client, userId, input.changeId);
@@ -593,11 +666,19 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     if(result.rowCount)throw currentRoutineLifeLinkBindingError();
   }
 
+  private async assertNoCurrentRoutineCollectionBindings(client: PoolClient,userId: string,collectionIds: string[]): Promise<void> {
+    if (!collectionIds.length) return;
+    const result = await client.query(`SELECT 1 FROM routine_context_bindings binding JOIN routines routine
+      ON routine.owner_id=binding.owner_id AND routine.current_revision_id=binding.routine_revision_id
+      WHERE binding.owner_id=$1 AND binding.target_type='collection' AND binding.target_id=ANY($2::text[]) LIMIT 1`, [userId,collectionIds]);
+    if (result.rowCount) throw new LifeLinkDomainError("routine_reference_conflict", "A current Routine revision still references this Collection. Revise that Routine before deleting it.");
+  }
+
   private async readChangeReplay(client: PoolClient, userId: string, commandId: string, requestId: string, undo: boolean): Promise<LifeLinkChangeResult | null> {
     const result = await client.query("SELECT * FROM life_link_change_receipts WHERE command_id = $1", [commandId]);
     const row = result.rows[0];
     if (!row) return null;
-    if (row.owner_id !== userId || row.request_id !== requestId || (row.operation === "undo") !== undo) throw new ClaimIdempotencyConflictError();
+    if (row.owner_id !== userId || row.collection_ids != null || row.request_id !== requestId || (row.operation === "undo") !== undo) throw new ClaimIdempotencyConflictError();
     return { operation: row.operation, affectedIds: row.affected_ids, history: await getPostgresChangeHistory(client, userId) };
   }
 

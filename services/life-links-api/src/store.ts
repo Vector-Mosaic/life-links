@@ -5,6 +5,7 @@ import {
   CHANGE_HISTORY_LIMIT, resolveLifeLinkChangeScope, lifeLinkChangePreviewItem, stableChangeFingerprint,
   type PreviewLifeLinkChangeInput, type LifeLinkChangePreview, type ApplyLifeLinkChangeInput,
   type UndoChangeInput, type ChangeHistory, type ChangeHistoryEntry, type LifeLinkChangeResult,
+  planCollectionChange, type CollectionChangeInput, type CollectionChangePreview, type CollectionChangeResult, type CollectionChangeState,
   type ClaimQrCommand,
   type ClaimResult,
   type ClearLifeLinkQrBindingCommand,
@@ -340,6 +341,9 @@ export class CompetitionFixtureShapeMismatchError extends Error {}
 export type LifeLinksStore = {
   previewLifeLinkChange(userId: string, input: PreviewLifeLinkChangeInput): Promise<LifeLinkChangePreview>;
   getLifeLinkChangePreview(userId: string, previewId: string): Promise<LifeLinkChangePreview | null>;
+  previewCollectionChange(userId: string, input: CollectionChangeInput): Promise<CollectionChangePreview>;
+  getCollectionChangePreview(userId: string, previewId: string): Promise<CollectionChangePreview | null>;
+  applyCollectionChange(userId: string, input: ApplyLifeLinkChangeInput): Promise<CollectionChangeResult>;
   applyLifeLinkChange(userId: string, input: ApplyLifeLinkChangeInput): Promise<LifeLinkChangeResult>;
   getChangeHistory(userId: string): Promise<ChangeHistory>;
   undoChange(userId: string, input: UndoChangeInput): Promise<LifeLinkChangeResult>;
@@ -494,7 +498,8 @@ type ChangeTable = "lifeLinks" | "collections" | "collectionMemberships" | "coll
 type OwnerChangeSnapshot = Record<ChangeTable, Map<string, unknown>>;
 type ChangeDelta = { table: ChangeTable; key: string; before: unknown; after: unknown };
 type MemoryHistoryEntry = ChangeHistoryEntry & { deltas: ChangeDelta[]; affectedIds: string[] };
-type MemoryPreview = { preview: LifeLinkChangePreview; input: PreviewLifeLinkChangeInput; fingerprint: string; expiresAt: number };
+type MemoryPreview = { domain?: never; preview: LifeLinkChangePreview; input: PreviewLifeLinkChangeInput; fingerprint: string; expiresAt: number }
+  | { domain: "collections"; preview: CollectionChangePreview; fingerprint: string; expiresAt: number };
 const CHANGE_MUTATION_LOCK = "\u0000canonical-change";
 
 export class InMemoryLifeLinksStore implements LifeLinksStore {
@@ -531,8 +536,64 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   private ownerLocks = new Map<string, Promise<void>>();
   private changeHistory = new Map<string, MemoryHistoryEntry[]>();
   private changePreviews = new Map<string, Map<string, MemoryPreview>>();
-  private changeReceipts = new Map<string, { ownerId: string; request: string; operation: LifeLinkChangeResult["operation"]; affectedIds: string[] }>();
+  private changeReceipts = new Map<string, { ownerId: string; request: string; operation: LifeLinkChangeResult["operation"]; affectedIds: string[]; collectionIds?: string[] }>();
   private usedChangeIds = new Set<string>();
+
+  async previewCollectionChange(userId: string, input: CollectionChangeInput): Promise<CollectionChangePreview> {
+    return this.withOwnerLock(userId, async () => {
+      const now = Date.now();
+      const plan = planCollectionChange(this.collectionChangeState(), userId, input, new Date(now).toISOString());
+      this.assertCollectionsNotCurrentRoutineContext(userId, new Set(plan.deletedCollectionIds));
+      const preview: CollectionChangePreview = { ...plan.preview, id: `preview-${randomUUID()}`, createdAt: new Date(now).toISOString() };
+      const previews = this.changePreviews.get(userId) ?? new Map<string, MemoryPreview>();
+      for (const [id, item] of previews) if (item.expiresAt <= now) previews.delete(id);
+      while (previews.size >= CHANGE_HISTORY_LIMIT) previews.delete(previews.keys().next().value!);
+      previews.set(preview.id, { domain: "collections", preview, fingerprint: createHash("sha256").update(stableChangeFingerprint(plan.preview)).digest("hex"), expiresAt: now + 15 * 60_000 });
+      this.changePreviews.set(userId, previews);
+      return structuredClone(preview);
+    });
+  }
+
+  async getCollectionChangePreview(userId: string, previewId: string): Promise<CollectionChangePreview | null> {
+    const entry = this.changePreviews.get(userId)?.get(previewId);
+    if (!entry || entry.domain !== "collections" || entry.expiresAt <= Date.now()) return null;
+    return structuredClone(entry.preview);
+  }
+
+  async applyCollectionChange(userId: string, input: ApplyLifeLinkChangeInput): Promise<CollectionChangeResult> {
+    return this.withLocks([CHANGE_MUTATION_LOCK, userId], async () => {
+      if (typeof input.commandId !== "string" || !input.commandId.trim() || input.commandId.length > 128) throw new LifeLinkDomainError("invalid_collection", "A stable command ID is required.");
+      const request = stableChangeFingerprint({ collectionApply: input.previewId });
+      const receipt = this.changeReceipts.get(input.commandId);
+      if (receipt) {
+        if (receipt.ownerId !== userId || receipt.request !== request || !receipt.collectionIds || receipt.operation === "undo") throw new ClaimIdempotencyConflictError();
+        return { operation: receipt.operation, collectionIds: [...receipt.collectionIds], lifeLinkIds: [...receipt.affectedIds], history: await this.getChangeHistory(userId) };
+      }
+      const saved = this.changePreviews.get(userId)?.get(input.previewId);
+      if (!saved || saved.domain !== "collections" || saved.expiresAt <= Date.now()) throw new LifeLinkDomainError("collection_not_found", "Collection change preview is unavailable or expired.");
+      const plan = planCollectionChange(this.collectionChangeState(), userId, saved.preview.input, new Date().toISOString());
+      if (createHash("sha256").update(stableChangeFingerprint(plan.preview)).digest("hex") !== saved.fingerprint) throw new LifeLinkDomainError("stale_collection", "The selection changed. Review a fresh preview.");
+      this.assertCollectionsNotCurrentRoutineContext(userId, new Set(plan.deletedCollectionIds));
+      await this.recordOwnerChange(userId, `${plan.preview.input.operation === "delete" ? "Remove" : "Move"} Collection selection`, async () => {
+        for (const [map, rows] of [[this.collections, plan.next.collections], [this.collectionSections, plan.next.sections],
+          [this.collectionMemberships, plan.next.memberships], [this.collectionSectionAssignments, plan.next.assignments]] as const) {
+          removeMapEntries(map as Map<string, { ownerId: string }>, (row) => row.ownerId === userId);
+          for (const row of rows) if (row.ownerId === userId) {
+            const key = "id" in row ? row.id : "sectionId" in row ? assignmentKey(row.collectionId, row.lifeLinkId, row.sectionId) : membershipKey(row.collectionId, row.lifeLinkId);
+            (map as Map<string, unknown>).set(key, row);
+          }
+        }
+      });
+      this.changeReceipts.set(input.commandId, { ownerId: userId, request, operation: plan.preview.input.operation, affectedIds: plan.lifeLinkIds, collectionIds: plan.collectionIds });
+      this.changePreviews.get(userId)?.delete(input.previewId);
+      return { operation: plan.preview.input.operation, collectionIds: plan.collectionIds, lifeLinkIds: plan.lifeLinkIds, history: await this.getChangeHistory(userId) };
+    });
+  }
+
+  private collectionChangeState(): CollectionChangeState {
+    return { collections: [...this.collections.values()], sections: [...this.collectionSections.values()],
+      memberships: [...this.collectionMemberships.values()], assignments: [...this.collectionSectionAssignments.values()], lifeLinks: [...this.lifeLinks.values()] };
+  }
 
   async previewLifeLinkChange(userId: string, input: PreviewLifeLinkChangeInput): Promise<LifeLinkChangePreview> {
     return this.withOwnerLock(userId, async () => {
@@ -555,6 +616,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
 
   async getLifeLinkChangePreview(userId: string, previewId: string): Promise<LifeLinkChangePreview | null> {
     const item = this.changePreviews.get(userId)?.get(previewId);
+    if (item?.domain === "collections") return null;
     if (!item || item.expiresAt <= Date.now()) {
       this.changePreviews.get(userId)?.delete(previewId);
       return null;
@@ -571,7 +633,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       const replay = await this.changeReplay(userId, input.commandId, { apply: input.previewId });
       if (replay) return replay;
       const saved = this.changePreviews.get(userId)?.get(input.previewId);
-      if (!saved || saved.expiresAt <= Date.now()) throw new LifeLinkDomainError("life_link_not_found", "The change preview is unavailable. Preview again.");
+      if (!saved || saved.domain === "collections" || saved.expiresAt <= Date.now()) throw new LifeLinkDomainError("life_link_not_found", "The change preview is unavailable. Preview again.");
       let fingerprint: string;
       try { fingerprint = this.changeFingerprint(userId, saved.input); }
       catch { throw new LifeLinkDomainError("stale_life_link", "The selection changed. Review a fresh preview.", { reason: "stale_preview" }); }
@@ -618,6 +680,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
         if (!sameChangeRow(tables[delta.table].get(delta.key), delta.after)) throw new LifeLinkDomainError("stale_life_link", "The changed data no longer matches this Undo.");
         if (delta.table === "qrBindings" && delta.before) this.assertQrHistoryAvailable(userId, delta.key);
         if (delta.table === "lifeLinks" && delta.before === undefined) this.assertLifeLinksNotCurrentRoutineContext(userId, new Set([delta.key]));
+        if (delta.table === "collections" && delta.before === undefined) this.assertCollectionsNotCurrentRoutineContext(userId, new Set([delta.key]));
       }
       for (const delta of entry.deltas) {
         if (delta.before === undefined) {
@@ -2733,6 +2796,13 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     }
   }
 
+  private assertCollectionsNotCurrentRoutineContext(userId: string, collectionIds: Set<string>): void {
+    const current = new Set([...this.routines.values()].filter((row) => row.ownerId === userId).map((row) => row.currentRevisionId));
+    if ([...this.routineContextBindings.values()].some((row) => row.ownerId === userId && row.targetType === "collection" && current.has(row.routineRevisionId) && collectionIds.has(row.targetId))) {
+      throw new LifeLinkDomainError("routine_reference_conflict", "A current Routine revision still references this Collection. Revise that Routine before deleting it.");
+    }
+  }
+
   private changeSideEffects(ids: string[]) {
     const selected = new Set(ids);
     return {
@@ -2833,7 +2903,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     if (typeof commandId !== "string" || !commandId.trim() || commandId.length > 128) throw new LifeLinkDomainError("invalid_life_link", "A stable command ID is required.");
     const receipt = this.changeReceipts.get(commandId);
     if (!receipt) return null;
-    if (receipt.ownerId !== ownerId || receipt.request !== stableChangeFingerprint(request)) throw new ClaimIdempotencyConflictError();
+    if (receipt.ownerId !== ownerId || receipt.collectionIds !== undefined || receipt.request !== stableChangeFingerprint(request)) throw new ClaimIdempotencyConflictError();
     return { operation: receipt.operation, affectedIds: [...receipt.affectedIds], history: await this.getChangeHistory(ownerId) };
   }
 

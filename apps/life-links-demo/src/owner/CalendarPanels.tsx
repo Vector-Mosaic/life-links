@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   CalendarDays,
   ChevronLeft,
@@ -47,15 +47,18 @@ type CalendarPanelProps = {
 
 export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onOpenDetails }: CalendarPanelProps) {
   const selected = snapshot.calendarWorkspace.selectedEvent;
-  const initialZone = readStoredTimeZone();
-  const [view, setView] = useState<CalendarView>("month");
-  const [timeZone, setTimeZone] = useState(initialZone);
-  const [anchorDate, setAnchorDate] = useState<string | null>(() => selected ? eventStartDate(selected, initialZone) : null);
-  const [selectedDate, setSelectedDate] = useState<string | null>(anchorDate);
-  const [visibleCalendarIds, setVisibleCalendarIds] = useState<string[]>([]);
+  const presentation = snapshot.presentation.calendar;
+  const { view, anchorDate, selectedDate } = presentation;
+  const timeZone = presentation.timeZone ?? readStoredTimeZone();
+  const setAnchorDate = (anchorDate: string) => controller.setCalendarPresentation({ anchorDate });
+  const setSelectedDate = (selectedDate: string) => controller.setCalendarPresentation({ selectedDate });
   const calendarFilter = useRef<HTMLDetailsElement>(null);
   const calendars = snapshot.calendarWorkspace.calendars.filter((calendar) => !calendar.deletedAt);
-  const visibleSet = useMemo(() => new Set(visibleCalendarIds), [visibleCalendarIds]);
+  const visibleSet = useMemo(() => new Set([
+    ...snapshot.calendarWorkspace.calendars.filter((calendar) => !calendar.deletedAt && calendar.source === "native" &&
+      !presentation.hiddenNativeCalendarIds.includes(calendar.id)).map((calendar) => calendar.id),
+    ...snapshot.calendarWorkspace.providerBindings.filter((binding) => binding.visible).map((binding) => binding.calendarId)
+  ]), [snapshot.calendarWorkspace.calendars, snapshot.calendarWorkspace.providerBindings, presentation.hiddenNativeCalendarIds]);
   const range = useMemo(() => calendarRange(view, anchorDate ?? "1970-01-01"), [anchorDate, view]);
   const loadRange = useMemo(() => calendarLoadRange(range), [range]);
   const clock = snapshot.calendarWorkspace.clock?.timeZone === timeZone ? snapshot.calendarWorkspace.clock : null;
@@ -84,15 +87,6 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
   }, []);
 
   useEffect(() => {
-    setVisibleCalendarIds((current) => {
-      const nativeIds = calendars.filter((calendar) => calendar.source === "native").map((calendar) => calendar.id);
-      const validNative = current.filter((id) => nativeIds.includes(id));
-      const externalIds = snapshot.calendarWorkspace.providerBindings.filter((binding) => binding.visible).map((binding) => binding.calendarId);
-      return [...(current.length ? validNative : nativeIds), ...externalIds];
-    });
-  }, [snapshot.calendarWorkspace.calendars, snapshot.calendarWorkspace.providerBindings]);
-
-  useEffect(() => {
     const abort = new AbortController();
     void controller.loadCalendarClock(timeZone, abort.signal).catch(() => undefined);
     return () => abort.abort();
@@ -100,9 +94,10 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
 
   useEffect(() => {
     if (!clock) return;
-    setAnchorDate((current) => current ?? clock.today);
-    setSelectedDate((current) => current ?? clock.today);
-  }, [clock?.serverTime, clock?.timeZone, clock?.today]);
+    if (!anchorDate || !selectedDate || !presentation.timeZone) controller.setCalendarPresentation({
+      anchorDate: anchorDate ?? clock.today, selectedDate: selectedDate ?? clock.today, timeZone
+    });
+  }, [controller, clock?.serverTime, clock?.timeZone, clock?.today, anchorDate, selectedDate, presentation.timeZone, timeZone]);
 
   useEffect(() => {
     if (!anchorDate) return;
@@ -113,18 +108,21 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
 
   useEffect(() => {
     if (!selected) return;
+    const key = `native:${selected.event.id}:${selected.event.currentRevisionId}:${timeZone}`;
+    if (presentation.selectedEventKey === key) return;
     const date = eventStartDate(selected, timeZone);
-    setAnchorDate(date);
-    setSelectedDate(date);
-  }, [selected?.event.id, selected?.event.currentRevisionId, timeZone]);
+    controller.setCalendarPresentation({ anchorDate: date, selectedDate: date, selectedEventKey: key });
+  }, [controller, selected?.event.id, selected?.event.currentRevisionId, timeZone, presentation.selectedEventKey]);
 
   const selectedProvider = snapshot.calendarWorkspace.selectedProviderEvent;
   useEffect(() => {
     if (!selectedProvider) return;
+    const key = `provider:${selectedProvider.connectionId}:${selectedProvider.calendarId}:${selectedProvider.providerEventId}:${selectedProvider.providerRevision}:${timeZone}`;
+    if (presentation.selectedEventKey === key) return;
     const span = selectedProvider.content.span;
     const date = span.kind === "all_day" ? span.startDate : toLocalDateTimeInput(span.startUtc, timeZone).slice(0, 10);
-    setAnchorDate(date); setSelectedDate(date);
-  }, [selectedProvider?.connectionId, selectedProvider?.calendarId, selectedProvider?.providerEventId, selectedProvider?.providerRevision, timeZone]);
+    controller.setCalendarPresentation({ anchorDate: date, selectedDate: date, selectedEventKey: key });
+  }, [controller, selectedProvider?.connectionId, selectedProvider?.calendarId, selectedProvider?.providerEventId, selectedProvider?.providerRevision, timeZone, presentation.selectedEventKey]);
 
   const events = useMemo(() => buildCalendarDisplayEvents({
     nativeEvents: snapshot.calendarWorkspace.events,
@@ -162,10 +160,10 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
   }
   function chooseView(next: CalendarView) {
     if (selectedDate) setAnchorDate(selectedDate);
-    setView(next);
+    controller.setCalendarPresentation({ view: next });
   }
   function chooseTimeZone(next: string) {
-    setTimeZone(next);
+    controller.setCalendarPresentation({ timeZone: next });
     try { localStorage.setItem("life-links-calendar-time-zone", next); } catch { /* preference only */ }
   }
   function toggleCalendar(calendarId: string) {
@@ -175,7 +173,8 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
       void controller.updateConnectedCalendar(binding.connectionId, calendarId, calendar.updatedAt, { visible: !binding.visible }).catch(() => undefined);
       return;
     }
-    setVisibleCalendarIds((ids) => ids.includes(calendarId) ? ids.filter((id) => id !== calendarId) : [...ids, calendarId]);
+    const hidden = presentation.hiddenNativeCalendarIds;
+    controller.setCalendarPresentation({ hiddenNativeCalendarIds: hidden.includes(calendarId) ? hidden.filter((id) => id !== calendarId) : [...hidden, calendarId] });
   }
   function openEvent(event: CalendarDisplayEvent) {
     if (event.providerEvent) {

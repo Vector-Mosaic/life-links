@@ -311,7 +311,7 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(14);
+    expect(migrations.rows[0].count).toBe(15);
     const agentConnectionColumn = await adminPool.query(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -1227,7 +1227,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(14);
+      expect(receiptCount.rows[0].count).toBe(15);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1258,7 +1258,8 @@ describe("Life Links Postgres integration", () => {
         "011_calendar.sql",
         "012_calendar_permissions.sql",
         "013_calendar_authorization.sql",
-        "014_calendar_account_email.sql"
+        "014_calendar_account_email.sql",
+        "015_collection_changes.sql"
       ]);
     } finally {
       await concurrent.store.close();

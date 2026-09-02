@@ -9,6 +9,38 @@ const id = (prefix: string) => `${prefix}-${randomUUID()}`;
 
 export function routineStoreContract(getStore: () => LifeLinksStore): void {
   describe("general Routines store contract", () => {
+    it("protects current Collection context during delete and Undo while retaining historical Session snapshots", async () => {
+      const store = getStore();
+      // PostgreSQL shares a seeded schema; keep this case outside the pagination owner's population.
+      const ownerId = DEMO_GUEST_ID;
+      const createdAt = "2026-09-01T12:00:00.000Z";
+      const activity = await store.createActivity({ id: id("activity"), ownerId, title: "Check kit", createdAt });
+      const collection = await store.createCollection({ id: id("collection"), ownerId, title: "Referenced kit", createdAt });
+      const creationChange = (await store.getChangeHistory(ownerId)).entries[0];
+      const beforeBinding = await store.previewCollectionChange(ownerId, { operation: "delete", scope: "collections", collections: [{ collectionId: collection.id, expectedUpdatedAt: collection.updatedAt }] });
+      const stepId = id("routine-step");
+      const routine = await store.createRoutine({ id: id("routine"), revisionId: id("routine-revision"), ownerId, title: "Kit check", createdAt,
+        steps: [{ id: stepId, activityId: activity.id, activityTitle: activity.title, position: 0 }],
+        bindings: [{ id: id("routine-binding"), targetType: "collection", targetId: collection.id }] });
+      await expect(store.undoChange(ownerId, { changeId: creationChange.id, commandId: id("undo") })).rejects.toMatchObject({ code: "routine_reference_conflict" });
+      await expect(store.applyCollectionChange(ownerId, { previewId: beforeBinding.id, commandId: id("collection-command") })).rejects.toMatchObject({ code: "routine_reference_conflict" });
+      const selection = { operation: "delete" as const, scope: "collections" as const, collections: [{ collectionId: collection.id, expectedUpdatedAt: collection.updatedAt }] };
+      await expect(store.previewCollectionChange(ownerId, selection)).rejects.toMatchObject({ code: "routine_reference_conflict" });
+      let run = (await store.startRoutineRun(ownerId, { id: id("routine-run"), routineId: routine.routine.id, startedAt: "2026-09-07T13:00:00.000Z" }))!;
+      run = (await store.putRoutineRunStepResult(ownerId, { runId: run.id, routineStepId: stepId, expectedUpdatedAt: run.updatedAt, actualValues: [], proposedNextValues: [], notes: "Checked" }))!;
+      const sessionId = id("routine-session");
+      await store.finalizeRoutineRun(ownerId, { runId: run.id, sessionId, expectedUpdatedAt: run.updatedAt, completedAt: "2026-09-07T13:30:00.000Z" });
+      const history = await store.getRoutineSession(ownerId, sessionId);
+      await store.reviseRoutine(ownerId, { id: id("routine-revision"), ownerId, routineId: routine.routine.id,
+        revisionNumber: 2, expectedCurrentRevisionId: routine.routine.currentRevisionId, title: "Kit check", createdAt: "2026-09-08T13:00:00.000Z",
+        steps: [{ id: id("routine-step"), activityId: activity.id, activityTitle: activity.title, position: 0 }], bindings: [] });
+      const preview = await store.previewCollectionChange(ownerId, selection);
+      await store.applyCollectionChange(ownerId, { previewId: preview.id, commandId: id("collection-command") });
+      expect(await store.getCollection(ownerId, collection.id)).toBeNull();
+      expect(await store.getRoutineSession(ownerId, sessionId)).toEqual(history);
+      expect(history?.session.contextSnapshot[0]).toMatchObject({ targetType: "collection", targetId: collection.id, targetTitle: collection.title });
+    });
+
     it("preserves a snapshotted immutable Session while future definitions and corrections advance", async () => {
       const store = getStore();
       const createdAt = "2026-09-01T12:00:00.000Z";

@@ -29,6 +29,9 @@ import type {
   CalendarPatch,
   CalendarRecord,
   ChangeHistory,
+  CollectionChangeInput,
+  CollectionChangePreview,
+  CollectionChangeResult,
   CanonicalRoutineCreation,
   LifeLinkChangePreview,
   LifeLinkChangeResult,
@@ -74,6 +77,20 @@ import type {
 import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, MAX_LIFE_LINK_TOOL_OUTPUT_BYTES } from "@life-links/core";
 import { validateAttachmentImageResult } from "./attachmentImage";
 import { validateAttachmentTranscript } from "./attachmentTranscript";
+
+export async function previewCollectionChange(input: CollectionChangeInput, signal?: AbortSignal): Promise<CollectionChangePreview> {
+  const { preview } = await apiFetch<{ preview: CollectionChangePreview }>("/api/collections/changes/preview", { method: "POST", body: JSON.stringify(input), signal });
+  return preview;
+}
+
+export async function getCollectionChangePreview(previewId: string, signal?: AbortSignal): Promise<CollectionChangePreview> {
+  const { preview } = await apiFetch<{ preview: CollectionChangePreview }>(`/api/collections/changes/${encodeURIComponent(previewId)}`, { signal });
+  return preview;
+}
+
+export function applyCollectionChange(previewId: string, commandId: string, signal?: AbortSignal): Promise<CollectionChangeResult> {
+  return apiFetch("/api/collections/changes/apply", { method: "POST", body: JSON.stringify({ previewId, commandId }), signal });
+}
 
 export async function previewLifeLinkChange(input: PreviewLifeLinkChangeInput, signal?: AbortSignal): Promise<LifeLinkChangePreview> {
   const { preview } = await apiFetch<{ preview: LifeLinkChangePreview }>("/api/life-links/changes/preview", { method: "POST", body: JSON.stringify(input), signal });

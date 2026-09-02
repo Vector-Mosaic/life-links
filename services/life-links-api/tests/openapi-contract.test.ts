@@ -81,6 +81,9 @@ const EXPECTED_WEB_CLIENT_OPERATIONS = [
   "POST /api/life-links/changes/preview",
   "GET /api/life-links/changes/{previewId}",
   "POST /api/life-links/changes/apply",
+  "POST /api/collections/changes/preview",
+  "GET /api/collections/changes/{previewId}",
+  "POST /api/collections/changes/apply",
   "GET /api/change-history",
   "POST /api/change-history/undo",
   "DELETE /api/collections/{collectionId}/members/{lifeLinkId}",
@@ -512,7 +515,7 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(107);
+    expect(published).toHaveLength(110);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");

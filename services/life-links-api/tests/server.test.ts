@@ -96,6 +96,35 @@ describe("Life Links API", () => {
     ctx = await createSeededAgent();
   });
 
+  it("previews and applies Collection-only deletion with owner privacy and exact retry identity", async () => {
+    const path = "/api/collections/changes";
+    expect((await ctx.agent.post(`${path}/preview`).send({})).status).toBe(401);
+    await login();
+    const item = await ctx.store.createLifeLink({ id: "collection-delete-physical", ownerId: "demo-owner", title: "Preserve this physical item", createdAt: "2026-09-02T00:00:00.000Z" });
+    const created = await ctx.agent.post("/api/collections").send({ title: "Purpose only" });
+    const added = await ctx.agent.put(`/api/collections/${created.body.collection.id}/members/${item.id}`).send({ expectedUpdatedAt: created.body.collection.updatedAt });
+    const collection = added.body.collection;
+    const selection = { operation: "delete", scope: "collections", collections: [{ collectionId: collection.id, expectedUpdatedAt: collection.updatedAt }] };
+    const preview = await ctx.agent.post(`${path}/preview`).send(selection);
+    expect(preview.status).toBe(200);
+    expect(preview.headers["cache-control"]).toBe("private, no-store");
+    expect(preview.body.preview.sideEffects).toMatchObject({ collectionsRemoved: 1, membershipsRemoved: 1, lifeLinksDeleted: 0 });
+    const previewId = preview.body.preview.id;
+    expect((await ctx.agent.get(`${path}/${previewId}`)).body.preview).toEqual(preview.body.preview);
+    expect((await ctx.agent.get(`/api/life-links/changes/${previewId}`)).status).toBe(404);
+    const command = { previewId, commandId: "collection-http-delete-command" };
+    const applied = await ctx.agent.post(`${path}/apply`).send(command);
+    expect(applied.status).toBe(200);
+    expect(applied.body).toMatchObject({ operation: "delete", collectionIds: [collection.id], lifeLinkIds: [item.id], history: { limit: 5 } });
+    expect((await ctx.agent.post(`${path}/apply`).send(command)).body).toEqual(applied.body);
+    expect((await ctx.agent.get(`/api/life-links/${item.id}`)).body.detail.lifeLink).toEqual(item);
+    expect((await ctx.agent.get(`/api/collections/${collection.id}`)).status).toBe(404);
+    const undo = await ctx.agent.post("/api/change-history/undo").send({ changeId: applied.body.history.entries[0].id, commandId: "collection-http-undo" });
+    expect(undo.status).toBe(200);
+    expect((await ctx.agent.get(`/api/collections/${collection.id}/members`)).body.lifeLinks.map((row: { id: string }) => row.id)).toEqual([item.id]);
+    expect((await ctx.agent.post(`${path}/preview`).send({ ...selection, ownerId: "another-owner" })).status).toBe(400);
+  });
+
   it("uploads real documents through canonical media, privately downloads bytes and reads text without changing saved content", async () => {
     await login();
     const record = await ctx.store.createLifeLink({ id: "attachment-documents", ownerId: "demo-owner", title: "Manuals", createdAt: "2026-08-30T00:00:00.000Z" });

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  previewCollectionChange, getCollectionChangePreview, applyCollectionChange,
   ApiError, addCollectionMember, attachQr, clearLifeLinkQrBinding, connectAgent, createCollection,
   createCalendar, createCalendarEvent, createRoutine, deleteCalendar, deleteCalendarEvent, finalizeRoutineRun,
   createCollectionSection, createLifeLink, disconnectAgent, getCollection, listCollections,
@@ -19,6 +20,20 @@ import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, ATTACHMENT_IMAGE_MAX_BYTES } from "@
 import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedImageFixture, attachmentTranscriptFixture } from "./attachmentImage.testFixtures";
 
 describe("Life Links API error normalization", () => {
+  it("uses the shared owner Collection preview/apply contract with exact retry identity and cancellation", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ preview: { id: "preview-exact" }, operation: "delete", collectionIds: [], lifeLinkIds: [], history: { limit: 5, entries: [] } }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const abort = new AbortController();
+    const input = { operation: "delete" as const, scope: "collections" as const, collections: [{ collectionId: "collection-exact", expectedUpdatedAt: "2026-09-02T00:00:00.000Z" }] };
+    expect(await previewCollectionChange(input, abort.signal)).toEqual({ id: "preview-exact" });
+    await getCollectionChangePreview("preview-exact", abort.signal);
+    await applyCollectionChange("preview-exact", "command-exact", abort.signal);
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([url]) => url)).toEqual(["/api/collections/changes/preview", "/api/collections/changes/preview-exact", "/api/collections/changes/apply"]);
+    expect(JSON.parse(calls[0][1].body as string)).toEqual(input);
+    expect(JSON.parse(calls[2][1].body as string)).toEqual({ previewId: "preview-exact", commandId: "command-exact" });
+    expect(calls.every(([, init]) => init.signal === abort.signal && init.credentials === "include")).toBe(true);
+  });
   afterEach(() => {
     vi.unstubAllGlobals();
   });

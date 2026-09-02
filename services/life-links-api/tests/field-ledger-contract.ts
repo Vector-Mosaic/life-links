@@ -14,6 +14,130 @@ export function fieldLedgerStoreContract(getStore: () => LifeLinksStore): void {
     const createCollection = (title = "Camping Gear", ownerId = DEMO_OWNER_ID) =>
       getStore().createCollection({ id: id("collection"), ownerId, title, createdAt });
 
+    const collectionFixture = async () => {
+      const store = getStore();
+      const item = await createItem();
+      let source = await createCollection("Source");
+      const target = await createCollection("Target");
+      source = (await store.addCollectionMember(DEMO_OWNER_ID, { collectionId: source.id, lifeLinkId: item.id, expectedUpdatedAt: source.updatedAt }))!;
+      const first = (await store.createCollectionSection(DEMO_OWNER_ID, { id: id("section"), collectionId: source.id, title: "First", expectedUpdatedAt: source.updatedAt }))!;
+      const second = (await store.createCollectionSection(DEMO_OWNER_ID, { id: id("section"), collectionId: source.id, title: "Second", expectedUpdatedAt: first.collection.updatedAt }))!;
+      source = (await store.replaceCollectionSectionAssignments(DEMO_OWNER_ID, { collectionId: source.id, lifeLinkId: item.id, sectionIds: [first.section.id, second.section.id], expectedUpdatedAt: second.collection.updatedAt }))!;
+      return { store, item, source, target, first: first.section, second: second.section };
+    };
+    const undoLatest = async () => {
+      const store = getStore();
+      await store.undoChange(DEMO_OWNER_ID, { changeId: (await store.getChangeHistory(DEMO_OWNER_ID)).entries[0].id, commandId: id("undo") });
+    };
+
+    it("deletes Collections atomically through the shared journal without deleting their physical members", async () => {
+      const { store, item, source, target } = await collectionFixture();
+      const original = (await store.getLifeLinkDetail(DEMO_OWNER_ID, item.id))!.lifeLink;
+      const priorHistory = await store.getChangeHistory(DEMO_OWNER_ID);
+      const preview = await store.previewCollectionChange(DEMO_OWNER_ID, { operation: "delete", scope: "collections",
+        collections: [source, target].map((row) => ({ collectionId: row.id, expectedUpdatedAt: row.updatedAt })) });
+      expect(preview.sideEffects).toMatchObject({ collectionsRemoved: 2, sectionsRemoved: 2, membershipsRemoved: 1, assignmentsRemoved: 2, lifeLinksDeleted: 0 });
+      expect(await store.getLifeLinkChangePreview(DEMO_OWNER_ID, preview.id)).toBeNull();
+      expect(await store.getCollectionChangePreview(DEMO_OWNER_ID, preview.id)).toEqual(preview);
+      expect(await store.getCollectionChangePreview(DEMO_GUEST_ID, preview.id)).toBeNull();
+      const command = { previewId: preview.id, commandId: id("collection-command") };
+      const result = await store.applyCollectionChange(DEMO_OWNER_ID, command);
+      expect(result.collectionIds).toEqual([source.id, target.id].sort());
+      expect(result.history.entries.slice(1)).toEqual(priorHistory.entries.slice(0, 4));
+      expect(await store.applyCollectionChange(DEMO_OWNER_ID, command)).toEqual(result);
+      await expect(store.applyLifeLinkChange(DEMO_OWNER_ID, command)).rejects.toThrow();
+      expect(await store.getCollection(DEMO_OWNER_ID, source.id)).toBeNull();
+      expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, item.id))!.lifeLink).toEqual(original);
+      await undoLatest();
+      expect((await store.getCollection(DEMO_OWNER_ID, source.id))?.title).toBe(source.title);
+      expect((await store.listLifeLinkCollectionMemberships(DEMO_OWNER_ID, item.id))!.items[0].sections).toHaveLength(2);
+      expect((await store.getLifeLinkDetail(DEMO_OWNER_ID, item.id))!.lifeLink.id).toBe(original.id);
+    });
+
+    it("removes selected assignments or whole Sections without dropping independent membership", async () => {
+      const { store, item, source, first, second } = await collectionFixture();
+      const preview = await store.previewCollectionChange(DEMO_OWNER_ID, { operation: "delete", scope: "contents",
+        source: { collectionId: source.id, expectedUpdatedAt: source.updatedAt }, sectionIds: [], members: [{ lifeLinkId: item.id, sourceSectionId: first.id }] });
+      await store.applyCollectionChange(DEMO_OWNER_ID, { previewId: preview.id, commandId: id("collection-command") });
+      expect((await store.listLifeLinkCollectionMemberships(DEMO_OWNER_ID, item.id))!.items[0].sections.map((row) => row.id)).toEqual([second.id]);
+      await undoLatest();
+      const current = (await store.getCollection(DEMO_OWNER_ID, source.id))!;
+      const sectionPreview = await store.previewCollectionChange(DEMO_OWNER_ID, { operation: "delete", scope: "contents",
+        source: { collectionId: current.id, expectedUpdatedAt: current.updatedAt }, sectionIds: [first.id, second.id], members: [] });
+      await store.applyCollectionChange(DEMO_OWNER_ID, { previewId: sectionPreview.id, commandId: id("collection-command") });
+      expect((await store.listCollectionMembers(DEMO_OWNER_ID, source.id))!.items.map((row) => row.id)).toEqual([item.id]);
+      expect((await store.listCollectionSections(DEMO_OWNER_ID, source.id))!.items).toEqual([]);
+      await undoLatest();
+      expect((await store.listLifeLinkCollectionMemberships(DEMO_OWNER_ID, item.id))!.items[0].sections).toHaveLength(2);
+    });
+
+    it("moves one Section appearance without erasing other assignments and treats exact destinations as no-ops", async () => {
+      const { store, item, source, first, second } = await collectionFixture();
+      const preview = await store.previewCollectionChange(DEMO_OWNER_ID, { operation: "move", scope: "contents",
+        source: { collectionId: source.id, expectedUpdatedAt: source.updatedAt }, sectionIds: [], members: [{ lifeLinkId: item.id, sourceSectionId: first.id }],
+        target: { collectionId: source.id, expectedUpdatedAt: source.updatedAt, sectionId: second.id } });
+      expect(preview.sideEffects).toMatchObject({ assignmentsRemoved: 1, assignmentsAdded: 0, membershipsRemoved: 0 });
+      await store.applyCollectionChange(DEMO_OWNER_ID, { previewId: preview.id, commandId: id("collection-command") });
+      const memberships = (await store.listLifeLinkCollectionMemberships(DEMO_OWNER_ID, item.id))!.items;
+      expect(memberships[0].sections.map((row) => row.id)).toEqual([second.id]);
+      const current = memberships[0].collection;
+      const history = await store.getChangeHistory(DEMO_OWNER_ID);
+      const noOp = await store.previewCollectionChange(DEMO_OWNER_ID, { operation: "move", scope: "contents",
+        source: { collectionId: current.id, expectedUpdatedAt: current.updatedAt }, sectionIds: [], members: [{ lifeLinkId: item.id, sourceSectionId: second.id }],
+        target: { collectionId: current.id, expectedUpdatedAt: current.updatedAt, sectionId: second.id } });
+      expect((await store.applyCollectionChange(DEMO_OWNER_ID, { previewId: noOp.id, commandId: id("collection-command") })).collectionIds).toEqual([]);
+      expect(await store.getChangeHistory(DEMO_OWNER_ID)).toEqual(history);
+    });
+
+    it("transfers selected direct membership across Collections while retaining destination assignments", async () => {
+      const { store, item, source, target, first } = await collectionFixture();
+      let destination = (await store.addCollectionMember(DEMO_OWNER_ID, { collectionId: target.id, lifeLinkId: item.id, expectedUpdatedAt: target.updatedAt }))!;
+      const section = (await store.createCollectionSection(DEMO_OWNER_ID, { id: id("section"), collectionId: target.id, title: "Existing destination", expectedUpdatedAt: destination.updatedAt }))!;
+      destination = (await store.replaceCollectionSectionAssignments(DEMO_OWNER_ID, { collectionId: target.id, lifeLinkId: item.id, sectionIds: [section.section.id], expectedUpdatedAt: section.collection.updatedAt }))!;
+      const preview = await store.previewCollectionChange(DEMO_OWNER_ID, { operation: "move", scope: "contents",
+        source: { collectionId: source.id, expectedUpdatedAt: source.updatedAt }, sectionIds: [], members: [{ lifeLinkId: item.id, sourceSectionId: first.id }],
+        target: { collectionId: destination.id, expectedUpdatedAt: destination.updatedAt, sectionId: null } });
+      await store.applyCollectionChange(DEMO_OWNER_ID, { previewId: preview.id, commandId: id("collection-command") });
+      expect((await store.listCollectionMembers(DEMO_OWNER_ID, source.id))!.items).toEqual([]);
+      expect((await store.listLifeLinkCollectionMemberships(DEMO_OWNER_ID, item.id))!.items.map((row) => [row.collection.id, row.sections.map((entry) => entry.id)]))
+        .toEqual([[target.id, [section.section.id]]]);
+      await undoLatest();
+      expect((await store.listLifeLinkCollectionMemberships(DEMO_OWNER_ID, item.id))!.items).toHaveLength(2);
+    });
+
+    it("moves a whole Section with stable identity and reverses its composite foreign-key edges", async () => {
+      const { store, item, source, target, first, second } = await collectionFixture();
+      const original = (await store.getLifeLinkDetail(DEMO_OWNER_ID,item.id))!.lifeLink;
+      const preview = await store.previewCollectionChange(DEMO_OWNER_ID, { operation: "move", scope: "contents",
+        source: { collectionId: source.id, expectedUpdatedAt: source.updatedAt }, sectionIds: [first.id], members: [{ lifeLinkId: item.id, sourceSectionId: first.id }],
+        target: { collectionId: target.id, expectedUpdatedAt: target.updatedAt, sectionId: null } });
+      expect(preview.sideEffects).toMatchObject({ sectionsMoved: 1, sectionsRemoved: 0, membershipsRemoved: 0, membershipsAdded: 1 });
+      await store.applyCollectionChange(DEMO_OWNER_ID, { previewId: preview.id, commandId: id("collection-command") });
+      expect((await store.listCollectionSections(DEMO_OWNER_ID, target.id))!.items[0]).toMatchObject({ id: first.id, title: first.title, collectionId: target.id });
+      expect((await store.listCollectionMembers(DEMO_OWNER_ID, source.id))!.items.map((row) => row.id)).toEqual([item.id]);
+      expect((await store.listLifeLinkCollectionMemberships(DEMO_OWNER_ID, item.id))!.items.find((row) => row.collection.id === source.id)?.sections.map((row) => row.id)).toEqual([second.id]);
+      expect((await store.getLifeLinkDetail(DEMO_OWNER_ID,item.id))!.lifeLink).toEqual(original);
+      await undoLatest();
+      expect((await store.listCollectionSections(DEMO_OWNER_ID, source.id))!.items.map((row) => row.id)).toEqual([first.id, second.id]);
+      expect((await store.listCollectionMembers(DEMO_OWNER_ID, target.id))!.items).toEqual([]);
+    });
+
+    it("refuses stale, foreign and cross-domain Collection changes without partial effects", async () => {
+      const { store, item, source, target } = await collectionFixture();
+      const input = { operation: "move" as const, scope: "contents" as const, source: { collectionId: source.id, expectedUpdatedAt: source.updatedAt }, sectionIds: [],
+        members: [{ lifeLinkId: item.id, sourceSectionId: null }], target: { collectionId: target.id, expectedUpdatedAt: target.updatedAt, sectionId: null } };
+      await expect(store.previewCollectionChange(DEMO_GUEST_ID,input)).rejects.toMatchObject({ code: "collection_not_found" });
+      const preview = await store.previewCollectionChange(DEMO_OWNER_ID,input);
+      await store.updateCollection(DEMO_OWNER_ID,{ collectionId: target.id, expectedUpdatedAt: target.updatedAt, patch: { title: "Changed target" } });
+      const history = await store.getChangeHistory(DEMO_OWNER_ID);
+      await expect(store.applyCollectionChange(DEMO_OWNER_ID,{previewId:preview.id,commandId:id("collection-command")})).rejects.toMatchObject({code:"stale_collection"});
+      expect((await store.listCollectionMembers(DEMO_OWNER_ID,source.id))!.items.map((row)=>row.id)).toEqual([item.id]);
+      expect((await store.listCollectionMembers(DEMO_OWNER_ID,target.id))!.items).toEqual([]);
+      expect(await store.getChangeHistory(DEMO_OWNER_ID)).toEqual(history);
+      const physical = await store.previewLifeLinkChange(DEMO_OWNER_ID,{operation:"delete",lifeLinkIds:[item.id]});
+      await expect(store.applyCollectionChange(DEMO_OWNER_ID,{previewId:physical.id,commandId:id("collection-command")})).rejects.toMatchObject({code:"collection_not_found"});
+    });
+
     it("persists roles, promotes parents, and records only explicit placement freshness", async () => {
       const store = getStore();
       const parent = await createItem("Green tub");

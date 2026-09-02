@@ -10,6 +10,7 @@ export type RoutineWorkspaceTab = "routines" | "history";
 export const ROUTINE_VALUE_KINDS: RoutineValueKind[] = ["number", "quantity", "duration", "text", "boolean"];
 
 export type RoutineDialogState =
+  | { kind: "delete-routines"; routines: Array<{ id: string; title: string; expectedUpdatedAt: string }> }
   | { kind: "new-group" }
   | { kind: "new-activity" }
   | { kind: "new-routine" }

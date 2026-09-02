@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Boxes,
   ChevronDown,
@@ -42,6 +42,9 @@ type RoutineDialogHostProps = {
 };
 
 export function RoutineDialogHost({ dialog, controller, snapshot, onClose, onSessionCompleted }: RoutineDialogHostProps) {
+  if (dialog.kind === "delete-routines") {
+    return <RoutineDeleteDialog routines={dialog.routines} controller={controller} snapshot={snapshot} onClose={onClose} />;
+  }
   if (dialog.kind === "new-group" || dialog.kind === "new-activity") {
     return <SimpleRoutineCreateDialog kind={dialog.kind} controller={controller} snapshot={snapshot} onClose={onClose} />;
   }
@@ -55,6 +58,56 @@ export function RoutineDialogHost({ dialog, controller, snapshot, onClose, onSes
     return <RoutineRunDialog occurrenceId={dialog.occurrenceId ?? null} controller={controller} snapshot={snapshot} onClose={onClose} onSessionCompleted={onSessionCompleted} />;
   }
   return <RoutineCorrectionDialog sessionId={dialog.sessionId} stepResultId={dialog.stepResultId ?? null} controller={controller} snapshot={snapshot} onClose={onClose} />;
+}
+
+function RoutineDeleteDialog({ routines, controller, snapshot, onClose }: {
+  routines: Extract<NonNullable<RoutineDialogState>, { kind: "delete-routines" }>["routines"];
+  controller: LifeLinksWorkspaceController;
+  snapshot: LifeLinksWorkspaceSnapshot;
+  onClose(): void;
+}) {
+  // A retry reuses exactly the confirmed archive patch and original revisions.
+  const [archivedAt] = useState(() => new Date().toISOString());
+  const [confirmedIds, setConfirmedIds] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const request = useRef<AbortController | null>(null);
+  const ownerId = snapshot.currentUser?.id;
+  useEffect(() => () => request.current?.abort(), [ownerId]);
+  async function remove() {
+    if (saving || !ownerId) return;
+    const operation = new AbortController(); request.current = operation;
+    setSaving(true); setError("");
+    const completed = new Set(confirmedIds);
+    try {
+      for (const routine of routines) {
+        if (completed.has(routine.id)) continue;
+        operation.signal.throwIfAborted();
+        if (controller.getSnapshot().currentUser?.id !== ownerId) throw new Error("Your account changed. Close this dialog and try again.");
+        await controller.updateRoutine(routine.id, routine.expectedUpdatedAt, { archivedAt }, operation.signal);
+        operation.signal.throwIfAborted();
+        const current = controller.getSnapshot();
+        if (current.currentUser?.id !== ownerId || !current.routineWorkspace.routines.some((item) => item.id === routine.id && item.archivedAt === archivedAt)) {
+          throw new Error("Removal could not be confirmed. Retry to check the same change.");
+        }
+        completed.add(routine.id); setConfirmedIds([...completed]);
+      }
+      onClose();
+    } catch (issue) {
+      if (!operation.signal.aborted) setError(messageFromIssue(issue, "Removal could not be confirmed. Retry the remaining Routines."));
+    } finally { if (!operation.signal.aborted) setSaving(false); }
+  }
+  return <Dialog title="Delete selected Routines?" onClose={onClose} closeDisabled={saving}>
+    <div className="ll-form">
+      <p>These Routines will be removed from your active list. Their schedules will stop and future, unstarted plans will be canceled.</p>
+      <ul>{routines.map((routine) => <li key={routine.id}>{routine.title}{confirmedIds.includes(routine.id) ? " — removed" : ""}</li>)}</ul>
+      <p>Completed history and Runs already in progress are kept. Use <strong>Show removed routines</strong> to restore a Routine or resume its Run. This is not permanent erasure.</p>
+      <p className="ll-muted">Restoring does not restart schedules or restore canceled plans.</p>
+      {error && <p role="alert" className="ll-error">{confirmedIds.length ? `${confirmedIds.length} removed; the remaining changes are not confirmed. ` : ""}{error}</p>}
+      <footer><button type="button" className="ll-button" disabled={saving} onClick={onClose}>{confirmedIds.length ? "Close" : "Cancel"}</button>
+        <button type="button" className="ll-button ll-primary" disabled={saving || !routines.length} onClick={() => void remove()}>{saving ? "Deleting…" : error ? "Retry remaining" : "Yes, delete"}</button></footer>
+    </div>
+  </Dialog>;
 }
 
 function SimpleRoutineCreateDialog({ kind, controller, snapshot, onClose }: {

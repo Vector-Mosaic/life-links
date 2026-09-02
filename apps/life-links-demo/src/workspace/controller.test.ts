@@ -1745,6 +1745,35 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.listCollectionMembers).toHaveBeenCalledWith(collection.id, { cursor: "member-page-2", limit: 25 });
     expect(api.listLifeLinkCollectionMemberships).toHaveBeenCalledWith(canonicalLink.id, { cursor: "membership-page-2", limit: 25 });
     expect(route.pushes).toEqual([]);
+    expect(api.getLifeLinkDetail.mock.calls.every(([id]) => id === canonicalLink.id)).toBe(true);
+    controller.dispose();
+  });
+
+  it("opens a Collection without eager member Details and loads only requested visible locations", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    api.getLifeLinkDetail.mockClear();
+    await controller.openCollection(collection.id);
+    expect(controller.getSnapshot().collectionComplete).toBe(true);
+    expect(api.getLifeLinkDetail).not.toHaveBeenCalled();
+    await controller.loadCollectionMemberDetails([canonicalLink.id]);
+    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().collectionMemberDetails[canonicalLink.id]).toEqual(canonicalDetail);
+    await controller.loadCollectionMemberDetails([canonicalLink.id]);
+    expect(api.getLifeLinkDetail).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it("does not publish delayed Collection location reads into another owner or Collection", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start(); await controller.openCollection(collection.id);
+    let resolve!: (value: { detail: LifeLinkDetail }) => void;
+    api.getLifeLinkDetail.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const pending = controller.loadCollectionMemberDetails([canonicalLink.id]);
+    await controller.logout(); resolve({ detail: canonicalDetail }); await pending;
+    expect(controller.getSnapshot().collectionMemberDetails).toEqual({});
     controller.dispose();
   });
 
@@ -2198,6 +2227,83 @@ describe("Routine workspace controller contract", () => {
     controller.dispose();
   });
 
+  it("keeps paged owner History independent of focused Routine Sessions and navigation", async () => {
+    const first = fixture(31, "First history"); const second = fixture(32, "Second history");
+    const api = fakeApi();
+    const ownerPage = deferred<{ sessions: typeof first.session[]; nextCursor: string | null; truncated: boolean }>();
+    api.listRoutineSessions.mockImplementation(async (options = {}) => {
+      if (options.routineId) return { sessions: [first.session], nextCursor: null, truncated: false };
+      if (options.cursor) return { sessions: [second.session], nextCursor: null, truncated: false };
+      return ownerPage.promise;
+    });
+    api.getRoutine.mockResolvedValue({ routine: first.routine });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    controller.setRoutinePresentation({ tab: "history", collapsedGroupIds: [first.group.id], showRemoved: true });
+    const loading = controller.loadRoutineHistory();
+    await controller.selectRoutine(first.routine.routine.id);
+    ownerPage.resolve({ sessions: [first.session], nextCursor: "history-page-2", truncated: true });
+    await loading;
+    await controller.loadRoutineHistory({ cursor: "history-page-2" });
+    expect(controller.getSnapshot().routineWorkspace).toMatchObject({
+      sessions: [first.session],
+      history: { routineId: null, sessions: [first.session, second.session], nextCursor: null, loaded: true, loading: false },
+      presentation: { tab: "history", historyRoutineId: null, collapsedGroupIds: [first.group.id], showRemoved: true }
+    });
+    await controller.openRoutines();
+    expect(api.listRoutines).toHaveBeenLastCalledWith({ includeArchived: true, signal: undefined });
+    expect(controller.getSnapshot().routineWorkspace.history.sessions).toEqual([first.session, second.session]);
+    expect(controller.getSnapshot().routineWorkspace.presentation.tab).toBe("history");
+    await controller.logout();
+    expect(controller.getSnapshot().routineWorkspace.history).toMatchObject({ sessions: [], loaded: false });
+    expect(controller.getSnapshot().routineWorkspace.presentation).toMatchObject({ tab: "routines", historyRoutineId: null, showRemoved: false });
+    controller.dispose();
+  });
+
+  it("refuses late History pages after changing Routine scope and retains the scoped cursor", async () => {
+    const first = fixture(33); const second = fixture(34);
+    const api = fakeApi();
+    const late = deferred<{ sessions: typeof first.session[]; nextCursor: string | null; truncated: boolean }>();
+    api.listRoutineSessions.mockImplementation(async (options = {}) => options.routineId === second.routine.routine.id
+      ? { sessions: [second.session], nextCursor: "scoped-page-2", truncated: true } : late.promise);
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    const oldQuery = controller.loadRoutineHistory();
+    controller.setRoutinePresentation({ tab: "history", historyRoutineId: second.routine.routine.id });
+    await controller.loadRoutineHistory();
+    late.resolve({ sessions: [first.session], nextCursor: "wrong-page", truncated: true }); await oldQuery;
+    expect(controller.getSnapshot().routineWorkspace.history).toMatchObject({
+      routineId: second.routine.routine.id, sessions: [second.session], nextCursor: "scoped-page-2", loaded: true
+    });
+    const calls = api.listRoutineSessions.mock.calls.length;
+    await controller.loadRoutineHistory({ cursor: "wrong-page" });
+    expect(api.listRoutineSessions).toHaveBeenCalledTimes(calls);
+    await controller.loadRoutineHistory({ cursor: "scoped-page-2" });
+    expect(api.listRoutineSessions).toHaveBeenLastCalledWith({ routineId: second.routine.routine.id, cursor: "scoped-page-2", signal: undefined });
+    api.listRoutineSessions.mockRejectedValueOnce(new Error("History unavailable"));
+    await controller.loadRoutineHistory();
+    expect(controller.getSnapshot().routineWorkspace.history).toMatchObject({ sessions: [second.session], loading: false, error: "History unavailable" });
+    controller.dispose();
+  });
+
+  it("publishes a Routine archive acknowledgement without overwriting a newer selected Routine", async () => {
+    const first = fixture(35); const second = fixture(36);
+    const api = fakeApi();
+    const pending = deferred<{ routine: typeof first.routine }>();
+    api.updateRoutine.mockReturnValue(pending.promise);
+    api.getRoutine.mockResolvedValue({ routine: second.routine });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    const archivedAt = "2026-09-02T12:00:00.000Z";
+    const archive = controller.updateRoutine(first.routine.routine.id, first.routine.routine.updatedAt, { archivedAt });
+    await controller.selectRoutine(second.routine.routine.id);
+    pending.resolve({ routine: { ...first.routine, routine: { ...first.routine.routine, archivedAt, updatedAt: archivedAt } } });
+    await archive;
+    expect(controller.getSnapshot().routineWorkspace.selectedRoutine).toEqual(second.routine);
+    expect(controller.getSnapshot().routineWorkspace.routines.find((entry) => entry.id === first.routine.routine.id)?.archivedAt).toBe(archivedAt);
+    controller.dispose();
+  });
+
   it("loads owner definitions/history, preserves Run result channels, and clears the nested slice on logout", async () => {
     const { group, activity, routine, summary, run } = fixture(1);
     const api = fakeApi();
@@ -2615,6 +2721,112 @@ describe("Routine workspace controller contract", () => {
   });
 });
 
+describe("owner-session peer navigation and panel presentation", () => {
+  beforeEach(() => { vi.stubGlobal("window", { localStorage: new MemoryStorage() }); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("resumes a hierarchy subject with fresh data and pane/scroll preferences while root breadcrumbs stay explicit", async () => {
+    const api = fakeApi(); const route = new FakeRoute("/life-links");
+    const controller = new LifeLinksWorkspaceController({ api, route }); await controller.start();
+    await controller.activateLifeLink(canonicalLink.id);
+    controller.setMiddleCollapsed(true);
+    controller.setWorkspaceScroll("details", 218);
+    await controller.openCollections();
+    const read = api.getLifeLinkDetail.getMockImplementation()!;
+    api.getLifeLinkDetail.mockImplementation(async (id, options) => id === canonicalLink.id
+      ? { detail: { ...canonicalDetail, lifeLink: { ...canonicalLink, title: "Fresh server title" } } }
+      : read(id, options));
+    await controller.resumeWorkspace("hierarchies");
+    expect(route.pathname()).toBe(`/life-links/${canonicalLink.id}`);
+    expect(controller.getSnapshot()).toMatchObject({
+      selectedLifeLinkDetail: { lifeLink: { title: "Fresh server title" } }, middleCollapsed: true, detailsOpen: true,
+      presentation: { peers: { hierarchies: { detailsScrollTop: 218 } } }
+    });
+    await controller.openHierarchy();
+    await controller.openCollections(); await controller.resumeWorkspace("hierarchies");
+    expect(route.pathname()).toBe("/life-links");
+    expect(controller.getSnapshot().selectedLifeLinkId).toBeNull();
+    controller.dispose();
+  });
+
+  it("retains each Collection view and namespaced expansion while re-reading its selected member", async () => {
+    const api = fakeApi(); const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start(); await controller.openCollection(collection.id, canonicalLink.id);
+    controller.setCollectionPresentation(collection.id, { view: "locations", expandedGroups: ["section:same", "location:same"] });
+    controller.setWorkspaceScroll("middle", 172);
+    await controller.openHierarchy(); api.getCollection.mockClear(); await controller.resumeWorkspace("collections");
+    expect(api.getCollection).toHaveBeenCalled();
+    expect(controller.getSnapshot()).toMatchObject({ selectedCollection: { id: collection.id }, selectedLifeLinkId: canonicalLink.id,
+      presentation: { collections: { [collection.id]: { view: "locations", expandedGroups: ["section:same", "location:same"] } },
+        peers: { collections: { middleScrollTop: 172 } } }
+    });
+    controller.dispose();
+  });
+
+  it("remembers Calendar view/date and hidden native calendars but re-reads access rather than restoring it", async () => {
+    const api = fakeApi(); api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.getCalendarEvent.mockResolvedValue({ calendarEvent: nativeCalendarEvent, latestTombstone: null });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start(); await controller.openCalendarEvent(nativeCalendarEvent.event.id);
+    controller.setCalendarPresentation({ view: "week", timeZone: "America/New_York", anchorDate: "2026-10-15", selectedDate: "2026-10-16", hiddenNativeCalendarIds: [nativeCalendar.id] });
+    await controller.openCollections();
+    api.listCalendars.mockResolvedValue({ calendars: [{ ...nativeCalendar, agentAccess: "none" }], nextCursor: null, truncated: false });
+    await controller.resumeWorkspace("calendar");
+    expect(controller.getSnapshot().presentation.calendar).toMatchObject({ view: "week", anchorDate: "2026-10-15", selectedDate: "2026-10-16", hiddenNativeCalendarIds: [nativeCalendar.id] });
+    expect(controller.getSnapshot().calendarWorkspace.calendars[0].agentAccess).toBe("none");
+    expect(api.getCalendarEvent).toHaveBeenCalledTimes(2);
+    expect(controller.getSnapshot().agentConnection.connected).toBe(false);
+    controller.dispose();
+  });
+
+  it("never publishes both content panes collapsed, including navigation and mobile-back behavior", async () => {
+    const api = fakeApi(); const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    const published: Array<{ middleCollapsed: boolean; detailsOpen: boolean }> = [];
+    controller.subscribe(() => published.push(controller.getSnapshot()));
+    await controller.start();
+    controller.setMiddleCollapsed(true);
+    expect(controller.getSnapshot()).toMatchObject({ middleCollapsed: true, detailsOpen: true });
+    controller.setDetailsOpen(false);
+    expect(controller.getSnapshot()).toMatchObject({ middleCollapsed: false, detailsOpen: false });
+    controller.setMiddleCollapsed(true); await controller.openHierarchy();
+    expect(published.every((state) => !state.middleCollapsed || state.detailsOpen)).toBe(true);
+    controller.dispose();
+  });
+
+  it("clears private presentation on logout and ignores a late resume read", async () => {
+    const api = fakeApi(); api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.getCalendarEvent.mockResolvedValue({ calendarEvent: nativeCalendarEvent, latestTombstone: null });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start(); await controller.openCalendarEvent(nativeCalendarEvent.event.id);
+    controller.setCalendarPresentation({ view: "agenda", anchorDate: "2028-01-01" });
+    controller.setCollectionPresentation(collection.id, { view: "all" });
+    await controller.openCollections();
+    let finish!: (value: { calendarEvent: CalendarEventDetail; latestTombstone: null }) => void;
+    api.getCalendarEvent.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const pending = controller.resumeWorkspace("calendar");
+    await controller.logout();
+    finish({ calendarEvent: nativeCalendarEvent, latestTombstone: null }); await pending;
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, calendarWorkspace: { selectedEvent: null },
+      presentation: { collections: {}, calendar: { view: "month", anchorDate: null }, peers: { calendar: { pathname: null } } } });
+    const calls = api.getCalendarEvent.mock.calls.length;
+    await controller.resumeWorkspace("calendar");
+    expect(api.getCalendarEvent).toHaveBeenCalledTimes(calls);
+    controller.dispose();
+  });
+
+  it("does not turn OAuth drafts or a public QR into remembered private navigation", async () => {
+    const api = fakeApi(); api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    const route = new FakeRoute("/calendar?calendarAuthorization=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    const controller = new LifeLinksWorkspaceController({ api, route }); await controller.start();
+    expect(controller.getSnapshot().presentation.peers.calendar.pathname).toBe("/calendar");
+    route.pop(`/qr/${link.id}`); await new Promise((resolve) => setTimeout(resolve, 0));
+    const previous = controller.getSnapshot().routePathname;
+    await controller.resumeWorkspace("calendar");
+    expect(controller.getSnapshot().routePathname).toBe(previous);
+    controller.dispose();
+  });
+});
+
 class FakeRoute implements WorkspaceBrowserRoute {
   private listeners = new Set<() => void>();
   readonly pushes: string[] = [];
@@ -2667,6 +2879,8 @@ function fakeApi() {
     getLifeLinkAttachmentImage: vi.fn<LifeLinksWorkspaceApi["getLifeLinkAttachmentImage"]>(),
     getChangeHistory: vi.fn<LifeLinksWorkspaceApi["getChangeHistory"]>(async () => ({ limit: 5, entries: [] })),
     previewLifeLinkChange: vi.fn<LifeLinksWorkspaceApi["previewLifeLinkChange"]>(),
+    previewCollectionChange: vi.fn<LifeLinksWorkspaceApi["previewCollectionChange"]>(),
+    applyCollectionChange: vi.fn<LifeLinksWorkspaceApi["applyCollectionChange"]>(),
     getLifeLinkChangePreview: vi.fn<LifeLinksWorkspaceApi["getLifeLinkChangePreview"]>(),
     applyLifeLinkChange: vi.fn<LifeLinksWorkspaceApi["applyLifeLinkChange"]>(),
     undoChange: vi.fn<LifeLinksWorkspaceApi["undoChange"]>(),
@@ -2823,6 +3037,34 @@ describe("Outlook provider workspace", () => {
     await controller.start(); await controller.connectAgent();
     return { api, controller, route };
   }
+  it("resumes the exact provider route through a fresh authorized read without losing Calendar presentation", async () => {
+    const { api, controller, route } = await setup();
+    await controller.openProviderCalendarEvent(reference);
+    const path = route.pathname();
+    controller.setCalendarPresentation({ view: "day", anchorDate: "2026-09-15", selectedDate: "2026-09-15" });
+    await controller.openCollections(); api.getProviderCalendarEvent.mockClear();
+    await controller.resumeWorkspace("calendar");
+    expect(route.pathname()).toBe(path);
+    expect(api.getProviderCalendarEvent).toHaveBeenCalledExactlyOnceWith(reference, undefined, "human");
+    expect(controller.getSnapshot()).toMatchObject({ calendarWorkspace: { selectedProviderEvent: providerEvent },
+      presentation: { calendar: { view: "day", anchorDate: "2026-09-15" } } });
+    controller.dispose();
+  });
+
+  it("does not reopen a provider event after a peer switch during its calendar read", async () => {
+    const { api, controller, route } = await setup();
+    let finish!: (value: { calendars: CalendarRecord[]; providerBindings: CalendarProviderBindingView[]; nextCursor: null; truncated: false }) => void;
+    api.listCalendars.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const pending = controller.openProviderCalendarEvent(reference);
+    await controller.openCollections();
+    finish({ calendars: [externalCalendar], providerBindings: [binding], nextCursor: null, truncated: false });
+    await pending;
+    expect(route.pathname()).toBe("/collections");
+    expect(controller.getSnapshot()).toMatchObject({ workspaceMode: "collections", detailsOpen: false, calendarWorkspace: { selectedProviderEvent: null } });
+    expect(api.getProviderCalendarEvent).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
   async function setupManagedCalendar() {
     const context = await setup();
     const view = { calendar: externalCalendar, connectionId: binding.connectionId, providerCalendarId: binding.providerCalendarId,

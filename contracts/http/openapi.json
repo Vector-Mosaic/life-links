@@ -1096,6 +1096,34 @@
         }
       }
     },
+    "/api/collections/changes/preview": {
+      "post": {
+        "operationId": "previewCollectionChange", "summary": "Preview an atomic Collection selection change", "tags": ["collections"],
+        "description": "Owner-only purpose organization. No physical Life Link is deleted or moved. Exact source/destination revisions and the full selected association state are revalidated at apply; a current Routine Collection binding blocks Collection deletion. Preview expires after fifteen minutes and shares the existing newest-five preview pool.",
+        "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"}],
+        "requestBody": {"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CollectionChangeInput"}}}},
+        "responses": {
+          "200":{"description":"Exact owner selection and effect counts.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CollectionChangePreviewResponse"}}}},
+          "400":{"$ref":"#/components/responses/LifeLinkBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/LifeLinkNotFound"},"409":{"$ref":"#/components/responses/LifeLinkConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}
+        }
+      }
+    },
+    "/api/collections/changes/{previewId}": {
+      "get": {
+        "operationId":"getCollectionChangePreview","summary":"Read an unexpired owner Collection preview","tags":["collections"],
+        "parameters":[{"$ref":"#/components/parameters/XRequestId"},{"name":"previewId","in":"path","required":true,"schema":{"type":"string","minLength":1,"maxLength":200}}],
+        "responses":{"200":{"description":"Exact owner preview; physical Life Link preview identities are not accepted.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CollectionChangePreviewResponse"}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"404":{"$ref":"#/components/responses/LifeLinkNotFound"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}}
+      }
+    },
+    "/api/collections/changes/apply": {
+      "post": {
+        "operationId":"applyCollectionChange","summary":"Apply a confirmed Collection selection once","tags":["collections"],
+        "description":"The owner confirms the displayed preview. Exact command retry returns the original affected identities without repeating effects or adding Undo entries. Different owner/request/domain reuse conflicts. One real bulk operation is one entry in the shared newest-five Undo journal; no-op selection creates no entry. No new page-agent capability is granted.",
+        "parameters":[{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"}],
+        "requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ApplyLifeLinkChangeRequest"}}}},
+        "responses":{"200":{"description":"Affected Collection and Life Link identities, not changed physical records.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CollectionChangeResult"}}}},"400":{"$ref":"#/components/responses/LifeLinkBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/Forbidden"},"404":{"$ref":"#/components/responses/LifeLinkNotFound"},"409":{"$ref":"#/components/responses/LifeLinkConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}}
+      }
+    },
     "/api/collections": {
       "get": {
         "operationId": "listCollections",
@@ -3181,6 +3209,21 @@
       "CalendarConnectionSettingsRequest": {"type":"object","additionalProperties":false,"required":["expectedUpdatedAt"],"properties":{"expectedUpdatedAt":{"type":"string","format":"date-time"},"visible":{"type":"boolean"},"agentAccess":{"enum":["none","read","write"]}},"anyOf":[{"required":["visible"]},{"required":["agentAccess"]}]},
       "CalendarConnectionDisconnectRequest": {"type":"object","additionalProperties":false,"required":["localProjectionDisposition"],"properties":{"localProjectionDisposition":{"enum":["purge","retain_private_stale"]}}},
       "CalendarConnectionErrorResponse": {"type":"object","additionalProperties":false,"required":["error","retryable"],"properties":{"error":{"type":"string"},"retryable":{"type":"boolean"}}},
+      "CollectionChangeReference": {"type":"object","additionalProperties":false,"required":["collectionId","expectedUpdatedAt"],"properties":{"collectionId":{"type":"string","pattern":"^collection-[0-9a-fA-F-]{36}$"},"expectedUpdatedAt":{"type":"string","format":"date-time"}}},
+      "CollectionChangeTarget": {"type":"object","additionalProperties":false,"required":["collectionId","expectedUpdatedAt","sectionId"],"properties":{"collectionId":{"type":"string","pattern":"^collection-[0-9a-fA-F-]{36}$"},"expectedUpdatedAt":{"type":"string","format":"date-time"},"sectionId":{"type":["string","null"],"pattern":"^section-[0-9a-fA-F-]{36}$"}}},
+      "CollectionChangeMember": {"type":"object","additionalProperties":false,"required":["lifeLinkId","sourceSectionId"],"properties":{"lifeLinkId":{"type":"string","minLength":1,"maxLength":512},"sourceSectionId":{"type":["string","null"],"pattern":"^section-[0-9a-fA-F-]{36}$"}},"description":"An exact appearance. null selects direct Collection membership; a Section ID selects only that assignment for same-Collection removal/move. Cross-Collection item movement transfers source direct membership including all source-local assignments."},
+      "CollectionChangeInput": {
+        "description":"One to one hundred selected entries total. Whole-Section moves preserve Section identities and source direct memberships, ensure destination membership, and can target only another Collection with sectionId null. A whole selected Section subsumes its selected member appearances. Other Section assignments and other Collections remain unchanged. All-items same-Collection assignment adds the destination without erasing unrelated assignments.",
+        "oneOf":[
+          {"type":"object","additionalProperties":false,"required":["operation","scope","collections"],"properties":{"operation":{"const":"delete"},"scope":{"const":"collections"},"collections":{"type":"array","minItems":1,"maxItems":100,"items":{"$ref":"#/components/schemas/CollectionChangeReference"}}}},
+          {"type":"object","additionalProperties":false,"required":["operation","scope","source","sectionIds","members"],"properties":{"operation":{"const":"delete"},"scope":{"const":"contents"},"source":{"$ref":"#/components/schemas/CollectionChangeReference"},"sectionIds":{"type":"array","maxItems":100,"items":{"type":"string","pattern":"^section-[0-9a-fA-F-]{36}$"}},"members":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/CollectionChangeMember"}}}},
+          {"type":"object","additionalProperties":false,"required":["operation","scope","source","sectionIds","members","target"],"properties":{"operation":{"const":"move"},"scope":{"const":"contents"},"source":{"$ref":"#/components/schemas/CollectionChangeReference"},"sectionIds":{"type":"array","maxItems":100,"items":{"type":"string","pattern":"^section-[0-9a-fA-F-]{36}$"}},"members":{"type":"array","maxItems":100,"items":{"$ref":"#/components/schemas/CollectionChangeMember"}},"target":{"$ref":"#/components/schemas/CollectionChangeTarget"}}}
+        ]
+      },
+      "CollectionChangeSideEffects": {"type":"object","additionalProperties":false,"required":["collectionsRemoved","sectionsRemoved","sectionsMoved","membershipsRemoved","membershipsAdded","assignmentsRemoved","assignmentsAdded","lifeLinksDeleted"],"properties":{"collectionsRemoved":{"type":"integer","minimum":0},"sectionsRemoved":{"type":"integer","minimum":0},"sectionsMoved":{"type":"integer","minimum":0},"membershipsRemoved":{"type":"integer","minimum":0},"membershipsAdded":{"type":"integer","minimum":0},"assignmentsRemoved":{"type":"integer","minimum":0},"assignmentsAdded":{"type":"integer","minimum":0},"lifeLinksDeleted":{"const":0}}},
+      "CollectionChangePreview": {"type":"object","additionalProperties":false,"required":["domain","id","input","collections","sections","members","targetCollection","targetSection","sideEffects","createdAt"],"properties":{"domain":{"const":"collections"},"id":{"type":"string","minLength":1,"maxLength":200},"input":{"$ref":"#/components/schemas/CollectionChangeInput"},"collections":{"type":"array","items":{"$ref":"#/components/schemas/Collection"}},"sections":{"type":"array","items":{"$ref":"#/components/schemas/CollectionSection"}},"members":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["lifeLinkId","sourceSectionId","title"],"properties":{"lifeLinkId":{"type":"string","minLength":1,"maxLength":512},"sourceSectionId":{"type":["string","null"]},"title":{"type":"string"}}}},"targetCollection":{"anyOf":[{"$ref":"#/components/schemas/Collection"},{"type":"null"}]},"targetSection":{"anyOf":[{"$ref":"#/components/schemas/CollectionSection"},{"type":"null"}]},"sideEffects":{"$ref":"#/components/schemas/CollectionChangeSideEffects"},"createdAt":{"type":"string","format":"date-time"}}},
+      "CollectionChangePreviewResponse": {"type":"object","additionalProperties":false,"required":["preview"],"properties":{"preview":{"$ref":"#/components/schemas/CollectionChangePreview"}}},
+      "CollectionChangeResult": {"type":"object","additionalProperties":false,"required":["operation","collectionIds","lifeLinkIds","history"],"properties":{"operation":{"enum":["move","delete"]},"collectionIds":{"type":"array","items":{"type":"string"}},"lifeLinkIds":{"type":"array","items":{"type":"string"}},"history":{"$ref":"#/components/schemas/ChangeHistory"}}},
       "LifeLinkChangePreviewItem": {
         "type": "object",
         "additionalProperties": false,

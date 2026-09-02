@@ -148,6 +148,20 @@ export type AgentCollectionListResult =
   | Exclude<AgentToolControllerActionResult, { ok: true }>;
 
 export type RoutineWorkspaceState = {
+  presentation: {
+    tab: "routines" | "history";
+    historyRoutineId: string | null;
+    showRemoved: boolean;
+    collapsedGroupIds: string[];
+  };
+  history: {
+    routineId: string | null;
+    sessions: RoutineSessionProjection[];
+    nextCursor: string | null;
+    loaded: boolean;
+    loading: boolean;
+    error: string;
+  };
   groups: RoutineGroupRecord[];
   groupsNextCursor: string | null;
   activities: ActivityRecord[];
@@ -206,7 +220,38 @@ export type CalendarWorkspaceState = {
   error: string;
 };
 
+export type WorkspacePeer = "hierarchies" | "collections" | "routines" | "calendar";
+export type WorkspacePeerPresentation = {
+  pathname: string | null;
+  middleCollapsed: boolean;
+  detailsOpen: boolean;
+  middleScrollTop: number;
+  detailsScrollTop: number;
+};
+export type CollectionPresentation = {
+  view: "sections" | "locations" | "all";
+  expandedGroups: string[];
+};
+export type CalendarPresentation = {
+  view: "month" | "week" | "day" | "agenda";
+  timeZone: string | null;
+  anchorDate: string | null;
+  selectedDate: string | null;
+  hiddenNativeCalendarIds: string[];
+  selectedEventKey: string | null;
+};
+/** Owner-session UI preferences and references only; never a cached domain or permission snapshot. */
+export type WorkspacePresentation = {
+  peers: Record<WorkspacePeer, WorkspacePeerPresentation>;
+  collections: Record<string, CollectionPresentation>;
+  calendar: CalendarPresentation;
+  routineDetails: { kind: "routine" | "session"; sessionId: string | null };
+  restoreRevision: number;
+};
+
 export type LifeLinksWorkspaceSnapshot = {
+  presentation: WorkspacePresentation;
+  middleCollapsed: boolean;
   changeHistory: ChangeHistory;
   agentChangeConfirmation: LifeLinkChangePreview | null;
   agentCalendarDeletionConfirmation: AgentCalendarDeletionPreview | AgentProviderCalendarDeletionPreview | null;

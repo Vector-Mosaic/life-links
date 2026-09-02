@@ -4,21 +4,30 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CalendarWorkspacePanel } from "./CalendarPanels";
 import type { LifeLinksWorkspaceController } from "../workspace/controller";
-import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
+import type { CalendarPresentation, LifeLinksWorkspaceSnapshot } from "../workspace/types";
 
 describe("Calendar visibility popover", () => {
   let root: Root;
   let container: HTMLDivElement;
   let filter: HTMLDetailsElement;
   let onOpenDialog: ReturnType<typeof vi.fn>;
+  let snapshot: LifeLinksWorkspaceSnapshot;
+  let render: () => void;
 
   beforeEach(async () => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     localStorage.setItem("life-links-calendar-time-zone", "UTC");
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     onOpenDialog = vi.fn();
-    const controller = { loadCalendarClock: vi.fn().mockResolvedValue(undefined), loadCalendarWindow: vi.fn().mockResolvedValue(undefined) } as unknown as LifeLinksWorkspaceController;
-    const snapshot = {
+    const controller = {
+      loadCalendarClock: vi.fn().mockResolvedValue(undefined), loadCalendarWindow: vi.fn().mockResolvedValue(undefined),
+      setCalendarPresentation: vi.fn((patch: Partial<CalendarPresentation>) => {
+        snapshot = { ...snapshot, presentation: { ...snapshot.presentation, calendar: { ...snapshot.presentation.calendar, ...patch } } };
+        render();
+      })
+    } as unknown as LifeLinksWorkspaceController;
+    snapshot = {
+      presentation: { calendar: { view: "month", timeZone: "UTC", anchorDate: "2026-09-02", selectedDate: "2026-09-02", hiddenNativeCalendarIds: [], selectedEventKey: null } },
       calendarWorkspace: {
         calendars: [{ id: "calendar-home", title: "Home", color: "#79bea6", source: "native", isDefault: true, deletedAt: null }],
         providerBindings: [], selectedEvent: null, selectedProviderEvent: null, events: [], providerEvents: [], loading: false, error: "",
@@ -26,7 +35,8 @@ describe("Calendar visibility popover", () => {
       },
       routineWorkspace: { calendarOccurrences: [], routines: [], calendarError: "" }
     } as unknown as LifeLinksWorkspaceSnapshot;
-    await act(async () => root.render(<CalendarWorkspacePanel controller={controller} snapshot={snapshot} onOpenDialog={onOpenDialog} onOpenDetails={vi.fn()} />));
+    render = () => root.render(<CalendarWorkspacePanel controller={controller} snapshot={snapshot} onOpenDialog={onOpenDialog} onOpenDetails={vi.fn()} />);
+    await act(async () => render());
     filter = container.querySelector<HTMLDetailsElement>(".ll-calendar-filter")!;
     expect(filter).not.toBeNull();
     filter.open = true;
@@ -64,5 +74,17 @@ describe("Calendar visibility popover", () => {
     await act(async () => filter.querySelector<HTMLButtonElement>("button")!.click());
     expect(filter.open).toBe(false);
     expect(onOpenDialog).toHaveBeenCalledExactlyOnceWith({ kind: "manage-calendars" });
+  });
+
+  it("restores date, view and even an empty native filter after a peer panel unmount", async () => {
+    await act(async () => filter.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>(".ll-calendar-view-switch button")).find((button) => button.textContent === "Week")!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Next week"]')!.click());
+    expect(snapshot.presentation.calendar).toMatchObject({ view: "week", anchorDate: "2026-09-09", hiddenNativeCalendarIds: ["calendar-home"] });
+    await act(async () => root.unmount()); root = createRoot(container);
+    await act(async () => render());
+    expect(container.querySelector('[aria-pressed="true"]')?.textContent).toBe("Week");
+    expect(container.querySelector<HTMLInputElement>('.ll-calendar-filter input[type="checkbox"]')?.checked).toBe(false);
+    expect(snapshot.presentation.calendar.anchorDate).toBe("2026-09-09");
   });
 });
