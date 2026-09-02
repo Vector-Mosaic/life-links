@@ -43,9 +43,10 @@ type CalendarPanelProps = {
   snapshot: LifeLinksWorkspaceSnapshot;
   onOpenDialog(dialog: NonNullable<CalendarDialogState>): void;
   onOpenDetails(): void;
+  autoRefreshPaused?: boolean;
 };
 
-export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onOpenDetails }: CalendarPanelProps) {
+export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onOpenDetails, autoRefreshPaused = false }: CalendarPanelProps) {
   const selected = snapshot.calendarWorkspace.selectedEvent;
   const presentation = snapshot.presentation.calendar;
   const { view, anchorDate, selectedDate } = presentation;
@@ -53,6 +54,10 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
   const setAnchorDate = (anchorDate: string) => controller.setCalendarPresentation({ anchorDate });
   const setSelectedDate = (selectedDate: string) => controller.setCalendarPresentation({ selectedDate });
   const calendarFilter = useRef<HTMLDetailsElement>(null);
+  const initialWindowRequest = useRef<{ abort: AbortController; done: Promise<void> } | null>(null);
+  const autoRefreshRequest = useRef<{ abort: AbortController; done: Promise<void> } | null>(null);
+  const refreshBlocked = useRef(false);
+  refreshBlocked.current = autoRefreshPaused || snapshot.calendarWorkspace.loading;
   const calendars = snapshot.calendarWorkspace.calendars.filter((calendar) => !calendar.deletedAt);
   const visibleSet = useMemo(() => new Set([
     ...snapshot.calendarWorkspace.calendars.filter((calendar) => !calendar.deletedAt && calendar.source === "native" &&
@@ -102,9 +107,63 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
   useEffect(() => {
     if (!anchorDate) return;
     const abort = new AbortController();
-    void controller.loadCalendarWindow({ ...loadRange, signal: abort.signal }).catch(() => undefined);
+    const request = { abort, done: controller.loadCalendarWindow({ ...loadRange, signal: abort.signal }).catch(() => undefined) };
+    initialWindowRequest.current = request;
+    void request.done.finally(() => { if (initialWindowRequest.current === request) initialWindowRequest.current = null; });
     return () => abort.abort();
   }, [anchorDate, controller, loadRange.endDate, loadRange.startDate]);
+
+  useEffect(() => {
+    if (!anchorDate || autoRefreshPaused) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let waiting: Promise<void> | null = null;
+    let ownedRequest: typeof autoRefreshRequest.current = null;
+    const available = () => !disposed && !refreshBlocked.current && document.visibilityState !== "hidden" && navigator.onLine !== false;
+    const clearTimer = () => { if (timer !== null) clearTimeout(timer); timer = null; };
+    const schedule = (delay = 60_000) => { clearTimer(); if (available()) timer = setTimeout(refresh, delay); };
+    function refresh() {
+      clearTimer();
+      if (!available()) return;
+      const pending = initialWindowRequest.current ?? autoRefreshRequest.current;
+      if (pending) {
+        // A resumed view may still be waiting for its aborted fetch to settle.
+        // Coalesce wakeups behind that request instead of overlapping it.
+        if (waiting !== pending.done) {
+          waiting = pending.done;
+          void pending.done.finally(() => { waiting = null; if (!disposed) schedule(0); });
+        }
+        return;
+      }
+      const abort = new AbortController();
+      const request = { abort, done: controller.loadCalendarWindow({ ...loadRange, signal: abort.signal, background: true }).catch(() => undefined) };
+      ownedRequest = request; autoRefreshRequest.current = request;
+      void request.done.finally(() => {
+        if (autoRefreshRequest.current === request) autoRefreshRequest.current = null;
+        if (ownedRequest === request) ownedRequest = null;
+        // Schedule from completion, including failure: no interval overlap or retry storm.
+        if (!disposed) schedule();
+      });
+    }
+    function wake() {
+      if (!available()) { clearTimer(); ownedRequest?.abort.abort(); return; }
+      // A refresh already underway satisfies a focus/online/visibility burst.
+      if (autoRefreshRequest.current && !autoRefreshRequest.current.abort.signal.aborted) return;
+      schedule(0);
+    }
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("focus", wake);
+    window.addEventListener("online", wake);
+    window.addEventListener("offline", wake);
+    schedule();
+    return () => {
+      disposed = true; clearTimer(); ownedRequest?.abort.abort();
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("focus", wake);
+      window.removeEventListener("online", wake);
+      window.removeEventListener("offline", wake);
+    };
+  }, [anchorDate, controller, loadRange.endDate, loadRange.startDate, autoRefreshPaused, snapshot.calendarWorkspace.loading, snapshot.currentUser?.id]);
 
   useEffect(() => {
     if (!selected) return;

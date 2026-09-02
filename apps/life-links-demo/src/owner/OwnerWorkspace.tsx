@@ -315,7 +315,10 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
             {selectedCollection.notes && <section className="ll-detail-section"><h3>Collection notes</h3><p className="ll-preserve-lines">{selectedCollection.notes}</p></section>}
           </>}
           {dataMode && routinesMode && <RoutineWorkspacePanel controller={controller} snapshot={snapshot} onOpenDialog={setRoutineDialog} onOpenDetails={() => controller.setDetailsOpen(true)} onShowRoutine={() => setRoutineDetailKind("routine")} onShowSession={() => setRoutineDetailKind("session")} />}
-          {dataMode && calendarMode && <CalendarWorkspacePanel controller={controller} snapshot={snapshot} onOpenDialog={setCalendarDialog} onOpenDetails={() => controller.setDetailsOpen(true)} />}
+          {dataMode && calendarMode && <CalendarWorkspacePanel controller={controller} snapshot={snapshot} onOpenDialog={setCalendarDialog} onOpenDetails={() => controller.setDetailsOpen(true)}
+            autoRefreshPaused={Boolean(busy || undoing || middleCollapsed || dialog || routineDialog || calendarDialog || collectionChange || snapshot.canonicalEditingId ||
+              snapshot.agentChangeConfirmation || snapshot.agentCalendarDeletionConfirmation || snapshot.agentWorkspaceChangeConfirmation ||
+              snapshot.calendarWorkspace.connectionFlow?.loading || snapshot.calendarWorkspace.connectionManagement?.loading)} />}
           {searchMode && <section className="ll-search-screen"><form className="ll-search-form" onSubmit={(event) => { event.preventDefault(); void controller.searchLifeLinks(); }}><Search size={19} /><input aria-label="Search records" placeholder="Search places, things, and notes" value={snapshot.lifeLinkSearchQuery} onChange={(event) => controller.setLifeLinkSearchQuery(event.target.value)} /><button className="ll-button ll-primary" disabled={snapshot.lifeLinkSearchLoading}>Search</button></form>
             {snapshot.lifeLinkSearchLoading && <p className="ll-muted">Searching…</p>}
             {snapshot.lifeLinkSearchResults.map((result) => {

@@ -481,7 +481,7 @@ export interface LifeLinksWorkspaceActions {
   createRoutineSchedule(routineId: string, input: RoutineScheduleCreateInput, signal?: AbortSignal): Promise<void>;
   updateRoutineSchedule(scheduleId: string, expectedUpdatedAt: string, patch: RoutineSchedulePatch, signal?: AbortSignal): Promise<void>;
   loadRoutineOccurrences(options?: RoutineOccurrenceListOptions): Promise<void>;
-  loadRoutineCalendarWindow(options: { startDate: string; endDate: string; signal?: AbortSignal }): Promise<void>;
+  loadRoutineCalendarWindow(options: { startDate: string; endDate: string; signal?: AbortSignal; background?: boolean }): Promise<void>;
   startRoutineRun(routineId: string, input: { id: string; occurrenceId?: string | null }, signal?: AbortSignal): Promise<void>;
   resumeRoutineRun(runId: string, signal?: AbortSignal): Promise<void>;
   putRoutineRunStepResult(runId: string, routineStepId: string, input: {
@@ -494,7 +494,7 @@ export interface LifeLinksWorkspaceActions {
   openCalendar(updateHistory?: boolean): Promise<void>;
   openCalendarEvent(eventId: string, updateHistory?: boolean): Promise<void>;
   loadCalendarClock(timeZone: string, signal?: AbortSignal): Promise<CalendarClock | null>;
-  loadCalendarWindow(options: { startDate: string; endDate: string; signal?: AbortSignal }): Promise<void>;
+  loadCalendarWindow(options: { startDate: string; endDate: string; signal?: AbortSignal; background?: boolean }): Promise<void>;
   createNativeCalendar(input: CalendarCreateInput, signal?: AbortSignal): Promise<CalendarRecord>;
   updateNativeCalendar(calendarId: string, expectedUpdatedAt: string, patch: CalendarPatch, signal?: AbortSignal): Promise<CalendarRecord>;
   deleteNativeCalendar(calendarId: string, expectedUpdatedAt: string, signal?: AbortSignal): Promise<CalendarRecord>;
@@ -615,6 +615,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private calendarWorkspaceLoadRevision = 0;
   private calendarClockLoadRevision = 0;
   private calendarWindowLoadRevision = 0;
+  private backgroundCalendarWindowPending = false;
+  private requestedCalendarWindow: { startDate: string; endDate: string; ownerRevision: number; navigationRevision: number } | null = null;
   private calendarConnectionsLoadRevision = 0;
   private calendarConnectionFlowRevision = 0;
   private calendarSelectionRevision = 0;
@@ -1034,16 +1036,20 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async loadRoutineCalendarWindow(
-    options: { startDate: string; endDate: string; signal?: AbortSignal }
+    options: { startDate: string; endDate: string; signal?: AbortSignal; background?: boolean }
   ): Promise<void> {
     const ownerId = this.snapshot.currentUser?.id;
     if (!ownerId) return;
     const ownerRevision = this.ownerRevision;
     const navigationRevision = this.navigationRevision;
     const loadRevision = ++this.routineCalendarLoadRevision;
+    const routines = this.snapshot.routineWorkspace.routines;
+    const occurrences = this.snapshot.routineWorkspace.calendarOccurrences;
     const isCurrent = () => ownerRevision === this.ownerRevision && ownerId === this.snapshot.currentUser?.id &&
-      navigationRevision === this.navigationRevision && loadRevision === this.routineCalendarLoadRevision;
-    this.updateRoutineWorkspace({ calendarLoading: true, calendarError: "" });
+      navigationRevision === this.navigationRevision && loadRevision === this.routineCalendarLoadRevision &&
+      !options.signal?.aborted && (!options.background || (routines === this.snapshot.routineWorkspace.routines &&
+        occurrences === this.snapshot.routineWorkspace.calendarOccurrences));
+    if (!options.background) this.updateRoutineWorkspace({ calendarLoading: true, calendarError: "" });
     try {
       await this.api.materializeRoutineOccurrences(options);
       options.signal?.throwIfAborted();
@@ -1380,16 +1386,32 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
   }
 
-  async loadCalendarWindow(options: { startDate: string; endDate: string; signal?: AbortSignal }): Promise<void> {
+  async loadCalendarWindow(options: { startDate: string; endDate: string; signal?: AbortSignal; background?: boolean }): Promise<void> {
     const ownerId = this.snapshot.currentUser?.id;
     if (!ownerId) return;
+    options.signal?.throwIfAborted();
+    const startingWorkspace = this.snapshot.calendarWorkspace;
+    const requested = this.requestedCalendarWindow;
+    if (options.background && (this.backgroundCalendarWindowPending || startingWorkspace.loading ||
+        this.snapshot.routineWorkspace.calendarLoading || this.snapshot.workspaceMode !== "calendar" ||
+        requested?.ownerRevision !== this.ownerRevision || requested.navigationRevision !== this.navigationRevision ||
+        requested.startDate !== options.startDate || requested.endDate !== options.endDate)) return;
+    if (!options.background) this.requestedCalendarWindow = { startDate: options.startDate, endDate: options.endDate,
+      ownerRevision: this.ownerRevision, navigationRevision: this.navigationRevision };
+    if (options.background) this.backgroundCalendarWindowPending = true;
     const ownerRevision = this.ownerRevision;
     const navigation = this.navigationRevision;
     const loadRevision = ++this.calendarWindowLoadRevision;
     const current = () => ownerRevision === this.ownerRevision && ownerId === this.snapshot.currentUser?.id &&
       navigation === this.navigationRevision && loadRevision === this.calendarWindowLoadRevision &&
-      this.snapshot.workspaceMode === "calendar";
-    this.updateCalendarWorkspace({ loading: true, error: "" });
+      this.snapshot.workspaceMode === "calendar" && !options.signal?.aborted &&
+      // A quiet read must not replace a save, disconnect or visibility update
+      // acknowledged while it was in flight. Foreground reads retain priority.
+      (!options.background || (startingWorkspace.events === this.snapshot.calendarWorkspace.events &&
+        startingWorkspace.providerEvents === this.snapshot.calendarWorkspace.providerEvents &&
+        startingWorkspace.providerBindings === this.snapshot.calendarWorkspace.providerBindings &&
+        startingWorkspace.calendars === this.snapshot.calendarWorkspace.calendars));
+    if (!options.background) this.updateCalendarWorkspace({ loading: true, error: "" });
     try {
       const [events] = await Promise.all([
         readAllPages(async (cursor) => {
@@ -1405,8 +1427,10 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         }),
         this.loadRoutineCalendarWindow(options)
       ]);
+      if (!current()) return;
       const providerEvents: CalendarProviderEventProjection[] = [];
       for (const binding of this.snapshot.calendarWorkspace.providerBindings.filter((entry) => entry.visible && entry.capabilities.read)) {
+        if (!current()) return;
         const projections = await readAllPages(async (cursor) => {
           const page = await this.api.listProviderCalendarEvents({ authority: "provider", connectionId: binding.connectionId, calendarId: binding.calendarId,
             startDate: options.startDate, endDate: options.endDate, limit: 100, ...(cursor ? { cursor } : {}) }, options.signal);
@@ -1434,6 +1458,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         this.updateCalendarWorkspace({ loading: false, error: messageFromError(error) });
       }
       if (!(error instanceof DOMException && error.name === "AbortError")) throw error;
+    } finally {
+      if (options.background) this.backgroundCalendarWindowPending = false;
     }
   }
 
@@ -1583,7 +1609,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         try { await this.loadCalendarWindow({ ...this.snapshot.calendarWorkspace.range, signal }); }
         catch {
           if (sameOwner() && !signal?.aborted) this.updateCalendarWorkspace((current) => ({ connectionManagement: {
-            ...current.connectionManagement, error: "Settings saved, but events could not be refreshed. Try Refresh events."
+            ...current.connectionManagement, error: "Settings saved, but events could not be refreshed. Try Refresh now."
           } }));
         }
       }

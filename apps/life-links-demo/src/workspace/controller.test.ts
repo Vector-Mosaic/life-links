@@ -434,6 +434,106 @@ describe("LifeLinksWorkspaceController", () => {
     controller.dispose();
   });
 
+  it("quietly refreshes the existing Calendar window once without changing presentation", async () => {
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.listCalendarEvents.mockResolvedValue({ calendarEvents: [nativeCalendarEvent], nextCursor: null, truncated: false });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+    const range = { startDate: "2026-08-01", endDate: "2026-08-31" };
+    await controller.loadCalendarWindow(range);
+    controller.setCalendarPresentation({ view: "week", anchorDate: "2026-08-20", selectedDate: "2026-08-20" });
+    const presentation = controller.getSnapshot().presentation;
+    const response = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listCalendarEvents"]>>>();
+    api.listCalendarEvents.mockImplementationOnce(() => response.promise);
+    const pending = controller.loadCalendarWindow({ ...range, background: true });
+    await controller.loadCalendarWindow({ ...range, background: true });
+    expect(api.listCalendarEvents).toHaveBeenCalledTimes(2);
+    expect(controller.getSnapshot().calendarWorkspace).toMatchObject({ loading: false, events: [nativeCalendarEvent] });
+    expect(controller.getSnapshot().routineWorkspace.calendarLoading).toBe(false);
+    const fresh = { ...nativeCalendarEvent, currentRevision: { ...nativeCalendarEvent.currentRevision, title: "Updated elsewhere" } };
+    response.resolve({ calendarEvents: [fresh], nextCursor: null, truncated: false });
+    await pending;
+    expect(controller.getSnapshot().calendarWorkspace.events).toEqual([fresh]);
+    expect(controller.getSnapshot().presentation).toEqual(presentation);
+    controller.dispose();
+  });
+
+  it("does not replace an acknowledged Calendar save with an older background response", async () => {
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+    const range = { startDate: "2026-08-01", endDate: "2026-08-31" };
+    await controller.loadCalendarWindow(range);
+    const response = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listCalendarEvents"]>>>();
+    api.listCalendarEvents.mockImplementationOnce(() => response.promise);
+    const pending = controller.loadCalendarWindow({ ...range, background: true });
+    api.createCalendarEvent.mockResolvedValue({ calendarEvent: nativeCalendarEvent, latestTombstone: null });
+    await controller.createNativeCalendarEvent({ calendarId: nativeCalendar.id, lineage: { kind: "standalone" },
+      title: nativeCalendarEvent.currentRevision.title, description: "", location: "", status: "confirmed",
+      span: nativeCalendarEvent.currentRevision.span, recurrence: null, subjectLinks: [] });
+    response.resolve({ calendarEvents: [], nextCursor: null, truncated: false });
+    await pending;
+    expect(controller.getSnapshot().calendarWorkspace.events).toEqual([nativeCalendarEvent]);
+    expect(controller.getSnapshot().calendarWorkspace.selectedEvent).toEqual(nativeCalendarEvent);
+    controller.dispose();
+  });
+
+  it("retains displayed events after a failed quiet refresh and allows the next pass", async () => {
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.listCalendarEvents.mockResolvedValue({ calendarEvents: [nativeCalendarEvent], nextCursor: null, truncated: false });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+    const range = { startDate: "2026-08-01", endDate: "2026-08-31" };
+    await controller.loadCalendarWindow(range);
+    api.listCalendarEvents.mockRejectedValueOnce(new Error("Calendar refresh unavailable"));
+    await expect(controller.loadCalendarWindow({ ...range, background: true })).rejects.toThrow("Calendar refresh unavailable");
+    expect(controller.getSnapshot().calendarWorkspace).toMatchObject({ events: [nativeCalendarEvent], loading: false, error: "Calendar refresh unavailable" });
+    await controller.loadCalendarWindow({ ...range, background: true });
+    expect(controller.getSnapshot().calendarWorkspace.error).toBe("");
+    controller.dispose();
+  });
+
+  it("quietly recovers the exact requested Calendar window after its first load fails", async () => {
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.listCalendarEvents.mockResolvedValue({ calendarEvents: [nativeCalendarEvent], nextCursor: null, truncated: false });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+    const range = { startDate: "2026-08-01", endDate: "2026-08-31" };
+    api.listCalendarEvents.mockRejectedValueOnce(new Error("Offline"));
+    await expect(controller.loadCalendarWindow(range)).rejects.toThrow("Offline");
+    expect(controller.getSnapshot().calendarWorkspace.range).toBeNull();
+    await controller.loadCalendarWindow({ startDate: "2026-07-01", endDate: "2026-07-31", background: true });
+    expect(api.listCalendarEvents).toHaveBeenCalledOnce();
+    await controller.loadCalendarWindow({ ...range, background: true });
+    expect(controller.getSnapshot().calendarWorkspace).toMatchObject({ range, events: [nativeCalendarEvent], loading: false, error: "" });
+    controller.dispose();
+  });
+
+  it.each(["abort", "peer", "logout"] as const)("drops a late quiet Calendar result after %s", async (reason) => {
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+    const range = { startDate: "2026-08-01", endDate: "2026-08-31" };
+    await controller.loadCalendarWindow(range);
+    const abort = new AbortController();
+    const response = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listCalendarEvents"]>>>();
+    api.listCalendarEvents.mockImplementationOnce(() => response.promise);
+    const pending = controller.loadCalendarWindow({ ...range, background: true, signal: abort.signal });
+    if (reason === "abort") abort.abort();
+    else if (reason === "peer") await controller.openRoutines();
+    else await controller.logout();
+    response.resolve({ calendarEvents: [nativeCalendarEvent], nextCursor: null, truncated: false });
+    await pending;
+    expect(controller.getSnapshot().calendarWorkspace.events).toEqual([]);
+    expect(controller.getSnapshot().calendarWorkspace.error).toBe("");
+    controller.dispose();
+  });
+
   it("uses the authenticated Calendar clock for the selected IANA view zone", async () => {
     const api = fakeApi();
     api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });

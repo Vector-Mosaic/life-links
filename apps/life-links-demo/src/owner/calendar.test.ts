@@ -66,7 +66,7 @@ describe("Calendar manager permission presentation", () => {
     expect(markup).toContain('type="checkbox" checked=""');
     expect(markup).toContain("Visibility does not change agent access");
     expect(markup).toContain("Add calendars from this account");
-    expect(markup).toContain("Refresh events");
+    expect(markup).toContain("Refresh now");
     expect(markup).toContain("Disconnect account");
   });
 
@@ -128,7 +128,7 @@ describe("Calendar manager permission presentation", () => {
     expect(markup).toContain("Reconnect Google Calendar");
     expect(markup).not.toContain("Reconnect Outlook");
     expect(markup).toContain("Add calendars from this account");
-    expect(markup).toContain("Refresh events");
+    expect(markup).toContain("Refresh now");
     expect(markup).toContain("This account needs to reconnect");
     expect(markup).not.toContain("No external accounts are connected");
   });

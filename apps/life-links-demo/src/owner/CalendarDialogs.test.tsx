@@ -49,7 +49,7 @@ describe("Calendar manager and event form", () => {
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-    actions = Object.fromEntries(["loadCalendarConnections", "createNativeCalendar", "updateNativeCalendar", "createNativeCalendarEvent", "updateNativeCalendarEvent", "createExternalCalendarEvent", "updateExternalCalendarEvent", "updateConnectedCalendar"].map((name) => [name, vi.fn().mockResolvedValue(undefined)]));
+    actions = Object.fromEntries(["loadCalendarConnections", "refreshConnectedCalendarAccount", "createNativeCalendar", "updateNativeCalendar", "createNativeCalendarEvent", "updateNativeCalendarEvent", "createExternalCalendarEvent", "updateExternalCalendarEvent", "updateConnectedCalendar"].map((name) => [name, vi.fn().mockResolvedValue(undefined)]));
     actions.getSnapshot = vi.fn(() => snapshot);
     actions.updateConnectedCalendar.mockImplementation(commitConnectedSettings);
     controller = actions as unknown as LifeLinksWorkspaceController; onClose = vi.fn();
@@ -83,6 +83,12 @@ describe("Calendar manager and event form", () => {
       calendars, loading: false, loaded: true, error: "", ...overrides
     } });
   }
+  it("offers Refresh now for the existing account refresh action", async () => {
+    await renderConnected();
+    expect([...document.querySelectorAll("button")].some((entry) => entry.textContent?.trim() === "Refresh events")).toBe(false);
+    await click(button("Refresh now"));
+    expect(actions.refreshConnectedCalendarAccount).toHaveBeenCalledExactlyOnceWith(connection.connectionId, expect.any(AbortSignal));
+  });
   function button(text: string) {
     const found = [...document.querySelectorAll<HTMLButtonElement>("button")].find((entry) => entry.textContent?.trim() === text);
     if (!found) throw new Error(`Missing button: ${text}`);
@@ -253,7 +259,7 @@ describe("Calendar manager and event form", () => {
     await click(button("Cancel"));
     actions.updateConnectedCalendar.mockImplementationOnce(async (...args: Parameters<typeof commitConnectedSettings>) => {
       const saved = await commitConnectedSettings(...args);
-      publishManagement({ ...snapshot.calendarWorkspace.connectionManagement, error: "Settings saved, but events could not be refreshed. Try Refresh events." });
+      publishManagement({ ...snapshot.calendarWorkspace.connectionManagement, error: "Settings saved, but events could not be refreshed. Try Refresh now." });
       return saved;
     });
     await setAgentAccess("Work", "none"); await click(button("Update"));
