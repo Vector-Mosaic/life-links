@@ -183,11 +183,12 @@ describe("Calendar page-bound agent tools", () => {
     });
     const catalog = createLifeLinksAgentToolCatalog(inertController);
     expect(catalog.map((tool) => tool.name)).toEqual(LIFE_LINKS_PAGE_TOOL_NAMES);
-    const origin = "https://life-links-api-production-1398.up.railway.app";
-    const descriptors = catalog.map(({ name, title, description, inputSchema, annotations }) => ({
-      name, title, description, inputSchema, annotations, origin, pageUrl: `${origin}/calendar`
-    }));
-    expect(new TextEncoder().encode(JSON.stringify(descriptors)).byteLength).toBeLessThanOrEqual(65_536 - 8_192);
+    for (const origin of ["https://lifelinks.vmosaic.com", "https://life-links-api-production-1398.up.railway.app"]) {
+      const descriptors = catalog.map(({ name, title, description, inputSchema, annotations }) => ({
+        name, title, description, inputSchema, annotations, origin, pageUrl: `${origin}/calendar`
+      }));
+      expect(new TextEncoder().encode(JSON.stringify(descriptors)).byteLength).toBeLessThanOrEqual(65_536 - 8_192);
+    }
   });
 
   it("admits explicit provider tool shapes without weakening native shapes or accepting side-effect fields", () => {

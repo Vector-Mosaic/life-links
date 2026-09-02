@@ -2525,7 +2525,7 @@
       "get": {
         "operationId": "openLifeLinkQrPage",
         "summary": "Open the stable browser page for a QR link",
-        "description": "Returns the Life Links browser application shell. The browser application resolves viewer-filtered QR state through `GET /api/qr/{qrId}`.",
+        "description": "Returns the Life Links browser application shell. The browser application resolves viewer-filtered QR state through `GET /api/qr/{qrId}`. After the configured challenge-host cutover, HTML navigation on the explicitly retained Railway hostname redirects to the canonical HTTPS origin with the same path and query. QR identity, API behavior and viewer filtering remain unchanged; browser sessions remain host-only.",
         "tags": [
           "browser"
         ],
@@ -2549,6 +2549,24 @@
         "responses": {
           "200": {
             "$ref": "#/components/responses/BrowserPageOk"
+          },
+          "307": {
+            "description": "Temporary, non-cached browser navigation redirect from the explicitly retained challenge hostname to https://lifelinks.vmosaic.com. API and asset requests are not redirected.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Location": {
+                "description": "Canonical HTTPS origin with the original browser path and query.",
+                "schema": { "type": "string", "format": "uri" }
+              },
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            },
+            "content": {
+              "text/html": { "schema": { "type": "string" } }
+            }
           },
           "500": {
             "$ref": "#/components/responses/InternalError"

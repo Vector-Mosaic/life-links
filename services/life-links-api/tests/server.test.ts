@@ -2260,6 +2260,87 @@ describe("Life Links API", () => {
     expect(response.headers["origin-agent-cluster"]).not.toBe("?0");
   });
 
+  it("redirects only retained Railway browser navigation to the canonical hostname", async () => {
+    const origin = "https://lifelinks.vmosaic.com";
+    const previousHost = "life-links-api-production-1398.up.railway.app";
+    const env = { APP_ENV: "webmcp-challenge", AUTO_SEED: "false", QR_BASE_URL: origin,
+      ALLOWED_ORIGINS: `https://${previousHost}`, BUILD_SHA: "a".repeat(40),
+      CANONICAL_SOURCE_SHA: "b".repeat(40), SOURCE_TREE_SHA256: "c".repeat(64), TRUST_PROXY: "true" };
+    const hosted = await createSeededAgent({ env });
+    for (const url of ["/", "/calendar?view=week&date=2026-09-02", "/qr/LL-DEMO-00002?from=label",
+      "/life-links/competition-mini-pump-patch-kit", "//foreign.example/calendar?return=%2Fcalendar"]) {
+      const response = await request(hosted.app).get(url).set("Host", previousHost)
+        .set("X-Forwarded-Proto", "https").set("Accept", "text/html");
+      expect(response.status, url).toBe(307);
+      expect(response.headers.location).toBe(`${origin}${url}`);
+      expect(new URL(response.headers.location).origin).toBe(origin);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(response.headers["set-cookie"]).toBeUndefined();
+    }
+    const head = await request(hosted.app).head("/qr/LL-DEMO-00002").set("Host", previousHost)
+      .set("X-Forwarded-Proto", "https").set("Accept", "text/html");
+    expect(head.status).toBe(307);
+    expect(head.headers.location).toBe(`${origin}/qr/LL-DEMO-00002`);
+
+    for (const url of ["/healthz", "/readyz", "/version", "/api/config", "/api/qr/LL-DEMO-00002",
+      "/api/calendar-providers/google/callback?code=synthetic", "/api/calendar-providers/microsoft/callback",
+      "/api", "/assets/missing.js", "/assets/missing", "/favicon.ico"]) {
+      const response = await request(hosted.app).get(url).set("Host", previousHost)
+        .set("X-Forwarded-Proto", "https").set("Accept", "text/html");
+      expect(response.headers.location, url).toBeUndefined();
+      expect(response.status, url).not.toBe(307);
+    }
+    for (const [host, forwardedHost, protocol, accept] of [
+      ["lifelinks.vmosaic.com", previousHost, "https", "text/html"],
+      ["foreign.example", previousHost, "https", "text/html"],
+      [previousHost, "foreign.example", "http", "text/html"],
+      [previousHost, "foreign.example", "https", "application/json"],
+      [previousHost, "foreign.example", "https", "text/html;q=0,application/json"]
+    ]) {
+      const response = await request(hosted.app).get("/calendar").set("Host", host)
+        .set("X-Forwarded-Host", forwardedHost).set("X-Forwarded-Proto", protocol).set("Accept", accept);
+      expect(response.headers.location).toBeUndefined();
+    }
+    const mutation = await request(hosted.app).post("/calendar").set("Host", previousHost)
+      .set("X-Forwarded-Proto", "https").set("Origin", origin).set("Accept", "text/html");
+    expect(mutation.status).toBe(404);
+    expect(mutation.headers.location).toBeUndefined();
+    const unapproved = await createSeededAgent({ env: { ...env, ALLOWED_ORIGINS: origin } });
+    expect((await request(unapproved.app).get("/calendar").set("Host", previousHost)
+      .set("X-Forwarded-Proto", "https").set("Accept", "text/html")).headers.location).toBeUndefined();
+  });
+
+  it("uses the canonical hostname for new QR URLs without changing existing records or session boundaries", async () => {
+    const origin = "https://lifelinks.vmosaic.com";
+    const previousOrigin = "https://life-links-api-production-1398.up.railway.app";
+    const store = new InMemoryLifeLinksStore();
+    await store.seedDemo(DEMO_PASSWORD, previousOrigin);
+    const before = await store.getQrState("LL-DEMO-00002", null);
+    const config = readConfig({ APP_ENV: "webmcp-challenge", LIFE_LINKS_STORE: "memory", AUTO_SEED: "false",
+      SESSION_SECRET: "canonical-host-test-secret", QR_BASE_URL: origin, ALLOWED_ORIGINS: previousOrigin,
+      BUILD_SHA: "a".repeat(40), CANONICAL_SOURCE_SHA: "b".repeat(40), SOURCE_TREE_SHA256: "c".repeat(64) });
+    expect(config.allowedOrigins).toEqual([previousOrigin, origin]);
+    const app = createLifeLinksApp({ store, config, logger: createLogger("life_links_test", { env: "ci", sink: () => undefined }) });
+    expect((await request(app).get("/api/config")).body.qrBaseUrl).toBe(origin);
+    const login = await request(app).post("/api/auth/login").set("Origin", origin)
+      .send({ email: "owner@life-links.test", password: DEMO_PASSWORD });
+    expect(login.status).toBe(200);
+    const setCookie = login.headers["set-cookie"][0];
+    expect(setCookie).toContain("Secure");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("SameSite=Lax");
+    expect(setCookie).not.toMatch(/Domain=/i);
+    const batch = await request(app).post("/api/qr-batches").set("Origin", origin)
+      .set("Cookie", setCookie.split(";")[0]).send({ count: 1 });
+    expect(batch.status).toBe(201);
+    expect(batch.body.qrCodes[0].url).toBe(`${origin}/qr/${batch.body.qrCodes[0].id}`);
+    expect(await store.getQrState("LL-DEMO-00002", null)).toEqual(before);
+    const forbidden = await request(app).post("/api/auth/login").set("Origin", "https://other.vmosaic.com")
+      .send({ email: "owner@life-links.test", password: DEMO_PASSWORD });
+    expect(forbidden.status).toBe(403);
+    expect(forbidden.body.error).toBe("origin_forbidden");
+  });
+
   it("rejects cross-site mutating requests when origin checks are enabled", async () => {
     const events: LogEvent[] = [];
     const guarded = await createSeededAgent({

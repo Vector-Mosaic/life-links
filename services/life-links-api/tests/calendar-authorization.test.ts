@@ -92,14 +92,15 @@ describe("Google authorization through the shared Calendar service", () => {
       LIFE_LINKS_GOOGLE_CLIENT_ID: "invalid", LIFE_LINKS_GOOGLE_REDIRECT_URI: "invalid" }).googleCalendar).toBeUndefined();
     expect(() => readConfig({ NODE_ENV: "test", LIFE_LINKS_GOOGLE_CALENDAR_ENABLED: "true" })).toThrow(/PostgreSQL/);
     const env = { NODE_ENV: "test", DATABASE_URL: "postgresql://synthetic.invalid/test", LIFE_LINKS_STORE: "postgres",
-      QR_BASE_URL: "https://life-links.example", LIFE_LINKS_GOOGLE_CALENDAR_ENABLED: "true",
+      QR_BASE_URL: "https://lifelinks.vmosaic.com", LIFE_LINKS_GOOGLE_CALENDAR_ENABLED: "true",
       LIFE_LINKS_GOOGLE_CLIENT_ID: "synthetic-client.apps.googleusercontent.com", LIFE_LINKS_GOOGLE_CLIENT_SECRET: "synthetic-private-client-secret",
       LIFE_LINKS_CALENDAR_ENCRYPTION_KEY: Buffer.alloc(32, 3).toString("base64"),
-      LIFE_LINKS_GOOGLE_REDIRECT_URI: "https://life-links.example/api/calendar-providers/google/callback" };
+      LIFE_LINKS_GOOGLE_REDIRECT_URI: "https://lifelinks.vmosaic.com/api/calendar-providers/google/callback" };
     expect(readConfig(env).googleCalendar).toMatchObject({ clientId: env.LIFE_LINKS_GOOGLE_CLIENT_ID,
       redirectUri: env.LIFE_LINKS_GOOGLE_REDIRECT_URI });
     expect(readConfig(env).microsoftCalendar).toBeUndefined();
-    for (const redirect of ["http://life-links.example/api/calendar-providers/google/callback",
+    for (const redirect of ["http://lifelinks.vmosaic.com/api/calendar-providers/google/callback",
+      "https://life-links-api-production-1398.up.railway.app/api/calendar-providers/google/callback",
       "https://other.example/api/calendar-providers/google/callback", "https://life-links.example/api/calendar-providers/microsoft/callback",
       `${env.LIFE_LINKS_GOOGLE_REDIRECT_URI}?next=foreign`, `${env.LIFE_LINKS_GOOGLE_REDIRECT_URI}#fragment`]) {
       expect(() => readConfig({ ...env, LIFE_LINKS_GOOGLE_REDIRECT_URI: redirect })).toThrow(/callback/);
@@ -288,13 +289,14 @@ describe("Calendar authorization and private MSAL cache", () => {
     expect(readConfig({ NODE_ENV: "test" }).microsoftCalendar).toBeUndefined();
     expect(() => readConfig({ NODE_ENV: "test", LIFE_LINKS_MICROSOFT_CALENDAR_ENABLED: "true" })).toThrow(/Postgres|PostgreSQL/);
     const env = { NODE_ENV: "test", DATABASE_URL: "postgresql://synthetic.invalid/test", LIFE_LINKS_STORE: "postgres",
-      QR_BASE_URL: "https://life-links.example", LIFE_LINKS_MICROSOFT_CALENDAR_ENABLED: "true",
+      QR_BASE_URL: "https://lifelinks.vmosaic.com", LIFE_LINKS_MICROSOFT_CALENDAR_ENABLED: "true",
       LIFE_LINKS_MICROSOFT_CLIENT_ID: "11111111-1111-4111-8111-111111111111", LIFE_LINKS_MICROSOFT_CERTIFICATE_SHA256: "a".repeat(64),
       LIFE_LINKS_MICROSOFT_PRIVATE_KEY_BASE64: Buffer.from("-----BEGIN PRIVATE KEY-----\nsynthetic-test-only").toString("base64"),
       LIFE_LINKS_CALENDAR_ENCRYPTION_KEY: Buffer.alloc(32, 3).toString("base64"),
-      LIFE_LINKS_MICROSOFT_REDIRECT_URI: "https://life-links.example/api/calendar-providers/microsoft/callback" };
+      LIFE_LINKS_MICROSOFT_REDIRECT_URI: "https://lifelinks.vmosaic.com/api/calendar-providers/microsoft/callback" };
     expect(readConfig(env).microsoftCalendar?.clientId).toBe(env.LIFE_LINKS_MICROSOFT_CLIENT_ID);
-    for (const redirect of ["http://life-links.example/api/calendar-providers/microsoft/callback",
+    for (const redirect of ["http://lifelinks.vmosaic.com/api/calendar-providers/microsoft/callback",
+      "https://life-links-api-production-1398.up.railway.app/api/calendar-providers/microsoft/callback",
       "https://other.example/api/calendar-providers/microsoft/callback", `${env.LIFE_LINKS_MICROSOFT_REDIRECT_URI}?next=foreign`]) {
       expect(() => readConfig({ ...env, LIFE_LINKS_MICROSOFT_REDIRECT_URI: redirect })).toThrow(/callback/);
     }

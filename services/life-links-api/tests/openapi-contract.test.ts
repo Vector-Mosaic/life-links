@@ -562,6 +562,12 @@ describe("Life Links OpenAPI v1", () => {
       expect(publishedShapes, `undocumented client operation ${clientOperation}`).toContain(operationShape(clientOperation));
     }
     expect(operations.has("GET /qr/{qrId}")).toBe(true);
+    const qrResponses = objectValue(operations.get("GET /qr/{qrId}")?.responses, "QR browser responses");
+    expect(qrResponses["200"]).toEqual({ $ref: "#/components/responses/BrowserPageOk" });
+    expect(qrResponses["307"]).toMatchObject({ headers: {
+      Location: { schema: { type: "string", format: "uri" } },
+      "Cache-Control": { schema: { type: "string", const: "no-store" } }
+    } });
   });
 
   it("publishes the canonical authentication, browser-origin, and response-envelope boundaries", () => {

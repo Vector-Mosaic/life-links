@@ -244,6 +244,19 @@ qualification.
 `webmcp-field-ledger-family-v3` fixture; a predecessor runtime identity is not
 successor qualification.
 
+The canonical public address is `https://lifelinks.vmosaic.com`, on the same
+isolated Railway application and database. `QR_BASE_URL` controls newly issued
+QR URLs and the Microsoft notification callback. Both Calendar OAuth callback
+settings must use that exact HTTPS origin and remain registered with their
+providers. `ALLOWED_ORIGINS` explicitly retains the former Railway origin for
+existing-link continuity; its HTML page and QR navigation redirects to the
+canonical origin without changing the path or query. API/health requests and
+assets are not redirected. Existing stored/printed QR identities and links are
+not rewritten, and no data or Calendar credentials are reset for a hostname
+change. Session cookies remain host-only, so sign in once on the new hostname
+before connecting a Calendar. The local defaults above remain local; independent
+deployments use their own explicitly registered HTTPS origin.
+
 ## External calendar setup and support status
 
 Outlook uses Life Links' own Microsoft application, certificate-backed MSAL

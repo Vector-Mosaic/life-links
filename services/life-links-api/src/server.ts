@@ -2124,6 +2124,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
 
   app.use(express.static(config.staticDistPath, { fallthrough: true, index: false }));
   app.get(/^\/(?!api\/).*/, (request, response, next) => {
+    if (redirectPreviousChallengeBrowserEntry(request, response, config)) return;
     sendClientApp(request, response, next, config.staticDistPath);
   });
 
@@ -3279,6 +3280,25 @@ function agentConnectionForUser(user: StoredUser | undefined) {
     connectedAt: user?.agentConnectedAt ?? null,
     toolCatalogId: user?.agentToolCatalogId ?? null
   };
+}
+
+function redirectPreviousChallengeBrowserEntry(request: Request, response: Response, config: LifeLinksConfig): boolean {
+  const previousOrigin = "https://life-links-api-production-1398.up.railway.app";
+  // This is the existing challenge browser's hostname cutover, not a general
+  // redirect or proxy-host policy. APIs, callbacks, health and served assets
+  // have already terminated before the SPA fallback reaches this boundary.
+  if (config.env !== "webmcp-challenge" || config.qrBaseUrl !== "https://lifelinks.vmosaic.com"
+    || !config.allowedOrigins.includes(previousOrigin)
+    || !["GET", "HEAD"].includes(request.method) || request.protocol !== "https"
+    || request.get("host")?.toLowerCase() !== new URL(previousOrigin).host
+    || !/(?:^|,)\s*text\/html(?:\s*;|,|$)/i.test(request.get("accept") ?? "")
+    || !request.accepts("html")
+    || /^\/(?:api|assets)(?:\/|$)/.test(request.path) || path.extname(request.path)) return false;
+  // Concatenation keeps even a //-prefixed path on the fixed canonical host;
+  // URL resolution against the request must never select a foreign authority.
+  response.setHeader("Cache-Control", "no-store");
+  response.redirect(307, `${config.qrBaseUrl}${request.originalUrl}`);
+  return true;
 }
 
 function sendClientApp(_request: Request, response: Response, _next: NextFunction, staticDistPath: string) {
