@@ -1460,7 +1460,9 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     if (!inspected.ok) return inspected;
     const ownerId = this.agentCalendarOwnerId();
     if (!ownerId) return { ok: false as const, code: "calendar_event_unavailable" as const };
-    if (inspected.detail.currentRevision.id !== input.expectedCurrentRevisionId) {
+    // A committed request may have lost its response. Only its exact revision ID is eligible for store-validated replay.
+    if (inspected.detail.currentRevision.id !== input.expectedCurrentRevisionId &&
+        inspected.detail.currentRevision.id !== input.revisionId) {
       return { ok: false as const, code: "stale_calendar_event" as const };
     }
     if (!sameCalendarEditTarget(input.target, inspected.detail.event)) {
@@ -1476,7 +1478,13 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         description: input.patch.description ?? current.description,
         location: input.patch.location ?? current.location,
         status: input.patch.status ?? current.status,
-        span: input.patch.span ?? current.span,
+        // Stored zoned spans include derived instants; commands carry only the authoritative local time and zone.
+        span: input.patch.span ?? (current.span.kind === "all_day" ? {
+          kind: "all_day", startDate: current.span.startDate, endDateExclusive: current.span.endDateExclusive
+        } : {
+          kind: "zoned", startLocalDateTime: current.span.startLocalDateTime,
+          endLocalDateTime: current.span.endLocalDateTime, timeZone: current.span.timeZone
+        }),
         recurrence: input.patch.recurrence === undefined ? current.recurrence : input.patch.recurrence,
         subjectLinks: input.patch.subjectLinks ? [...input.patch.subjectLinks] : current.subjectLinks
       }, signal);

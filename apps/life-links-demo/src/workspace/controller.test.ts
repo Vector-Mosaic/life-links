@@ -1,14 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CalendarDomainError,
   createLinkBodyDocFromPlainText,
+  createDemoSeedData,
   createCanonicalActivity,
   createCanonicalRoutine,
   createCanonicalRoutineGroup,
   createCanonicalRoutineSchedule,
+  normalizeCalendarEventSpan,
+  reviseCanonicalCalendarEvent,
   summarizeLifeLink,
   type CollectionRecord,
   type CollectionSectionRecord,
   type CalendarRecord,
+  type CalendarEventSpanInput,
   type LifeLinkDetail,
   type LifeLinkChangePreview,
   type LifeLinkRecord,
@@ -34,6 +39,7 @@ import {
 } from "./routes";
 import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedImageFixture, attachmentTranscriptFixture } from "../attachmentImage.testFixtures";
 import { validateAttachmentImageResult } from "../attachmentImage";
+import { InMemoryLifeLinksStore } from "../../../../services/life-links-api/src/store";
 
 const owner = {
   id: "owner-1",
@@ -262,6 +268,143 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.getCalendarEvent).toHaveBeenCalledWith(nativeCalendarEvent.event.id);
     expect(api.listLinks).not.toHaveBeenCalled();
     expect(api.listLifeLinks).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it.each<CalendarEventSpanInput>([
+    { kind: "all_day", startDate: "2026-08-20", endDateExclusive: "2026-08-21" },
+    {
+      kind: "zoned", startLocalDateTime: "2026-08-20T09:00", endLocalDateTime: "2026-08-20T10:00",
+      timeZone: "America/New_York"
+    }
+  ])("revises a $kind Calendar event through canonical validation without submitting derived timing", async (span) => {
+    const api = fakeApi();
+    let persisted: CalendarEventDetail = {
+      ...structuredClone(nativeCalendarEvent),
+      currentRevision: { ...structuredClone(nativeCalendarEvent.currentRevision), span: normalizeCalendarEventSpan(span) }
+    };
+    const original = structuredClone(persisted);
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.getCalendarEvent.mockImplementation(async () => ({ calendarEvent: structuredClone(persisted), latestTombstone: null }));
+    api.updateCalendarEvent.mockImplementation(async (eventId, input) => {
+      // Exercise the same strict input normalizer and revision constructor used by both API stores.
+      const { target: _target, ...command } = input;
+      persisted = reviseCanonicalCalendarEvent(persisted.event, persisted.currentRevision, {
+        ...command,
+        revisionId: input.revisionId!,
+        ownerId: owner.id,
+        eventId,
+        createdAt: "2026-09-01T16:00:00.000Z"
+      });
+      return { calendarEvent: structuredClone(persisted), latestTombstone: null };
+    });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+    await controller.connectAgent();
+    const revisionId = "calendar-event-revision-44444444-4444-4444-8444-444444444444";
+    const target = { scope: "event" as const, eventId: persisted.event.id };
+
+    const result = await controller.agentUpdateCalendarEvent({
+      eventId: persisted.event.id, expectedCurrentRevisionId: persisted.currentRevision.id,
+      revisionId, target, patch: { title: "Updated appointment" }
+    });
+
+    expect(result).toMatchObject({ ok: true, detail: { currentRevision: { id: revisionId, title: "Updated appointment" } } });
+    expect(api.updateCalendarEvent.mock.calls[0][1].span).toEqual(span);
+    expect(persisted.currentRevision.span).toEqual(original.currentRevision.span);
+    expect(persisted.currentRevision).toMatchObject({
+      description: original.currentRevision.description, location: original.currentRevision.location,
+      status: original.currentRevision.status, recurrence: original.currentRevision.recurrence,
+      subjectLinks: original.currentRevision.subjectLinks
+    });
+    expect(controller.getSnapshot().calendarWorkspace.selectedEvent).toEqual(persisted);
+
+    const replacementSpan: CalendarEventSpanInput = {
+      kind: "zoned", startLocalDateTime: "2026-11-04T09:00", endLocalDateTime: "2026-11-04T10:00",
+      timeZone: "America/New_York"
+    };
+    await expect(controller.agentUpdateCalendarEvent({
+      eventId: persisted.event.id, expectedCurrentRevisionId: revisionId,
+      revisionId: "calendar-event-revision-55555555-5555-4555-8555-555555555555",
+      target, patch: { span: replacementSpan }
+    })).resolves.toMatchObject({ ok: true });
+    expect(api.updateCalendarEvent.mock.calls[1][1].span).toEqual(replacementSpan);
+    expect(persisted.currentRevision.span).toEqual(normalizeCalendarEventSpan(replacementSpan));
+    expect(persisted.currentRevision.title).toBe("Updated appointment");
+    controller.dispose();
+  });
+
+  it("replays a committed Calendar update after a lost response through the store and rejects changed or stale retries", async () => {
+    const api = fakeApi();
+    const store = new InMemoryLifeLinksStore();
+    await store.seedDemo("synthetic-calendar-controller-test", "https://example.test");
+    const testOwner = createDemoSeedData(rootFixture.createdAt).users[0];
+    const calendar = await store.createCalendar({
+      id: nativeCalendar.id, ownerId: testOwner.id, title: nativeCalendar.title,
+      timeZone: nativeCalendar.timeZone, createdAt: rootFixture.createdAt
+    });
+    const original = await store.createCalendarEvent({
+      id: nativeCalendarEvent.event.id, ownerId: testOwner.id, calendarId: calendar.id,
+      revisionId: nativeCalendarEvent.currentRevision.id, lineage: { kind: "standalone" },
+      title: "Original appointment", span: {
+        kind: "zoned", startLocalDateTime: "2026-08-20T09:00", endLocalDateTime: "2026-08-20T10:00",
+        timeZone: "America/New_York"
+      }, createdAt: rootFixture.createdAt
+    });
+    api.getMe.mockResolvedValue({ user: testOwner, qrBaseUrl: "https://example.test", agentConnection: connectedAgentConnection });
+    api.listCalendars.mockResolvedValue({ calendars: [calendar], nextCursor: null, truncated: false });
+    api.getCalendarEvent.mockImplementation(async (eventId) => ({
+      calendarEvent: (await store.getCalendarEvent(testOwner.id, eventId))!, latestTombstone: null
+    }));
+    let loseFirstResponse = true;
+    api.updateCalendarEvent.mockImplementation(async (eventId, input) => {
+      const { target: _target, ...command } = input;
+      let calendarEvent: CalendarEventDetail | null;
+      try {
+        calendarEvent = await store.reviseCalendarEvent(testOwner.id, {
+          ...command, revisionId: input.revisionId!, ownerId: testOwner.id, eventId,
+          createdAt: "2026-09-01T16:00:00.000Z"
+        });
+      } catch (error) {
+        if (error instanceof CalendarDomainError) throw new ApiError(409, error.code, {}, { reason: error.reason });
+        throw error;
+      }
+      if (loseFirstResponse) {
+        loseFirstResponse = false;
+        throw new Error("connection lost after Calendar revision committed");
+      }
+      return { calendarEvent: calendarEvent!, latestTombstone: null };
+    });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+    const request = {
+      eventId: original.event.id, expectedCurrentRevisionId: original.currentRevision.id,
+      revisionId: "calendar-event-revision-66666666-6666-4666-8666-666666666666",
+      target: { scope: "event" as const, eventId: original.event.id }, patch: { title: "Revised appointment" }
+    };
+
+    await expect(controller.agentUpdateCalendarEvent(request)).resolves.toEqual({ ok: false, code: "effect_not_applied" });
+    expect((await store.getCalendarEvent(testOwner.id, original.event.id))?.currentRevision.id).toBe(request.revisionId);
+    await expect(controller.agentUpdateCalendarEvent(request)).resolves.toMatchObject({
+      ok: true, detail: { currentRevision: { id: request.revisionId, revisionNumber: 2, title: "Revised appointment" } }
+    });
+    expect(api.updateCalendarEvent.mock.calls[1][1]).toEqual(api.updateCalendarEvent.mock.calls[0][1]);
+
+    await expect(controller.agentUpdateCalendarEvent({ ...request, patch: { title: "Different retry payload" } }))
+      .resolves.toEqual({ ok: false, code: "stale_calendar_event" });
+    expect((await store.getCalendarEvent(testOwner.id, original.event.id))?.currentRevision)
+      .toMatchObject({ id: request.revisionId, revisionNumber: 2, title: "Revised appointment" });
+    expect(api.updateCalendarEvent).toHaveBeenCalledTimes(3);
+
+    const { target: _target, ...committedCommand } = api.updateCalendarEvent.mock.calls[1][1];
+    await store.reviseCalendarEvent(testOwner.id, {
+      ...committedCommand, ownerId: testOwner.id, eventId: original.event.id,
+      expectedCurrentRevisionId: request.revisionId,
+      revisionId: "calendar-event-revision-77777777-7777-4777-8777-777777777777",
+      title: "Newer human revision", createdAt: "2026-09-01T16:01:00.000Z"
+    });
+    await expect(controller.agentUpdateCalendarEvent(request)).resolves.toEqual({ ok: false, code: "stale_calendar_event" });
+    expect(api.updateCalendarEvent).toHaveBeenCalledTimes(3);
     controller.dispose();
   });
 
