@@ -24,6 +24,7 @@ import {
   type ProviderCalendarEventDeleteInput,
   type ProviderCalendarEventDeletionResponse,
   type CalendarConnectedCalendarPatch,
+  type CalendarConnectionSelectionInput,
   type CalendarEventEditTargetInput,
   type CalendarEventRecord,
   type CalendarPatch,
@@ -1159,7 +1160,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const authorizationId = returnParams.get("calendarAuthorization");
     const authorizationError = returnParams.get("calendarConnectionError");
     if (authorizationId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authorizationId)) {
-      this.updateCalendarWorkspace({ connectionFlow: { authorizationId, connectionId: null, discovery: null, loading: false, error: "", feedback: "Calendar authorization returned. Choose the exact calendars to connect." } });
+      this.updateCalendarWorkspace({ connectionFlow: { authorizationId, connectionId: null, discovery: null, loading: false, error: "", feedback: "Sign-in complete. Choose calendars and agent access to finish connecting." } });
     } else if (authorizationError) {
       const feedback = authorizationError === "cancelled" ? "Calendar connection was canceled. No calendars were added."
         : authorizationError === "session_expired" ? "The Calendar authorization session expired. Start Connect again."
@@ -1481,6 +1482,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async loadCalendarConnectionDiscovery(connectionId?: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const sameOwner = this.captureCalendarOwner();
     const revision = ++this.calendarConnectionFlowRevision;
     const authorizationId = connectionId ? null : this.snapshot.calendarWorkspace.connectionFlow.authorizationId;
@@ -1492,31 +1494,47 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         : await this.api.getCalendarAuthorization(authorizationId!, signal);
       signal?.throwIfAborted();
       if (sameOwner() && revision === this.calendarConnectionFlowRevision) {
-        this.updateCalendarWorkspace({ connectionFlow: { authorizationId, connectionId: connectionId ?? null, discovery, loading: false, error: "", feedback: "Newly linked calendars start with no agent access." } });
+        this.updateCalendarWorkspace({ connectionFlow: { authorizationId, connectionId: connectionId ?? null, discovery, loading: false, error: "", feedback: "Choose calendars and the access you want your connected agent to have." } });
       }
     } catch (error) {
-      if (sameOwner() && revision === this.calendarConnectionFlowRevision && !signal?.aborted) {
-        this.updateCalendarWorkspace((current) => ({ connectionFlow: { ...current.connectionFlow, loading: false, error: messageFromError(error) } }));
+      if (sameOwner() && revision === this.calendarConnectionFlowRevision) {
+        this.updateCalendarWorkspace((current) => ({ connectionFlow: { ...current.connectionFlow, loading: false, error: signal?.aborted ? "" : messageFromError(error) } }));
       }
       if (!signal?.aborted) throw error;
     }
   }
 
-  async completeCalendarConnectionSelection(selectedCalendarIds: string[], signal?: AbortSignal): Promise<void> {
+  async completeCalendarConnectionSelection(selectedCalendarIds: string[], signal?: AbortSignal, agentAccessByCalendarId?: CalendarConnectionSelectionInput["agentAccessByCalendarId"]): Promise<void> {
+    signal?.throwIfAborted();
     const sameOwner = this.captureCalendarOwner();
+    const flowRevision = this.calendarConnectionFlowRevision;
     const flow = this.snapshot.calendarWorkspace.connectionFlow;
     if (!flow.discovery || (!flow.authorizationId && !flow.connectionId)) throw new Error("Load the available calendars first.");
-    const available = new Set(flow.discovery.calendars.filter((calendar) => calendar.capabilities.read).map((calendar) => calendar.providerCalendarId));
-    if (!selectedCalendarIds.length || new Set(selectedCalendarIds).size !== selectedCalendarIds.length || selectedCalendarIds.some((id) => !available.has(id))) {
+    const available = new Map(flow.discovery.calendars.filter((calendar) => calendar.capabilities.read).map((calendar) => [calendar.providerCalendarId, calendar]));
+    if (!selectedCalendarIds.length || selectedCalendarIds.length > 50 || new Set(selectedCalendarIds).size !== selectedCalendarIds.length || selectedCalendarIds.some((id) => !available.has(id))) {
       throw new Error("Choose one or more exact available calendars.");
     }
-    if (flow.authorizationId) await this.api.completeCalendarAuthorization(flow.authorizationId, selectedCalendarIds, signal);
-    else await this.api.selectConnectedCalendars(flow.connectionId!, selectedCalendarIds, signal);
+    const ids = [...selectedCalendarIds];
+    if (agentAccessByCalendarId !== undefined) {
+      if (!agentAccessByCalendarId || typeof agentAccessByCalendarId !== "object" || Array.isArray(agentAccessByCalendarId)
+        || Object.keys(agentAccessByCalendarId).length !== ids.length
+        || Object.entries(agentAccessByCalendarId).some(([id, access]) => {
+          const calendar = available.get(id);
+          return !ids.includes(id) || !calendar || !["none", "read", "write"].includes(access)
+            || (access === "write" && !calendar.capabilities.create && !calendar.capabilities.update && !calendar.capabilities.delete);
+        })) throw new Error("Choose an available agent access level for each selected calendar.");
+      const access = { ...agentAccessByCalendarId };
+      if (flow.authorizationId) await this.api.completeCalendarAuthorization(flow.authorizationId, ids, signal, access);
+      else await this.api.selectConnectedCalendars(flow.connectionId!, ids, signal, access);
+    } else if (flow.authorizationId) await this.api.completeCalendarAuthorization(flow.authorizationId, ids, signal);
+    else await this.api.selectConnectedCalendars(flow.connectionId!, ids, signal);
     signal?.throwIfAborted();
-    if (!sameOwner()) return;
+    if (!sameOwner() || flowRevision !== this.calendarConnectionFlowRevision) return;
     ++this.calendarConnectionFlowRevision;
-    this.updateCalendarWorkspace({ connectionFlow: { authorizationId: null, connectionId: null, discovery: null, loading: false, error: "", feedback: "Selected calendars connected. New calendars have no agent access until you choose it below." } });
-    if (this.route.pathname().includes("calendarAuthorization=")) this.route.push("/calendar");
+    this.updateCalendarWorkspace({ connectionFlow: { authorizationId: null, connectionId: null, discovery: null, loading: false, error: "", feedback: agentAccessByCalendarId === undefined
+      ? "Selected calendars connected. New calendars have no agent access until you choose it in Manage calendars."
+      : "Selected calendars connected with your chosen agent access." } });
+    if (/calendarAuthorization=|calendarConnectionError=/.test(this.route.pathname())) this.route.push("/calendar");
     await this.loadCalendarWorkspace(signal);
     await this.loadCalendarConnections(signal);
     const range = this.snapshot.calendarWorkspace.range;
@@ -1531,7 +1549,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     signal?.throwIfAborted();
     if (!sameOwner()) return;
     this.updateCalendarWorkspace({ connectionFlow: { authorizationId: null, connectionId: null, discovery: null, loading: false, error: "", feedback: "Calendar selection canceled." } });
-    if (this.route.pathname().includes("calendarAuthorization=")) this.route.push("/calendar");
+    if (/calendarAuthorization=|calendarConnectionError=/.test(this.route.pathname())) this.route.push("/calendar");
   }
 
   async refreshConnectedCalendarAccount(connectionId: string, signal?: AbortSignal): Promise<void> {

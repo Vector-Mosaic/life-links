@@ -4,7 +4,7 @@ import { CalendarDomainError, type CalendarProviderAvailability } from "@life-li
 import { CalendarProviderGateway, CalendarProviderGatewayError, calendarProviderLocalCalendarId } from "./calendar-provider-gateway.js";
 import type { Logger } from "./logger.js";
 import { assertHumanCalendarActor } from "./store.js";
-import { CalendarAuthorizationError, calendarAuthorizationProvider, type CalendarAuthorizationService } from "./calendar-authorization.js";
+import { CalendarAuthorizationError, calendarAuthorizationProvider, readCalendarConnectionSelection, type CalendarAuthorizationService } from "./calendar-authorization.js";
 
 export const CALENDAR_PROVIDER_AVAILABILITY: readonly CalendarProviderAvailability[] = [
   { providerKey: "google", displayName: "Google Calendar", authorizationAvailable: false, reason: "authorization_not_configured" },
@@ -102,8 +102,8 @@ export function createCalendarConnectionRouter(deps: {
     response.json(await authorization().discover(ownerId, session(request), routeId(request.params.authorizationId)));
   }));
   router.post("/api/calendar-authorizations/:authorizationId/complete", deps.requireAuthenticated, route(async (request, response, ownerId) => {
-    if (!plainObject(request.body) || Object.keys(request.body).length !== 1) throw new CalendarAuthorizationError("calendar_selection_invalid");
-    response.json(await authorization().complete(ownerId, session(request), routeId(request.params.authorizationId), request.body.selectedCalendarIds));
+    const input = readCalendarConnectionSelection(request.body);
+    response.json(await authorization().complete(ownerId, session(request), routeId(request.params.authorizationId), input.selectedCalendarIds, input.agentAccessByCalendarId));
   }));
   router.delete("/api/calendar-authorizations/:authorizationId", deps.requireAuthenticated, route(async (request, response, ownerId) => {
     await authorization().cancel(ownerId, session(request), routeId(request.params.authorizationId));
@@ -116,18 +116,14 @@ export function createCalendarConnectionRouter(deps: {
   }));
   router.post("/api/calendar-connections/:connectionId/select", deps.requireAuthenticated, route(async (request, response, ownerId) => {
     const connectionId = routeId(request.params.connectionId);
-    const body = request.body;
-    if (!plainObject(body) || Object.keys(body).length !== 1 || !Array.isArray(body.selectedCalendarIds)
-      || !body.selectedCalendarIds.length || body.selectedCalendarIds.length > 50
-      || body.selectedCalendarIds.some((id: unknown) => typeof id !== "string")
-      || new Set(body.selectedCalendarIds).size !== body.selectedCalendarIds.length) throw new CalendarAuthorizationError("calendar_selection_invalid");
+    const body = readCalendarConnectionSelection(request.body);
     const discovery = await deps.gateway.discoverConnectionCalendars({ ownerId, connectionId });
     const calendars = body.selectedCalendarIds.map((id: string) => {
       const remote = discovery.calendars.find((calendar) => calendar.providerCalendarId === id);
       if (!remote) throw new CalendarAuthorizationError("calendar_selection_invalid");
       return { calendarId: calendarProviderLocalCalendarId(connectionId, id),
         providerCalendarId: id, title: remote.displayName, color: "#4f8fbd", timeZone: remote.timeZone ?? "UTC", isDefault: false,
-        visible: true, agentGrant: "none" as const };
+        visible: true, ...(body.agentAccessByCalendarId === undefined ? {} : { agentGrant: body.agentAccessByCalendarId[id] }) };
     });
     await deps.gateway.selectExternalCalendars({ ownerId, connectionId, calendars, initialWindow: authorization().initialWindow() });
     response.json({ connection: await deps.gateway.getConnection(ownerId, connectionId), calendars: await deps.gateway.listManagedCalendars(ownerId, connectionId) });

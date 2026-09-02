@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
-import { CalendarAuthorizationService } from "../src/calendar-authorization.js";
+import { CalendarAuthorizationService, readCalendarConnectionSelection } from "../src/calendar-authorization.js";
 import { CalendarSecretCipher, InMemoryCalendarSecretStore } from "../src/calendar-secret-store.js";
 import { calendarProviderCredentialHandle, calendarProviderLocalCalendarId, CalendarProviderGateway, InMemoryCalendarProviderStateStore } from "../src/calendar-provider-gateway.js";
 import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
@@ -156,7 +156,46 @@ describe("Google authorization through the shared Calendar service", () => {
     expect([...h.store.rows.values()].find((row) => row.purpose === "credential")?.expiresAt).toBeNull();
   });
 
-  it("reconnects only the same Google account without duplicating canonical calendar identity", async () => {
+  it("binds explicit per-calendar choices and never reapplies a completed grant after revocation", async () => {
+    const h = googleHarness(); const id = await h.authorized();
+    const grants = { "agent-tests": "write" as const, "not-selected": "read" as const };
+    const completed = await h.service.complete("owner-one", "session-one", id, Object.keys(grants), grants);
+    expect(completed.calendars.map((entry) => [entry.providerCalendarId, entry.calendar.agentAccess])).toEqual([
+      ["agent-tests", "write"], ["not-selected", "read"]
+    ]);
+    const selected = completed.calendars[0];
+    await h.gateway.setCalendarAgentGrant({ ownerId: "owner-one", connectionId: completed.connection.connectionId,
+      calendarId: selected.calendar.id, expectedUpdatedAt: selected.calendar.updatedAt, agentGrant: "none" });
+    const replay = await h.service.complete("owner-one", "session-one", id, ["not-selected", "agent-tests"], grants);
+    expect(replay.calendars[0].calendar.agentAccess).toBe("none");
+    expect(await h.gateway.listConnections("owner-one")).toHaveLength(1);
+    await expect(h.service.complete("owner-one", "session-one", id, Object.keys(grants), { ...grants, "agent-tests": "read" }))
+      .rejects.toThrow("calendar_selection_invalid");
+    await expect(h.service.complete("owner-one", "session-one", id, Object.keys(grants))).rejects.toThrow("calendar_selection_invalid");
+  });
+
+  it("rechecks provider capabilities before binding a permission selection or creating a connection", async () => {
+    const h = googleHarness(); const id = await h.authorized();
+    await h.service.discover("owner-one", "session-one", id);
+    const discover = h.adapter.discover.bind(h.adapter);
+    vi.spyOn(h.adapter, "discover").mockImplementation(async (input) => ({ ...(await discover(input)), calendars: [
+      { providerCalendarId: "agent-tests", displayName: "Now read only", capabilities: { read: true, create: false, update: false, delete: false } }
+    ] }));
+    await expect(h.service.complete("owner-one", "session-one", id, ["agent-tests"], { "agent-tests": "write" }))
+      .rejects.toMatchObject({ code: "invalid_input" });
+    expect(await h.gateway.listConnections("owner-one")).toEqual([]);
+    expect(h.cipher.open<{ selectedCalendarIds: unknown }>(h.store.rows.get(id)!).selectedCalendarIds).toBeNull();
+    const completed = await h.service.complete("owner-one", "session-one", id, ["agent-tests"], { "agent-tests": "read" });
+    expect(completed.calendars[0].calendar.agentAccess).toBe("read");
+  });
+
+  it.each([{}, { "agent-tests": "owner" }, { "agent-tests": "write", foreign: "read" }, null, [], "write"])(
+    "refuses malformed or nonexact permission maps before effects: %j", (agentAccessByCalendarId) => {
+      expect(() => readCalendarConnectionSelection({ selectedCalendarIds: ["agent-tests"], agentAccessByCalendarId }))
+        .toThrow("calendar_selection_invalid");
+    });
+
+  it.each([undefined, { "agent-tests": "write" as const }])("reconnects only the same Google account with the selected access %j", async (grants) => {
     const h = googleHarness(); const first = await h.service.complete("owner-one", "session-one", await h.authorized(), ["agent-tests"]);
     const connectionId = first.connection.connectionId;
     await expect(h.service.start("owner-one", "session-one", connectionId, "microsoft")).rejects.toThrow("authorization_failed");
@@ -180,13 +219,13 @@ describe("Google authorization through the shared Calendar service", () => {
     const started = await restarted.start("owner-one", "session-one", connectionId, "google");
     const id = await restarted.callback({ ownerId: "owner-one", sessionId: "session-one", provider: "google", code: "new-google-code",
       state: new URL(started.authorizationUrl).searchParams.get("state")! });
-    const result = await restarted.complete("owner-one", "session-one", id, ["agent-tests"]);
+    const result = await restarted.complete("owner-one", "session-one", id, ["agent-tests"], grants);
     expect(result.connection).toMatchObject({ connectionId, providerKey: "google-calendar", providerAccountId: "google-sub-one", status: "active" });
     expect(result.calendars[0].calendar.id).toBe(first.calendars[0].calendar.id);
-    expect(result.calendars[0].calendar.agentAccess).toBe("none");
+    expect(result.calendars[0].calendar.agentAccess).toBe(grants?.["agent-tests"] ?? "none");
     expect(first.calendars[0].calendar.timeZone).toBe("UTC");
     expect(result.calendars[0].calendar).toMatchObject({ ...first.calendars[0].calendar,
-      timeZone: "America/New_York", updatedAt: expect.any(String) });
+      timeZone: "America/New_York", agentAccess: grants?.["agent-tests"] ?? "none", updatedAt: expect.any(String) });
     expect(await gateway.listConnections("owner-one")).toHaveLength(1);
     expect((await h.providerState.getConnection(connectionId))?.credentialHandle).toBe(
       h.cipher.open<{ credentialId: string }>(h.store.rows.get(id)!).credentialId);
@@ -321,21 +360,26 @@ describe("Calendar authorization and private MSAL cache", () => {
       }
       return fetchChanges(input);
     });
-    await expect(service.complete("owner-one", "session-one", id, ["selected-a"])).rejects.toThrow("synthetic-selection-sync-failure");
+    const selectedGrants = { "selected-a": "write" as const };
+    await expect(service.complete("owner-one", "session-one", id, ["selected-a"], selectedGrants)).rejects.toThrow("synthetic-selection-sync-failure");
     const selectedId = calendarProviderLocalCalendarId(connectionId, "selected-a");
     expect((await providerState.listCalendars(connectionId)).map((entry) => entry.providerCalendarId)).toEqual(["existing", "selected-a"]);
     expect(await providerState.listProjections(connectionId, selectedId)).toHaveLength(0);
+    expect((await providerState.getCanonicalCalendar(selectedId))?.agentAccess).toBe("write");
+    expect((await providerState.getCanonicalCalendar(calendarProviderLocalCalendarId(connectionId, "existing")))?.agentAccess).toBe("none");
 
     // A fresh service must enforce the committed selection, not process-local state.
     const restarted = new CalendarAuthorizationService(h.store, h.cipher, h.auth, () => gateway, now);
     await expect(restarted.complete("owner-one", "session-one", id, ["selected-b"])).rejects.toThrow("calendar_selection_invalid");
+    await expect(restarted.complete("owner-one", "session-one", id, ["selected-a"], { "selected-a": "read" }))
+      .rejects.toThrow("calendar_selection_invalid");
     expect((await providerState.listCalendars(connectionId)).map((entry) => entry.providerCalendarId)).toEqual(["existing", "selected-a"]);
     if (resolution === "retry") {
-      const completed = await restarted.complete("owner-one", "session-one", id, ["selected-a"]);
+      const completed = await restarted.complete("owner-one", "session-one", id, ["selected-a"], selectedGrants);
       expect(completed.connection.status).toBe("active");
       expect(completed.calendars).toHaveLength(2);
       expect((await gateway.listProjections("owner-one", connectionId, selectedId)).map((entry) => entry.providerEventId)).toEqual(["event-a"]);
-      await expect(restarted.complete("owner-one", "session-one", id, ["selected-a"])).resolves.toEqual(completed);
+      await expect(restarted.complete("owner-one", "session-one", id, ["selected-a"], selectedGrants)).resolves.toEqual(completed);
       expect([...h.store.rows.values()].find((row) => row.purpose === "credential")?.expiresAt).toBeNull();
     } else {
       await restarted.cancel("owner-one", "session-one", id);

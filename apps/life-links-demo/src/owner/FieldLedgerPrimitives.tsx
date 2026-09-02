@@ -8,11 +8,11 @@ export function LifeLinksGlyph({ double = false }: { double?: boolean }) {
   return double ? <span className="ll-double-link" aria-hidden="true"><Link2 /><Link2 /></span> : <Link2 aria-hidden="true" />;
 }
 
-export function Dialog({ title, children, onClose, wide = false, closeLabel }: { title: string; children: ReactNode; onClose(): void; wide?: boolean; closeLabel?: string }) {
+export function Dialog({ title, children, onClose, wide = false, closeLabel, closeDisabled = false }: { title: string; children: ReactNode; onClose(): void; wide?: boolean; closeLabel?: string; closeDisabled?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const closeRef = useRef(onClose);
-  closeRef.current = onClose;
+  closeRef.current = closeDisabled ? () => undefined : onClose;
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     const frame = requestAnimationFrame(() => ref.current?.querySelector<HTMLElement>(focusable)?.focus());
@@ -29,9 +29,9 @@ export function Dialog({ title, children, onClose, wide = false, closeLabel }: {
     document.addEventListener("keydown", key, true);
     return () => { cancelAnimationFrame(frame); document.removeEventListener("keydown", key, true); previous?.focus(); };
   }, []);
-  return createPortal(<div className="ll-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+  return createPortal(<div className="ll-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeRef.current(); }}>
     <div ref={ref} className={`ll-dialog${wide ? " ll-dialog-wide" : ""}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
-      <header><h2 id={titleId}>{title}</h2><button className="ll-icon-button" aria-label={closeLabel ?? `Close ${title}`} title="Close" onClick={onClose}><X size={19} /></button></header>
+      <header><h2 id={titleId}>{title}</h2><button className="ll-icon-button" aria-label={closeLabel ?? `Close ${title}`} title="Close" disabled={closeDisabled} onClick={onClose}><X size={19} /></button></header>
       <div className="ll-dialog-body">{children}</div>
     </div>
   </div>, document.body);

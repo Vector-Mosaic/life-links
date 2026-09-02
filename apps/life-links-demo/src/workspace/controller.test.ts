@@ -2889,7 +2889,7 @@ describe("Outlook provider workspace", () => {
   it("uses the common Google discovery/selection/cancellation flow without changing agent permissions", async () => {
     const authorizationId = "11111111-1111-4111-8111-111111111111";
     const { api, controller, route } = await setup(`/calendar?calendarAuthorization=${authorizationId}`);
-    expect(controller.getSnapshot().calendarWorkspace.connectionFlow.feedback).toBe("Calendar authorization returned. Choose the exact calendars to connect.");
+    expect(controller.getSnapshot().calendarWorkspace.connectionFlow.feedback).toBe("Sign-in complete. Choose calendars and agent access to finish connecting.");
     api.getCalendarAuthorization.mockResolvedValue({ providerKey: "google", providerAccountId: "google-subject-exact",
       calendars: [{ providerCalendarId: "exact-calendar@group.calendar.google.com", displayName: "Agent Tests", isDefault: false, capabilities: binding.capabilities }] });
     await controller.loadCalendarConnectionDiscovery();
@@ -2915,11 +2915,80 @@ describe("Outlook provider workspace", () => {
     ["session_expired", "The Calendar authorization session expired. Start Connect again."],
     ["authorization_failed", "Calendar authorization could not be completed. Start Connect again."]
   ])("keeps %s callback feedback provider-neutral without starting another authorization", async (code, feedback) => {
-    const { api, controller } = await setup(`/calendar?calendarConnectionError=${code}`);
+    const { api, controller, route } = await setup(`/calendar?calendarConnectionError=${code}`);
     expect(controller.getSnapshot().calendarWorkspace.connectionFlow.error).toBe(feedback);
     expect(api.authorizeGoogleCalendar).not.toHaveBeenCalled();
     expect(api.authorizeMicrosoftCalendar).not.toHaveBeenCalled();
     expect(api.completeCalendarAuthorization).not.toHaveBeenCalled();
+    await controller.cancelCalendarConnectionSelection();
+    expect(controller.getSnapshot().calendarWorkspace.connectionFlow.error).toBe("");
+    expect(route.pathname()).toBe("/calendar");
+    controller.dispose();
+  });
+
+  it.each(["google", "microsoft"] as const)("connects %s calendars with the chosen access without a second settings mutation", async (providerKey) => {
+    const authorizationId = "11111111-1111-4111-8111-111111111111";
+    const { api, controller, route } = await setup(`/calendar?calendarAuthorization=${authorizationId}`);
+    api.getCalendarAuthorization.mockResolvedValue({ providerKey, providerAccountId: binding.providerAccountId, calendars: [
+      { providerCalendarId: "personal", displayName: "Personal", isDefault: true, capabilities: binding.capabilities },
+      { providerCalendarId: "holidays", displayName: "Holidays", isDefault: false, capabilities: { read: true, create: false, update: false, delete: false } },
+      { providerCalendarId: "private", displayName: "Private", isDefault: false, capabilities: binding.capabilities }
+    ] });
+    await controller.loadCalendarConnectionDiscovery();
+    const signal = new AbortController().signal;
+    await controller.completeCalendarConnectionSelection(["personal", "holidays", "private"], signal, { personal: "write", holidays: "read", private: "none" });
+    expect(api.completeCalendarAuthorization).toHaveBeenCalledWith(authorizationId, ["personal", "holidays", "private"], signal, { personal: "write", holidays: "read", private: "none" });
+    expect(api.updateConnectedCalendar).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().calendarWorkspace.connectionFlow).toMatchObject({ authorizationId: null, discovery: null, feedback: "Selected calendars connected with your chosen agent access." });
+    expect(route.pathname()).toBe("/calendar");
+    controller.dispose();
+  });
+
+  it("rejects missing, extra, and provider-incompatible access choices before connecting", async () => {
+    const { api, controller } = await setup("/calendar?calendarAuthorization=11111111-1111-4111-8111-111111111111");
+    api.getCalendarAuthorization.mockResolvedValue({ providerKey: "google", providerAccountId: binding.providerAccountId, calendars: [
+      { providerCalendarId: "holidays", displayName: "Holidays", isDefault: false, capabilities: { read: true, create: false, update: false, delete: false } }
+    ] });
+    await controller.loadCalendarConnectionDiscovery();
+    const invalidAccess: Record<string, "none" | "read" | "write">[] = [{}, { holidays: "read", other: "write" }, { holidays: "write" }];
+    for (const access of invalidAccess) {
+      await expect(controller.completeCalendarConnectionSelection(["holidays"], undefined, access)).rejects.toThrow("available agent access");
+    }
+    expect(api.completeCalendarAuthorization).not.toHaveBeenCalled();
+    const abort = new AbortController(); abort.abort();
+    await expect(controller.completeCalendarConnectionSelection(["holidays"], abort.signal, { holidays: "read" })).rejects.toMatchObject({ name: "AbortError" });
+    expect(api.completeCalendarAuthorization).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("includes chosen access when adding a calendar to an existing connection", async () => {
+    const { api, controller } = await setup();
+    api.discoverConnectedCalendars.mockResolvedValue({ providerKey: "microsoft", providerAccountId: binding.providerAccountId, calendars: [
+      { providerCalendarId: "new-calendar", displayName: "New calendar", isDefault: false, capabilities: binding.capabilities }
+    ] });
+    await controller.loadCalendarConnectionDiscovery(binding.connectionId);
+    await controller.completeCalendarConnectionSelection(["new-calendar"], undefined, { "new-calendar": "write" });
+    expect(api.selectConnectedCalendars).toHaveBeenCalledWith(binding.connectionId, ["new-calendar"], undefined, { "new-calendar": "write" });
+    expect(api.completeCalendarAuthorization).not.toHaveBeenCalled();
+    expect(api.updateConnectedCalendar).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("allows discovery to restart after the first dialog request is aborted", async () => {
+    const { api, controller } = await setup("/calendar?calendarAuthorization=11111111-1111-4111-8111-111111111111");
+    const pending = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["getCalendarAuthorization"]>>>();
+    api.getCalendarAuthorization.mockReturnValueOnce(pending.promise);
+    const abort = new AbortController();
+    const loading = controller.loadCalendarConnectionDiscovery(undefined, abort.signal);
+    expect(controller.getSnapshot().calendarWorkspace.connectionFlow.loading).toBe(true);
+    abort.abort();
+    pending.reject(new DOMException("Dialog unmounted", "AbortError"));
+    await loading;
+    expect(controller.getSnapshot().calendarWorkspace.connectionFlow).toMatchObject({ loading: false, error: "" });
+    api.getCalendarAuthorization.mockResolvedValueOnce({ providerKey: "google", providerAccountId: binding.providerAccountId, calendars: [] });
+    await controller.loadCalendarConnectionDiscovery();
+    expect(api.getCalendarAuthorization).toHaveBeenCalledTimes(2);
+    expect(controller.getSnapshot().calendarWorkspace.connectionFlow.discovery?.providerKey).toBe("google");
     controller.dispose();
   });
   it("lists/query/inspects exact provider identities through narrowed reads and pages provider entries one at a time", async () => {

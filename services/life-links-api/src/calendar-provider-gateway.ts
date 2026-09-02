@@ -273,6 +273,11 @@ export type CalendarProviderSynchronizationTarget = {
 
 export type CalendarProviderConnectionExpectation = Pick<CalendarProviderConnectionRecord, "status" | "credentialHandle">;
 
+export type CalendarProviderBindingUpdateOptions = {
+  expectedUpdatedAt: string;
+  updatedAt: string;
+} | { provisioningConnection: CalendarProviderConnectionExpectation };
+
 export type CalendarProviderWebhookHint = {
   hintId: string;
   ownerId: string;
@@ -316,10 +321,7 @@ export interface CalendarProviderStateStore {
   getCanonicalCalendar(calendarId: string): Promise<CalendarRecord | null>;
   getManagedCalendar(connectionId: string, calendarId: string): Promise<CalendarConnectedCalendarView | null>;
   provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord, options?: { providerTimeZone: string }): Promise<void>;
-  updateCalendarBinding(calendar: CalendarProviderBindingRecord, options?: {
-    expectedUpdatedAt: string;
-    updatedAt: string;
-  }): Promise<void>;
+  updateCalendarBinding(calendar: CalendarProviderBindingRecord, options?: CalendarProviderBindingUpdateOptions): Promise<void>;
   rollbackProvisioning(connectionId: string): Promise<void>;
   getSyncState(connectionId: string, calendarId: string): Promise<CalendarProviderSyncState | null>;
   listProjections(connectionId: string, calendarId: string): Promise<CalendarProviderEventProjection[]>;
@@ -568,8 +570,9 @@ export class CalendarProviderGateway {
     if (!input.calendars.length) throw new CalendarProviderGatewayError("invalid_input", "Select at least one Calendar.");
     const seenLocal = new Set<string>();
     const seenProvider = new Set<string>();
+    const existing = await this.store.listCalendars(connection.connectionId);
     const selections = input.calendars.map((value) => {
-      const selection = normalizeCalendarSelection({ ...value, agentGrant: "none" }, input.ownerId, this.#now().toISOString());
+      const selection = normalizeCalendarSelection(value, input.ownerId, this.#now().toISOString());
       if (seenProvider.has(selection.providerCalendarId) || seenLocal.has(selection.calendar.id)) {
         throw new CalendarProviderGatewayError("invalid_input", "Calendar selections must be unique.");
       }
@@ -577,6 +580,11 @@ export class CalendarProviderGateway {
       const remote = discovery.calendars.find((entry) => entry.providerCalendarId === selection.providerCalendarId);
       if (!remote) throw new CalendarProviderGatewayError("provider_identity_mismatch", "The selected Calendar was not discovered in this account.");
       if (!remote.capabilities.read) throw new CalendarProviderGatewayError("calendar_read_only", "The selected Calendar is not readable.");
+      assertAgentGrant(selection.agentGrant, remote.capabilities);
+      const bound = existing.find((entry) => entry.providerCalendarId === selection.providerCalendarId);
+      if (bound && value.agentGrant !== undefined && bound.agentGrant !== selection.agentGrant) {
+        throw new CalendarProviderGatewayError("calendar_settings_conflict", "An already connected Calendar keeps its current access; edit its settings separately.");
+      }
       return { selection, remote };
     });
     for (const { selection, remote } of selections) {
@@ -584,7 +592,7 @@ export class CalendarProviderGateway {
         ownerId: input.ownerId, connectionId: input.connectionId, providerKey: connection.providerKey,
         providerAccountId: connection.providerAccountId, calendarId: selection.calendar.id,
         providerCalendarId: remote.providerCalendarId, providerDisplayName: remote.displayName,
-        capabilities: remote.capabilities, agentGrant: "none", visible: selection.visible
+        capabilities: remote.capabilities, agentGrant: selection.agentGrant, visible: selection.visible
       }, remote.timeZone === undefined ? undefined : { providerTimeZone: remote.timeZone });
       await this.synchronizeCalendar({ ownerId: input.ownerId, connectionId: input.connectionId,
         calendarId: selection.calendar.id, window });
@@ -595,6 +603,7 @@ export class CalendarProviderGateway {
   async reconnectConnection(input: {
     ownerId: string; connectionId: string; expectedProviderAccountId: string;
     credentialHandle: CalendarProviderCredentialHandle; initialWindow: CalendarProviderWindow;
+    calendars?: CalendarProviderSelection[];
   }, options: { beforeCredentialReplacement?: (input: {
     ownerId: string; connectionId: string; providerAccountId: string;
     credentialHandle: CalendarProviderCredentialHandle; replacementCredentialHandle: CalendarProviderCredentialHandle;
@@ -606,6 +615,18 @@ export class CalendarProviderGateway {
     const window = normalizeWindow(input.initialWindow, this.#maxInitialWindowDays);
     if (previous.status === "active" && previous.credentialHandle === input.credentialHandle) return safeConnection(previous);
     const discovery = await this.discoverExternalCalendars({ ...input, providerKey: previous.providerKey });
+    const grants = new Map<string, CalendarAgentGrant>();
+    const selectedLocalIds = new Set<string>();
+    for (const value of input.calendars ?? []) {
+      const selection = normalizeCalendarSelection(value, input.ownerId, this.#now().toISOString());
+      const remote = discovery.calendars.find((entry) => entry.providerCalendarId === selection.providerCalendarId);
+      if (!remote || grants.has(selection.providerCalendarId) || selectedLocalIds.has(selection.calendar.id)) {
+        throw new CalendarProviderGatewayError("provider_identity_mismatch", "Reconnect requires unique exact discovered Calendars.");
+      }
+      assertAgentGrant(selection.agentGrant, remote.capabilities);
+      grants.set(selection.providerCalendarId, selection.agentGrant);
+      selectedLocalIds.add(selection.calendar.id);
+    }
     const bindings = await this.store.listCalendars(previous.connectionId);
     if (bindings.some((binding) => !discovery.calendars.some((remote) => remote.providerCalendarId === binding.providerCalendarId))) {
       throw new CalendarProviderGatewayError("provider_identity_mismatch", "A previously selected Calendar is not available in this account.");
@@ -637,7 +658,7 @@ export class CalendarProviderGateway {
         await this.store.provisionCalendar(canonical, { ...binding, agentGrant: canonical.agentAccess }, { providerTimeZone: remote.timeZone });
       }
       await this.store.updateCalendarBinding({ ...binding, capabilities: remote.capabilities, providerDisplayName: remote.displayName,
-        visible: true, agentGrant: "none" });
+        visible: true, agentGrant: grants.get(binding.providerCalendarId) ?? "none" }, { provisioningConnection: reconnecting });
       await this.synchronizeCalendar({ ownerId: input.ownerId, connectionId: input.connectionId, calendarId: binding.calendarId,
         window, allowProvisioning: true });
     }
@@ -1587,7 +1608,7 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
     const { agentGrant: _grant, ...metadata } = cloneCalendar(binding);
     this.#calendars.set(key, metadata);
   }
-  async updateCalendarBinding(calendar: CalendarProviderBindingRecord, options?: { expectedUpdatedAt: string; updatedAt: string }) {
+  async updateCalendarBinding(calendar: CalendarProviderBindingRecord, options?: CalendarProviderBindingUpdateOptions) {
     const key = calendarKey(calendar.connectionId, calendar.calendarId);
     const existing = this.#calendars.get(key);
     const canonical = this.#canonicalCalendars.get(calendar.calendarId);
@@ -1600,14 +1621,21 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
       || existing.providerCalendarId !== calendar.providerCalendarId) {
       throw new CalendarProviderGatewayError("provider_identity_mismatch", "The provider Calendar binding identity cannot change.");
     }
-    if (options && (canonical.updatedAt !== options.expectedUpdatedAt
+    if (options && "provisioningConnection" in options) {
+      const connection = this.#connections.get(calendar.connectionId);
+      if (connection?.status !== "provisioning" || connection.status !== options.provisioningConnection.status
+        || connection.credentialHandle !== options.provisioningConnection.credentialHandle) {
+        throw new CalendarProviderGatewayError("connection_inactive", "The reconnect changed before its Calendar permissions were saved.");
+      }
+    }
+    if (options && "expectedUpdatedAt" in options && (canonical.updatedAt !== options.expectedUpdatedAt
       || this.#connections.get(calendar.connectionId)?.status !== "active")) {
       throw new CalendarProviderGatewayError("calendar_settings_conflict", "Calendar settings changed. Reload before saving.");
     }
     this.#canonicalCalendars.set(canonical.id, {
       ...canonical,
       agentAccess: calendar.agentGrant,
-      updatedAt: options?.updatedAt ?? nextCalendarSettingsTimestamp(new Date().toISOString(), canonical.updatedAt)
+      updatedAt: options && "updatedAt" in options ? options.updatedAt : nextCalendarSettingsTimestamp(new Date().toISOString(), canonical.updatedAt)
     });
     const { agentGrant: _grant, ...metadata } = cloneCalendar(calendar);
     this.#calendars.set(key, metadata);
@@ -1801,7 +1829,7 @@ function requiredCredential(connection: CalendarProviderConnectionRecord): Calen
   return connection.credentialHandle;
 }
 
-function assertAgentGrant(grant: CalendarAgentGrant, capabilities: CalendarProviderCapabilities) {
+export function assertAgentGrant(grant: CalendarAgentGrant, capabilities: CalendarProviderCapabilities) {
   if (grant !== "none" && !capabilities.read) {
     throw new CalendarProviderGatewayError("invalid_input", "Agent access cannot exceed provider read capability.");
   }

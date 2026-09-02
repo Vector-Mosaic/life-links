@@ -62,6 +62,12 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
   useEffect(() => { setCollapsedGroups([]); setCollectionView("sections"); }, [selectedCollection?.id]);
   useEffect(() => { setEditingHierarchy(false); setSelectedIds([]); setChangeError(""); setRoutineDetailKind("routine"); setRoutineDialog(null); setCalendarDialog(null); }, [currentUser?.id, snapshot.hierarchyParentId, snapshot.workspaceMode, snapshot.activeView]);
   useEffect(() => {
+    const flow = snapshot.calendarWorkspace.connectionFlow;
+    if (calendarMode && dataMode && (flow?.authorizationId || flow?.connectionId || flow?.error)) {
+      setCalendarDialog({ kind: "select-calendars" });
+    }
+  }, [calendarMode, dataMode, currentUser?.id, snapshot.calendarWorkspace.connectionFlow?.authorizationId, snapshot.calendarWorkspace.connectionFlow?.connectionId, snapshot.calendarWorkspace.connectionFlow?.error]);
+  useEffect(() => {
     // An agent must not obscure or discard a human form that is already open.
     if ((dialog || routineDialog || calendarDialog) && snapshot.agentChangeConfirmation) controller.confirmAgentChange(false);
     if ((dialog || routineDialog || calendarDialog) && snapshot.agentCalendarDeletionConfirmation) {

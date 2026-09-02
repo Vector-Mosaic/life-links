@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CalendarDays, Check, Cloud, Pencil, Plus, Trash2 } from "lucide-react";
+import { normalizeCalendarEventSpan } from "@life-links/core";
 import type {
   CalendarEventEditTargetInput,
   CalendarEventStatus,
@@ -25,6 +26,7 @@ export type CalendarDialogState =
   | { kind: "edit-provider-event"; reference: ProviderCalendarEventReference }
   | { kind: "delete-provider-event"; reference: ProviderCalendarEventReference }
   | { kind: "manage-calendars" }
+  | { kind: "select-calendars" }
   | null;
 
 type Props = {
@@ -35,6 +37,9 @@ type Props = {
 };
 
 export function CalendarDialogHost(props: Props) {
+  const flow = props.snapshot.calendarWorkspace.connectionFlow;
+  if (props.dialog.kind === "select-calendars" || (props.dialog.kind === "manage-calendars" &&
+    (flow?.authorizationId || flow?.connectionId || flow?.error))) return <CalendarConnectionSelectionDialog {...props} />;
   if (props.dialog.kind === "manage-calendars") return <ManageCalendarsDialog {...props} />;
   if (props.dialog.kind === "delete-event") return <DeleteEventDialog {...props} eventId={props.dialog.eventId} />;
   if (props.dialog.kind === "delete-provider-event") return <DeleteProviderEventDialog {...props} reference={props.dialog.reference} />;
@@ -98,12 +103,16 @@ function CalendarEventDialog({ controller, snapshot, onClose, eventId, initialDa
   const [status, setStatus] = useState<CalendarEventStatus>(existing?.currentRevision.status ?? existingProvider?.content.status ?? "confirmed");
   const [allDay, setAllDay] = useState(existingSpan?.kind === "all_day");
   const startDateDefault = initialDate ?? snapshot.calendarWorkspace.clock?.today ?? "";
-  const [startDate, setStartDate] = useState(existingSpan?.kind === "all_day" ? existingSpan.startDate : existingSpan?.kind === "zoned" ? existingSpan.startLocalDateTime.slice(0, 10) : startDateDefault);
-  const [endDate, setEndDate] = useState(existingSpan?.kind === "all_day" ? previousDate(existingSpan.endDateExclusive) : existingSpan?.kind === "zoned" ? existingSpan.endLocalDateTime.slice(0, 10) : startDateDefault);
+  const initialStartDate = existingSpan?.kind === "all_day" ? existingSpan.startDate : existingSpan?.kind === "zoned" ? existingSpan.startLocalDateTime.slice(0, 10) : startDateDefault;
+  const initialEndDate = existingSpan?.kind === "all_day" ? previousDate(existingSpan.endDateExclusive) : existingSpan?.kind === "zoned" ? existingSpan.endLocalDateTime.slice(0, 10) : startDateDefault;
+  const [startDate, setStartDate] = useState(initialStartDate);
+  const [endDate, setEndDate] = useState(initialEndDate);
+  const [multiDay, setMultiDay] = useState(initialEndDate > initialStartDate);
   const [startTime, setStartTime] = useState(existingSpan?.kind === "zoned" ? existingSpan.startLocalDateTime.slice(11, 16) : "09:00");
   const [endTime, setEndTime] = useState(existingSpan?.kind === "zoned" ? existingSpan.endLocalDateTime.slice(11, 16) : "10:00");
   const [timeZone, setTimeZone] = useState(existingSpan?.kind === "zoned" ? existingSpan.timeZone : existingCalendar?.timeZone ?? defaultCalendar?.timeZone ?? resolvedTimeZone());
   const existingRecurrence = existing?.currentRevision.recurrence;
+  const [recurrenceEdited, setRecurrenceEdited] = useState(false);
   const [frequency, setFrequency] = useState<"none" | CalendarRecurrenceRule["frequency"]>(existingRecurrence?.frequency ?? "none");
   const [interval, setInterval] = useState(existingRecurrence?.interval ?? 1);
   const [weekdays, setWeekdays] = useState<CalendarWeekday[]>(existingRecurrence?.frequency === "weekly" ? existingRecurrence.weekdays : [weekdayForDate(startDate)]);
@@ -123,25 +132,31 @@ function CalendarEventDialog({ controller, snapshot, onClose, eventId, initialDa
   const providerBinding = snapshot.calendarWorkspace.providerBindings?.find((entry) => entry.calendarId === calendarId);
   const providerMode = selectedCalendar?.source === "external";
 
-  const recurrence = useMemo(() => buildRecurrence({ frequency, interval, weekdays, startDate, endKind, untilDate, count }), [count, endKind, frequency, interval, startDate, untilDate, weekdays]);
+  const recurrence = useMemo(() => existing && !recurrenceEdited ? existingRecurrence ?? null
+    : buildRecurrence({ frequency, interval, weekdays, startDate, endKind, untilDate, count }),
+  [count, endKind, existingRecurrence, frequency, interval, recurrenceEdited, startDate, untilDate, weekdays]);
   async function submit() {
     setSaving(true); setError("");
     try {
       if (providerReference && !existingProvider) throw new Error("The exact provider event is no longer available. Reopen it before editing.");
       if (!calendarId) throw new Error("Choose a Calendar.");
       if (!title.trim()) throw new Error("Add an event title.");
-      if (endDate < startDate) throw new Error("The end date cannot be before the start date.");
+      if (!startDate || (multiDay && !endDate)) throw new Error("Choose the event date.");
+      if (multiDay && endDate <= startDate) throw new Error("A multi-day event must end after its start date.");
+      const lastDate = multiDay ? endDate : startDate;
       const span = allDay
-        ? { kind: "all_day" as const, startDate, endDateExclusive: nextDate(endDate) }
-        : { kind: "zoned" as const, startLocalDateTime: `${startDate}T${startTime}`, endLocalDateTime: `${endDate}T${endTime}`, timeZone };
+        ? { kind: "all_day" as const, startDate, endDateExclusive: nextDate(lastDate) }
+        : { kind: "zoned" as const, startLocalDateTime: `${startDate}T${startTime}`, endLocalDateTime: `${lastDate}T${endTime}`, timeZone };
+      const unchangedProviderTiming = existingProvider && existingSpan && (span.kind === "all_day" && existingSpan.kind === "all_day"
+        ? span.startDate === existingSpan.startDate && span.endDateExclusive === existingSpan.endDateExclusive
+        : span.kind === "zoned" && existingSpan.kind === "zoned" && span.startLocalDateTime === existingSpan.startLocalDateTime && span.endLocalDateTime === existingSpan.endLocalDateTime && span.timeZone === existingSpan.timeZone);
+      // Provider instants retain seconds and their exact DST-fold identity when the displayed timing is unchanged.
+      if (!unchangedProviderTiming) normalizeCalendarEventSpan(span);
       if (providerMode) {
         if (!providerBinding || !(existingProvider ? providerBinding.capabilities.update : providerBinding.capabilities.create)) throw new Error("This provider Calendar does not allow this change.");
         if (existingProvider && !providerEventCanMutate(existingProvider)) throw new Error("Recurring, invitation, online meeting, or floating provider events cannot be changed here.");
-        const unchangedTiming = existingProvider && existingSpan && (span.kind === "all_day" && existingSpan.kind === "all_day"
-          ? span.startDate === existingSpan.startDate && span.endDateExclusive === existingSpan.endDateExclusive
-          : span.kind === "zoned" && existingSpan.kind === "zoned" && span.startLocalDateTime === existingSpan.startLocalDateTime && span.endLocalDateTime === existingSpan.endLocalDateTime && span.timeZone === existingSpan.timeZone);
         const content = { title: title.trim(), description: description.trim(), location: location.trim(), status,
-          span: unchangedTiming ? existingProvider!.content.span : providerWritableSpan(span) };
+          span: unchangedProviderTiming ? existingProvider!.content.span : providerWritableSpan(span) };
         const input = { authority: "provider" as const, commandId: commandId.current, connectionId: providerBinding.connectionId, calendarId, content };
         if (existingProvider) await controller.updateExternalCalendarEvent(existingProvider.providerEventId, { ...input, expectedProviderRevision: existingProvider.providerRevision, scope: "event" });
         else await controller.createExternalCalendarEvent(input);
@@ -175,11 +190,22 @@ function CalendarEventDialog({ controller, snapshot, onClose, eventId, initialDa
       <label>Title<input autoFocus required maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
       <label>Description<textarea rows={4} maxLength={4000} value={description} onChange={(event) => setDescription(event.target.value)} /></label>
       <label>Location<input maxLength={500} value={location} onChange={(event) => setLocation(event.target.value)} /></label>
-      <label className="ll-checkbox-label"><input type="checkbox" checked={allDay} onChange={(event) => setAllDay(event.target.checked)} />All-day event</label>
-      <div className="ll-calendar-form-grid"><label>Starts<input type="date" required value={startDate} onChange={(event) => { setStartDate(event.target.value); if (endDate < event.target.value) setEndDate(event.target.value); }} /></label>{!allDay && <label>Start time<input type="time" required value={startTime} onChange={(event) => setStartTime(event.target.value)} /></label>}
-        <label>Ends<input type="date" required value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>{!allDay && <label>End time<input type="time" required value={endTime} onChange={(event) => setEndTime(event.target.value)} /></label>}</div>
+      <div className="ll-calendar-event-options">
+        <label className="ll-checkbox-label"><input type="checkbox" checked={allDay} onChange={(event) => setAllDay(event.target.checked)} />All-day event</label>
+        <label className="ll-checkbox-label"><input type="checkbox" checked={multiDay} onChange={(event) => {
+          setMultiDay(event.target.checked);
+          setEndDate(event.target.checked && startDate ? (endDate > startDate ? endDate : nextDate(startDate)) : startDate);
+        }} />Multi-day event</label>
+      </div>
+      <div className="ll-calendar-form-grid"><label>{multiDay ? "Start date" : "Date"}<input type="date" required value={startDate} onChange={(event) => {
+        const date = event.target.value;
+        setStartDate(date);
+        if (!multiDay) setEndDate(date);
+        else if (date && endDate <= date) setEndDate(nextDate(date));
+      }} /></label>{!allDay && <label>Start time<input type="time" required value={startTime} onChange={(event) => setStartTime(event.target.value)} /></label>}
+        {multiDay && <label>End date<input type="date" required min={startDate ? nextDate(startDate) : undefined} value={endDate} onChange={(event) => setEndDate(event.target.value)} /></label>}{!allDay && <label>End time<input type="time" required value={endTime} onChange={(event) => setEndTime(event.target.value)} /></label>}</div>
       {!allDay && <label>Event time zone<select value={timeZone} onChange={(event) => setTimeZone(event.target.value)}>{supportedTimeZones().map((zone) => <option value={zone} key={zone}>{zone}</option>)}</select></label>}
-      <fieldset className="ll-calendar-recurrence" disabled={providerMode}><legend>Repeats</legend><div className="ll-calendar-form-grid"><label>Frequency<select value={frequency} onChange={(event) => setFrequency(event.target.value as typeof frequency)}><option value="none" disabled={existing?.event.lineage.kind === "recurrence_master"}>Does not repeat</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label>{frequency !== "none" && <label>Every<input type="number" min={1} max={366} value={interval} onChange={(event) => setInterval(Number(event.target.value))} /></label>}</div>
+      <fieldset className="ll-calendar-recurrence" disabled={providerMode} onChange={() => setRecurrenceEdited(true)}><legend>Repeats</legend><div className="ll-calendar-form-grid"><label>Frequency<select value={frequency} onChange={(event) => setFrequency(event.target.value as typeof frequency)}><option value="none" disabled={existing?.event.lineage.kind === "recurrence_master"}>Does not repeat</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label>{frequency !== "none" && <label>Every<input type="number" min={1} max={366} value={interval} onChange={(event) => setInterval(Number(event.target.value))} /></label>}</div>
         {frequency === "weekly" && <div className="ll-calendar-weekday-picker" aria-label="Repeat on">{WEEKDAYS.map((day) => <label key={day}><input type="checkbox" checked={weekdays.includes(day)} onChange={() => setWeekdays((days) => days.includes(day) ? days.filter((item) => item !== day) : [...days, day])} />{capitalize(day.slice(0, 3))}</label>)}</div>}
         {frequency !== "none" && <div className="ll-calendar-form-grid"><label>Ends<select value={endKind} onChange={(event) => setEndKind(event.target.value as CalendarRecurrenceEnd["kind"])}><option value="never">Never</option><option value="until">On a date</option><option value="count">After a count</option></select></label>{endKind === "until" && <label>Last date<input type="date" min={startDate} value={untilDate} onChange={(event) => setUntilDate(event.target.value)} /></label>}{endKind === "count" && <label>Occurrences<input type="number" min={1} max={10000} value={count} onChange={(event) => setCount(Number(event.target.value))} /></label>}</div>}
         {recurrence && <p className="ll-muted">{recurrenceSummary(recurrence)}</p>}
@@ -247,6 +273,7 @@ function DeleteEventDialog({ controller, snapshot, onClose, eventId }: Props & {
 function ManageCalendarsDialog({ controller, snapshot, onClose }: Props) {
   const calendars = snapshot.calendarWorkspace.calendars.filter((calendar) => !calendar.deletedAt && calendar.source === "native");
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
   const editing = calendars.find((calendar) => calendar.id === editingId);
   const [title, setTitle] = useState("");
   const [color, setColor] = useState("#7FC9B3");
@@ -262,17 +289,111 @@ function ManageCalendarsDialog({ controller, snapshot, onClose }: Props) {
     setSaving(true); setError("");
     try {
       if (!title.trim()) throw new Error("Add a Calendar name.");
+      if (editingId && !editing) throw new Error("This Calendar is no longer available. Cancel and reopen it.");
       if (editing) await controller.updateNativeCalendar(editing.id, editing.updatedAt, { title: title.trim(), color, timeZone, isDefault, agentAccess });
       else await controller.createNativeCalendar({ title: title.trim(), color, timeZone, isDefault, agentAccess });
-      setEditingId(null); setTitle(""); setIsDefault(false); setAgentAccess("write");
+      setEditorOpen(false); setEditingId(null); setTitle(""); setIsDefault(false); setAgentAccess("write");
     } catch (issue) { setError(messageFromIssue(issue, "The Calendar could not be saved.")); }
     finally { setSaving(false); }
   }
-  return <Dialog title="Manage calendars" onClose={onClose} wide><div className="ll-calendar-manager">
-    <section><h3>Your Life Links calendars</h3><div className="ll-calendar-manager-list">{calendars.map((calendar) => <button key={calendar.id} onClick={() => setEditingId(calendar.id)} className={editingId === calendar.id ? "selected" : ""}><span className="ll-calendar-color" style={{ background: calendar.color }} /><span><strong>{calendar.title}</strong><small>{calendar.timeZone}{calendar.isDefault ? " · Default" : ""}</small><small>Agent: {agentAccessLabel(calendar.agentAccess)}</small></span><Pencil size={15} /></button>)}</div><button className="ll-text-button" onClick={() => { setEditingId(null); setTitle(""); setColor("#7FC9B3"); setTimeZone(resolvedTimeZone()); setIsDefault(false); setAgentAccess("write"); }}><Plus size={15} />New Calendar</button></section>
-    <form className="ll-form" onSubmit={(event) => { event.preventDefault(); void save(); }}><h3>{editing ? `Edit ${editing.title}` : "New Calendar"}</h3><label>Name<input required maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>Color<input type="color" value={color} onChange={(event) => setColor(event.target.value)} /></label><label>Default time zone<select value={timeZone} onChange={(event) => setTimeZone(event.target.value)}>{supportedTimeZones().map((zone) => <option value={zone} key={zone}>{zone}</option>)}</select></label><label className="ll-checkbox-label"><input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} />Use as my default Calendar</label><CalendarAgentAccessSelect value={agentAccess} onChange={setAgentAccess} disabled={saving} /><p className="ll-calendar-access-help">Showing or hiding a Calendar does not change agent access. Your agent must also be connected with Calendar tools enabled (the Calendar-v2 grant). Deleting events still requires your confirmation.</p>{error && <p className="ll-inline-warning" role="alert">{error}</p>}<button className="ll-button ll-primary" disabled={saving || !title.trim()}><Check size={16} />{saving ? "Saving…" : editing ? "Save Calendar" : "Create Calendar"}</button></form>
+  return <Dialog title="Manage calendars" onClose={onClose} wide closeDisabled={saving}><div className={`ll-calendar-manager${editorOpen ? " ll-calendar-manager-editing" : ""}`}>
+    <section><h3>Your Life Links calendars</h3><div className="ll-calendar-manager-list">{calendars.map((calendar) => <button key={calendar.id} disabled={saving} onClick={() => { setEditingId(calendar.id); setEditorOpen(true); setError(""); }} className={editorOpen && editingId === calendar.id ? "selected" : ""}><span className="ll-calendar-color" style={{ background: calendar.color }} /><span><strong>{calendar.title}</strong><small>{calendar.timeZone}{calendar.isDefault ? " · Default" : ""}</small><small>Agent: {agentAccessLabel(calendar.agentAccess)}</small></span><Pencil size={15} /></button>)}</div><button className="ll-text-button" disabled={saving} onClick={() => { setEditorOpen(true); setEditingId(null); setTitle(""); setColor("#7FC9B3"); setTimeZone(resolvedTimeZone()); setIsDefault(false); setAgentAccess("write"); setError(""); }}><Plus size={15} />New Calendar</button></section>
+    {editorOpen && <form className="ll-form" onSubmit={(event) => { event.preventDefault(); void save(); }}><h3>{editing ? `Edit ${editing.title}` : "New Calendar"}</h3><label>Name<input autoFocus required maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>Color<input type="color" value={color} onChange={(event) => setColor(event.target.value)} /></label><label>Default time zone<select value={timeZone} onChange={(event) => setTimeZone(event.target.value)}>{supportedTimeZones().map((zone) => <option value={zone} key={zone}>{zone}</option>)}</select></label><label className="ll-checkbox-label"><input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} />Use as my default Calendar</label><CalendarAgentAccessSelect value={agentAccess} onChange={setAgentAccess} disabled={saving} /><p className="ll-calendar-access-help">Showing or hiding a Calendar does not change agent access. Your agent must also be connected with Calendar tools enabled (the Calendar-v2 grant). Deleting events still requires your confirmation.</p>{error && <p className="ll-inline-warning" role="alert">{error}</p>}<footer><button type="button" className="ll-button" disabled={saving} onClick={() => { setEditorOpen(false); setEditingId(null); setError(""); }}>Cancel editor</button><button className="ll-button ll-primary" disabled={saving || !title.trim()}><Check size={16} />{saving ? "Saving…" : editing ? "Save Calendar" : "Create Calendar"}</button></footer></form>}
     <CalendarConnectionsSection controller={controller} management={snapshot.calendarWorkspace.connectionManagement} flow={snapshot.calendarWorkspace.connectionFlow} />
   </div></Dialog>;
+}
+
+function CalendarConnectionSelectionDialog({ controller, snapshot, onClose }: Props) {
+  const flow = snapshot.calendarWorkspace.connectionFlow;
+  const management = snapshot.calendarWorkspace.connectionManagement;
+  const lifetime = useRef<AbortController | null>(null);
+  const pendingRef = useRef(false);
+  const [pending, setPending] = useState<"connect" | "cancel" | null>(null);
+  const [error, setError] = useState("");
+  const existing = flow?.connectionId ? management.calendars.filter((entry) => entry.connectionId === flow.connectionId) : [];
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [accessById, setAccessById] = useState<Record<string, CalendarAgentAccess>>({});
+  const connection = management.connections.find((entry) => entry.connectionId === flow?.connectionId);
+  const provider = calendarAuthorizationProvider(flow?.discovery?.providerKey ?? connection?.providerKey ?? "");
+  const providerName = provider === "google" ? "Google Calendar" : provider === "microsoft" ? "Outlook" : null;
+  const title = flow?.connectionId ? "Choose calendars" : providerName ? `Finish connecting ${providerName}` : "Finish connecting your calendar";
+
+  useEffect(() => {
+    const abort = new AbortController();
+    lifetime.current = abort;
+    if ((flow?.authorizationId || flow?.connectionId) && !flow.discovery && !flow.loading && !flow.error) {
+      void controller.loadCalendarConnectionDiscovery(flow.connectionId ?? undefined, abort.signal).catch(() => undefined);
+    }
+    return () => { abort.abort(); lifetime.current = null; };
+  }, [controller]);
+
+  useEffect(() => {
+    setSelectedIds([]);
+    setAccessById({});
+  }, [flow?.discovery]);
+
+  function accessFor(calendar: NonNullable<typeof flow.discovery>["calendars"][number]): CalendarAgentAccess {
+    const linked = existing.find((entry) => entry.providerCalendarId === calendar.providerCalendarId);
+    if (linked) return linked.calendar.agentAccess;
+    const chosen = accessById[calendar.providerCalendarId] ?? "none";
+    if (!calendar.capabilities.read) return "none";
+    return chosen === "write" && !canProviderCalendarWrite(calendar.capabilities) ? "read" : chosen;
+  }
+
+  async function cancel() {
+    if (pendingRef.current) return;
+    pendingRef.current = true; setPending("cancel"); setError("");
+    try {
+      await controller.cancelCalendarConnectionSelection(lifetime.current?.signal);
+      onClose();
+    } catch (issue) { setError(messageFromIssue(issue, "Calendar selection could not be canceled. Please try again.")); }
+    finally { pendingRef.current = false; setPending(null); }
+  }
+
+  async function connect() {
+    if (pendingRef.current || !flow?.discovery || !selectedIds.length) return;
+    pendingRef.current = true; setPending("connect"); setError("");
+    const choices = Object.fromEntries(flow.discovery.calendars.filter((calendar) => selectedIds.includes(calendar.providerCalendarId))
+      .map((calendar) => [calendar.providerCalendarId, accessFor(calendar)]));
+    try {
+      await controller.completeCalendarConnectionSelection(selectedIds, lifetime.current?.signal, choices);
+      onClose();
+    } catch (issue) { setError(messageFromIssue(issue, "The selected calendars could not be connected. Please try again.")); }
+    finally { pendingRef.current = false; setPending(null); }
+  }
+
+  return <Dialog title={title} onClose={() => void cancel()} closeDisabled={Boolean(pending)}>
+    <div className="ll-calendar-selection">
+      {flow?.authorizationId && !flow.error && <p className="ll-calendar-selection-success" role="status"><Check size={18} aria-hidden="true" />{providerName ? `${providerName} sign-in successful.` : "Sign-in successful."}</p>}
+      <p>Choose the calendars to show in Life Links and what your connected agent can do with each one.</p>
+      {flow?.discovery && <details className="ll-calendar-selection-account"><summary>Account details</summary><small>Provider account ID: {flow.discovery.providerAccountId}</small></details>}
+      {flow?.loading && <p role="status">Finding your calendars…</p>}
+      {(flow?.error || error) && <div className="ll-inline-warning" role="alert"><p>{error || flow?.error}</p>
+        {flow?.error && (flow.authorizationId || flow.connectionId) && <button className="ll-button" disabled={Boolean(pending) || flow.loading} onClick={() => {
+          setError(""); void controller.loadCalendarConnectionDiscovery(flow.connectionId ?? undefined, lifetime.current?.signal).catch(() => undefined);
+        }}>Retry calendar discovery</button>}
+      </div>}
+      {flow?.discovery && <div className="ll-calendar-selection-list" role="group" aria-label="Choose calendars and agent access">
+        {flow.discovery.calendars.map((calendar) => {
+          const linked = existing.find((entry) => entry.providerCalendarId === calendar.providerCalendarId);
+          const selected = selectedIds.includes(calendar.providerCalendarId);
+          return <div className={`ll-calendar-selection-row${selected ? " selected" : ""}`} key={calendar.providerCalendarId}>
+            <label className="ll-calendar-selection-check"><input type="checkbox" checked={selected || Boolean(linked)} disabled={Boolean(pending) || !calendar.capabilities.read || Boolean(linked)} onChange={(event) => {
+              setSelectedIds((ids) => event.target.checked ? [...ids, calendar.providerCalendarId] : ids.filter((id) => id !== calendar.providerCalendarId));
+            }} /><span><strong>{calendar.displayName}</strong><small>{linked ? "Already connected" : calendar.isDefault ? "Default calendar" : ""}{!calendar.capabilities.read ? " · Unavailable" : !canProviderCalendarWrite(calendar.capabilities) ? `${linked || calendar.isDefault ? " · " : ""}Read only at provider` : ""}</small></span></label>
+            <CalendarAgentAccessSelect value={accessFor(calendar)} onChange={(value) => setAccessById((current) => ({ ...current, [calendar.providerCalendarId]: value }))}
+              disabled={Boolean(pending) || !selected || Boolean(linked)} canRead={calendar.capabilities.read} canWrite={canProviderCalendarWrite(calendar.capabilities)}
+              ariaLabel={`Agent access for ${calendar.displayName}`} writeLabel={calendar.capabilities.update ? "Read and edit" : "Read and allowed changes"} />
+          </div>;
+        })}
+        {!flow.discovery.calendars.length && <p>No readable calendars were found in this account.</p>}
+      </div>}
+      {flow?.connectionId && <p className="ll-calendar-selection-note">Already-connected calendars keep their access. You can change it in Manage calendars.</p>}
+      {Boolean(selectedIds.length) && <p className="ll-calendar-selection-note">{selectedIds.length} selected · Shown together in your Calendar.</p>}
+      <footer className="ll-dialog-footer"><button className="ll-button" disabled={Boolean(pending)} onClick={() => void cancel()}>{pending === "cancel" ? "Canceling…" : "Cancel"}</button>
+        <button className="ll-button ll-primary" disabled={Boolean(pending) || Boolean(flow?.loading) || !flow?.discovery || !selectedIds.length} onClick={() => void connect()}>{pending === "connect" ? "Connecting…" : "Connect calendars"}</button></footer>
+    </div>
+  </Dialog>;
 }
 
 function CalendarConnectionsSection({ controller, management, flow }: {
@@ -284,21 +405,12 @@ function CalendarConnectionsSection({ controller, management, flow }: {
   const [pending, setPending] = useState<string | null>(null);
   const [disconnectId, setDisconnectId] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   useEffect(() => {
     const abort = new AbortController();
     lifetime.current = abort;
     void controller.loadCalendarConnections(abort.signal).catch(() => undefined);
     return () => { abort.abort(); lifetime.current = null; };
   }, [controller]);
-
-  useEffect(() => {
-    if (flow?.authorizationId && !flow.discovery && !flow.loading && !flow.error) {
-      void controller.loadCalendarConnectionDiscovery(undefined, lifetime.current?.signal).catch(() => undefined);
-    }
-  }, [controller, flow?.authorizationId, flow?.discovery, flow?.loading, flow?.error]);
-
-  useEffect(() => { setSelectedIds([]); }, [flow?.discovery]);
 
   async function connect(provider: "microsoft" | "google", reconnectConnectionId?: string) {
     const abort = lifetime.current;
@@ -311,20 +423,6 @@ function CalendarConnectionsSection({ controller, management, flow }: {
       if (!abort.signal.aborted) window.location.assign(authorizationUrl);
     } catch (issue) { if (!abort.signal.aborted) setError(messageFromIssue(issue, `${provider === "microsoft" ? "Outlook" : "Google"} sign-in could not be started.`)); }
     finally { if (!abort.signal.aborted) setPending(null); }
-  }
-
-  async function selectCalendars() {
-    setPending("selection"); setError("");
-    try { await controller.completeCalendarConnectionSelection(selectedIds, lifetime.current?.signal); }
-    catch (issue) { setError(messageFromIssue(issue, "The selected calendars could not be connected.")); }
-    finally { setPending(null); }
-  }
-
-  async function cancelSelection() {
-    setPending("selection"); setError("");
-    try { await controller.cancelCalendarConnectionSelection(lifetime.current?.signal); }
-    catch (issue) { setError(messageFromIssue(issue, "The pending connection could not be canceled.")); }
-    finally { setPending(null); }
   }
 
   async function refresh(connectionId: string) {
@@ -361,14 +459,6 @@ function CalendarConnectionsSection({ controller, management, flow }: {
       return <button className="ll-button" key={provider.providerKey} disabled={Boolean(pending) || !available} title={available ? `Continue to ${authorizationProvider === "microsoft" ? "Microsoft" : "Google"} sign-in` : "Account authorization is not available yet"} onClick={() => { if (authorizationProvider) void connect(authorizationProvider); }}><Cloud size={16} />Connect {provider.displayName}</button>;
     })}
     {flow?.feedback && <p role="status">{flow.feedback}</p>}
-    {flow?.error && <div className="ll-inline-warning" role="alert"><p>{flow.error}</p>{(flow.authorizationId || flow.connectionId) && <button className="ll-button" disabled={Boolean(pending)} onClick={() => void controller.loadCalendarConnectionDiscovery(flow.connectionId ?? undefined, lifetime.current?.signal).catch(() => undefined)}>Retry calendar discovery</button>}</div>}
-    {flow?.loading && <p role="status">Finding calendars in the selected account…</p>}
-    {flow?.discovery && <section className="ll-calendar-discovery" aria-label="Choose provider calendars"><h4>Choose calendars</h4><p>Account: {flow.discovery.providerAccountId}</p><p>New calendars start with No access for agents. Reconnecting an account also resets its calendars to No access. Adding calendars to an existing connection preserves its other calendar permissions.</p>
-      {flow.discovery.calendars.map((calendar) => <label className="ll-checkbox-label" key={calendar.providerCalendarId}><input type="checkbox" checked={selectedIds.includes(calendar.providerCalendarId)} disabled={!calendar.capabilities.read || Boolean(pending)} onChange={(event) => setSelectedIds((ids) => event.target.checked ? [...ids, calendar.providerCalendarId] : ids.filter((id) => id !== calendar.providerCalendarId))} />{calendar.displayName}{calendar.isDefault ? " (provider default)" : ""}<small>{calendar.capabilities.read ? (calendar.capabilities.update ? " · Writable" : " · Read only") : " · Unavailable"}</small></label>)}
-      {!flow.discovery.calendars.length && <p>No readable calendars were returned by this account.</p>}
-      <button className="ll-button" disabled={Boolean(pending)} onClick={() => void cancelSelection()}>Cancel selection</button><button className="ll-button ll-primary" disabled={Boolean(pending) || !selectedIds.length} onClick={() => void selectCalendars()}>{pending === "selection" ? "Connecting…" : "Connect selected calendars"}</button>
-    </section>}
-    {flow?.authorizationId && !flow.discovery && <button className="ll-button" disabled={Boolean(pending)} onClick={() => void cancelSelection()}>Cancel pending connection</button>}
     {management.loading && <p role="status">Loading Calendar connections…</p>}
     {(management.error || error) && <div className="ll-inline-warning" role="alert"><p>{error || management.error}</p><button className="ll-button" disabled={management.loading || Boolean(pending)} onClick={() => { setError(""); void controller.loadCalendarConnections(lifetime.current?.signal).catch(() => undefined); }}>Retry loading connections</button></div>}
     {management.loaded && !management.error && !management.connections.length && <p>No external accounts are connected.</p>}
@@ -394,7 +484,7 @@ function CalendarConnectionsSection({ controller, management, flow }: {
             </div>;
           })}</div>
           <p>An agent also needs the connected Calendar-v2 grant, and can never exceed the provider's permissions.</p>
-          {authorizationProvider && active ? <div><button className="ll-button" disabled={Boolean(pending) || flow?.loading} onClick={() => void controller.loadCalendarConnectionDiscovery(connection.connectionId, lifetime.current?.signal).catch(() => undefined)}>Choose additional calendars</button><button className="ll-button" disabled={Boolean(pending)} onClick={() => void refresh(connection.connectionId)}>Refresh events</button>{canAuthorize && <button className="ll-button" disabled={Boolean(pending)} onClick={() => void connect(authorizationProvider, connection.connectionId)}>{reconnectLabel}</button>}</div> : <p>Finding additional calendars for this account is not available yet.</p>}
+          {authorizationProvider && active ? <div><button className="ll-button" disabled={Boolean(pending) || flow?.loading} onClick={() => void controller.loadCalendarConnectionDiscovery(connection.connectionId).catch(() => undefined)}>Choose additional calendars</button><button className="ll-button" disabled={Boolean(pending)} onClick={() => void refresh(connection.connectionId)}>Refresh events</button>{canAuthorize && <button className="ll-button" disabled={Boolean(pending)} onClick={() => void connect(authorizationProvider, connection.connectionId)}>{reconnectLabel}</button>}</div> : <p>Finding additional calendars for this account is not available yet.</p>}
           {disconnectId === connection.connectionId ? <div className="ll-calendar-disconnect-confirmation" role="group" aria-label={`Confirm disconnect ${providerName}`}>
             <strong>Disconnect {providerName}?</strong><p>Life Links will stop using this account and remove its cached events from this view. Your original calendars and events at {providerName} will not be deleted. Provider access revocation may remain pending or fail; its status will be shown separately.</p>
             <button className="ll-button" disabled={Boolean(pending)} onClick={() => setDisconnectId(null)}>Cancel</button><button className="ll-button ll-danger" disabled={Boolean(pending)} onClick={() => void disconnect(connection)}>{pending === connection.connectionId ? "Disconnecting…" : "Yes, disconnect"}</button>
@@ -405,15 +495,20 @@ function CalendarConnectionsSection({ controller, management, flow }: {
   </section>;
 }
 
-function CalendarAgentAccessSelect({ value, onChange, disabled = false, canRead = true, canWrite = true, writeLabel = "Read and edit" }: {
+function CalendarAgentAccessSelect({ value, onChange, disabled = false, canRead = true, canWrite = true, writeLabel = "Read and edit", ariaLabel }: {
   value: CalendarAgentAccess;
   onChange(value: CalendarAgentAccess): void;
   disabled?: boolean;
   canRead?: boolean;
   canWrite?: boolean;
   writeLabel?: string;
+  ariaLabel?: string;
 }) {
-  return <label>Agent access<select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value as CalendarAgentAccess)}><option value="none">No access</option><option value="read" disabled={!canRead}>Read only</option><option value="write" disabled={!canRead || !canWrite}>{writeLabel}</option></select></label>;
+  return <label>Agent access<select aria-label={ariaLabel} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value as CalendarAgentAccess)}><option value="none">No access</option><option value="read" disabled={!canRead}>Read only</option><option value="write" disabled={!canRead || !canWrite}>{writeLabel}</option></select></label>;
+}
+
+function canProviderCalendarWrite(capabilities: { create: boolean; update: boolean; delete: boolean }): boolean {
+  return capabilities.create || capabilities.update || capabilities.delete;
 }
 
 function agentAccessLabel(value: CalendarAgentAccess): string {

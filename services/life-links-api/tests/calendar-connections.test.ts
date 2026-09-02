@@ -18,7 +18,7 @@ const calendarId = calendarProviderLocalCalendarId(connectionId, providerCalenda
 const vaultHandle = "synthetic-private-vault-handle-must-not-leak";
 const writable = { read: true, create: true, update: true, delete: true };
 
-async function fixture(options: { readOnly?: boolean; adapterAvailable?: boolean; googleAuthorization?: boolean } = {}) {
+async function fixture(options: { readOnly?: boolean; adapterAvailable?: boolean; googleAuthorization?: boolean; additionalCalendar?: boolean } = {}) {
   const store = new InMemoryCalendarProviderStateStore();
   const adapter = new DeterministicFakeCalendarProviderAdapter("google-calendar", "synthetic-provider-account", [{
     providerCalendarId, displayName: "Synthetic calendar", capabilities: options.readOnly
@@ -27,7 +27,7 @@ async function fixture(options: { readOnly?: boolean; adapterAvailable?: boolean
       title: "Synthetic event", description: null, location: null, status: "confirmed", providerSeriesId: null,
       span: { kind: "all_day", startDate: "2026-09-01", endDateExclusive: "2026-09-02" }
     } }]
-  }]);
+  }, ...(options.additionalCalendar ? [{ providerCalendarId: "additional-calendar", displayName: "Additional calendar", capabilities: writable, events: [] }] : [])]);
   const connectedGateway = new CalendarProviderGateway([adapter], store, { now: () => new Date("2026-09-01T12:00:00.000Z") });
   await connectedGateway.connectExternalAccount({
     ownerId, connectionId, providerKey: "google-calendar", expectedProviderAccountId: "synthetic-provider-account",
@@ -95,7 +95,7 @@ describe("owner Calendar connection management", () => {
     expect((await gateway.listManagedCalendars(ownerId, connectionId))[0]).toEqual(updated);
   });
 
-  it("routes Google OAuth through the same owner/session selection flow without granting agent access", async () => {
+  it.each([undefined, "write"] as const)("routes Google OAuth through owner/session selection with chosen/default access %s", async (grant) => {
     const { app, store, gateway, google, secretStore, logs } = await fixture({ googleAuthorization: true });
     const headers = { "X-Test-Owner": ownerId, "X-Test-Session": "google-session" };
     const endpoint = "/api/calendar-providers/google/authorize";
@@ -134,18 +134,24 @@ describe("owner Calendar connection management", () => {
       .send({ selectedCalendarIds: [providerCalendarId], agentAccess: "write" })).status).toBe(400);
     expect((await request(app).post(`${selectionPath}/complete`).set(headers)
       .send({ selectedCalendarIds: ["not-discovered"] })).body.error).toBe("calendar_selection_invalid");
-    const complete = await request(app).post(`${selectionPath}/complete`).set(headers).send({ selectedCalendarIds: [providerCalendarId] });
+    for (const agentAccessByCalendarId of [{}, { [providerCalendarId]: "write", foreign: "none" }, { [providerCalendarId]: "owner" }]) {
+      expect((await request(app).post(`${selectionPath}/complete`).set(headers)
+        .send({ selectedCalendarIds: [providerCalendarId], agentAccessByCalendarId })).body.error).toBe("calendar_selection_invalid");
+    }
+    const selection = { selectedCalendarIds: [providerCalendarId],
+      ...(grant === undefined ? {} : { agentAccessByCalendarId: { [providerCalendarId]: grant } }) };
+    const complete = await request(app).post(`${selectionPath}/complete`).set(headers).send(selection);
     expect(complete.status).toBe(200);
     expect(complete.body.connection).toMatchObject({ providerKey: "google-calendar", status: "active" });
     expect(complete.body.calendars).toHaveLength(1);
     const selectedCalendar = complete.body.calendars[0].calendar;
-    expect(selectedCalendar.agentAccess).toBe("none");
-    expect((await store.getCanonicalCalendar(selectedCalendar.id))?.agentAccess).toBe("none");
-    expect(await gateway.listCalendars(ownerId, complete.body.connection.connectionId, "agent")).toEqual([]);
+    expect(selectedCalendar.agentAccess).toBe(grant ?? "none");
+    expect((await store.getCanonicalCalendar(selectedCalendar.id))?.agentAccess).toBe(grant ?? "none");
+    expect(await gateway.listCalendars(ownerId, complete.body.connection.connectionId, "agent")).toHaveLength(grant ? 1 : 0);
     const available = await request(app).get(`/api/calendar-connections/${complete.body.connection.connectionId}/available-calendars`).set(headers);
     expect(available.status).toBe(200);
     expect(available.body.providerKey).toBe("google");
-    const retry = await request(app).post(`${selectionPath}/complete`).set(headers).send({ selectedCalendarIds: [providerCalendarId] });
+    const retry = await request(app).post(`${selectionPath}/complete`).set(headers).send(selection);
     expect(retry.body).toEqual(complete.body);
     expect([...secretStore.rows.values()].filter((row) => row.purpose === "credential")).toHaveLength(1);
     const replay = await request(app).get("/api/calendar-providers/google/callback").set(headers).query(callbackQuery);
@@ -153,6 +159,34 @@ describe("owner Calendar connection management", () => {
     expect(google.redeem).toHaveBeenCalledTimes(1);
     expect(JSON.stringify({ complete: complete.body, discovery: discovery.body, headers: callback.headers, logs,
       rows: [...secretStore.rows.values()] })).not.toMatch(/private-google-test-code|private-google-test-cache|private-google-test-token|credentialHandle/);
+  });
+
+  it("does not let additional selection change an existing grant, exceed capabilities, or accept foreign map keys", async () => {
+    const { app, gateway } = await fixture({ googleAuthorization: true, readOnly: true });
+    const headers = { "X-Test-Owner": ownerId };
+    for (const agentAccessByCalendarId of [{ foreign: "read" }, {}]) {
+      expect((await request(app).post(`${basePath}/select`).set(headers)
+        .send({ selectedCalendarIds: [providerCalendarId], agentAccessByCalendarId })).body.error).toBe("calendar_selection_invalid");
+    }
+    expect((await request(app).post(`${basePath}/select`).set(headers).send({ selectedCalendarIds: [providerCalendarId],
+      agentAccessByCalendarId: { [providerCalendarId]: "write" } })).status).toBe(400);
+    expect((await request(app).post(`${basePath}/select`).set(headers).send({ selectedCalendarIds: [providerCalendarId],
+      agentAccessByCalendarId: { [providerCalendarId]: "read" } })).status).toBe(409);
+    const exact = await request(app).post(`${basePath}/select`).set(headers).send({ selectedCalendarIds: [providerCalendarId],
+      agentAccessByCalendarId: { [providerCalendarId]: "none" } });
+    expect(exact.status).toBe(200);
+    expect((await gateway.listManagedCalendars(ownerId, connectionId))[0].calendar.agentAccess).toBe("none");
+  });
+
+  it("adds another calendar with chosen access through the same HTTP selection without changing the existing one", async () => {
+    const { app, gateway } = await fixture({ googleAuthorization: true, additionalCalendar: true });
+    const selected = await request(app).post(`${basePath}/select`).set("X-Test-Owner", ownerId).send({
+      selectedCalendarIds: ["additional-calendar"], agentAccessByCalendarId: { "additional-calendar": "write" }
+    });
+    expect(selected.status).toBe(200);
+    const calendars = await gateway.listManagedCalendars(ownerId, connectionId);
+    expect(calendars.find((entry) => entry.providerCalendarId === "additional-calendar")?.calendar.agentAccess).toBe("write");
+    expect(calendars.find((entry) => entry.providerCalendarId === providerCalendarId)?.calendar.agentAccess).toBe("none");
   });
 
   it("requires owner authentication, isolates connections, and returns only safe supported metadata", async () => {

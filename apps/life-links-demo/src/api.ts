@@ -18,6 +18,7 @@ import type {
   ProviderCalendarEventResponse,
   ProviderCalendarEventDeletionResponse,
   CalendarConnectionView,
+  CalendarConnectionSelectionInput,
   CalendarConnectedCalendarView,
   CalendarConnectedCalendarPatch,
   CalendarProviderAvailability,
@@ -608,9 +609,9 @@ export function getCalendarAuthorization(authorizationId: string, signal?: Abort
   return apiFetch<CalendarAuthorizationDiscovery>(`/api/calendar-authorizations/${encodeURIComponent(authorizationId)}/calendars`, { signal });
 }
 
-export function completeCalendarAuthorization(authorizationId: string, selectedCalendarIds: string[], signal?: AbortSignal) {
+export function completeCalendarAuthorization(authorizationId: string, selectedCalendarIds: string[], signal?: AbortSignal, agentAccessByCalendarId?: CalendarConnectionSelectionInput["agentAccessByCalendarId"]) {
   return apiFetch<{ connection: CalendarConnectionView; calendars: CalendarConnectedCalendarView[] }>(`/api/calendar-authorizations/${encodeURIComponent(authorizationId)}/complete`, {
-    method: "POST", body: JSON.stringify({ selectedCalendarIds }), signal
+    method: "POST", body: JSON.stringify({ selectedCalendarIds, ...(agentAccessByCalendarId === undefined ? {} : { agentAccessByCalendarId }) }), signal
   });
 }
 
@@ -622,9 +623,9 @@ export function discoverConnectedCalendars(connectionId: string, signal?: AbortS
   return apiFetch<CalendarAuthorizationDiscovery>(`/api/calendar-connections/${encodeURIComponent(connectionId)}/available-calendars`, { signal });
 }
 
-export function selectConnectedCalendars(connectionId: string, selectedCalendarIds: string[], signal?: AbortSignal) {
+export function selectConnectedCalendars(connectionId: string, selectedCalendarIds: string[], signal?: AbortSignal, agentAccessByCalendarId?: CalendarConnectionSelectionInput["agentAccessByCalendarId"]) {
   return apiFetch<{ connection: CalendarConnectionView; calendars: CalendarConnectedCalendarView[] }>(`/api/calendar-connections/${encodeURIComponent(connectionId)}/select`, {
-    method: "POST", body: JSON.stringify({ selectedCalendarIds }), signal
+    method: "POST", body: JSON.stringify({ selectedCalendarIds, ...(agentAccessByCalendarId === undefined ? {} : { agentAccessByCalendarId }) }), signal
   });
 }
 

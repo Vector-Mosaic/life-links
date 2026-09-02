@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import type { CalendarAuthorizationDiscovery } from "@life-links/core";
-import { CalendarProviderGateway, calendarProviderCredentialHandle, calendarProviderLocalCalendarId, type CalendarProviderCredentialHandle } from "./calendar-provider-gateway.js";
+import type { CalendarAuthorizationDiscovery, CalendarConnectionSelectionInput } from "@life-links/core";
+import { CalendarProviderGateway, assertAgentGrant, calendarProviderCredentialHandle, calendarProviderLocalCalendarId, type CalendarProviderCredentialHandle } from "./calendar-provider-gateway.js";
 import type { CalendarProviderCredentialResolver, CalendarProviderCredentialRevoker } from "./calendar-provider-credentials.js";
 import { CalendarSecretCipher, type CalendarSecretRow, type CalendarSecretStore } from "./calendar-secret-store.js";
 import type { MicrosoftCalendarAuth, MicrosoftCalendarTokenState } from "./calendar-microsoft-auth.js";
@@ -27,6 +27,7 @@ type Authorization = {
   expectedProviderAccountId: string | null;
   providerAccountId: string | null;
   selectedCalendarIds: string[] | null;
+  agentAccessByCalendarId?: CalendarConnectionSelectionInput["agentAccessByCalendarId"];
 };
 type Credential = (MicrosoftCalendarTokenState | GoogleCalendarTokenState) & {
   provider?: CalendarAuthorizationProvider; status: "ready" | "reconnect_required"; connectionId: string
@@ -135,16 +136,16 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
       calendars: discovery.calendars.map((calendar) => ({ ...calendar, isDefault: calendar.isDefault === true })) };
   }
 
-  async complete(ownerId: string, sessionId: string, id: string, selectedCalendarIds: string[]) {
-    if (!Array.isArray(selectedCalendarIds) || !selectedCalendarIds.length || selectedCalendarIds.length > 50
-      || selectedCalendarIds.some((value) => typeof value !== "string" || !value || value.length > 512)
-      || new Set(selectedCalendarIds).size !== selectedCalendarIds.length) throw new CalendarAuthorizationError("calendar_selection_invalid");
+  async complete(ownerId: string, sessionId: string, id: string, selectedCalendarIds: string[],
+    agentAccessByCalendarId?: CalendarConnectionSelectionInput["agentAccessByCalendarId"]) {
+    const input = readCalendarConnectionSelection({ selectedCalendarIds,
+      ...(agentAccessByCalendarId === undefined ? {} : { agentAccessByCalendarId }) });
     // Commit the validated selection before gateway effects, which use their
     // own transactions and can survive a failed authorization completion.
     const calendars = await this.secrets.locked(id, async (row) => {
       const state = this.#authorization(row, ownerId, sessionId);
       if (!state.providerAccountId || !["authorized", "completed"].includes(state.status)) throw new CalendarAuthorizationError("authorization_failed");
-      if (state.selectedCalendarIds && JSON.stringify([...state.selectedCalendarIds].sort()) !== JSON.stringify([...selectedCalendarIds].sort())) {
+      if (state.selectedCalendarIds && selectionIdentity(state) !== selectionIdentity(input)) {
         throw new CalendarAuthorizationError("calendar_selection_invalid");
       }
       if (state.status === "completed") return { row, value: null };
@@ -154,10 +155,13 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
       const selection = selectedCalendarIds.map((providerCalendarId) => {
         const remote = discovery.calendars.find((calendar) => calendar.providerCalendarId === providerCalendarId);
         if (!remote) throw new CalendarAuthorizationError("calendar_selection_invalid");
+        const agentGrant = input.agentAccessByCalendarId?.[providerCalendarId] ?? "none";
+        assertAgentGrant(agentGrant, remote.capabilities);
         return { calendarId: calendarProviderLocalCalendarId(state.connectionId, providerCalendarId), providerCalendarId,
-          title: remote.displayName, color: "#4f8fbd", timeZone: remote.timeZone ?? "UTC", isDefault: false, visible: true, agentGrant: "none" as const };
+          title: remote.displayName, color: "#4f8fbd", timeZone: remote.timeZone ?? "UTC", isDefault: false, visible: true, agentGrant };
       });
       state.selectedCalendarIds = [...selectedCalendarIds];
+      state.agentAccessByCalendarId = input.agentAccessByCalendarId;
       return { row: this.#updated(row!, state), value: selection };
     });
     return this.secrets.locked(id, async (row) => {
@@ -165,7 +169,7 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
       // retry may have completed while the committed selection was unlocked.
       const state = this.#authorization(row, ownerId, sessionId);
       if (!state.providerAccountId || !["authorized", "completed"].includes(state.status)) throw new CalendarAuthorizationError("authorization_failed");
-      if (!state.selectedCalendarIds || JSON.stringify([...state.selectedCalendarIds].sort()) !== JSON.stringify([...selectedCalendarIds].sort())) {
+      if (!state.selectedCalendarIds || selectionIdentity(state) !== selectionIdentity(input)) {
         throw new CalendarAuthorizationError("calendar_selection_invalid");
       }
       if (state.status === "completed") return { row, value: {
@@ -176,7 +180,8 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
       const credentialHandle = calendarProviderCredentialHandle(state.credentialId);
       if (state.reconnect) {
         await this.gateway().reconnectConnection({ ownerId, connectionId: state.connectionId,
-          expectedProviderAccountId: state.providerAccountId, credentialHandle, initialWindow: this.initialWindow() },
+          expectedProviderAccountId: state.providerAccountId, credentialHandle, initialWindow: this.initialWindow(),
+          calendars },
         { beforeCredentialReplacement: this.#beforeRevoke });
         await this.gateway().selectExternalCalendars({ ownerId, connectionId: state.connectionId, calendars, initialWindow: this.initialWindow() });
       } else await this.gateway().connectExternalAccount({ ownerId, connectionId: state.connectionId,
@@ -289,6 +294,31 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
     return { id, ownerId, purpose, encryptedPayload: this.cipher.seal({ id, ownerId, purpose }, data), expiresAt: new Date(this.now().getTime() + ttlMs).toISOString() };
   }
   #updated(row: CalendarSecretRow, data: unknown): CalendarSecretRow { return { ...row, encryptedPayload: this.cipher.seal(row, data) }; }
+}
+
+/** One closed request grammar shared by initial authorization and additional selection. */
+export function readCalendarConnectionSelection(value: unknown): CalendarConnectionSelectionInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new CalendarAuthorizationError("calendar_selection_invalid");
+  const input = value as Record<string, unknown>;
+  const ids = input.selectedCalendarIds;
+  if (Object.keys(input).some((key) => !["selectedCalendarIds", "agentAccessByCalendarId"].includes(key))
+    || !Array.isArray(ids) || !ids.length || ids.length > 50
+    || ids.some((id) => typeof id !== "string" || !id.trim() || id.length > 512)
+    || new Set(ids).size !== ids.length) throw new CalendarAuthorizationError("calendar_selection_invalid");
+  if (input.agentAccessByCalendarId === undefined) return { selectedCalendarIds: [...ids] };
+  const grants = input.agentAccessByCalendarId;
+  if (!grants || typeof grants !== "object" || Array.isArray(grants)
+    || Object.keys(grants).length !== ids.length
+    || Object.keys(grants).some((key) => !ids.includes(key))
+    || ids.some((id) => !Object.prototype.hasOwnProperty.call(grants, id)
+      || !["none", "read", "write"].includes((grants as Record<string, string>)[id]))) {
+    throw new CalendarAuthorizationError("calendar_selection_invalid");
+  }
+  return { selectedCalendarIds: [...ids], agentAccessByCalendarId: { ...grants } as NonNullable<CalendarConnectionSelectionInput["agentAccessByCalendarId"]> };
+}
+
+function selectionIdentity(input: { selectedCalendarIds: string[] | null; agentAccessByCalendarId?: CalendarConnectionSelectionInput["agentAccessByCalendarId"] }): string {
+  return JSON.stringify([...(input.selectedCalendarIds ?? [])].sort().map((id) => [id, input.agentAccessByCalendarId?.[id] ?? "none"]));
 }
 
 function sha(value: string): string { return createHash("sha256").update(value).digest("hex"); }

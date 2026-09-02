@@ -1055,7 +1055,9 @@ describe("Life Links OpenAPI v1", () => {
     }
     expect(objectValue(schemas.CalendarProviderSelectionRequest, "selection")).toMatchObject({
       additionalProperties: false, required: ["selectedCalendarIds"],
-      properties: { selectedCalendarIds: { minItems: 1, maxItems: 50, uniqueItems: true } }
+      properties: { selectedCalendarIds: { minItems: 1, maxItems: 50, uniqueItems: true },
+        agentAccessByCalendarId: { type: "object", minProperties: 1, maxProperties: 50,
+          additionalProperties: { type: "string", enum: ["none", "read", "write"] } } }
     });
     const connectionProperties = objectValue(objectValue(schemas.CalendarConnectionView, "connection").properties, "connection fields");
     expect(connectionProperties.credentialStatus).toEqual({ enum: ["ready", "reconnect_required", "not_retained"] });

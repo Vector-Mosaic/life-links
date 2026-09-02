@@ -1,6 +1,6 @@
 {
-  "canonical_source_byte_count": 39837719,
-  "canonical_source_tree_sha256": "9c01254ab24445ad7a41c8940ed31203f0b60b10c2a38dedef1412112edeec4f",
+  "canonical_source_byte_count": 39901610,
+  "canonical_source_tree_sha256": "bbddeaa62895bc4cdf5238a396bc1a1543a8393e9cb54f97f112ac445260010e",
   "excluded_globs": [
     "**/node_modules/**",
     "**/dist/**",
@@ -79,13 +79,13 @@
       "selected_variant_id": null
     },
     {
-      "canonical_byte_count": 2786,
-      "canonical_sha256": "11cbace1873df5532ba9df64adfc3efd7521711fb8b8cdcb0a55eb6753fc2d3c",
+      "canonical_byte_count": 2926,
+      "canonical_sha256": "f9e1c6c3aef8ec7b64f6a6bd4dded69ce14a212a42d7f0a5df9891a7383ead9a",
       "destination": "apps/life-links-demo/package.json",
       "id": "standalone-demo-package-scripts",
       "kind": "exact_text_replacements",
-      "projected_byte_count": 2643,
-      "projected_sha256": "51a645d4c392801ba2fc01eae366885072c1ed656ff727e3954ce350d190a475",
+      "projected_byte_count": 2783,
+      "projected_sha256": "738b6e9857d033a2d953610211d392bf58c1af50ac59418db8a19c4e097841f5",
       "replacements": [
         {
           "after_byte_count": 37,
@@ -291,13 +291,13 @@
       "selected_variant_id": null
     },
     {
-      "canonical_byte_count": 377887,
-      "canonical_sha256": "08dbeb179aa00b39d2c6d75897411b6c3c6b2148ccd384872a09b22c08227292",
+      "canonical_byte_count": 378598,
+      "canonical_sha256": "950818bb1cc478f9a44c0a309ea1a0841bf391675b46032f95cc328dae2b2750",
       "destination": "contracts/http/openapi.json",
       "id": "public-openapi-metadata",
       "kind": "exact_text_replacements",
-      "projected_byte_count": 377692,
-      "projected_sha256": "4f60bd3ff8e13ec6595323410d6f500fea999e2fa05e219e0bc0a27ef5055579",
+      "projected_byte_count": 378403,
+      "projected_sha256": "40c2fcd82c156d4e3e53e624f57951c6be26e3654ca3fa34822a74d5ee06becb",
       "replacements": [
         {
           "after_byte_count": 0,
@@ -311,13 +311,13 @@
       "selected_variant_id": null
     },
     {
-      "canonical_byte_count": 68122,
-      "canonical_sha256": "2168d30fd2bf22e0b10b1237bf1b0ed888ec2eb08cc8bac9d1b29b20513debff",
+      "canonical_byte_count": 68297,
+      "canonical_sha256": "3c855146f31d25c2f99b4919c47afe71e9d22e79d5d64a3968a2048be16a851b",
       "destination": "services/life-links-api/tests/openapi-contract.test.ts",
       "id": "standalone-openapi-included-clients",
       "kind": "exact_text_replacements",
-      "projected_byte_count": 67852,
-      "projected_sha256": "925eee7d8299132b4914ba922e5335461e3e2c0a526fc7ad969f84ffefec9ca7",
+      "projected_byte_count": 68027,
+      "projected_sha256": "0440f7bc75c815103a576f2d9beb2bcd33e8fe0a4ff2bd679c1b6b6be2995e9f",
       "replacements": [
         {
           "after_byte_count": 0,
@@ -334,7 +334,7 @@
   "profile_id": "life-links-webmcp-challenge",
   "profile_path": "systems/life_links/config/publication/webmcp_challenge_public_release.profile.json",
   "profile_sha256": "783cc99fcdfb7a57058aa8a840276671443bdc74670b7a8962abe1c9177aeb1b",
-  "projection_commit": "f98e528561aca7160fc35ae5179c99237b7d205b",
+  "projection_commit": "f3dc212478222ad30afec7f5e4819fc9446c06d0",
   "scaffold_destinations": [
     ".dockerignore",
     ".env.example",
@@ -357,9 +357,9 @@
       "template": "systems/life_links/config/publication/templates/package.json"
     },
     {
-      "byte_count": 154128,
+      "byte_count": 163566,
       "destination": "pnpm-lock.yaml",
-      "sha256": "fdbff87fffbdf277502d689ac0c9cf0ebebe2438dfb03dba6adb565eef723cc2",
+      "sha256": "24a3ef81522f1a8170af4a47856a71fd1e6fc84b1c99592c1fd01fe3766fc925",
       "template": "systems/life_links/config/publication/templates/pnpm-lock.yaml"
     },
     {
@@ -411,9 +411,9 @@
       "template": "systems/life_links/config/publication/templates/LICENSE.mit"
     },
     {
-      "byte_count": 54532,
+      "byte_count": 55793,
       "destination": "THIRD_PARTY_NOTICES.md",
-      "sha256": "0294b642421c2cdbd06a4d5b6e83a236a387b6825d8111eb03abb7aa22aabf1e",
+      "sha256": "d293d14af227c5dcab7a40af79a18fed2bba26426f892d883a15a0580aa88d3a",
       "template": "systems/life_links/config/publication/templates/THIRD_PARTY_NOTICES.md"
     },
     {
@@ -424,9 +424,9 @@
     }
   ],
   "schema_version": "life_links.source_projection.v2",
-  "source_byte_count": 39836912,
-  "source_commit": "f98e528561aca7160fc35ae5179c99237b7d205b",
-  "source_file_count": 441,
+  "source_byte_count": 39900803,
+  "source_commit": "f3dc212478222ad30afec7f5e4819fc9446c06d0",
+  "source_file_count": 444,
   "source_mappings": [
     {
       "destination": "apps/life-links-demo",
@@ -453,5 +453,5 @@
       "source": "systems/life_links/contracts/mcp"
     }
   ],
-  "source_tree_sha256": "fa740fa913962b976a2ff17fd2d87796a6145b1d098639cc9b51aa9af0ec906f"
+  "source_tree_sha256": "52fae3a99252ab8096fe66b4c6346c1041a0b0d4b9f16e99797f2e7774646ab7"
 }

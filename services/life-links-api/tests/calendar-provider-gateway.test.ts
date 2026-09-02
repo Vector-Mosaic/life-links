@@ -197,7 +197,7 @@ describe("provider-neutral Calendar gateway", () => {
     expect(await store.getProjection(CONNECTION_ID, CALENDAR_ID, seed.providerEventId)).toBeNull();
   });
 
-  it("adds exact discovered calendars to an existing account with default-deny grants and retry-safe identities", async () => {
+  it.each([undefined, "write"] as const)("adds exact calendars with chosen/default access %s and preserves later settings on retry", async (agentGrant) => {
     const secondaryId = "calendar-22222222-2222-4222-8222-222222222222";
     const adapter = new DeterministicFakeCalendarProviderAdapter(PROVIDER_KEY, PROVIDER_ACCOUNT_ID, [
       { providerCalendarId: PROVIDER_CALENDAR_ID, displayName: "First", capabilities: WRITABLE },
@@ -209,7 +209,8 @@ describe("provider-neutral Calendar gateway", () => {
       expectedProviderAccountId: PROVIDER_ACCOUNT_ID, credentialHandle: calendarProviderCredentialHandle("selection-handle"),
       initialWindow: WINDOW, calendars: [{ calendarId: CALENDAR_ID, providerCalendarId: PROVIDER_CALENDAR_ID, ...LOCAL_CALENDAR_FIELDS }] });
     const selection = { ownerId: OWNER_ID, connectionId: CONNECTION_ID, initialWindow: WINDOW,
-      calendars: [{ calendarId: secondaryId, providerCalendarId: "secondary-calendar", ...LOCAL_CALENDAR_FIELDS, agentGrant: "write" as const }] };
+      calendars: [{ calendarId: secondaryId, providerCalendarId: "secondary-calendar", ...LOCAL_CALENDAR_FIELDS,
+        ...(agentGrant === undefined ? {} : { agentGrant }) }] };
     await expect(gateway.selectExternalCalendars({ ...selection, calendars: [...selection.calendars,
       { ...selection.calendars[0], calendarId: "calendar-33333333-3333-4333-8333-333333333333", providerCalendarId: "not-discovered" }]
     })).rejects.toMatchObject({ code: "provider_identity_mismatch" });
@@ -217,7 +218,14 @@ describe("provider-neutral Calendar gateway", () => {
     await gateway.selectExternalCalendars(selection);
     await gateway.selectExternalCalendars(selection);
     expect(await store.listCalendars(CONNECTION_ID)).toHaveLength(2);
-    expect((await store.getCanonicalCalendar(secondaryId))?.agentAccess).toBe("none");
+    expect((await store.getCanonicalCalendar(secondaryId))?.agentAccess).toBe(agentGrant ?? "none");
+    expect((await store.getCanonicalCalendar(CALENDAR_ID))?.agentAccess).toBe("none");
+    if (agentGrant) {
+      await gateway.setCalendarAgentGrant({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, calendarId: secondaryId,
+        expectedUpdatedAt: (await store.getCanonicalCalendar(secondaryId))!.updatedAt, agentGrant: "none" });
+      await expect(gateway.selectExternalCalendars(selection)).rejects.toMatchObject({ code: "calendar_settings_conflict" });
+      expect((await store.getCanonicalCalendar(secondaryId))?.agentAccess).toBe("none");
+    }
   });
 
   it("a changed visible window fetches a complete snapshot without deleting events outside that window", async () => {
@@ -230,7 +238,7 @@ describe("provider-neutral Calendar gateway", () => {
     expect(adapter.metrics().fetchCalls.at(-1)).toMatchObject({ syncCursor: null, window: october });
   });
 
-  it("reconnects an active exact account with stable Calendar IDs, fresh grants and no old queued replay", async () => {
+  it.each([undefined, "read"] as const)("reconnects with explicit/default access %s, stable IDs and no old queued replay", async (agentGrant) => {
     const { adapter, gateway, store } = await connected({ agentGrant: "write" });
     const command: CalendarProviderCommand = { kind: "create", commandId: "before-reauthorization", ownerId: OWNER_ID,
       connectionId: CONNECTION_ID, calendarId: CALENDAR_ID, actor: "owner", content: timed("Old pending command") };
@@ -247,7 +255,9 @@ describe("provider-neutral Calendar gateway", () => {
       cleanupCalls++;
     };
     await gateway.reconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
-      expectedProviderAccountId: PROVIDER_ACCOUNT_ID, credentialHandle: nextHandle, initialWindow: WINDOW }, {
+      expectedProviderAccountId: PROVIDER_ACCOUNT_ID, credentialHandle: nextHandle, initialWindow: WINDOW,
+      ...(agentGrant === undefined ? {} : { calendars: [{ calendarId: CALENDAR_ID, providerCalendarId: PROVIDER_CALENDAR_ID,
+        ...LOCAL_CALENDAR_FIELDS, agentGrant }] }) }, {
       beforeCredentialReplacement: async (input) => {
         expect(input).toMatchObject({ credentialHandle: oldConnection.credentialHandle, replacementCredentialHandle: nextHandle });
         expect((await store.getCanonicalCalendar(CALENDAR_ID))?.agentAccess).toBe("none");
@@ -257,13 +267,50 @@ describe("provider-neutral Calendar gateway", () => {
     expect(reconnected).toMatchObject({ status: "active", credentialHandle: nextHandle });
     expect(reconnected.connectedAt > oldConnection.connectedAt).toBe(true);
     expect((await store.listCalendars(CONNECTION_ID)).map((row) => row.calendarId)).toEqual([CALENDAR_ID]);
-    expect((await store.getCanonicalCalendar(CALENDAR_ID))?.agentAccess).toBe("none");
+    expect((await store.getCanonicalCalendar(CALENDAR_ID))?.agentAccess).toBe(agentGrant ?? "none");
     expect(await gateway.listRetryableCommands()).toEqual([]);
     await expect(gateway.executeCommand(command)).rejects.toMatchObject({ code: "connection_inactive" });
     expect(cleanupCalls).toBe(1);
+    await gateway.setCalendarAgentGrant({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, calendarId: CALENDAR_ID,
+      expectedUpdatedAt: (await store.getCanonicalCalendar(CALENDAR_ID))!.updatedAt, agentGrant: "none" });
     await gateway.reconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
-      expectedProviderAccountId: PROVIDER_ACCOUNT_ID, credentialHandle: nextHandle, initialWindow: WINDOW });
+      expectedProviderAccountId: PROVIDER_ACCOUNT_ID, credentialHandle: nextHandle, initialWindow: WINDOW,
+      calendars: [{ calendarId: CALENDAR_ID, providerCalendarId: PROVIDER_CALENDAR_ID, ...LOCAL_CALENDAR_FIELDS, agentGrant: "write" }] });
     expect(cleanupCalls).toBe(1);
+    expect((await store.getCanonicalCalendar(CALENDAR_ID))?.agentAccess).toBe("none");
+  });
+
+  it("validates all reconnect grant choices before replacing credentials or resetting any old access", async () => {
+    const { gateway: previous, store } = await connected({ agentGrant: "write" });
+    const before = await store.getConnection(CONNECTION_ID);
+    const readOnly = fake([], { read: true, create: false, update: false, delete: false });
+    const gateway = new CalendarProviderGateway([readOnly], store, { now: clock() });
+    await expect(gateway.reconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
+      expectedProviderAccountId: PROVIDER_ACCOUNT_ID, credentialHandle: calendarProviderCredentialHandle("new-read-only-handle"),
+      initialWindow: WINDOW, calendars: [{ calendarId: CALENDAR_ID, providerCalendarId: PROVIDER_CALENDAR_ID,
+        ...LOCAL_CALENDAR_FIELDS, agentGrant: "write" }] })).rejects.toMatchObject({ code: "invalid_input" });
+    expect(await store.getConnection(CONNECTION_ID)).toEqual(before);
+    expect((await previous.listCalendars(OWNER_ID, CONNECTION_ID))[0].agentGrant).toBe("write");
+  });
+
+  it("cannot restore reconnect grants when a concurrent disconnect closes the provisioning connection", async () => {
+    const { adapter, gateway, store } = await connected();
+    adapter.revokeConnection = async () => {};
+    const update = store.updateCalendarBinding.bind(store);
+    let interrupted = false;
+    store.updateCalendarBinding = async (binding, options) => {
+      if (options && "provisioningConnection" in options && !interrupted) {
+        interrupted = true;
+        await gateway.disconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, localProjectionDisposition: "purge" });
+      }
+      return update(binding, options);
+    };
+    await expect(gateway.reconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
+      expectedProviderAccountId: PROVIDER_ACCOUNT_ID, credentialHandle: calendarProviderCredentialHandle("interrupted-reconnect"),
+      initialWindow: WINDOW, calendars: [{ calendarId: CALENDAR_ID, providerCalendarId: PROVIDER_CALENDAR_ID,
+        ...LOCAL_CALENDAR_FIELDS, agentGrant: "write" }] })).rejects.toMatchObject({ code: "connection_inactive" });
+    expect((await store.getConnection(CONNECTION_ID))?.status).toBe("disconnected");
+    expect((await store.getCanonicalCalendar(CALENDAR_ID))?.agentAccess).toBe("none");
   });
 
   it("uses an acknowledged create identity after readback failure rather than posting again", async () => {
@@ -905,6 +952,42 @@ describe("PostgreSQL provider Calendar provisioning transaction", () => {
     ownerId: OWNER_ID,
     ...LOCAL_CALENDAR_FIELDS,
     createdAt: "2026-09-01T12:00:00.000Z"
+  });
+
+  it.each(["provisioning", "disconnected"])("checks the locked %s connection before saving selected reconnect grants", async (status) => {
+    const statements: string[] = [];
+    const writes: unknown[][] = [];
+    const client = {
+      async query(sql: string, values?: unknown[]) {
+        const statement = sql.replace(/\s+/g, " ").trim(); statements.push(statement);
+        if (statement.startsWith("SELECT * FROM calendar_provider_connections")) return { rowCount: 1, rows: [{
+          status, credential_handle: "exact-reconnect-handle", owner_id: OWNER_ID,
+          provider_key: PROVIDER_KEY, provider_account_id: PROVIDER_ACCOUNT_ID
+        }] };
+        if (statement.startsWith("SELECT b.*")) return { rowCount: 1, rows: [{
+          owner_id: OWNER_ID, provider_key: PROVIDER_KEY, provider_account_id: PROVIDER_ACCOUNT_ID,
+          provider_calendar_id: PROVIDER_CALENDAR_ID, calendar_updated_at: "2026-09-01T12:00:00.000Z"
+        }] };
+        if (statement.startsWith("UPDATE calendars")) writes.push(values ?? []);
+        return { rowCount: 1, rows: [] };
+      }, release() {}
+    };
+    const store = new PostgresCalendarProviderStateStore({ connect: async () => client } as never);
+    const saving = store.updateCalendarBinding({ ...providerBinding(), agentGrant: "write" }, { provisioningConnection: {
+      status: "provisioning", credentialHandle: calendarProviderCredentialHandle("exact-reconnect-handle")
+    } });
+    if (status === "provisioning") {
+      await saving;
+      expect(writes[0].slice(0, 3)).toEqual([CALENDAR_ID, OWNER_ID, "write"]);
+      expect(statements.at(-1)).toBe("COMMIT");
+    } else {
+      await expect(saving).rejects.toMatchObject({ code: "connection_inactive" });
+      expect(writes).toEqual([]);
+      expect(statements.at(-1)).toBe("ROLLBACK");
+    }
+    expect(statements).toEqual(expect.arrayContaining([
+      expect.stringContaining("pg_advisory_xact_lock"), expect.stringContaining("FOR UPDATE")
+    ]));
   });
 
   it("creates the canonical Calendar and binding in one committed transaction", async () => {

@@ -3,16 +3,32 @@
 ## Current source-candidate notice boundary
 
 The retained JavaScript inventory and Outlook additions below keep their exact
-recorded scope. The new Google source candidate pins `google-auth-library@10.9.1`.
+recorded scope. The admitted Google addition pins `google-auth-library@10.9.1`.
 The [Google dependency appendix](#google-authentication-dependency-additions)
 reconciles all 15 added package versions and their installed upstream notices
 with the production inventory from cloud run `33626746438`, source
-`61a5a5e1da132a4dc90fdfd7fe9bad7c08a6c2fc`. The frozen standalone lock SHA-256 is
+`61a5a5e1da132a4dc90fdfd7fe9bad7c08a6c2fc`. That checkpoint's frozen standalone
+lock SHA-256 is
 `fdbff87fffbdf277502d689ac0c9cf0ebebe2438dfb03dba6adb565eef723cc2`;
 the retained `pnpm licenses list --prod --json` output SHA-256 is
 `69697aef6c2d4ace9666ba4060132b58ad941c0c23baa1a21513966aa707b29c`.
 All 15 exact versions and declared licenses match. This closes the Google-added
 dependency-notice delta, not a fresh audit of the complete historical closure.
+
+The Calendar connection-dialog test addition admits `jsdom@26.1.0` only in the
+web app's development dependencies. Its standalone lock SHA-256 is
+`24a3ef81522f1a8170af4a47856a71fd1e6fc84b1c99592c1fd01fe3766fc925`.
+Compared with the preceding `fdbff87f...` lock identified above, every production
+and optional importer and all 336 reachable production snapshot/package-resolution
+records are unchanged. The 31 added package records belong only to the development
+closure; no shipped dependency or package notice is added by this change.
+The frozen-install production inventory from cloud run `33654405621`, source
+`10ee0393c7afc7839a76ed2786392057bb6a8ed4`, is byte-identical to the retained
+inventories from runs `33626746438` and `33641813804`: 120,872 bytes, with the
+`69697aef...` SHA-256 identified above. All 303 exact package-version/license
+entries match, and `jsdom` is absent from that production inventory. This proves
+the unchanged installed production-notice delta, not whole-release test success,
+deployment qualification, or a new native-build audit.
 
 Previously admitted native evidence is retained: applicable canvas/Rust/Skia
 source and notices, image-bound Debian corresponding sources, and the packaged
@@ -31,8 +47,10 @@ installation.
 
 Audited lockfile SHA-256:
 `6b549600ab4f6bd18b481cca2bbe486d3cc3062e2057415f48ff07da2169035e`.
-If the final standalone lockfile has a different digest, this inventory and
-notice bundle must be regenerated before publication.
+Later standalone lockfile changes require reconciliation of the affected
+production inventory and notices before publication. A verified development-only
+change does not invalidate retained production notices; changed shipped packages,
+versions, or license terms require the corresponding inventory/notice update.
 
 The result contains 190 third-party package names and 199 exact locked
 package-version entries. Development-only dependencies are excluded. Packages

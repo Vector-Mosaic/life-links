@@ -6,6 +6,7 @@ import {
   assertCalendarProvisioningPair,
   calendarProviderCredentialHandle,
   type CalendarProviderBindingRecord,
+  type CalendarProviderBindingUpdateOptions,
   type CalendarProviderConnectionRecord,
   type CalendarProviderConnectionExpectation,
   type CalendarProviderSynchronizationTarget,
@@ -362,10 +363,7 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
     });
   }
 
-  async updateCalendarBinding(calendar: CalendarProviderBindingRecord, options?: {
-    expectedUpdatedAt: string;
-    updatedAt: string;
-  }): Promise<void> {
+  async updateCalendarBinding(calendar: CalendarProviderBindingRecord, options?: CalendarProviderBindingUpdateOptions): Promise<void> {
     await this.withTransaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`owner:${calendar.ownerId}`]);
       const connection = await client.query<ProviderConnectionRow>(
@@ -382,11 +380,16 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
         || row.provider_calendar_id !== calendar.providerCalendarId) {
         throw new CalendarProviderGatewayError("provider_identity_mismatch", "The provider Calendar binding identity does not match its canonical Calendar.");
       }
-      if (options && (iso(row.calendar_updated_at) !== options.expectedUpdatedAt || connection.rows[0].status !== "active")) {
+      if (options && "provisioningConnection" in options
+        && (connection.rows[0].status !== "provisioning" || connection.rows[0].status !== options.provisioningConnection.status
+          || connection.rows[0].credential_handle !== options.provisioningConnection.credentialHandle)) {
+        throw new CalendarProviderGatewayError("connection_inactive", "The reconnect changed before its Calendar permissions were saved.");
+      }
+      if (options && "expectedUpdatedAt" in options && (iso(row.calendar_updated_at) !== options.expectedUpdatedAt || connection.rows[0].status !== "active")) {
         throw new CalendarProviderGatewayError("calendar_settings_conflict", "Calendar settings changed. Reload before saving.");
       }
-      const updatedAt = options?.updatedAt
-        ?? new Date(Math.max(Date.now(), Date.parse(iso(row.calendar_updated_at)) + 1)).toISOString();
+      const updatedAt = options && "updatedAt" in options ? options.updatedAt
+        : new Date(Math.max(Date.now(), Date.parse(iso(row.calendar_updated_at)) + 1)).toISOString();
       await client.query(
         `UPDATE calendar_provider_bindings SET provider_display_name = $7, capabilities = $8::jsonb, visible = $9
          WHERE connection_id = $1 AND owner_id = $2 AND provider_key = $3

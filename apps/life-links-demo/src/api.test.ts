@@ -38,7 +38,26 @@ describe("Life Links API error normalization", () => {
     }
   });
 
-  it("routes Outlook authorization separately from exact provider event authority without credentials or agent settings", async () => {
+  it("sends selected calendar access in the same owner-only completion request", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const signal = new AbortController().signal;
+    const selectedCalendarIds = ["primary@example.test", "shared/calendar+one="];
+    const agentAccessByCalendarId = { "primary@example.test": "write" as const, "shared/calendar+one=": "read" as const };
+    await completeCalendarAuthorization("authorization-one", selectedCalendarIds, signal, agentAccessByCalendarId);
+    await selectConnectedCalendars("connection/one", selectedCalendarIds, signal, agentAccessByCalendarId);
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([path]) => path)).toEqual([
+      "/api/calendar-authorizations/authorization-one/complete", "/api/calendar-connections/connection%2Fone/select"
+    ]);
+    for (const [, init] of calls) {
+      expect(JSON.parse(init.body as string)).toEqual({ selectedCalendarIds, agentAccessByCalendarId });
+      expect(init).toMatchObject({ method: "POST", credentials: "include", signal });
+      expect(new Headers(init.headers).has("X-Life-Links-Actor")).toBe(false);
+    }
+  });
+
+  it("routes Outlook authorization separately from exact provider event authority without credentials or implicit agent settings", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);
     const connectionId = "connection/one", calendarId = "calendar-one", providerEventId = "AAM/event+one=";

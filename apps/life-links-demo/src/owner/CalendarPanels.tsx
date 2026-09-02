@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays,
   ChevronLeft,
@@ -53,6 +53,7 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
   const [anchorDate, setAnchorDate] = useState<string | null>(() => selected ? eventStartDate(selected, initialZone) : null);
   const [selectedDate, setSelectedDate] = useState<string | null>(anchorDate);
   const [visibleCalendarIds, setVisibleCalendarIds] = useState<string[]>([]);
+  const calendarFilter = useRef<HTMLDetailsElement>(null);
   const calendars = snapshot.calendarWorkspace.calendars.filter((calendar) => !calendar.deletedAt);
   const visibleSet = useMemo(() => new Set(visibleCalendarIds), [visibleCalendarIds]);
   const range = useMemo(() => calendarRange(view, anchorDate ?? "1970-01-01"), [anchorDate, view]);
@@ -60,9 +61,27 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
   const clock = snapshot.calendarWorkspace.clock?.timeZone === timeZone ? snapshot.calendarWorkspace.clock : null;
 
   useEffect(() => {
-    const flow = snapshot.calendarWorkspace.connectionFlow;
-    if (flow?.authorizationId || flow?.error) onOpenDialog({ kind: "manage-calendars" });
-  }, [snapshot.calendarWorkspace.connectionFlow?.authorizationId, snapshot.calendarWorkspace.connectionFlow?.error]);
+    function dismissOutside(event: Event) {
+      const filter = calendarFilter.current;
+      if (filter?.open && event.target instanceof Node && !filter.contains(event.target)) filter.open = false;
+    }
+    function dismissWithEscape(event: KeyboardEvent) {
+      const filter = calendarFilter.current;
+      if (event.key !== "Escape" || !filter?.open) return;
+      event.preventDefault();
+      event.stopPropagation();
+      filter.open = false;
+      filter.querySelector("summary")?.focus();
+    }
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("focusin", dismissOutside);
+    document.addEventListener("keydown", dismissWithEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("focusin", dismissOutside);
+      document.removeEventListener("keydown", dismissWithEscape, true);
+    };
+  }, []);
 
   useEffect(() => {
     setVisibleCalendarIds((current) => {
@@ -200,10 +219,10 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
     </div>
 
     <div className="ll-calendar-options">
-      <details className="ll-calendar-filter"><summary><CalendarDays size={15} />Calendars</summary><div className="ll-calendar-filter-menu">
+      <details ref={calendarFilter} className="ll-calendar-filter"><summary><CalendarDays size={15} />Calendars</summary><div className="ll-calendar-filter-menu">
         {calendars.map((calendar) => <label key={calendar.id}><input type="checkbox" checked={visibleSet.has(calendar.id)} onChange={() => toggleCalendar(calendar.id)} /><span className="ll-calendar-color" style={{ background: calendar.color }} />{calendar.title}{calendar.isDefault && <small>Default</small>}</label>)}
         <label className="ll-calendar-projection-filter"><input type="checkbox" checked disabled /><span className="ll-calendar-color ll-routine-color" />Routine plans<small>Projection</small></label>
-        <button className="ll-text-button" type="button" onClick={() => onOpenDialog({ kind: "manage-calendars" })}><Settings2 size={14} />Manage</button>
+        <button className="ll-text-button" type="button" onClick={() => { if (calendarFilter.current) calendarFilter.current.open = false; onOpenDialog({ kind: "manage-calendars" }); }}><Settings2 size={14} />Manage</button>
       </div></details>
       <label className="ll-calendar-zone"><span>View time zone</span><select value={timeZone} onChange={(event) => chooseTimeZone(event.target.value)}>{supportedTimeZones().map((zone) => <option value={zone} key={zone}>{zone}</option>)}</select></label>
     </div>

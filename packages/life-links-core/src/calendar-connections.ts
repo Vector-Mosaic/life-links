@@ -37,6 +37,13 @@ export type CalendarConnectedCalendarPatch = {
   agentAccess?: CalendarAgentAccess;
 };
 
+/** Explicit owner choices for exact discovered provider Calendar identities. */
+export type CalendarConnectionSelectionInput = {
+  selectedCalendarIds: string[];
+  /** When supplied, keys must exactly match selectedCalendarIds. Omission preserves default-deny behavior. */
+  agentAccessByCalendarId?: Record<string, CalendarAgentAccess>;
+};
+
 export type CalendarProviderAvailability = {
   providerKey: "google" | "microsoft";
   displayName: string;

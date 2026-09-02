@@ -17,7 +17,7 @@ import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
 import type { LifeLinksWorkspaceController } from "../workspace/controller";
 
 vi.mock("./FieldLedgerPrimitives", () => ({
-  Dialog: ({ children }: { children: ReactNode }) => children
+  Dialog: ({ title, children, wide }: { title: string; children: ReactNode; wide?: boolean }) => createElement("section", { role: "dialog", "aria-label": title, "data-wide": Boolean(wide) }, children)
 }));
 
 const ownerId = "owner-calendar-test";
@@ -36,14 +36,15 @@ const calendar: CalendarRecord = {
 };
 
 describe("Calendar manager permission presentation", () => {
-  it("shows the persisted native permission and all three explicit choices independently from visibility", () => {
+  it("shows persisted native permissions without opening an unsolicited editor", () => {
     const markup = calendarManagerMarkup([{ ...calendar, agentAccess: "none" }]);
     expect(markup).toContain("Agent: No access");
-    expect(markup).toContain('<option value="none">No access</option>');
-    expect(markup).toContain('<option value="read">Read only</option>');
-    expect(markup).toContain('<option value="write" selected="">Read and edit</option>');
-    expect(markup).toContain("Showing or hiding a Calendar does not change agent access");
-    expect(markup).toContain("Calendar-v2 grant");
+    expect(markup).toContain("Your Life Links calendars");
+    expect(markup).toContain("New Calendar");
+    expect(markup).toContain("External calendars");
+    expect(markup).not.toContain("<form");
+    expect(markup).not.toContain("Create Calendar");
+    expect(markup).not.toContain("Default time zone");
   });
 
   it("does not present provider calendars as editable native calendars or pretend OAuth is available", () => {
@@ -83,18 +84,26 @@ describe("Calendar manager permission presentation", () => {
     expect(markup).not.toContain("No external accounts are connected");
   });
 
-  it("enables only configured Outlook sign-in, preserves exact discovery choices, and does not imply agent consent", () => {
+  it("replaces the settings manager with a compact Outlook calendar and agent-access selection", () => {
     const markup = calendarManagerMarkup([], {
       providers: [{ providerKey: "microsoft", displayName: "Microsoft Outlook", authorizationAvailable: true }]
     }, { authorizationId: "11111111-1111-4111-8111-111111111111", connectionId: null, loading: false, error: "", feedback: "",
       discovery: { providerKey: "microsoft", providerAccountId: "exact-test-account", calendars: [
         { providerCalendarId: "provider/exact+id=", displayName: "Work Calendar", isDefault: true, capabilities: { read: true, create: true, update: true, delete: true } }
       ] } });
-    expect(markup).toMatch(/<button class="ll-button" title="Continue to Microsoft sign-in">[^]*?Connect Microsoft Outlook<\/button>/);
-    expect(markup).toContain("exact-test-account"); expect(markup).toContain("Work Calendar (provider default)");
-    expect(markup).toContain("New calendars start with No access for agents");
+    expect(markup).toContain('aria-label="Finish connecting Outlook" data-wide="false"');
+    expect(markup).toContain('<details class="ll-calendar-selection-account"><summary>Account details</summary>');
+    expect(markup).toContain("exact-test-account"); expect(markup).toContain("Work Calendar");
+    expect(markup).not.toMatch(/<details[^>]*\bopen(?:=|>)/);
+    expect(markup).toContain("Default calendar");
+    expect(markup).toContain("Outlook sign-in successful.");
+    expect(markup).toContain('aria-label="Agent access for Work Calendar"');
+    expect(markup).toContain('<option value="none" selected="">No access</option>');
     expect(markup).not.toContain('type="checkbox" checked=""');
-    expect(markup).toContain("Cancel selection"); expect(markup).toContain("Connect selected calendars");
+    expect(markup).toContain("Cancel"); expect(markup).toContain("Connect calendars");
+    expect(markup).not.toContain("Your Life Links calendars");
+    expect(markup).not.toContain("New Calendar");
+    expect(markup).not.toContain("External calendars");
   });
 
   it("distinguishes removal of saved Outlook credentials from Microsoft account consent", () => {
