@@ -7,6 +7,16 @@ import type {
   ActivityRecord,
   AppendRoutineSessionAmendmentCommand,
   CalendarActor,
+  CalendarAuthorizationDiscovery,
+  CalendarProviderBindingView,
+  ProviderCalendarEventReference,
+  ProviderCalendarEventCreateInput,
+  ProviderCalendarEventUpdateInput,
+  ProviderCalendarEventDeleteInput,
+  ProviderCalendarEventQueryInput,
+  ProviderCalendarEventPage,
+  ProviderCalendarEventResponse,
+  ProviderCalendarEventDeletionResponse,
   CalendarConnectionView,
   CalendarConnectedCalendarView,
   CalendarConnectedCalendarPatch,
@@ -363,7 +373,7 @@ export type RoutineOccurrenceMaterializationResponse = {
   occurrenceCount: number;
 };
 export type RoutineSessionPageResponse = { sessions: RoutineSessionProjection[]; nextCursor: string | null; truncated: boolean };
-export type CalendarPageResponse = { calendars: CalendarRecord[]; nextCursor: string | null; truncated: boolean };
+export type CalendarPageResponse = { calendars: CalendarRecord[]; providerBindings?: CalendarProviderBindingView[]; nextCursor: string | null; truncated: boolean };
 export type CalendarEventDetail = { event: CalendarEventRecord; currentRevision: CalendarEventRevisionRecord };
 export type CalendarEventPageResponse = {
   calendarEvents: CalendarEventDetail[];
@@ -582,6 +592,42 @@ export function listCalendarProviders(signal?: AbortSignal) {
   return apiFetch<{ providers: CalendarProviderAvailability[] }>("/api/calendar-providers", { signal });
 }
 
+export function authorizeMicrosoftCalendar(reconnectConnectionId?: string, signal?: AbortSignal) {
+  return apiFetch<{ authorizationUrl: string }>("/api/calendar-providers/microsoft/authorize", {
+    method: "POST", body: JSON.stringify(reconnectConnectionId ? { reconnectConnectionId } : {}), signal
+  });
+}
+
+export function getCalendarAuthorization(authorizationId: string, signal?: AbortSignal) {
+  return apiFetch<CalendarAuthorizationDiscovery>(`/api/calendar-authorizations/${encodeURIComponent(authorizationId)}/calendars`, { signal });
+}
+
+export function completeCalendarAuthorization(authorizationId: string, selectedCalendarIds: string[], signal?: AbortSignal) {
+  return apiFetch<{ connection: CalendarConnectionView; calendars: CalendarConnectedCalendarView[] }>(`/api/calendar-authorizations/${encodeURIComponent(authorizationId)}/complete`, {
+    method: "POST", body: JSON.stringify({ selectedCalendarIds }), signal
+  });
+}
+
+export function cancelCalendarAuthorization(authorizationId: string, signal?: AbortSignal) {
+  return apiFetch<void>(`/api/calendar-authorizations/${encodeURIComponent(authorizationId)}`, { method: "DELETE", signal });
+}
+
+export function discoverConnectedCalendars(connectionId: string, signal?: AbortSignal) {
+  return apiFetch<CalendarAuthorizationDiscovery>(`/api/calendar-connections/${encodeURIComponent(connectionId)}/available-calendars`, { signal });
+}
+
+export function selectConnectedCalendars(connectionId: string, selectedCalendarIds: string[], signal?: AbortSignal) {
+  return apiFetch<{ connection: CalendarConnectionView; calendars: CalendarConnectedCalendarView[] }>(`/api/calendar-connections/${encodeURIComponent(connectionId)}/select`, {
+    method: "POST", body: JSON.stringify({ selectedCalendarIds }), signal
+  });
+}
+
+export function refreshCalendarConnection(connectionId: string, windowStart: string, windowEnd: string, signal?: AbortSignal) {
+  return apiFetch<{ refreshed: true }>(`/api/calendar-connections/${encodeURIComponent(connectionId)}/refresh`, {
+    method: "POST", body: JSON.stringify({ windowStart, windowEnd }), signal
+  });
+}
+
 export function listCalendarConnections(signal?: AbortSignal) {
   return apiFetch<{ connections: CalendarConnectionView[] }>("/api/calendar-connections", { signal });
 }
@@ -694,6 +740,31 @@ export function restoreCalendarEvent(eventId: string, input: CalendarEventRestor
   return apiFetch<CalendarEventDetailResponse>(`/api/calendar-events/${encodeURIComponent(eventId)}/restore`, {
     method: "POST", body: JSON.stringify(input), signal
   });
+}
+
+export function listProviderCalendarEvents(input: ProviderCalendarEventQueryInput, signal?: AbortSignal, actor?: CalendarActor) {
+  const query = new URLSearchParams({ authority: "provider", connectionId: input.connectionId, calendarId: input.calendarId,
+    startDate: input.startDate, endDate: input.endDate });
+  if (input.cursor) query.set("cursor", input.cursor);
+  if (input.limit) query.set("limit", String(input.limit));
+  return apiFetch<ProviderCalendarEventPage>(`/api/calendar-events?${query}`, { signal, headers: calendarActorHeaders(actor) });
+}
+
+export function getProviderCalendarEvent(reference: ProviderCalendarEventReference, signal?: AbortSignal, actor?: CalendarActor) {
+  const query = new URLSearchParams({ authority: "provider", connectionId: reference.connectionId, calendarId: reference.calendarId });
+  return apiFetch<ProviderCalendarEventResponse>(`/api/calendar-events/${encodeURIComponent(reference.providerEventId)}?${query}`, { signal, headers: calendarActorHeaders(actor) });
+}
+
+export function createProviderCalendarEvent(input: ProviderCalendarEventCreateInput, signal?: AbortSignal, actor?: CalendarActor) {
+  return apiFetch<ProviderCalendarEventResponse>("/api/calendar-events", { method: "POST", body: JSON.stringify(input), signal, headers: calendarActorHeaders(actor) });
+}
+
+export function updateProviderCalendarEvent(providerEventId: string, input: ProviderCalendarEventUpdateInput, signal?: AbortSignal, actor?: CalendarActor) {
+  return apiFetch<ProviderCalendarEventResponse>(`/api/calendar-events/${encodeURIComponent(providerEventId)}`, { method: "PATCH", body: JSON.stringify(input), signal, headers: calendarActorHeaders(actor) });
+}
+
+export function deleteProviderCalendarEvent(providerEventId: string, input: ProviderCalendarEventDeleteInput, signal?: AbortSignal, actor?: CalendarActor) {
+  return apiFetch<ProviderCalendarEventDeletionResponse>(`/api/calendar-events/${encodeURIComponent(providerEventId)}`, { method: "DELETE", body: JSON.stringify(input), signal, headers: calendarActorHeaders(actor) });
 }
 
 export async function listCollections(options: PageOptions = {}) {

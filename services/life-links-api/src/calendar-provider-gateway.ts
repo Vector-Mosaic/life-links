@@ -8,10 +8,15 @@ import {
   type CalendarConnectedCalendarView,
   type CalendarConnectedCalendarPatch,
   type CalendarProviderCapabilities,
-  type CalendarRecord
+  type CalendarRecord,
+  type ProviderEventSpan,
+  type ProviderEventContent,
+  type ProviderEventSnapshot,
+  type CalendarProviderEventProjection
 } from "@life-links/core";
 
-export type { CalendarProviderCapabilities } from "@life-links/core";
+export type { CalendarProviderCapabilities, ProviderTimedEventSpan, ProviderAllDayEventSpan,
+  ProviderEventSpan, ProviderEventContent, ProviderEventSnapshot, CalendarProviderEventProjection } from "@life-links/core";
 
 /**
  * Server-only reference to a credential-vault record. Provider adapters may
@@ -32,6 +37,12 @@ export function calendarProviderCredentialHandle(vaultRecordId: string): Calenda
 }
 
 export type CalendarProviderKey = string;
+
+/** Stable canonical identity for this account connection and exact remote Calendar. */
+export function calendarProviderLocalCalendarId(connectionId: string, providerCalendarId: string): string {
+  const digest = createHash("sha256").update(JSON.stringify([connectionId, providerCalendarId])).digest("hex");
+  return normalizeCalendarId(`calendar-${digest.slice(0, 8)}-${digest.slice(8, 12)}-5${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`);
+}
 export type CalendarAgentGrant = CalendarAgentAccess;
 export type CalendarProviderConnectionStatus = CalendarConnectionView["status"];
 export type CalendarProviderRevocationStatus = CalendarConnectionView["remoteRevocationStatus"];
@@ -74,54 +85,6 @@ export type CalendarProviderSelection = {
   agentGrant?: CalendarAgentGrant;
 };
 
-export type ProviderTimedEventSpan = {
-  kind: "timed";
-  startUtc: string;
-  endUtc: string;
-  sourceTimeZone: string | null;
-  floatingLocalStart: string | null;
-  floatingLocalEnd: string | null;
-};
-
-export type ProviderAllDayEventSpan = {
-  kind: "all_day";
-  startDate: string;
-  endDateExclusive: string;
-};
-
-export type ProviderEventSpan = ProviderTimedEventSpan | ProviderAllDayEventSpan;
-
-export type ProviderEventContent = {
-  title: string;
-  description: string | null;
-  location: string | null;
-  span: ProviderEventSpan;
-  providerSeriesId: string | null;
-  status: "confirmed" | "tentative" | "canceled";
-};
-
-export type ProviderEventSnapshot = {
-  providerEventId: string;
-  providerRevision: string;
-  content: ProviderEventContent;
-  /**
-   * An adapter may set this only after an authoritative provider read proves
-   * that an event deleted at the named revision was deliberately restored.
-   */
-  revivesProviderRevision?: string;
-};
-
-export type CalendarProviderEventProjection = ProviderAccountIdentity & {
-  ownerId: string;
-  connectionId: string;
-  calendarId: string;
-  providerCalendarId: string;
-  providerEventId: string;
-  providerRevision: string;
-  content: ProviderEventContent;
-  synchronizedAt: string;
-};
-
 export type CalendarProviderEventTombstone = ProviderAccountIdentity & {
   ownerId: string;
   connectionId: string;
@@ -158,6 +121,7 @@ export type CalendarProviderSyncBatch = {
 export type CalendarProviderDiscoveredCalendar = {
   providerCalendarId: string;
   displayName: string;
+  isDefault?: boolean;
   capabilities: CalendarProviderCapabilities;
 };
 
@@ -188,6 +152,7 @@ export type CalendarProviderAdapter = {
     providerCalendarId: string;
     commandId: string;
     content: ProviderEventContent;
+    authorizeDispatch?: () => Promise<void>;
   }): Promise<{ providerEventId: string }>;
   updateEvent(input: {
     credentialHandle: CalendarProviderCredentialHandle;
@@ -197,6 +162,7 @@ export type CalendarProviderAdapter = {
     commandId: string;
     expectedProviderRevision: string;
     content: ProviderEventContent;
+    authorizeDispatch?: () => Promise<void>;
   }): Promise<void>;
   deleteEvent(input: {
     credentialHandle: CalendarProviderCredentialHandle;
@@ -205,6 +171,7 @@ export type CalendarProviderAdapter = {
     providerEventId: string;
     commandId: string;
     expectedProviderRevision: string;
+    authorizeDispatch?: () => Promise<void>;
   }): Promise<void>;
   revokeConnection(input: {
     credentialHandle: CalendarProviderCredentialHandle;
@@ -273,7 +240,7 @@ export type CalendarProviderOutboxRecord = {
   commandId: string;
   fingerprint: string;
   command: CalendarProviderCommand;
-  status: "pending" | "processing" | "succeeded" | "conflict";
+  status: "pending" | "processing" | "succeeded" | "conflict" | "rejected";
   attempts: number;
   createdAt: string;
   updatedAt: string;
@@ -284,7 +251,25 @@ export type CalendarProviderOutboxRecord = {
   lastErrorCode: "provider_transient" | "provider_unknown" | null;
   result: CalendarProviderCommandResult | null;
   conflictRevision: string | null;
+  dispatchEvidence: CalendarProviderDispatchEvidence | null;
 };
+
+/** Durable uncertainty marker, written before provider I/O, never an assertion of success. */
+export type CalendarProviderDispatchEvidence = {
+  phase: "dispatched" | "acknowledged";
+  providerEventId: string | null;
+  dispatchedAt: string;
+  desiredFingerprint: string | null;
+};
+
+export type CalendarProviderSynchronizationTarget = {
+  ownerId: string;
+  connectionId: string;
+  calendarId: string;
+  providerKey: string;
+};
+
+export type CalendarProviderConnectionExpectation = Pick<CalendarProviderConnectionRecord, "status" | "credentialHandle">;
 
 export type CalendarProviderWebhookHint = {
   hintId: string;
@@ -319,6 +304,11 @@ export interface CalendarProviderStateStore {
   listConnections(ownerId: string): Promise<CalendarProviderConnectionRecord[]>;
   getConnection(connectionId: string): Promise<CalendarProviderConnectionRecord | null>;
   saveConnection(connection: CalendarProviderConnectionRecord): Promise<void>;
+  reserveConnection(connection: CalendarProviderConnectionRecord): Promise<{ record: CalendarProviderConnectionRecord; created: boolean }>;
+  transitionConnection(connection: CalendarProviderConnectionRecord, expected: CalendarProviderConnectionExpectation): Promise<boolean>;
+  listSynchronizationTargets(input: { providerKey?: string; limit: number; after: { connectionId: string; calendarId: string } | null }): Promise<CalendarProviderSynchronizationTarget[]>;
+  listRetryableCommands(input: { providerKey?: string; limit: number; now: string }): Promise<Pick<CalendarProviderCommand, "commandId" | "ownerId" | "connectionId" | "calendarId">[]>;
+  listRevocationTargets(input: { providerKey?: string; limit: number; now: string }): Promise<Array<{ ownerId: string; connectionId: string }>>;
   listCalendars(connectionId: string): Promise<CalendarProviderBindingRecord[]>;
   getCalendar(connectionId: string, calendarId: string): Promise<CalendarProviderBindingRecord | null>;
   getCanonicalCalendar(calendarId: string): Promise<CalendarRecord | null>;
@@ -371,6 +361,7 @@ export class CalendarProviderGatewayError extends Error {
       | "outbox_lease_lost"
       | "provider_revision_conflict"
       | "provider_readback_failed"
+      | "provider_event_read_only"
       | "webhook_hint_not_found",
     message: string,
     readonly details: Record<string, unknown> = {}
@@ -438,7 +429,15 @@ export class CalendarProviderGateway {
     if (!input.calendars.length) {
       throw new CalendarProviderGatewayError("invalid_input", "At least one exact provider calendar must be selected.");
     }
-    const connectedAt = this.#now().toISOString();
+    const previous = await this.store.getConnection(input.connectionId);
+    if (previous && (previous.ownerId !== input.ownerId || previous.providerKey !== input.providerKey
+      || previous.providerAccountId !== input.expectedProviderAccountId)) {
+      throw new CalendarProviderGatewayError("provider_identity_mismatch", "The connection is bound to another exact account.");
+    }
+    if (previous?.status === "disconnected") {
+      throw new CalendarProviderGatewayError("connection_inactive", "Use explicit reconnect for a disconnected account.");
+    }
+    const connectedAt = previous?.connectedAt ?? this.#now().toISOString();
     const selections = input.calendars.map((selection) =>
       normalizeCalendarSelection(selection, input.ownerId, connectedAt)
     );
@@ -451,15 +450,15 @@ export class CalendarProviderGateway {
       seenLocal.add(selection.calendar.id);
       seenProvider.add(selection.providerCalendarId);
     }
-    const adapter = this.#adapter(input.providerKey);
-    const discovery = normalizeDiscovery(await adapter.discover({ credentialHandle: input.credentialHandle }));
-    if (discovery.providerKey !== input.providerKey || discovery.providerAccountId !== input.expectedProviderAccountId) {
-      throw new CalendarProviderGatewayError("provider_identity_mismatch", "The authorized provider account did not match the selected account.");
+    if (previous?.status === "active") {
+      const bound = await this.store.listCalendars(previous.connectionId);
+      if (bound.length !== selections.length || selections.some((selection) => !bound.some((binding) =>
+        binding.calendarId === selection.calendar.id && binding.providerCalendarId === selection.providerCalendarId))) {
+        throw new CalendarProviderGatewayError("idempotency_conflict", "The connection was completed with a different Calendar selection.");
+      }
+      return { connection: safeConnection(previous), calendars: bound.map(cloneCalendar) };
     }
-    const existing = await this.store.getConnection(input.connectionId);
-    if (existing) {
-      throw new CalendarProviderGatewayError("invalid_input", "The connection identity is already in use.");
-    }
+    const discovery = await this.discoverExternalCalendars(input);
     const discovered = new Map(discovery.calendars.map((calendar) => [calendar.providerCalendarId, calendar]));
     const calendars: CalendarProviderBindingRecord[] = [];
     for (const selection of selections) {
@@ -494,10 +493,17 @@ export class CalendarProviderGateway {
       remoteRevocationAttemptedAt: null,
       remoteRevocationErrorCode: null
     };
-    await this.store.saveConnection(connection);
+    const reserved = await this.store.reserveConnection(connection);
+    connection = reserved.record;
+    if (connection.ownerId !== input.ownerId || connection.providerKey !== input.providerKey
+      || connection.providerAccountId !== input.expectedProviderAccountId || connection.credentialHandle !== input.credentialHandle) {
+      throw new CalendarProviderGatewayError("provider_identity_mismatch", "The connection identity or credential changed during selection.");
+    }
+    if (connection.status === "active") return this.connectExternalAccount(input);
+    if (connection.status !== "provisioning") throw new CalendarProviderGatewayError("connection_inactive", "The connection is no longer being provisioned.");
     try {
       for (let index = 0; index < calendars.length; index += 1) {
-        await this.store.provisionCalendar(selections[index].calendar, calendars[index]);
+        await this.store.provisionCalendar({ ...selections[index].calendar, createdAt: connection.connectedAt, updatedAt: connection.connectedAt }, calendars[index]);
       }
       for (const calendar of calendars) {
         await this.synchronizeCalendar({
@@ -508,18 +514,165 @@ export class CalendarProviderGateway {
           allowProvisioning: true
         });
       }
-      connection = { ...connection, status: "active" };
-      await this.store.saveConnection(connection);
+      const active: CalendarProviderConnectionRecord = { ...connection, status: "active" };
+      if (!await this.store.transitionConnection(active, connection)) {
+        const latest = await this.store.getConnection(connection.connectionId);
+        if (!latest || latest.status !== "active" || latest.credentialHandle !== connection.credentialHandle) {
+          throw new CalendarProviderGatewayError("connection_inactive", "The connection changed before provisioning completed.");
+        }
+      }
+      connection = active;
     } catch (error) {
-      const locallyClosed = await this.#closeConnectionLocally(connection, "retain_private_stale");
-      try {
-        await this.store.rollbackProvisioning(connection.connectionId);
-      } finally {
-        await this.#attemptRemoteRevocation(locallyClosed);
+      const latest = await this.store.getConnection(connection.connectionId);
+      if (reserved.created && latest?.status === "provisioning" && latest.credentialHandle === connection.credentialHandle) {
+        const locallyClosed = await this.#closeConnectionLocally(latest, "retain_private_stale");
+        try {
+          await this.store.rollbackProvisioning(connection.connectionId);
+        } finally {
+          await this.#attemptRemoteRevocation(locallyClosed);
+        }
       }
       throw error;
     }
     return { connection: safeConnection(connection), calendars: calendars.map(cloneCalendar) };
+  }
+
+  async discoverExternalCalendars(input: {
+    ownerId: string; providerKey: string; expectedProviderAccountId: string; credentialHandle: CalendarProviderCredentialHandle;
+  }): Promise<CalendarProviderDiscovery> {
+    assertIdentifier(input.ownerId, "ownerId");
+    assertIdentifier(input.expectedProviderAccountId, "expectedProviderAccountId");
+    const discovery = normalizeDiscovery(await this.#adapter(input.providerKey).discover({ credentialHandle: input.credentialHandle }));
+    if (discovery.providerKey !== input.providerKey || discovery.providerAccountId !== input.expectedProviderAccountId) {
+      throw new CalendarProviderGatewayError("provider_identity_mismatch", "The authorized provider account did not match the selected account.");
+    }
+    return discovery;
+  }
+
+  async discoverConnectionCalendars(input: { ownerId: string; connectionId: string }): Promise<CalendarProviderDiscovery> {
+    const connection = await this.#ownedConnection(input.ownerId, input.connectionId, false);
+    return this.discoverExternalCalendars({ ...input, providerKey: connection.providerKey,
+      expectedProviderAccountId: connection.providerAccountId, credentialHandle: requiredCredential(connection) });
+  }
+
+  async selectExternalCalendars(input: {
+    ownerId: string; connectionId: string; calendars: CalendarProviderSelection[]; initialWindow: CalendarProviderWindow;
+  }): Promise<CalendarConnectedCalendarView[]> {
+    const connection = await this.#ownedConnection(input.ownerId, input.connectionId, false);
+    const window = normalizeWindow(input.initialWindow, this.#maxInitialWindowDays);
+    const discovery = await this.discoverConnectionCalendars(input);
+    if (!input.calendars.length) throw new CalendarProviderGatewayError("invalid_input", "Select at least one Calendar.");
+    const seenLocal = new Set<string>();
+    const seenProvider = new Set<string>();
+    const selections = input.calendars.map((value) => {
+      const selection = normalizeCalendarSelection({ ...value, agentGrant: "none" }, input.ownerId, this.#now().toISOString());
+      if (seenProvider.has(selection.providerCalendarId) || seenLocal.has(selection.calendar.id)) {
+        throw new CalendarProviderGatewayError("invalid_input", "Calendar selections must be unique.");
+      }
+      seenProvider.add(selection.providerCalendarId); seenLocal.add(selection.calendar.id);
+      const remote = discovery.calendars.find((entry) => entry.providerCalendarId === selection.providerCalendarId);
+      if (!remote) throw new CalendarProviderGatewayError("provider_identity_mismatch", "The selected Calendar was not discovered in this account.");
+      if (!remote.capabilities.read) throw new CalendarProviderGatewayError("calendar_read_only", "The selected Calendar is not readable.");
+      return { selection, remote };
+    });
+    for (const { selection, remote } of selections) {
+      await this.store.provisionCalendar(selection.calendar, {
+        ownerId: input.ownerId, connectionId: input.connectionId, providerKey: connection.providerKey,
+        providerAccountId: connection.providerAccountId, calendarId: selection.calendar.id,
+        providerCalendarId: remote.providerCalendarId, providerDisplayName: remote.displayName,
+        capabilities: remote.capabilities, agentGrant: "none", visible: selection.visible
+      });
+      await this.synchronizeCalendar({ ownerId: input.ownerId, connectionId: input.connectionId,
+        calendarId: selection.calendar.id, window });
+    }
+    return this.listManagedCalendars(input.ownerId, input.connectionId);
+  }
+
+  async reconnectConnection(input: {
+    ownerId: string; connectionId: string; expectedProviderAccountId: string;
+    credentialHandle: CalendarProviderCredentialHandle; initialWindow: CalendarProviderWindow;
+  }, options: { beforeCredentialReplacement?: (input: {
+    ownerId: string; connectionId: string; providerAccountId: string;
+    credentialHandle: CalendarProviderCredentialHandle; replacementCredentialHandle: CalendarProviderCredentialHandle;
+  }) => Promise<void> } = {}): Promise<CalendarProviderConnectionView> {
+    let previous = await this.#ownedConnection(input.ownerId, input.connectionId, true);
+    if (previous.providerAccountId !== input.expectedProviderAccountId) {
+      throw new CalendarProviderGatewayError("provider_identity_mismatch", "Reconnect must authorize the same exact account.");
+    }
+    const window = normalizeWindow(input.initialWindow, this.#maxInitialWindowDays);
+    if (previous.status === "active" && previous.credentialHandle === input.credentialHandle) return safeConnection(previous);
+    const discovery = await this.discoverExternalCalendars({ ...input, providerKey: previous.providerKey });
+    const bindings = await this.store.listCalendars(previous.connectionId);
+    if (bindings.some((binding) => !discovery.calendars.some((remote) => remote.providerCalendarId === binding.providerCalendarId))) {
+      throw new CalendarProviderGatewayError("provider_identity_mismatch", "A previously selected Calendar is not available in this account.");
+    }
+    if (previous.status === "provisioning" && previous.credentialHandle !== input.credentialHandle) {
+      throw new CalendarProviderGatewayError("idempotency_conflict", "Reconnect is already bound to another authorization attempt.");
+    }
+    if (previous.credentialHandle && previous.credentialHandle !== input.credentialHandle) {
+      previous = await this.#closeConnectionLocally(previous, "purge");
+      await options.beforeCredentialReplacement?.({ ownerId: input.ownerId, connectionId: input.connectionId,
+        providerAccountId: previous.providerAccountId, credentialHandle: requiredCredential(previous),
+        replacementCredentialHandle: input.credentialHandle });
+      previous = await this.#attemptRemoteRevocation(previous);
+      if (previous.remoteRevocationStatus !== "succeeded") {
+        throw new ProviderTransientError("The previous Calendar authorization has not finished local credential cleanup.");
+      }
+    }
+    const reconnecting: CalendarProviderConnectionRecord = { ...previous, status: "provisioning", credentialHandle: input.credentialHandle,
+      connectedAt: previous.status === "provisioning" ? previous.connectedAt : this.#now().toISOString(),
+      disconnectedAt: null, remoteRevocationStatus: "not_required", remoteRevocationAttemptedAt: null, remoteRevocationErrorCode: null };
+    if (!await this.store.transitionConnection(reconnecting, previous)) {
+      throw new CalendarProviderGatewayError("connection_inactive", "The account connection changed during reconnect.");
+    }
+    for (const binding of bindings) {
+      const remote = discovery.calendars.find((entry) => entry.providerCalendarId === binding.providerCalendarId)!;
+      await this.store.updateCalendarBinding({ ...binding, capabilities: remote.capabilities, providerDisplayName: remote.displayName,
+        visible: true, agentGrant: "none" });
+      await this.synchronizeCalendar({ ownerId: input.ownerId, connectionId: input.connectionId, calendarId: binding.calendarId,
+        window, allowProvisioning: true });
+    }
+    const active: CalendarProviderConnectionRecord = { ...reconnecting, status: "active" };
+    if (!await this.store.transitionConnection(active, reconnecting)) {
+      throw new CalendarProviderGatewayError("connection_inactive", "The account changed before reconnect completed.");
+    }
+    return safeConnection(active);
+  }
+
+  async listSynchronizationTargets(input: { providerKey?: string; limit?: number; cursor?: string } = {}) {
+    const limit = boundedPageLimit(input.limit, 100);
+    const after = input.cursor ? decodeSynchronizationCursor(input.cursor) : null;
+    const rows = await this.store.listSynchronizationTargets({ providerKey: input.providerKey, limit: limit + 1, after });
+    const targets = rows.slice(0, limit);
+    return { targets, nextCursor: rows.length > limit
+      ? Buffer.from(JSON.stringify({ connectionId: targets.at(-1)!.connectionId, calendarId: targets.at(-1)!.calendarId }), "utf8").toString("base64url")
+      : null };
+  }
+
+  async listRetryableCommands(input: { providerKey?: string; limit?: number } = {}) {
+    return this.store.listRetryableCommands({ ...input, limit: boundedPageLimit(input.limit, 50), now: this.#now().toISOString() });
+  }
+
+  async retryCommand(commandId: string) {
+    const record = await this.store.getOutbox(commandId);
+    if (!record || record.command.actor !== "owner") {
+      throw new CalendarProviderGatewayError("agent_calendar_access_denied", "A background worker cannot dispatch page-agent commands.");
+    }
+    return this.executeCommand(record.command);
+  }
+
+  async retryPendingRevocations(input: { providerKey?: string; limit?: number } = {}) {
+    const targets = await this.store.listRevocationTargets({ ...input, limit: boundedPageLimit(input.limit, 10), now: this.#now().toISOString() });
+    let completed = 0;
+    for (const target of targets) {
+      const current = await this.store.getConnection(target.connectionId);
+      if (current?.status !== "disconnected" || current.ownerId !== target.ownerId) continue;
+      // Continue only this exact closed credential epoch. Re-entering the public
+      // disconnect command could close a newer reconnect that won this race.
+      const result = await this.#attemptRemoteRevocation(current);
+      if (result.remoteRevocationStatus === "succeeded") completed++;
+    }
+    return { attempted: targets.length, completed };
   }
 
   async getConnection(ownerId: string, connectionId: string): Promise<CalendarProviderConnectionView> {
@@ -638,6 +791,8 @@ export class CalendarProviderGateway {
     calendarId: string;
     window: CalendarProviderWindow;
     allowProvisioning?: boolean;
+    actor?: "owner" | "agent";
+    authorizeAgent?: () => Promise<void>;
   }): Promise<{ recoveredExpiredCursor: boolean; upserted: number; deleted: number; cursor: string }> {
     const normalizedInput = {
       ...input,
@@ -663,15 +818,24 @@ export class CalendarProviderGateway {
     calendarId: string;
     window: CalendarProviderWindow;
     allowProvisioning?: boolean;
+    actor?: "owner" | "agent";
+    authorizeAgent?: () => Promise<void>;
   }): Promise<{ recoveredExpiredCursor: boolean; upserted: number; deleted: number; cursor: string }> {
-    const { connection, calendar } = await this.#ownedCalendar(
+    const admit = async () => {
+      if (input.actor === "agent") {
+        if (!input.authorizeAgent) throw new CalendarProviderGatewayError("agent_calendar_access_denied", "Live page-agent admission is required to synchronize.");
+        await input.authorizeAgent();
+      }
+      return this.#ownedCalendar(
       input.ownerId,
       input.connectionId,
       input.calendarId,
       "read",
-      "owner",
+      input.actor ?? "owner",
       input.allowProvisioning ?? false
-    );
+      );
+    };
+    let { connection, calendar } = await admit();
     const adapter = this.#adapter(connection.providerKey);
     const storedState = await this.store.getSyncState(connection.connectionId, calendar.calendarId);
     const currentState = storedState ?? {
@@ -684,6 +848,7 @@ export class CalendarProviderGateway {
     let batch: CalendarProviderSyncBatch;
     let recoveredExpiredCursor = false;
     try {
+      ({ connection, calendar } = await admit());
       batch = normalizeSyncBatch(await adapter.fetchChanges({
         credentialHandle: requiredCredential(connection),
         providerAccountId: connection.providerAccountId,
@@ -695,6 +860,7 @@ export class CalendarProviderGateway {
     } catch (error) {
       if (!(error instanceof ProviderCursorExpiredError) || !currentState.syncCursor) throw error;
       recoveredExpiredCursor = true;
+      ({ connection, calendar } = await admit());
       batch = normalizeSyncBatch(await adapter.fetchChanges({
         credentialHandle: requiredCredential(connection),
         providerAccountId: connection.providerAccountId,
@@ -748,10 +914,11 @@ export class CalendarProviderGateway {
     }
     const state: CalendarProviderSyncState = {
       ...currentState,
-      syncCursor: nonEmpty(batch.nextSyncCursor, "nextSyncCursor"),
+      syncCursor: batch.nextSyncCursor,
       lastReconciledAt: now,
       lastRecoveryAt: recoveredExpiredCursor ? now : currentState.lastRecoveryAt
     };
+    await admit();
     await this.store.applySyncMutation({
       connectionId: connection.connectionId,
       calendarId: calendar.calendarId,
@@ -823,17 +990,17 @@ export class CalendarProviderGateway {
     return { calendarsReconciled: calendars.length };
   }
 
-  async executeCommand(inputCommand: CalendarProviderCommand): Promise<CalendarProviderCommandResult> {
+  async executeCommand(inputCommand: CalendarProviderCommand, options: { authorizeAgent?: () => Promise<void> } = {}): Promise<CalendarProviderCommandResult> {
     const command = normalizeCommand(inputCommand);
     const access = command.kind === "create" ? "create" : command.kind === "update" ? "update" : "delete";
-    const { connection, calendar } = await this.#ownedCalendar(
-      command.ownerId,
-      command.connectionId,
-      command.calendarId,
-      access,
-      command.actor,
-      false
-    );
+    const admit = async () => {
+      if (command.actor === "agent") {
+        if (!options.authorizeAgent) throw new CalendarProviderGatewayError("agent_calendar_access_denied", "A live page-agent admission is required.");
+        await options.authorizeAgent();
+      }
+      return this.#ownedCalendar(command.ownerId, command.connectionId, command.calendarId, access, command.actor, false);
+    };
+    let { connection, calendar } = await admit();
     const now = this.#now().toISOString();
     const fingerprint = commandFingerprint(command);
     const reserved = await this.store.reserveOutbox({
@@ -850,10 +1017,14 @@ export class CalendarProviderGateway {
       leaseExpiresAt: null,
       lastErrorCode: null,
       result: null,
-      conflictRevision: null
+      conflictRevision: null,
+      dispatchEvidence: null
     });
     if (!reserved.created && reserved.record.fingerprint !== fingerprint) {
       throw new CalendarProviderGatewayError("idempotency_conflict", "The command identity is bound to different arguments.");
+    }
+    if (reserved.record.createdAt < connection.connectedAt && reserved.record.status !== "succeeded") {
+      throw new CalendarProviderGatewayError("connection_inactive", "An earlier authorization's pending command cannot run after reconnect.");
     }
     const leaseOwner = `calendar-outbox-${randomUUID()}`;
     const claimedAt = this.#now().toISOString();
@@ -868,11 +1039,17 @@ export class CalendarProviderGateway {
       if (claimed.record.fingerprint !== fingerprint) {
         throw new CalendarProviderGatewayError("idempotency_conflict", "The command identity is bound to different arguments.");
       }
-      if (claimed.record.status === "succeeded" && claimed.record.result) return cloneResult(claimed.record.result);
+      if (claimed.record.status === "succeeded" && claimed.record.result) {
+        await admit();
+        return cloneResult(claimed.record.result);
+      }
       if (claimed.record.status === "conflict") {
         throw new CalendarProviderGatewayError("provider_revision_conflict", "The command previously conflicted at the provider.", {
           currentProviderRevision: claimed.record.conflictRevision
         });
+      }
+      if (claimed.record.status === "rejected") {
+        throw new CalendarProviderGatewayError("provider_event_read_only", "This command was refused because its provider effects are not admitted.");
       }
       if (claimed.record.nextAttemptAt && Date.parse(claimed.record.nextAttemptAt) > Date.parse(claimedAt)) {
         throw new CalendarProviderGatewayError("provider_retry_later", "The provider command is waiting for its bounded retry delay.", {
@@ -893,43 +1070,113 @@ export class CalendarProviderGateway {
     }
     const adapter = this.#adapter(connection.providerKey);
     try {
-      let result: CalendarProviderCommandResult;
+      ({ connection, calendar } = await admit());
+      let recoveredUpdate: ProviderEventSnapshot | null = null;
+      let deleteAlreadyMissing = false;
       if (command.kind === "create") {
-        const created = await adapter.createEvent({
+        assertStandaloneProviderWrite(command.content);
+      } else {
+        const current = await adapter.readEvent({ credentialHandle: requiredCredential(connection),
+          providerAccountId: connection.providerAccountId, providerCalendarId: calendar.providerCalendarId,
+          providerEventId: command.providerEventId });
+        if (current) {
+          if (current.providerEventId !== command.providerEventId) {
+            throw new CalendarProviderGatewayError("provider_readback_failed", "The provider returned another event identity.");
+          }
+          assertStandaloneProviderWrite(current.content);
+        }
+        if (outbox.dispatchEvidence) {
+          if (command.kind === "update" && current
+            && writableContentFingerprint(current.content) === outbox.dispatchEvidence.desiredFingerprint) recoveredUpdate = current;
+          if (command.kind === "delete" && !current) deleteAlreadyMissing = true;
+        }
+        if (!recoveredUpdate && !deleteAlreadyMissing) {
+          if (!current || current.providerRevision !== command.expectedProviderRevision) {
+            throw new ProviderRevisionConflictError(current?.providerRevision ?? null);
+          }
+          if (outbox.dispatchEvidence?.phase === "acknowledged") {
+            throw new ProviderTransientError("The acknowledged provider mutation has not yet been observed.");
+          }
+        }
+      }
+      const acknowledgedCreateId = command.kind === "create" && outbox.dispatchEvidence?.phase === "acknowledged"
+        ? outbox.dispatchEvidence.providerEventId : null;
+      const needsDispatch = !recoveredUpdate && !deleteAlreadyMissing && !acknowledgedCreateId;
+      if (needsDispatch) {
+        ({ connection, calendar } = await admit());
+        outbox = { ...outbox, dispatchEvidence: {
+          phase: "dispatched", providerEventId: command.kind === "create" ? null : command.providerEventId,
+          dispatchedAt: this.#now().toISOString(),
+          desiredFingerprint: command.kind === "delete" ? null : writableContentFingerprint(command.content)
+        } };
+        if (!await this.store.saveOutbox(outbox, leaseOwner)) {
+          throw new CalendarProviderGatewayError("outbox_lease_lost", "The command lost its lease before provider dispatch.");
+        }
+      }
+      const acknowledge = async (providerEventId: string) => {
+        outbox = { ...outbox, dispatchEvidence: { ...outbox.dispatchEvidence!, phase: "acknowledged", providerEventId } };
+        if (!await this.store.saveOutbox(outbox, leaseOwner)) {
+          throw new CalendarProviderGatewayError("outbox_lease_lost", "The provider outcome is uncertain after an outbox lease change.");
+        }
+      };
+      let result: CalendarProviderCommandResult;
+      const dispatchCredential = requiredCredential(connection);
+      const dispatchEpoch = connection.connectedAt;
+      const authorizeDispatch = async () => {
+        const current = await admit();
+        if (current.connection.credentialHandle !== dispatchCredential || current.connection.connectedAt !== dispatchEpoch) {
+          throw new CalendarProviderGatewayError("connection_inactive", "Calendar authorization changed before provider dispatch.");
+        }
+      };
+      if (command.kind === "create") {
+        const created = acknowledgedCreateId ? { providerEventId: acknowledgedCreateId } : await adapter.createEvent({
           credentialHandle: requiredCredential(connection),
           providerAccountId: connection.providerAccountId,
           providerCalendarId: calendar.providerCalendarId,
           commandId: command.commandId,
+          authorizeDispatch,
           content: cloneContent(command.content)
         });
         if (!isRecord(created)) {
           throw new CalendarProviderGatewayError("provider_readback_failed", "The provider create response has an invalid shape.");
         }
         assertIdentifier(created.providerEventId, "providerEventId");
+        if (!acknowledgedCreateId) await acknowledge(created.providerEventId);
+        await admit();
         const event = await this.#readback(adapter, connection, calendar, created.providerEventId);
         result = { kind: "create", event };
       } else if (command.kind === "update") {
-        await adapter.updateEvent({
+        if (!recoveredUpdate) {
+          await adapter.updateEvent({
           credentialHandle: requiredCredential(connection),
           providerAccountId: connection.providerAccountId,
           providerCalendarId: calendar.providerCalendarId,
           providerEventId: command.providerEventId,
           commandId: command.commandId,
+          authorizeDispatch,
           expectedProviderRevision: command.expectedProviderRevision,
           content: cloneContent(command.content)
-        });
-        const event = await this.#readback(adapter, connection, calendar, command.providerEventId);
+          });
+          await acknowledge(command.providerEventId);
+        }
+        await admit();
+        const event = await this.#readback(adapter, connection, calendar, command.providerEventId, recoveredUpdate ?? undefined);
         result = { kind: "update", event };
       } else {
-        await adapter.deleteEvent({
+        if (!deleteAlreadyMissing) {
+          await adapter.deleteEvent({
           credentialHandle: requiredCredential(connection),
           providerAccountId: connection.providerAccountId,
           providerCalendarId: calendar.providerCalendarId,
           providerEventId: command.providerEventId,
           commandId: command.commandId,
+          authorizeDispatch,
           expectedProviderRevision: command.expectedProviderRevision
-        });
-        const readback = await adapter.readEvent({
+          });
+          await acknowledge(command.providerEventId);
+        }
+        await admit();
+        const readback = deleteAlreadyMissing ? null : await adapter.readEvent({
           credentialHandle: requiredCredential(connection),
           providerAccountId: connection.providerAccountId,
           providerCalendarId: calendar.providerCalendarId,
@@ -985,6 +1232,11 @@ export class CalendarProviderGateway {
       }
       return cloneResult(result);
     } catch (error) {
+      if (error instanceof CalendarProviderGatewayError && error.code === "provider_event_read_only") {
+        await this.store.saveOutbox({ ...outbox, status: "rejected", updatedAt: this.#now().toISOString(),
+          nextAttemptAt: null, leaseOwner: null, leaseExpiresAt: null, lastErrorCode: "provider_unknown" }, leaseOwner);
+        throw error;
+      }
       if (error instanceof ProviderRevisionConflictError) {
         outbox = {
           ...outbox,
@@ -1060,7 +1312,11 @@ export class CalendarProviderGateway {
     };
     // Persist the inactive connection first. Even if a later cleanup write or
     // provider call fails, every gateway operation now fails closed.
-    await this.store.saveConnection(disconnected);
+    if (!await this.store.transitionConnection(disconnected, connection)) {
+      const current = await this.store.getConnection(connection.connectionId);
+      if (current?.status === "disconnected" && current.credentialHandle === connection.credentialHandle) return current;
+      throw new CalendarProviderGatewayError("connection_inactive", "The connection changed before local closure.");
+    }
     for (const calendar of await this.store.listCalendars(connection.connectionId)) {
       await this.store.updateCalendarBinding({ ...calendar, agentGrant: "none", visible: false });
     }
@@ -1076,8 +1332,8 @@ export class CalendarProviderGateway {
         ...connection,
         remoteRevocationStatus: "pending" as const
       };
-      await this.store.saveConnection(pending);
-      return pending;
+      if (await this.store.transitionConnection(pending, connection)) return pending;
+      return (await this.store.getConnection(connection.connectionId))!;
     }
     const attemptedAt = this.#now().toISOString();
     try {
@@ -1092,8 +1348,8 @@ export class CalendarProviderGateway {
         remoteRevocationAttemptedAt: attemptedAt,
         remoteRevocationErrorCode: null
       };
-      await this.store.saveConnection(succeeded);
-      return succeeded;
+      if (await this.store.transitionConnection(succeeded, connection)) return succeeded;
+      return (await this.store.getConnection(connection.connectionId))!;
     } catch {
       // Retain only the server-side vault handle so an explicit retry can
       // revoke remotely. Local use remains impossible because status is
@@ -1104,8 +1360,8 @@ export class CalendarProviderGateway {
         remoteRevocationAttemptedAt: attemptedAt,
         remoteRevocationErrorCode: "provider_revoke_failed"
       };
-      await this.store.saveConnection(failed);
-      return failed;
+      if (await this.store.transitionConnection(failed, connection)) return failed;
+      return (await this.store.getConnection(connection.connectionId))!;
     }
   }
 
@@ -1113,9 +1369,10 @@ export class CalendarProviderGateway {
     adapter: CalendarProviderAdapter,
     connection: CalendarProviderConnectionRecord,
     calendar: CalendarProviderBindingRecord,
-    providerEventId: string
+    providerEventId: string,
+    observed?: ProviderEventSnapshot
   ): Promise<CalendarProviderEventProjection> {
-    const snapshot = await adapter.readEvent({
+    const snapshot = observed ?? await adapter.readEvent({
       credentialHandle: requiredCredential(connection),
       providerAccountId: connection.providerAccountId,
       providerCalendarId: calendar.providerCalendarId,
@@ -1215,6 +1472,48 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
   }
   async getConnection(connectionId: string) { return cloneConnection(this.#connections.get(connectionId) ?? null); }
   async saveConnection(connection: CalendarProviderConnectionRecord) { this.#connections.set(connection.connectionId, cloneConnection(connection)!); }
+  async reserveConnection(connection: CalendarProviderConnectionRecord) {
+    const existing = this.#connections.get(connection.connectionId);
+    if (existing) return { record: cloneConnection(existing)!, created: false };
+    this.#connections.set(connection.connectionId, cloneConnection(connection)!);
+    return { record: cloneConnection(connection)!, created: true };
+  }
+  async transitionConnection(connection: CalendarProviderConnectionRecord, expected: CalendarProviderConnectionExpectation) {
+    const current = this.#connections.get(connection.connectionId);
+    if (!current || current.ownerId !== connection.ownerId || current.providerKey !== connection.providerKey
+      || current.providerAccountId !== connection.providerAccountId || current.status !== expected.status
+      || current.credentialHandle !== expected.credentialHandle) return false;
+    this.#connections.set(connection.connectionId, cloneConnection(connection)!);
+    return true;
+  }
+  async listSynchronizationTargets(input: { providerKey?: string; limit: number; after: { connectionId: string; calendarId: string } | null }) {
+    return [...this.#calendars.values()].filter((binding) => {
+      const connection = this.#connections.get(binding.connectionId);
+      return connection?.status === "active" && (!input.providerKey || binding.providerKey === input.providerKey)
+        && (!input.after || binding.connectionId > input.after.connectionId
+          || (binding.connectionId === input.after.connectionId && binding.calendarId > input.after.calendarId));
+    }).sort((a, b) => a.connectionId.localeCompare(b.connectionId) || a.calendarId.localeCompare(b.calendarId))
+      .slice(0, input.limit).map(({ ownerId, connectionId, calendarId, providerKey }) => ({ ownerId, connectionId, calendarId, providerKey }));
+  }
+  async listRetryableCommands(input: { providerKey?: string; limit: number; now: string }) {
+    const now = Date.parse(input.now);
+    return [...this.#outbox.values()].filter((record) => {
+      const connection = this.#connections.get(record.command.connectionId);
+      return record.command.actor === "owner" && connection?.status === "active"
+        && record.createdAt >= connection.connectedAt && (!input.providerKey || connection.providerKey === input.providerKey)
+        && (record.status === "pending" || record.status === "processing")
+        && (!record.nextAttemptAt || Date.parse(record.nextAttemptAt) <= now)
+        && (!record.leaseExpiresAt || Date.parse(record.leaseExpiresAt) <= now);
+    }).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.commandId.localeCompare(b.commandId)).slice(0, input.limit)
+      .map(({ command }) => ({ commandId: command.commandId, ownerId: command.ownerId, connectionId: command.connectionId, calendarId: command.calendarId }));
+  }
+  async listRevocationTargets(input: { providerKey?: string; limit: number; now: string }) {
+    return [...this.#connections.values()].filter((row) => row.status === "disconnected" && row.credentialHandle
+      && row.remoteRevocationStatus !== "succeeded" && (!input.providerKey || row.providerKey === input.providerKey)
+      && (!row.remoteRevocationAttemptedAt || Date.parse(row.remoteRevocationAttemptedAt) <= Date.parse(input.now) - 60_000))
+      .sort((a,b) => (a.remoteRevocationAttemptedAt ?? "").localeCompare(b.remoteRevocationAttemptedAt ?? ""))
+      .slice(0,input.limit).map(({ownerId,connectionId}) => ({ownerId,connectionId}));
+  }
   async listCalendars(connectionId: string) {
     return [...this.#calendars.values()].filter((calendar) => calendar.connectionId === connectionId)
       .map((calendar) => this.#bindingView(calendar));
@@ -1244,7 +1543,7 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
   async provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord) {
     assertCalendarProvisioningPair(calendar, binding);
     const connection = this.#connections.get(binding.connectionId);
-    if (!connection || connection.status !== "provisioning" || connection.ownerId !== calendar.ownerId
+    if (!connection || (connection.status !== "provisioning" && connection.status !== "active") || connection.ownerId !== calendar.ownerId
       || connection.providerKey !== binding.providerKey || connection.providerAccountId !== binding.providerAccountId) {
       throw new CalendarProviderGatewayError(
         "provider_identity_mismatch",
@@ -1252,9 +1551,12 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
       );
     }
     const key = calendarKey(binding.connectionId, binding.calendarId);
+    const existing = this.#calendars.get(key);
+    if (existing && existing.ownerId === binding.ownerId && existing.providerKey === binding.providerKey
+      && existing.providerAccountId === binding.providerAccountId && existing.providerCalendarId === binding.providerCalendarId) return;
     if (this.#canonicalCalendars.has(calendar.id) || this.#calendars.has(key)
       || [...this.#calendars.values()].some((candidate) => candidate.ownerId === binding.ownerId
-        && (candidate.calendarId === binding.calendarId || candidate.providerCalendarId === binding.providerCalendarId))) {
+        && (candidate.calendarId === binding.calendarId || (candidate.connectionId === binding.connectionId && candidate.providerCalendarId === binding.providerCalendarId)))) {
       throw new CalendarProviderGatewayError("provider_identity_mismatch", "The external Calendar identity is already provisioned.");
     }
     if (calendar.isDefault && [...this.#canonicalCalendars.values()].some((candidate) =>
@@ -1336,6 +1638,10 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
     return tombstone ? { ...tombstone } : null;
   }
   async applySyncMutation(mutation: CalendarProviderSyncMutation) {
+    const connection = this.#connections.get(mutation.connectionId);
+    if (!connection || (connection.status !== "active" && connection.status !== "provisioning")) {
+      throw new CalendarProviderGatewayError("connection_inactive", "A disconnected account cannot publish synchronized events.");
+    }
     const key = calendarKey(mutation.connectionId, mutation.calendarId);
     const currentState = this.#syncStates.get(key) ?? null;
     if (!syncStateEquals(currentState, mutation.expectedState)) {
@@ -1372,7 +1678,7 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
   }) {
     const current = this.#outbox.get(input.commandId);
     if (!current) throw new Error("The outbox command must be reserved before it is claimed.");
-    if (current.fingerprint !== input.fingerprint || current.status === "succeeded" || current.status === "conflict") {
+    if (current.fingerprint !== input.fingerprint || current.status === "succeeded" || current.status === "conflict" || current.status === "rejected") {
       return { record: cloneOutbox(current), claimed: false };
     }
     const nowMs = Date.parse(input.claimedAt);
@@ -1411,6 +1717,7 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
   async purgeConnectionProjections(connectionId: string) {
     for (const [key, projection] of this.#projections) if (projection.connectionId === connectionId) this.#projections.delete(key);
     for (const [key, tombstone] of this.#tombstones) if (tombstone.connectionId === connectionId) this.#tombstones.delete(key);
+    for (const [key, state] of this.#syncStates) if (state.connectionId === connectionId) this.#syncStates.delete(key);
   }
 }
 
@@ -1515,6 +1822,7 @@ function normalizeDiscovery(input: CalendarProviderDiscovery): CalendarProviderD
     return {
       providerCalendarId: candidate.providerCalendarId,
       displayName: candidate.displayName,
+      ...(typeof candidate.isDefault === "boolean" ? { isDefault: candidate.isDefault } : {}),
       capabilities: normalizeCapabilities(candidate.capabilities)
     };
   });
@@ -1529,7 +1837,8 @@ function normalizeSyncBatch(input: CalendarProviderSyncBatch): CalendarProviderS
       typeof input.completeWindowSnapshot !== "boolean" || typeof input.truncated !== "boolean") {
     throw new CalendarProviderGatewayError("invalid_input", "The provider synchronization response has an invalid shape.");
   }
-  assertIdentifier(input.nextSyncCursor, "nextSyncCursor");
+  assertBoundedString(input.nextSyncCursor, "nextSyncCursor", 65_536);
+  if (!input.nextSyncCursor) throw new CalendarProviderGatewayError("invalid_input", "A synchronization cursor is required.");
   const deletions = input.deletions.map((candidate) => {
     if (!isRecord(candidate)) throw new CalendarProviderGatewayError("invalid_input", "A provider deletion has an invalid shape.");
     assertIdentifier(candidate.providerEventId, "providerEventId");
@@ -1560,6 +1869,9 @@ function normalizeSnapshot(snapshot: ProviderEventSnapshot): ProviderEventSnapsh
 
 function normalizeContent(content: ProviderEventContent): ProviderEventContent {
   if (!isRecord(content)) throw new CalendarProviderGatewayError("invalid_input", "Provider event content has an invalid shape.");
+  if (Object.keys(content).some((key) => !["title", "description", "location", "span", "providerSeriesId", "status", "providerRecurrence", "outboundEffects"].includes(key))) {
+    throw new CalendarProviderGatewayError("invalid_input", "Provider event content contains unsupported fields.");
+  }
   assertBoundedString(content.title, "title", 1_000);
   if (!content.title.trim()) {
     throw new CalendarProviderGatewayError("invalid_input", "An event title is required.");
@@ -1596,12 +1908,30 @@ function normalizeContent(content: ProviderEventContent): ProviderEventContent {
   } else {
     throw new CalendarProviderGatewayError("invalid_input", "The provider event span kind is invalid.");
   }
-  return { title: content.title, description, location, span, providerSeriesId, status: content.status };
+  const providerRecurrence = content.providerRecurrence;
+  if (providerRecurrence !== undefined && (!isRecord(providerRecurrence)
+    || !["single", "series_master", "occurrence", "exception"].includes(providerRecurrence.kind)
+    || (providerRecurrence.originalStartUtc !== null && typeof providerRecurrence.originalStartUtc !== "string"))) {
+    throw new CalendarProviderGatewayError("invalid_input", "Provider recurrence metadata is invalid.");
+  }
+  const outboundEffects = content.outboundEffects;
+  if (outboundEffects !== undefined && (!isRecord(outboundEffects) || !Number.isSafeInteger(outboundEffects.attendeeCount)
+    || outboundEffects.attendeeCount < 0 || typeof outboundEffects.hasOnlineMeeting !== "boolean")) {
+    throw new CalendarProviderGatewayError("invalid_input", "Provider effects metadata is invalid.");
+  }
+  return { title: content.title, description, location, span, providerSeriesId, status: content.status,
+    ...(providerRecurrence === undefined ? {} : { providerRecurrence: { kind: providerRecurrence.kind,
+      originalStartUtc: providerRecurrence.originalStartUtc === null ? null : normalizeUtcInstant(providerRecurrence.originalStartUtc, "originalStartUtc") } }),
+    ...(outboundEffects === undefined ? {} : { outboundEffects: { ...outboundEffects } }) };
 }
 
 function normalizeCommand(command: CalendarProviderCommand): CalendarProviderCommand {
   if (!isRecord(command) || (command.kind !== "create" && command.kind !== "update" && command.kind !== "delete")) {
     throw new CalendarProviderGatewayError("invalid_input", "The provider command has an invalid shape.");
+  }
+  if (Object.keys(command).some((key) => !["kind", "commandId", "ownerId", "connectionId", "calendarId", "actor",
+    ...(command.kind === "delete" ? [] : ["content"]), ...(command.kind === "create" ? [] : ["providerEventId", "expectedProviderRevision"])].includes(key))) {
+    throw new CalendarProviderGatewayError("invalid_input", "Provider command contains unsupported fields or scope.");
   }
   assertIdentifier(command.commandId, "commandId");
   assertIdentifier(command.ownerId, "ownerId");
@@ -1609,6 +1939,7 @@ function normalizeCommand(command: CalendarProviderCommand): CalendarProviderCom
   assertActor(command.actor);
   const calendarId = canonicalCalendarId(command.calendarId);
   const content = command.kind === "delete" ? undefined : normalizeContent(command.content);
+  if (content) assertStandaloneProviderWrite(content);
   if (command.kind !== "create") {
     assertIdentifier(command.providerEventId, "providerEventId");
     assertIdentifier(command.expectedProviderRevision, "expectedProviderRevision");
@@ -1858,7 +2189,9 @@ function eventKey(connectionId: string, calendarId: string, providerEventId: str
 }
 
 function cloneContent(content: ProviderEventContent): ProviderEventContent {
-  return { ...content, span: { ...content.span } };
+  return { ...content, span: { ...content.span },
+    ...(content.providerRecurrence ? { providerRecurrence: { ...content.providerRecurrence } } : {}),
+    ...(content.outboundEffects ? { outboundEffects: { ...content.outboundEffects } } : {}) };
 }
 function cloneProjection(value: CalendarProviderEventProjection): CalendarProviderEventProjection {
   return { ...value, content: cloneContent(value.content) };
@@ -1875,5 +2208,37 @@ function cloneResult(value: CalendarProviderCommandResult): CalendarProviderComm
   return value.kind === "delete" ? { ...value } : { ...value, event: cloneProjection(value.event) };
 }
 function cloneOutbox(value: CalendarProviderOutboxRecord): CalendarProviderOutboxRecord {
-  return { ...value, command: cloneCommand(value.command), result: value.result ? cloneResult(value.result) : null };
+  return { ...value, command: cloneCommand(value.command), result: value.result ? cloneResult(value.result) : null,
+    dispatchEvidence: value.dispatchEvidence ? { ...value.dispatchEvidence } : null };
+}
+
+function boundedPageLimit(value: number | undefined, fallback: number) {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 1 || value > 100) throw new CalendarProviderGatewayError("invalid_input", "A page limit from 1 to 100 is required.");
+  return value;
+}
+
+function decodeSynchronizationCursor(cursor: string): { connectionId: string; calendarId: string } {
+  try {
+    if (cursor.length > 2048) throw new Error();
+    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    assertIdentifier(value.connectionId, "connectionId");
+    canonicalCalendarId(value.calendarId);
+    return { connectionId: value.connectionId, calendarId: value.calendarId };
+  } catch { throw new CalendarProviderGatewayError("invalid_input", "The synchronization cursor is invalid."); }
+}
+
+export function assertStandaloneProviderWrite(content: ProviderEventContent): void {
+  if (content.providerSeriesId || (content.providerRecurrence && content.providerRecurrence.kind !== "single")
+    || (content.outboundEffects && (content.outboundEffects.attendeeCount > 0 || content.outboundEffects.hasOnlineMeeting))) {
+    throw new CalendarProviderGatewayError("provider_event_read_only", "Invitations, conferencing, and recurring provider mutations are not admitted by this release.");
+  }
+}
+
+function writableContentFingerprint(content: ProviderEventContent): string {
+  const span = content.span.kind === "all_day" ? content.span : {
+    kind: "timed", startUtc: normalizeUtcInstant(content.span.startUtc, "startUtc"), endUtc: normalizeUtcInstant(content.span.endUtc, "endUtc")
+  };
+  return createHash("sha256").update(stableFingerprint({ title: content.title, description: content.description || null,
+    location: content.location || null, status: content.status, span })).digest("hex");
 }

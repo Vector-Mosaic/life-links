@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { createCanonicalExternalCalendar } from "@life-links/core";
 
 import {
   ProviderCursorExpiredError,
   ProviderRevisionConflictError,
+  CalendarProviderGateway,
+  InMemoryCalendarProviderStateStore,
   calendarProviderCredentialHandle,
   type ProviderEventContent
 } from "../src/calendar-provider-gateway.js";
@@ -32,13 +35,14 @@ class HttpHarness {
   enqueue(body: unknown, status = 200) { this.responders.push(() => json(body, status)); }
 }
 
-function adapter(http: HttpHarness, revoked: string[] = []) {
+function adapter(http: HttpHarness, revoked: string[] = [], beforeResolve?: () => Promise<void>) {
   return new MicrosoftGraphCalendarProviderAdapter({
     fetch: http.fetch,
     apiBaseUrl: API_BASE,
     credentialResolver: {
       async resolve({ providerKey }) {
         expect(providerKey).toBe(MICROSOFT_GRAPH_CALENDAR_PROVIDER_KEY);
+        await beforeResolve?.();
         return { accessToken: "secret-graph-access-token", providerAccountId: ACCOUNT_ID };
       }
     },
@@ -67,6 +71,136 @@ function timed(title: string): ProviderEventContent {
 }
 
 describe("Microsoft Graph Calendar provider adapter", () => {
+  it("PATCHes only the subject for a title edit without rewriting a Windows-zone source or its other semantics", async () => {
+    const http = new HttpHarness(); const graph = adapter(http);
+    const source = { ...graphTimedEvent("windows-event", "W/\"r1\"", "Original title"),
+      originalStartTimeZone: "Eastern Standard Time", originalEndTimeZone: "Eastern Standard Time",
+      showAs: "free", body: { contentType: "html", content: "<p>Keep this source body</p>" } };
+    http.enqueue(source);
+    http.responders.push(() => new Response(null, { status: 204 }));
+    const intended = timed("New title");
+    intended.description = source.body.content;
+    if (intended.span.kind !== "timed") throw new Error("Expected timed fixture");
+    intended.span = { ...intended.span, sourceTimeZone: "Eastern Standard Time", floatingLocalStart: null, floatingLocalEnd: null };
+    await graph.updateEvent({ credentialHandle: HANDLE, providerAccountId: ACCOUNT_ID, providerCalendarId: "primary-calendar",
+      providerEventId: source.id, commandId: "title-only-windows", expectedProviderRevision: source["@odata.etag"], content: intended });
+    expect(JSON.parse(String(http.calls.at(-1)!.init.body))).toEqual({ subject: "New title" });
+    expect(new Headers(http.calls.at(-1)!.init.headers).get("If-Match")).toBe(source["@odata.etag"]);
+  });
+
+  it("sends explicitly changed fields and only the changed time boundary", async () => {
+    const http = new HttpHarness(); const graph = adapter(http);
+    http.enqueue(graphTimedEvent("edited-event", "W/\"r1\"", "Workout"));
+    http.responders.push(() => new Response(null, { status: 204 }));
+    const intended = timed("Workout");
+    intended.description = "Four sets"; intended.location = "New gym"; intended.status = "tentative";
+    if (intended.span.kind !== "timed") throw new Error("Expected timed fixture");
+    intended.span = { ...intended.span, endUtc: "2026-09-14T15:30:00.000Z", floatingLocalEnd: "2026-09-14T11:30:00" };
+    await graph.updateEvent({ credentialHandle: HANDLE, providerAccountId: ACCOUNT_ID, providerCalendarId: "primary-calendar",
+      providerEventId: "edited-event", commandId: "explicit-field-edits", expectedProviderRevision: "W/\"r1\"", content: intended });
+    expect(JSON.parse(String(http.calls.at(-1)!.init.body))).toEqual({
+      body: { contentType: "text", content: "Four sets" }, location: { displayName: "New gym" }, showAs: "tentative",
+      end: { dateTime: "2026-09-14T11:30:00", timeZone: "America/New_York" }
+    });
+  });
+
+  it("does not PATCH normalized-equivalent timestamps or unchanged source projections", async () => {
+    const http = new HttpHarness(); const graph = adapter(http);
+    http.enqueue({ ...graphTimedEvent("same-event", "W/\"r1\"", "Workout"), showAs: "oof" });
+    const intended = timed("Workout");
+    if (intended.span.kind !== "timed") throw new Error("Expected timed fixture");
+    intended.span = { ...intended.span, startUtc: "2026-09-14T09:30:00-04:00", endUtc: "2026-09-14T14:30:00Z" };
+    let admitted = 0;
+    await graph.updateEvent({ credentialHandle: HANDLE, providerAccountId: ACCOUNT_ID, providerCalendarId: "primary-calendar",
+      providerEventId: "same-event", commandId: "equivalent-edit", expectedProviderRevision: "W/\"r1\"", content: intended,
+      authorizeDispatch: async () => { admitted++; } });
+    expect(http.calls).toHaveLength(1);
+    expect(http.calls[0].init.method ?? "GET").toBe("GET");
+    expect(admitted).toBe(1);
+  });
+
+  it("rechecks the canonical agent grant at the actual POST/PATCH/DELETE after credential or source-read awaits", async () => {
+    for (const kind of ["create", "update", "delete"] as const) {
+      const http = new HttpHarness();
+      const store = new InMemoryCalendarProviderStateStore();
+      const ownerId = "dispatch-owner", connectionId = "dispatch-connection";
+      const calendarId = "calendar-11111111-1111-4111-8111-111111111111";
+      const revokeGrant = async () => gateway.setCalendarAgentGrant({ ownerId, connectionId, calendarId,
+        agentGrant: "none", expectedUpdatedAt: (await store.getCanonicalCalendar(calendarId))!.updatedAt }).then(() => {});
+      const graph = adapter(http, [], kind === "create" ? revokeGrant : undefined);
+      const gateway = new CalendarProviderGateway([graph], store);
+      await store.saveConnection({ ownerId, connectionId, providerKey: MICROSOFT_GRAPH_CALENDAR_PROVIDER_KEY,
+        providerAccountId: ACCOUNT_ID, credentialHandle: HANDLE, status: "active", connectedAt: "2026-09-01T00:00:00.000Z",
+        disconnectedAt: null, remoteRevocationStatus: "not_required", remoteRevocationAttemptedAt: null, remoteRevocationErrorCode: null });
+      await store.provisionCalendar(createCanonicalExternalCalendar({ id: calendarId, ownerId, title: "Agent Tests",
+        timeZone: "UTC", color: "#2f6f5f", agentAccess: "write", createdAt: "2026-09-01T00:00:00.000Z" }), {
+        ownerId, connectionId, providerKey: MICROSOFT_GRAPH_CALENDAR_PROVIDER_KEY, providerAccountId: ACCOUNT_ID,
+        calendarId, providerCalendarId: "secondary-calendar", providerDisplayName: "Agent Tests", agentGrant: "write", visible: true,
+        capabilities: { read: true, create: true, update: true, delete: true }
+      });
+      if (kind !== "create") {
+        // Gateway preflight first, adapter's immediate pre-write read second.
+        http.enqueue(graphTimedEvent("exact-event", "W/\"r1\"", "Before"));
+        http.responders.push(async () => {
+          await revokeGrant();
+          return json(graphTimedEvent("exact-event", "W/\"r1\"", "Before"));
+        });
+      }
+      const common = { ownerId, connectionId, calendarId, commandId: `late-revoke-${kind}`, actor: "agent" as const };
+      const command = kind === "create" ? { ...common, kind, content: timed("After") }
+        : kind === "update" ? { ...common, kind, providerEventId: "exact-event", expectedProviderRevision: "W/\"r1\"", content: timed("After") }
+          : { ...common, kind, providerEventId: "exact-event", expectedProviderRevision: "W/\"r1\"" };
+      await expect(gateway.executeCommand(command, { authorizeAgent: async () => {} })).rejects.toMatchObject({ code: "agent_calendar_access_denied" });
+      expect(http.calls).toHaveLength(kind === "create" ? 0 : 2);
+      expect(http.calls.some((call) => ["POST", "PATCH", "DELETE"].includes(call.init.method ?? "GET"))).toBe(false);
+    }
+  });
+
+  it("preserves recurring source identity but refuses writes with attendees, conferencing or unknown effects", async () => {
+    const http = new HttpHarness(); const graph = adapter(http);
+    const recurring = { ...graphTimedEvent("instance", "W/\"r1\"", "Recurring"), type: "exception",
+      seriesMasterId: "series-one", originalStart: "2026-09-14T13:30:00Z", attendees: [{ type: "required" }] };
+    http.enqueue(recurring);
+    expect(await graph.readEvent({ credentialHandle: HANDLE, providerAccountId: ACCOUNT_ID,
+      providerCalendarId: "shared-calendar", providerEventId: "instance" })).toMatchObject({ content: {
+      providerSeriesId: "series-one", providerRecurrence: { kind: "exception", originalStartUtc: "2026-09-14T13:30:00.000Z" },
+      outboundEffects: { attendeeCount: 1, hasOnlineMeeting: false }
+    } });
+    for (const event of [recurring,
+      { ...graphTimedEvent("instance", "W/\"r1\"", "Meeting"), isOnlineMeeting: true },
+      { ...graphTimedEvent("instance", "W/\"r1\"", "Unknown"), attendees: undefined }]) {
+      http.enqueue(event);
+      await expect(graph.deleteEvent({ credentialHandle: HANDLE, providerAccountId: ACCOUNT_ID,
+        providerCalendarId: "shared-calendar", providerEventId: "instance", commandId: "refused-delete",
+        expectedProviderRevision: "W/\"r1\"" })).rejects.toMatchObject({ code: "provider_event_read_only" });
+    }
+    expect(http.calls.every((call) => !call.init.method || call.init.method === "GET")).toBe(true);
+  });
+
+  it("uses exact mailbox notification resources, strips clientState from results and renews/deletes exact IDs", async () => {
+    const http = new HttpHarness(); const graph = adapter(http);
+    const source = { id: "subscription-exact", creatorId: ACCOUNT_ID, resource: `users/${ACCOUNT_ID}/events`,
+      notificationUrl: "https://life-links.example/api/calendar-notifications/microsoft?subscriptionKey=bound",
+      expirationDateTime: "2026-09-04T00:00:00Z", clientState: "private-client-state-0000000000000000000000" };
+    http.enqueue(source);
+    const created = await graph.createSubscription({ credentialHandle: HANDLE, providerAccountId: ACCOUNT_ID,
+      notificationUrl: source.notificationUrl, clientState: source.clientState, expiresAt: source.expirationDateTime });
+    expect(JSON.stringify(created)).not.toContain(source.clientState);
+    expect(JSON.parse(String(http.calls[0].init.body))).toMatchObject({ resource: `users/${ACCOUNT_ID}/events`,
+      includeResourceData: false, lifecycleNotificationUrl: source.notificationUrl });
+    http.enqueue({ value: [source] });
+    expect(await graph.listSubscriptions({ credentialHandle: HANDLE, providerAccountId: ACCOUNT_ID })).toEqual([created]);
+    http.enqueue({ ...source, expirationDateTime: "2026-09-06T00:00:00Z" });
+    await graph.renewSubscription({ credentialHandle: HANDLE, providerAccountId: ACCOUNT_ID,
+      subscriptionId: created.id, expiresAt: "2026-09-06T00:00:00Z" });
+    expect(http.calls.at(-1)?.url).toBe(`${API_BASE}/subscriptions/subscription-exact`);
+    expect(http.calls.at(-1)?.init.method).toBe("PATCH");
+    http.enqueue({},404);
+    await graph.deleteSubscription({ credentialHandle: HANDLE, providerAccountId: ACCOUNT_ID, subscriptionId: created.id });
+    expect(http.calls.at(-1)?.init.method).toBe("DELETE");
+    expect(http.calls.some((call) => call.url.includes("revokeSignInSessions"))).toBe(false);
+  });
+
   it("discovers exact account/calendars and uses immutable primary-calendar delta paging", async () => {
     const http = new HttpHarness();
     const graph = adapter(http);
@@ -85,11 +219,13 @@ describe("Microsoft Graph Calendar provider adapter", () => {
         {
           providerCalendarId: "primary-calendar",
           displayName: "Primary",
+          isDefault: true,
           capabilities: { read: true, create: true, update: true, delete: true }
         },
         {
           providerCalendarId: "shared-calendar",
           displayName: "Shared",
+          isDefault: false,
           capabilities: { read: true, create: false, update: false, delete: false }
         }
       ]
@@ -279,6 +415,9 @@ function graphTimedEvent(id: string, etag: string, subject: string) {
     originalEndTimeZone: "America/New_York",
     isAllDay: false,
     isCancelled: false,
+    attendees: [],
+    isOnlineMeeting: false,
+    type: "singleInstance",
     showAs: "busy"
   };
 }
@@ -292,6 +431,9 @@ function graphAllDayEvent(id: string, etag: string) {
     end: { dateTime: "2026-09-21T00:00:00.0000000", timeZone: "UTC" },
     isAllDay: true,
     isCancelled: false,
+    attendees: [],
+    isOnlineMeeting: false,
+    type: "singleInstance",
     showAs: "busy"
   };
 }

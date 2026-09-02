@@ -124,6 +124,9 @@ import {
 import { AttachmentContentReader, AttachmentContentRequestError } from "./attachment-content.js";
 import { createCalendarConnectionRouter } from "./calendar-connections.js";
 import type { CalendarProviderGateway } from "./calendar-provider-gateway.js";
+import type { CalendarAuthorizationService } from "./calendar-authorization.js";
+import { createCalendarProviderNotificationRouter, type CalendarProviderSubscriptionService } from "./calendar-provider-subscriptions.js";
+import { handleProviderCalendarEventRequest, listProviderCalendarBindings } from "./calendar-provider-events.js";
 
 const SESSION_COOKIE = "life_links_session";
 const MEDIA_UPLOAD_FIELD = "file";
@@ -187,9 +190,13 @@ export type LifeLinksAppDeps = {
   config: LifeLinksConfig;
   logger: Logger;
   calendarProviderGateway?: CalendarProviderGateway;
+  calendarAuthorizationService?: CalendarAuthorizationService;
+  calendarSubscriptionService?: CalendarProviderSubscriptionService;
+  wakeCalendarRuntime?: () => void;
 };
 
-export function createLifeLinksApp({ store, config, logger, calendarProviderGateway }: LifeLinksAppDeps): Express {
+export function createLifeLinksApp({ store, config, logger, calendarProviderGateway, calendarAuthorizationService,
+  calendarSubscriptionService, wakeCalendarRuntime }: LifeLinksAppDeps): Express {
   const app = express();
   const attachmentReader = new AttachmentContentReader(undefined, config.attachmentRuntime);
   app.disable("x-powered-by");
@@ -213,6 +220,13 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     });
     next();
   });
+  // Graph notifications authenticate their opaque subscription identity and
+  // client-state hash, not an owner cookie or browser Origin. This exact route
+  // terminates before the owner-origin guard and has its own bounded parser.
+  if (calendarSubscriptionService) {
+    app.post("/api/calendar-notifications/microsoft", rateLimitGuard(config, logger));
+    app.use(createCalendarProviderNotificationRouter(calendarSubscriptionService, wakeCalendarRuntime ?? (() => {})));
+  }
   app.use(express.json({ limit: "1mb" }));
   app.use(async (request, _response, next) => {
     const appRequest = request as AppRequest;
@@ -254,7 +268,9 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   if (calendarProviderGateway) {
     app.use(createCalendarConnectionRouter({
       gateway: calendarProviderGateway, requireAuthenticated,
-      ownerId: (request) => (request as AppRequest).user?.id ?? null, logger
+      ownerId: (request) => (request as AppRequest).user?.id ?? null, logger,
+      authorization: calendarAuthorizationService,
+      sessionIdentity: (request) => (request as AppRequest).authTransport === "cookie" ? (request as AppRequest).sessionTokenHash ?? null : null
     }));
   }
 
@@ -1505,7 +1521,10 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     const page = readCalendarPageQuery(request, response, logger);
     if (!page) return;
     const result = await store.listCalendars(request.user!.id, page, actor);
-    response.json({ calendars: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
+    const providerBindings = await listProviderCalendarBindings({
+      gateway: calendarProviderGateway, calendars: result.items, ownerId: request.user!.id, actor
+    });
+    response.json({ calendars: result.items, providerBindings, nextCursor: result.nextCursor, truncated: result.truncated });
   });
 
   app.post("/api/calendars", requireAuthenticated, async (request: AppRequest, response) => {
@@ -1604,12 +1623,14 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     const actor = readCalendarRequestActor(request);
     const page = readCalendarEventPageQuery(request, response, logger);
     if (!page) return;
+    if (await dispatchProviderCalendarEvent(request, response, actor, page)) return;
     const result = await store.listCalendarEvents(request.user!.id, page, actor);
     response.json({ calendarEvents: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
   });
 
   app.post("/api/calendar-events", requireAuthenticated, async (request: AppRequest, response) => {
     const actor = readCalendarRequestActor(request);
+    if (await dispatchProviderCalendarEvent(request, response, actor)) return;
     const input = readCalendarBody(request, response, logger, [
       "id", "revisionId", "calendarId", "lineage", "title", "description", "location", "status", "span",
       "recurrence", "subjectLinks"
@@ -1638,6 +1659,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
 
   app.get("/api/calendar-events/:eventId", requireAuthenticated, async (request: AppRequest, response) => {
     const actor = readCalendarRequestActor(request);
+    if (await dispatchProviderCalendarEvent(request, response, actor)) return;
     const eventId = normalizeCalendarEventId(paramValue(request.params.eventId));
     const calendarEvent = await store.getCalendarEvent(request.user!.id, eventId, actor);
     if (!calendarEvent) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
@@ -1649,6 +1671,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
 
   app.patch("/api/calendar-events/:eventId", requireAuthenticated, async (request: AppRequest, response) => {
     const actor = readCalendarRequestActor(request);
+    if (await dispatchProviderCalendarEvent(request, response, actor)) return;
     const eventId = normalizeCalendarEventId(paramValue(request.params.eventId));
     const input = readCalendarBody(request, response, logger, [
       "revisionId", "expectedCurrentRevisionId", "target", "title", "description", "location", "status", "span",
@@ -1684,6 +1707,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
 
   app.delete("/api/calendar-events/:eventId", requireAuthenticated, async (request: AppRequest, response) => {
     const actor = readCalendarRequestActor(request);
+    if (await dispatchProviderCalendarEvent(request, response, actor)) return;
     const eventId = normalizeCalendarEventId(paramValue(request.params.eventId));
     const input = readCalendarBody(request, response, logger, [
       "tombstoneId", "expectedCurrentRevisionId", "target"
@@ -1736,6 +1760,22 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     });
     response.json({ calendarEvent, latestTombstone: null });
   });
+
+  async function dispatchProviderCalendarEvent(request: AppRequest, response: Response, actor: CalendarActor, page?: CalendarEventPageRequest) {
+    return handleProviderCalendarEventRequest({
+      request, response, actor, page, ownerId: request.user!.id, gateway: calendarProviderGateway, logger,
+      authorizeAgent: async () => {
+        if (actor !== "agent") return;
+        const session = request.sessionTokenHash ? await store.getSessionByTokenHash(request.sessionTokenHash) : null;
+        if (session?.user.id !== request.user!.id) {
+          throw new CalendarDomainError("calendar_access_denied", "The connected page session is no longer active.", {
+            reason: "calendar_agent_connection_required"
+          });
+        }
+        assertCalendarAgentConnection(session.user, actor);
+      }
+    });
+  }
 
   app.get("/api/links", requireAuthenticated, async (request: AppRequest, response) => {
     response.json({ links: await store.listLinks(request.user!.id) });

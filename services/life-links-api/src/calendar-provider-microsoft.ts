@@ -1,11 +1,14 @@
 import { createHash } from "node:crypto";
 
 import {
+  assertStandaloneProviderWrite,
+  CalendarProviderGatewayError,
   ProviderCursorExpiredError,
   ProviderRevisionConflictError,
   ProviderTransientError,
   type CalendarProviderAdapter,
   type CalendarProviderDiscovery,
+  type CalendarProviderCredentialHandle,
   type CalendarProviderSyncBatch,
   type ProviderEventContent,
   type ProviderEventSnapshot
@@ -22,6 +25,15 @@ export const MICROSOFT_GRAPH_CALENDAR_PROVIDER_KEY = "microsoft-graph-calendar";
 const GRAPH_API_BASE = "https://graph.microsoft.com/v1.0";
 const MAX_DISCOVERY_CALENDARS = 1_000;
 const CURSOR_PREFIX = "mgraph1.";
+
+export type MicrosoftCalendarSubscription = {
+  id: string;
+  resource: string;
+  notificationUrl: string;
+  creatorId: string;
+  expiresAt: string;
+};
+type SubscriptionCredential = { credentialHandle: CalendarProviderCredentialHandle; providerAccountId: string };
 
 type GraphCalendar = {
   id?: unknown;
@@ -54,6 +66,11 @@ type GraphEvent = {
   seriesMasterId?: unknown;
   attendees?: unknown;
   isOnlineMeeting?: unknown;
+  onlineMeeting?: unknown;
+  onlineMeetingUrl?: unknown;
+  type?: unknown;
+  originalStart?: unknown;
+  recurrence?: unknown;
 };
 
 type GraphCursor = {
@@ -111,6 +128,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
         calendars.push({
           providerCalendarId: requiredString(calendar.id),
           displayName: optionalString(calendar.name) ?? "Untitled calendar",
+          isDefault: calendar.isDefaultCalendar === true,
           capabilities: { read: true, create: writable, update: writable, delete: writable }
         });
         if (calendars.length > MAX_DISCOVERY_CALENDARS) {
@@ -247,6 +265,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       expectedProviderAccountId: input.providerAccountId
     });
     assertWritableStatus(input.content);
+    assertStandaloneProviderWrite(input.content);
     const response = await this.#request(
       `${this.#apiBase}/me/calendars/${encodeURIComponent(input.providerCalendarId)}/events`,
       credential.accessToken,
@@ -255,9 +274,11 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
         headers: { ...graphPreferHeaders(), "Content-Type": "application/json" },
         body: JSON.stringify({
           ...toGraphEventBody(input.content),
+          isOnlineMeeting: false,
           transactionId: deterministicGraphTransactionId(input.commandId)
         })
-      }
+      },
+      { authorizeDispatch: input.authorizeDispatch }
     );
     const created = await jsonObject(response);
     return { providerEventId: requiredString(created.id) };
@@ -272,9 +293,17 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     assertWritableStatus(input.content);
     const current = await this.#readRawEvent(credential.accessToken, input.providerCalendarId, input.providerEventId);
     if (!current) throw new ProviderRevisionConflictError(null);
+    assertGraphWriteEvidence(current);
+    const currentContent = mapGraphEvent(current).content;
+    assertStandaloneProviderWrite(currentContent);
     const currentRevision = graphRevision(current);
     if (currentRevision !== input.expectedProviderRevision) {
       throw new ProviderRevisionConflictError(currentRevision);
+    }
+    const patch = toGraphEventPatch(currentContent, input.content);
+    if (!Object.keys(patch).length) {
+      await input.authorizeDispatch?.();
+      return;
     }
     const response = await this.#request(
       `${this.#apiBase}/me/calendars/${encodeURIComponent(input.providerCalendarId)}/events/${encodeURIComponent(input.providerEventId)}`,
@@ -286,9 +315,9 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
           "Content-Type": "application/json",
           "If-Match": input.expectedProviderRevision
         },
-        body: JSON.stringify(toGraphEventBody(input.content))
+        body: JSON.stringify(patch)
       },
-      { allowedStatuses: [404, 412] }
+      { allowedStatuses: [404, 412], authorizeDispatch: input.authorizeDispatch }
     );
     if (response.status === 404 || response.status === 412) {
       throw new ProviderRevisionConflictError(await this.#currentRevision(
@@ -307,6 +336,8 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     });
     const current = await this.#readRawEvent(credential.accessToken, input.providerCalendarId, input.providerEventId);
     if (!current) throw new ProviderRevisionConflictError(null);
+    assertGraphWriteEvidence(current);
+    assertStandaloneProviderWrite(mapGraphEvent(current).content);
     const currentRevision = graphRevision(current);
     if (currentRevision !== input.expectedProviderRevision) {
       throw new ProviderRevisionConflictError(currentRevision);
@@ -318,7 +349,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
         method: "DELETE",
         headers: { ...graphPreferHeaders(), "If-Match": input.expectedProviderRevision }
       },
-      { allowedStatuses: [404, 412] }
+      { allowedStatuses: [404, 412], authorizeDispatch: input.authorizeDispatch }
     );
     if (response.status === 404 || response.status === 412) {
       throw new ProviderRevisionConflictError(await this.#currentRevision(
@@ -335,6 +366,66 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       providerKey: this.providerKey,
       providerAccountId: input.providerAccountId
     });
+  }
+
+  async listSubscriptions(input: SubscriptionCredential): Promise<MicrosoftCalendarSubscription[]> {
+    const credential = await resolveCalendarProviderCredential(this.#resolver, {
+      ...input, providerKey: this.providerKey, expectedProviderAccountId: input.providerAccountId
+    });
+    const result: MicrosoftCalendarSubscription[] = [];
+    let url: string | null = `${this.#apiBase}/subscriptions`;
+    while (url) {
+      const body = await jsonObject(await this.#request(this.#validatedGraphUrl(url), credential.accessToken));
+      for (const raw of array(body.value)) {
+        // Listing can include other resources owned by this app. Do not inspect
+        // their payloads or adopt them; lifecycle management matches exact URL,
+        // resource and creator below the adapter boundary.
+        result.push(graphSubscription(raw));
+        if (result.length > 1_000) throw new ProviderTransientError("Subscription discovery exceeded its bounded limit.");
+      }
+      url = optionalString(body["@odata.nextLink"]);
+    }
+    return result;
+  }
+
+  async createSubscription(input: SubscriptionCredential & {
+    notificationUrl: string; clientState: string; expiresAt: string;
+  }): Promise<MicrosoftCalendarSubscription> {
+    if (input.clientState.length < 32 || input.clientState.length > 128 || new URL(input.notificationUrl).protocol !== "https:") {
+      throw new Error("Invalid Calendar notification binding.");
+    }
+    const credential = await resolveCalendarProviderCredential(this.#resolver, {
+      ...input, providerKey: this.providerKey, expectedProviderAccountId: input.providerAccountId
+    });
+    const body = await jsonObject(await this.#request(`${this.#apiBase}/subscriptions`, credential.accessToken, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+        changeType: "created,updated,deleted", resource: `users/${encodeURIComponent(input.providerAccountId)}/events`,
+        notificationUrl: input.notificationUrl, lifecycleNotificationUrl: input.notificationUrl,
+        clientState: input.clientState, expirationDateTime: input.expiresAt, includeResourceData: false,
+        latestSupportedTlsVersion: "v1_2"
+      })
+    }));
+    return graphSubscription(body);
+  }
+
+  async renewSubscription(input: SubscriptionCredential & {
+    subscriptionId: string; expiresAt: string;
+  }): Promise<MicrosoftCalendarSubscription | null> {
+    const credential = await resolveCalendarProviderCredential(this.#resolver, {
+      ...input, providerKey: this.providerKey, expectedProviderAccountId: input.providerAccountId
+    });
+    const response = await this.#request(`${this.#apiBase}/subscriptions/${encodeURIComponent(input.subscriptionId)}`,
+      credential.accessToken, { method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expirationDateTime: input.expiresAt }) }, { allowedStatuses: [404] });
+    return response.status === 404 ? null : graphSubscription(await jsonObject(response));
+  }
+
+  async deleteSubscription(input: SubscriptionCredential & { subscriptionId: string }): Promise<void> {
+    const credential = await resolveCalendarProviderCredential(this.#resolver, {
+      ...input, providerKey: this.providerKey, expectedProviderAccountId: input.providerAccountId
+    });
+    await this.#request(`${this.#apiBase}/subscriptions/${encodeURIComponent(input.subscriptionId)}`,
+      credential.accessToken, { method: "DELETE" }, { allowedStatuses: [404] });
   }
 
   async #readRawEvent(accessToken: string, calendarId: string, eventId: string): Promise<GraphEvent | null> {
@@ -370,13 +461,16 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     input: string | URL,
     accessToken: string,
     init: RequestInit = {},
-    options: { allowedStatuses?: number[]; cursorRequest?: boolean } = {}
+    options: { allowedStatuses?: number[]; cursorRequest?: boolean; authorizeDispatch?: () => Promise<void> } = {}
   ): Promise<Response> {
     let response: Response;
+    const headers = bearerHeaders(accessToken);
+    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+    // The callback runs after credential resolution and source-event readback,
+    // immediately before the mutating request. Keep its denial unchanged.
+    await options.authorizeDispatch?.();
     try {
-      const headers = bearerHeaders(accessToken);
-      new Headers(init.headers).forEach((value, key) => headers.set(key, value));
-      response = await this.#fetch(input, { ...init, headers });
+      response = await this.#fetch(input, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(20_000) });
     } catch {
       throw new ProviderTransientError("Microsoft Graph did not complete the request reliably.");
     }
@@ -387,6 +481,15 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     }
     throw new Error(`Microsoft Graph request failed with status ${response.status}.`);
   }
+}
+
+function graphSubscription(value: unknown): MicrosoftCalendarSubscription {
+  if (!isRecord(value)) throw malformedGraphResponse();
+  const expiresAt = requiredString(value.expirationDateTime);
+  if (!Number.isFinite(Date.parse(expiresAt))) throw malformedGraphResponse();
+  return { id: requiredString(value.id), resource: requiredString(value.resource),
+    notificationUrl: requiredString(value.notificationUrl), creatorId: requiredString(value.creatorId),
+    expiresAt: new Date(expiresAt).toISOString() };
 }
 
 function mapGraphEvent(event: GraphEvent): ProviderEventSnapshot {
@@ -424,7 +527,13 @@ function mapGraphEvent(event: GraphEvent): ProviderEventSnapshot {
       location,
       span,
       providerSeriesId: optionalString(event.seriesMasterId),
-      status: event.isCancelled === true ? "canceled" : event.showAs === "tentative" ? "tentative" : "confirmed"
+      status: event.isCancelled === true ? "canceled" : event.showAs === "tentative" ? "tentative" : "confirmed",
+      providerRecurrence: {
+        kind: graphRecurrenceKind(event),
+        originalStartUtc: optionalString(event.originalStart) ? normalizedOriginalStart(requiredString(event.originalStart)) : null
+      },
+      outboundEffects: { attendeeCount: array(event.attendees).length,
+        hasOnlineMeeting: event.isOnlineMeeting === true || isRecord(event.onlineMeeting) || Boolean(optionalString(event.onlineMeetingUrl)) }
     }
   };
 }
@@ -448,6 +557,31 @@ function toGraphEventBody(content: ProviderEventContent): Record<string, unknown
     showAs: content.status === "tentative" ? "tentative" : "busy",
     ...span
   };
+}
+
+function toGraphEventPatch(current: ProviderEventContent, intended: ProviderEventContent): Record<string, unknown> {
+  const body = toGraphEventBody(intended);
+  const patch: Record<string, unknown> = {};
+  if (current.title !== intended.title) patch.subject = body.subject;
+  if ((current.description ?? "") !== (intended.description ?? "")) patch.body = body.body;
+  if ((current.location ?? "") !== (intended.location ?? "")) patch.location = body.location;
+  // "confirmed" is the app's projection of several Graph showAs values. Do
+  // not turn free/out-of-office/etc. into busy when status was not edited.
+  if (current.status !== intended.status) patch.showAs = body.showAs;
+  if (current.span.kind !== intended.span.kind) {
+    patch.isAllDay = body.isAllDay;
+    patch.start = body.start;
+    patch.end = body.end;
+  } else if (current.span.kind === "timed" && intended.span.kind === "timed") {
+    // Source zone names and floating-local mirrors are provenance, not a time
+    // edit. Comparing instants also treats equivalent ISO spellings equally.
+    if (Date.parse(current.span.startUtc) !== Date.parse(intended.span.startUtc)) patch.start = body.start;
+    if (Date.parse(current.span.endUtc) !== Date.parse(intended.span.endUtc)) patch.end = body.end;
+  } else if (current.span.kind === "all_day" && intended.span.kind === "all_day") {
+    if (current.span.startDate !== intended.span.startDate) patch.start = body.start;
+    if (current.span.endDateExclusive !== intended.span.endDateExclusive) patch.end = body.end;
+  }
+  return patch;
 }
 
 function graphTimedBoundary(utc: string, local: string | null, timeZone: string | null) {
@@ -507,7 +641,7 @@ function graphDeltaToken(deltaLink: string): string {
 
 function encodeGraphCursor(cursor: GraphCursor): string {
   const encoded = `${CURSOR_PREFIX}${Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url")}`;
-  if (encoded.length > 512) throw new ProviderTransientError("The Microsoft Graph synchronization cursor is too large to persist safely.");
+  if (encoded.length > 65_536) throw new ProviderTransientError("The Microsoft Graph synchronization cursor is too large to persist safely.");
   return encoded;
 }
 
@@ -541,6 +675,25 @@ function localDateTime(utc: string, timeZone: string): string | null {
   } catch {
     return null;
   }
+}
+
+function graphRecurrenceKind(event: GraphEvent): NonNullable<ProviderEventContent["providerRecurrence"]>["kind"] {
+  if (event.type === "seriesMaster" || isRecord(event.recurrence)) return "series_master";
+  if (event.type === "exception") return "exception";
+  if (event.type === "occurrence" || optionalString(event.seriesMasterId)) return "occurrence";
+  if (event.type === undefined || event.type === "singleInstance") return "single";
+  throw malformedGraphResponse();
+}
+
+function assertGraphWriteEvidence(event: GraphEvent) {
+  if (!Array.isArray(event.attendees) || typeof event.isOnlineMeeting !== "boolean" || event.type !== "singleInstance") {
+    throw new CalendarProviderGatewayError("provider_event_read_only", "The event's standalone invitation-free source state is not established.");
+  }
+}
+
+function normalizedOriginalStart(value: string): string {
+  if (!/[zZ]|[+-]\d{2}:\d{2}$/.test(value) || !Number.isFinite(Date.parse(value))) throw malformedGraphResponse();
+  return new Date(value).toISOString();
 }
 
 function assertWritableStatus(content: ProviderEventContent): void {

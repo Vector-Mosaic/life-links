@@ -7,6 +7,8 @@ import {
   calendarProviderCredentialHandle,
   type CalendarProviderBindingRecord,
   type CalendarProviderConnectionRecord,
+  type CalendarProviderConnectionExpectation,
+  type CalendarProviderSynchronizationTarget,
   type CalendarProviderEventProjection,
   type CalendarProviderEventTombstone,
   type CalendarProviderOutboxRecord,
@@ -107,6 +109,7 @@ type ProviderOutboxRow = QueryResultRow & {
   last_error_code: CalendarProviderOutboxRecord["lastErrorCode"];
   result: CalendarProviderOutboxRecord["result"];
   conflict_revision: string | null;
+  dispatch_evidence: CalendarProviderOutboxRecord["dispatchEvidence"];
 };
 
 type ProviderWebhookRow = QueryResultRow & {
@@ -199,6 +202,71 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
     return result.rows.map(mapBinding);
   }
 
+  async reserveConnection(connection: CalendarProviderConnectionRecord) {
+    const insert = await this.pool.query(
+      `INSERT INTO calendar_provider_connections (connection_id, owner_id, provider_key, provider_account_id, status,
+         credential_handle, connected_at, disconnected_at, remote_revocation_status, remote_revocation_attempted_at, remote_revocation_error_code)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (connection_id) DO NOTHING RETURNING connection_id`,
+      [connection.connectionId, connection.ownerId, connection.providerKey, connection.providerAccountId, connection.status,
+        connection.credentialHandle, connection.connectedAt, connection.disconnectedAt, connection.remoteRevocationStatus,
+        connection.remoteRevocationAttemptedAt, connection.remoteRevocationErrorCode]
+    );
+    const record = await this.getConnection(connection.connectionId);
+    if (!record) throw new Error("The reserved provider connection is not readable.");
+    return { record, created: insert.rowCount === 1 };
+  }
+
+  async transitionConnection(connection: CalendarProviderConnectionRecord, expected: CalendarProviderConnectionExpectation) {
+    return this.withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`owner:${connection.ownerId}`]);
+      const result = await client.query(
+        `UPDATE calendar_provider_connections SET status=$5, credential_handle=$6, connected_at=$7, disconnected_at=$8,
+           remote_revocation_status=$9, remote_revocation_attempted_at=$10, remote_revocation_error_code=$11
+         WHERE connection_id=$1 AND owner_id=$2 AND provider_key=$3 AND provider_account_id=$4
+           AND status=$12 AND credential_handle IS NOT DISTINCT FROM $13`,
+        [connection.connectionId, connection.ownerId, connection.providerKey, connection.providerAccountId, connection.status,
+          connection.credentialHandle, connection.connectedAt, connection.disconnectedAt, connection.remoteRevocationStatus,
+          connection.remoteRevocationAttemptedAt, connection.remoteRevocationErrorCode, expected.status, expected.credentialHandle]
+      );
+      return result.rowCount === 1;
+    });
+  }
+
+  async listSynchronizationTargets(input: { providerKey?: string; limit: number; after: { connectionId: string; calendarId: string } | null }) {
+    const result = await this.pool.query<ProviderBindingRow>(
+      `SELECT b.* FROM calendar_provider_bindings b JOIN calendar_provider_connections c ON c.connection_id=b.connection_id
+       JOIN calendars cal ON cal.id=b.calendar_id AND cal.owner_id=b.owner_id
+       WHERE c.status='active' AND cal.deleted_at IS NULL AND ($1::text IS NULL OR b.provider_key=$1)
+         AND ($2::text IS NULL OR (b.connection_id,b.calendar_id) > ($2,$3))
+       ORDER BY b.connection_id,b.calendar_id LIMIT $4`,
+      [input.providerKey ?? null, input.after?.connectionId ?? null, input.after?.calendarId ?? null, input.limit]
+    );
+    return result.rows.map((row): CalendarProviderSynchronizationTarget => ({ ownerId: row.owner_id,
+      connectionId: row.connection_id, calendarId: row.calendar_id, providerKey: row.provider_key }));
+  }
+
+  async listRetryableCommands(input: { providerKey?: string; limit: number; now: string }) {
+    const result = await this.pool.query<ProviderOutboxRow>(
+      `SELECT o.* FROM calendar_provider_outbox o JOIN calendar_provider_connections c ON c.connection_id=o.connection_id
+       WHERE c.status='active' AND o.created_at >= c.connected_at AND ($1::text IS NULL OR c.provider_key=$1)
+         AND o.command->>'actor'='owner' AND o.status IN ('pending','processing')
+         AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= $2::timestamptz)
+         AND (o.lease_expires_at IS NULL OR o.lease_expires_at <= $2::timestamptz)
+       ORDER BY o.created_at,o.command_id LIMIT $3`, [input.providerKey ?? null, input.now, input.limit]
+    );
+    return result.rows.map((row) => ({ commandId: row.command_id, ownerId: row.command.ownerId,
+      connectionId: row.command.connectionId, calendarId: row.command.calendarId }));
+  }
+
+  async listRevocationTargets(input: { providerKey?: string; limit: number; now: string }) {
+    const result = await this.pool.query<ProviderConnectionRow>(`SELECT owner_id,connection_id FROM calendar_provider_connections
+      WHERE status='disconnected' AND credential_handle IS NOT NULL AND remote_revocation_status<>'succeeded'
+        AND ($1::text IS NULL OR provider_key=$1)
+        AND (remote_revocation_attempted_at IS NULL OR remote_revocation_attempted_at <= $2::timestamptz - interval '60 seconds')
+      ORDER BY remote_revocation_attempted_at NULLS FIRST,connection_id LIMIT $3`, [input.providerKey ?? null,input.now,input.limit]);
+    return result.rows.map((row) => ({ ownerId: row.owner_id, connectionId: row.connection_id }));
+  }
+
   async getCalendar(connectionId: string, calendarId: string): Promise<CalendarProviderBindingRecord | null> {
     const result = await this.pool.query<ProviderBindingRow>(
       `${bindingReadSql} WHERE b.connection_id = $1 AND b.calendar_id = $2`,
@@ -237,13 +305,24 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
         [binding.connectionId]
       );
       const connection = connectionResult.rows[0];
-      if (!connection || connection.status !== "provisioning" || connection.owner_id !== calendar.ownerId
+      if (!connection || !["provisioning", "active"].includes(connection.status) || connection.owner_id !== calendar.ownerId
         || connection.provider_key !== binding.providerKey
         || connection.provider_account_id !== binding.providerAccountId) {
         throw new CalendarProviderGatewayError(
           "provider_identity_mismatch",
           "A canonical external Calendar may only be provisioned by its exact provisioning connection."
         );
+      }
+      const existing = await client.query<ProviderBindingRow>(
+        "SELECT * FROM calendar_provider_bindings WHERE connection_id=$1 AND calendar_id=$2", [binding.connectionId, calendar.id]
+      );
+      if (existing.rows[0]) {
+        const row = existing.rows[0];
+        if (row.owner_id !== binding.ownerId || row.provider_key !== binding.providerKey
+          || row.provider_account_id !== binding.providerAccountId || row.provider_calendar_id !== binding.providerCalendarId) {
+          throw new CalendarProviderGatewayError("provider_identity_mismatch", "The existing Calendar belongs to another provider identity.");
+        }
+        return;
       }
       await client.query(
         `INSERT INTO calendars (
@@ -495,8 +574,8 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
       `INSERT INTO calendar_provider_outbox (
          command_id, owner_id, connection_id, calendar_id, fingerprint, command,
          status, attempts, created_at, updated_at, last_attempt_at, next_attempt_at,
-         lease_owner, lease_expires_at, last_error_code, result, conflict_revision
-       ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17)
+         lease_owner, lease_expires_at, last_error_code, result, conflict_revision, dispatch_evidence
+       ) VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18::jsonb)
        ON CONFLICT (command_id) DO NOTHING RETURNING command_id`,
       outboxValues(record)
     );
@@ -536,11 +615,11 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
          fingerprint = $2, command = $3::jsonb, status = $4, attempts = $5,
          created_at = $6, updated_at = $7, last_attempt_at = $8,
          next_attempt_at = $9, lease_owner = $10, lease_expires_at = $11,
-         last_error_code = $12, result = $13::jsonb, conflict_revision = $14
+         last_error_code = $12, result = $13::jsonb, conflict_revision = $14, dispatch_evidence = $16::jsonb
        WHERE command_id = $1 AND status = 'processing' AND lease_owner = $15`,
       [record.commandId, record.fingerprint, JSON.stringify(record.command), record.status, record.attempts,
         record.createdAt, record.updatedAt, record.lastAttemptAt, record.nextAttemptAt, record.leaseOwner,
-        record.leaseExpiresAt, record.lastErrorCode, jsonOrNull(record.result), record.conflictRevision, expectedLeaseOwner]
+        record.leaseExpiresAt, record.lastErrorCode, jsonOrNull(record.result), record.conflictRevision, expectedLeaseOwner, jsonOrNull(record.dispatchEvidence)]
     );
     return result.rowCount === 1;
   }
@@ -616,8 +695,9 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
 
 async function lockBinding(client: PoolClient, connectionId: string, calendarId: string): Promise<BindingIdentity> {
   const result = await client.query<ProviderBindingRow>(
-    `SELECT * FROM calendar_provider_bindings
-     WHERE connection_id = $1 AND calendar_id = $2 FOR UPDATE`,
+    `SELECT b.* FROM calendar_provider_bindings b
+     JOIN calendar_provider_connections c ON c.connection_id=b.connection_id
+     WHERE b.connection_id = $1 AND b.calendar_id = $2 AND c.status IN ('active','provisioning') FOR UPDATE OF c,b`,
     [connectionId, calendarId]
   );
   const row = result.rows[0];
@@ -746,7 +826,8 @@ function mapOutbox(row: ProviderOutboxRow): CalendarProviderOutboxRecord {
     leaseExpiresAt: nullableIso(row.lease_expires_at),
     lastErrorCode: row.last_error_code,
     result: row.result === null ? null : structuredClone(row.result),
-    conflictRevision: row.conflict_revision
+    conflictRevision: row.conflict_revision,
+    dispatchEvidence: row.dispatch_evidence ? structuredClone(row.dispatch_evidence) : null
   };
 }
 
@@ -795,7 +876,8 @@ function outboxValues(record: CalendarProviderOutboxRecord): unknown[] {
     record.leaseExpiresAt,
     record.lastErrorCode,
     jsonOrNull(record.result),
-    record.conflictRevision
+    record.conflictRevision,
+    jsonOrNull(record.dispatchEvidence)
   ];
 }
 

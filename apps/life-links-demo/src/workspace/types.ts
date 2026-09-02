@@ -5,6 +5,9 @@ import type {
   ActivityRecord,
   CalendarEventTombstoneRecord,
   CalendarRecord,
+  CalendarAuthorizationDiscovery,
+  CalendarProviderBindingView,
+  CalendarProviderEventProjection,
   CalendarConnectionView,
   CalendarConnectedCalendarView,
   CalendarProviderAvailability,
@@ -33,7 +36,7 @@ import type {
 } from "@life-links/core";
 
 import type { ApiAgentConnection, ApiUser, CalendarClock, CalendarEventDetail } from "../api";
-import type { AgentCalendarDeletionPreview } from "../agent/calendarToolHandlers";
+import type { AgentCalendarDeletionPreview, AgentProviderCalendarDeletionPreview } from "../agent/calendarToolHandlers";
 
 export type WorkspaceView = "home" | "factory" | "scan" | "workspace" | "search";
 export type InventoryFilter = "all" | "claimed" | "unclaimed";
@@ -170,6 +173,14 @@ export type RoutineWorkspaceState = {
 };
 
 export type CalendarWorkspaceState = {
+  connectionFlow: {
+    authorizationId: string | null;
+    connectionId: string | null;
+    discovery: CalendarAuthorizationDiscovery | null;
+    loading: boolean;
+    error: string;
+    feedback: string;
+  };
   connectionManagement: {
     providers: CalendarProviderAvailability[];
     connections: CalendarConnectionView[];
@@ -180,6 +191,9 @@ export type CalendarWorkspaceState = {
   };
   clock: CalendarClock | null;
   calendars: CalendarRecord[];
+  providerBindings: CalendarProviderBindingView[];
+  providerEvents: CalendarProviderEventProjection[];
+  selectedProviderEvent: CalendarProviderEventProjection | null;
   calendarsNextCursor: string | null;
   calendarsComplete: boolean;
   events: CalendarEventDetail[];
@@ -195,7 +209,7 @@ export type CalendarWorkspaceState = {
 export type LifeLinksWorkspaceSnapshot = {
   changeHistory: ChangeHistory;
   agentChangeConfirmation: LifeLinkChangePreview | null;
-  agentCalendarDeletionConfirmation: AgentCalendarDeletionPreview | null;
+  agentCalendarDeletionConfirmation: AgentCalendarDeletionPreview | AgentProviderCalendarDeletionPreview | null;
   routineWorkspace: RoutineWorkspaceState;
   calendarWorkspace: CalendarWorkspaceState;
   workspaceMode: "hierarchies" | "collections" | "routines" | "calendar";

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { DEFAULT_QR_BASE_URL } from "@life-links/core";
 import { attachmentRuntime, type AttachmentNativeRuntime } from "./attachment-native-runtime.js";
+import type { MicrosoftCalendarAuthConfig } from "./calendar-microsoft-auth.js";
 
 export type StoreMode = "postgres" | "memory";
 export type SeedProfile = "legacy-demo" | "competition";
@@ -43,6 +44,7 @@ export type LifeLinksConfig = {
   rateLimitMutationMax: number;
   rateLimitClaimMax: number;
   rateLimitBatchMax: number;
+  microsoftCalendar?: MicrosoftCalendarAuthConfig & { encryptionKey: string };
 };
 
 const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -84,6 +86,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
   }
 
   return {
+    microsoftCalendar: readMicrosoftCalendarConfig(env, storeMode),
     attachmentRuntime: attachmentRuntime(env),
     host: env.HOST ?? "0.0.0.0",
     port: Number(env.PORT ?? "3002"),
@@ -125,6 +128,26 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
     rateLimitClaimMax: Number(env.RATE_LIMIT_CLAIM_MAX ?? "30"),
     rateLimitBatchMax: Number(env.RATE_LIMIT_BATCH_MAX ?? "12")
   };
+}
+
+function readMicrosoftCalendarConfig(env: NodeJS.ProcessEnv, storeMode: StoreMode): LifeLinksConfig["microsoftCalendar"] {
+  if (env.LIFE_LINKS_MICROSOFT_CALENDAR_ENABLED !== "true") return undefined;
+  if (storeMode !== "postgres") throw new Error("Microsoft Calendar requires the durable PostgreSQL store.");
+  const clientId = env.LIFE_LINKS_MICROSOFT_CLIENT_ID ?? "";
+  const redirectUri = env.LIFE_LINKS_MICROSOFT_REDIRECT_URI ?? "";
+  const certificateThumbprint = env.LIFE_LINKS_MICROSOFT_CERTIFICATE_SHA256 ?? "";
+  const certificatePrivateKey = Buffer.from(env.LIFE_LINKS_MICROSOFT_PRIVATE_KEY_BASE64 ?? "", "base64").toString("utf8");
+  const encryptionKey = env.LIFE_LINKS_CALENDAR_ENCRYPTION_KEY ?? "";
+  if (!/^[a-f0-9-]{36}$/i.test(clientId) || !/^[a-f0-9]{64}$/i.test(certificateThumbprint)
+    || !certificatePrivateKey.startsWith("-----BEGIN PRIVATE KEY-----") || Buffer.from(encryptionKey, "base64").length !== 32) {
+    throw new Error("Microsoft Calendar credentials are incomplete.");
+  }
+  let url: URL;
+  try { url = new URL(redirectUri); } catch { throw new Error("Microsoft Calendar callback is invalid."); }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash
+    || url.pathname !== "/api/calendar-providers/microsoft/callback"
+    || url.origin !== new URL(env.QR_BASE_URL ?? "").origin) throw new Error("Microsoft Calendar callback must match the application HTTPS origin.");
+  return { clientId, redirectUri, certificateThumbprint, certificatePrivateKey, encryptionKey };
 }
 
 function requireChallengeQrBaseUrl(value: string | undefined): string {

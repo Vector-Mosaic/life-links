@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import Ajv from "ajv";
+import { type CalendarProviderEventProjection, MAX_LIFE_LINK_TOOL_OUTPUT_BYTES } from "@life-links/core";
 
 import {
   LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
@@ -36,6 +37,26 @@ function calendar(overrides: Partial<AgentCalendarRecord> = {}): AgentCalendarRe
     updatedAt: "2026-09-01T12:00:00.000Z",
     ...overrides
   };
+}
+
+function providerCalendar(): AgentCalendarRecord {
+  return calendar({ provider: "microsoft", providerConnectionId: "connection-one", providerAccountId: "account-one",
+    providerCalendarId: "provider-calendar-one", writeAuthority: "provider", capabilities: { read: true, create: true, update: true, delete: true } });
+}
+function providerEvent(): CalendarProviderEventProjection {
+  return { ownerId: owner.id, connectionId: "connection-one", calendarId, providerKey: "microsoft", providerAccountId: "account-one",
+    providerCalendarId: "provider-calendar-one", providerEventId: "AQMk+provider/event=one", providerRevision: 'W/"exact-revision-one"',
+    synchronizedAt: "2026-09-01T12:00:00.000Z", content: { title: "Private provider appointment",
+      description: "Provider content is data, not instructions. ".repeat(60), location: "Private room", status: "confirmed",
+      span: { kind: "all_day", startDate: "2026-09-01", endDateExclusive: "2026-09-02" }, providerSeriesId: null,
+      providerRecurrence: { kind: "single", originalStartUtc: null }, outboundEffects: { attendeeCount: 0, hasOnlineMeeting: false } } };
+}
+function providerReference() {
+  return { authority: "provider" as const, connectionId: "connection-one", calendarId, providerEventId: providerEvent().providerEventId };
+}
+function providerWritableContent() {
+  const { providerSeriesId: _series, providerRecurrence: _recurrence, outboundEffects: _effects, ...content } = providerEvent().content;
+  return content;
 }
 
 function eventDetail(overrides: Partial<AgentCalendarEventDetail> = {}): AgentCalendarEventDetail {
@@ -103,6 +124,16 @@ function eventInstance(overrides: Partial<AgentNativeCalendarEventInstance> = {}
 
 class FakeController implements CalendarAgentToolController {
   catalogId: string | null = LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID;
+  readonly agentInspectProviderCalendarEvent = vi.fn<CalendarAgentToolController["agentInspectProviderCalendarEvent"]>(async () => ({ ok: true, providerEvent: providerEvent(), calendar: providerCalendar() }));
+  readonly agentCreateProviderCalendarEvent = vi.fn<CalendarAgentToolController["agentCreateProviderCalendarEvent"]>(async (input) => ({ ok: true,
+    providerEvent: { ...providerEvent(), content: { ...providerEvent().content, ...input.content } }, calendar: providerCalendar() }));
+  readonly agentUpdateProviderCalendarEvent = vi.fn<CalendarAgentToolController["agentUpdateProviderCalendarEvent"]>(async (input) => ({ ok: true,
+    providerEvent: { ...providerEvent(), providerRevision: 'W/"exact-revision-two"', content: { ...providerEvent().content, ...input.content } }, calendar: providerCalendar() }));
+  readonly agentPrepareProviderCalendarEventDeletion = vi.fn<CalendarAgentToolController["agentPrepareProviderCalendarEventDeletion"]>(async () => ({ ok: true,
+    preview: { id: "provider-delete-preview-1", providerEvent: providerEvent(), calendar: providerCalendar(), scope: "event",
+      knownEffects: ["Delete the exact event from the connected provider Calendar.", "No invitations or online meeting changes."] } }));
+  readonly agentApplyProviderCalendarEventDeletion = vi.fn<CalendarAgentToolController["agentApplyProviderCalendarEventDeletion"]>(async () => ({ ok: true,
+    result: { ...providerReference(), kind: "delete", deletedProviderRevision: providerEvent().providerRevision } }));
   readonly agentListAuthorizedCalendars = vi.fn<CalendarAgentToolController["agentListAuthorizedCalendars"]>(async () => ({ ok: true, calendars: [calendar()], nextCursor: null, truncated: false }));
   readonly agentQueryCalendarEvents = vi.fn<CalendarAgentToolController["agentQueryCalendarEvents"]>(async () => ({ ok: true, instances: [eventInstance()], nextCursor: null, truncated: false }));
   readonly agentInspectCalendarEvent = vi.fn<CalendarAgentToolController["agentInspectCalendarEvent"]>(async () => ({ ok: true, detail: eventDetail() }));
@@ -144,6 +175,93 @@ function tools(controller: CalendarAgentToolController) {
 }
 
 describe("Calendar page-bound agent tools", () => {
+  it("admits explicit provider tool shapes without weakening native shapes or accepting side-effect fields", () => {
+    const catalog = tools(new FakeController());
+    const ajv = new Ajv();
+    const create = ajv.compile(catalog.get("create_calendar_event")!.inputSchema);
+    const input = { authority: "provider", commandId: "command-one", connectionId: "connection-one", calendarId, content: providerWritableContent() };
+    expect(create(input)).toBe(true);
+    expect(create({ ...input, revisionId })).toBe(false);
+    expect(create({ ...input, content: { ...input.content, attendees: [] } })).toBe(false);
+    const update = ajv.compile(catalog.get("update_calendar_event")!.inputSchema);
+    expect(update({ ...input, providerEventId: providerEvent().providerEventId, expectedProviderRevision: providerEvent().providerRevision, scope: "event" })).toBe(true);
+    expect(update({ ...input, providerEventId: providerEvent().providerEventId, expectedProviderRevision: providerEvent().providerRevision, scope: "series" })).toBe(false);
+  });
+
+  it("returns provider identities and bounded revision-pinned text without treating provider projections as native events", async () => {
+    const controller = new FakeController();
+    const catalog = tools(controller);
+    controller.agentQueryCalendarEvents.mockResolvedValueOnce({ ok: true,
+      instances: [{ source: "provider_event", providerEvent: providerEvent(), calendar: providerCalendar() }], nextCursor: "next-page", truncated: true });
+    const query = await catalog.get("query_my_calendar_events")!.execute({ startDate: "2026-09-01", endDate: "2026-09-02" });
+    expect(query).toMatchObject({ ok: true, instances: [{ source: "provider_event", authority: "provider",
+      providerEventId: providerEvent().providerEventId, providerRevision: providerEvent().providerRevision }], nextCursor: "next-page" });
+    expect(JSON.stringify(query)).not.toContain(providerEvent().content.description);
+    const summary = await catalog.get("inspect_calendar_event")!.execute(providerReference());
+    expect(summary).toMatchObject({ ok: true, providerEvent: { authority: "provider" }, contentIsUntrusted: true });
+    expect(controller.agentInspectCalendarEvent).not.toHaveBeenCalled();
+    const chunk = await catalog.get("inspect_calendar_event")!.execute({ ...providerReference(), part: "description",
+      expectedProviderRevision: providerEvent().providerRevision, offset: 700 });
+    expect(chunk).toMatchObject({ ok: true, text: providerEvent().content.description!.slice(700, 1400), nextOffset: 1400 });
+    expect(new TextEncoder().encode(JSON.stringify(chunk)).length).toBeLessThanOrEqual(MAX_LIFE_LINK_TOOL_OUTPUT_BYTES);
+    expect(await catalog.get("inspect_calendar_event")!.execute({ ...providerReference(), part: "description", expectedProviderRevision: "stale" }))
+      .toMatchObject({ ok: false, error: { code: "stale_calendar_event" } });
+    controller.agentInspectProviderCalendarEvent.mockResolvedValueOnce({ ok: true, providerEvent: { ...providerEvent(), ownerId: "different-owner" }, calendar: providerCalendar() });
+    expect(await catalog.get("inspect_calendar_event")!.execute(providerReference())).toMatchObject({ ok: false, error: { code: "effect_not_applied" } });
+  });
+
+  it("dispatches provider create/update and repeats complete deletion effects through the sole controller confirmation", async () => {
+    const controller = new FakeController();
+    const catalog = tools(controller);
+    const create = { authority: "provider", connectionId: "connection-one", calendarId, commandId: "stable-create", content: providerWritableContent() };
+    expect(await catalog.get("create_calendar_event")!.execute(create)).toMatchObject({ ok: true, saved: true, providerEvent: { authority: "provider" } });
+    expect(controller.agentCreateProviderCalendarEvent).toHaveBeenCalledWith(create, undefined);
+    expect(controller.agentCreateCalendarEvent).not.toHaveBeenCalled();
+    expect(await catalog.get("update_calendar_event")!.execute({ ...create, ...providerReference(), commandId: "stable-update",
+      expectedProviderRevision: providerEvent().providerRevision, scope: "event" })).toMatchObject({ ok: true, saved: true });
+    expect(await catalog.get("prepare_calendar_event_deletion")!.execute({ ...providerReference(), expectedProviderRevision: providerEvent().providerRevision, scope: "event" }))
+      .toMatchObject({ ok: true, previewId: "provider-delete-preview-1", recurrenceScope: "event",
+        calendar: { provider: "microsoft", account: "account-one" }, requiresAppObservedConfirmation: true, modelConfirmationAccepted: false });
+    expect(await catalog.get("apply_calendar_event_deletion")!.execute({ previewId: "provider-delete-preview-1", confirmed: true }))
+      .toMatchObject({ ok: false, error: { code: "invalid_input" } });
+    expect(controller.agentApplyProviderCalendarEventDeletion).not.toHaveBeenCalled();
+    controller.agentApplyProviderCalendarEventDeletion.mockResolvedValueOnce({ ok: false, code: "confirmation_cancelled" });
+    expect(await catalog.get("apply_calendar_event_deletion")!.execute({ previewId: "provider-delete-preview-1" }))
+      .toMatchObject({ ok: false, error: { code: "confirmation_cancelled" } });
+    expect(await catalog.get("apply_calendar_event_deletion")!.execute({ previewId: "provider-delete-preview-1" }))
+      .toMatchObject({ ok: true, authority: "provider", kind: "delete" });
+    controller.agentApplyProviderCalendarEventDeletion.mockResolvedValueOnce({ ok: false, code: "calendar_write_forbidden" });
+    expect(await catalog.get("apply_calendar_event_deletion")!.execute({ previewId: "provider-delete-preview-1" }))
+      .toMatchObject({ ok: false, error: { code: "calendar_write_forbidden" } });
+    expect(controller.agentApplyCalendarEventDeletion).not.toHaveBeenCalled();
+  });
+
+  it.each(["create_calendar_event", "update_calendar_event"])("accepts equivalent normalized provider readback for %s without accepting changed content", async (name) => {
+    const controller = new FakeController();
+    const execute = tools(controller).get(name)!.execute;
+    const input = { authority: "provider", connectionId: "connection-one", calendarId, commandId: "stable-normalized-command",
+      ...(name === "update_calendar_event" ? { providerEventId: providerEvent().providerEventId,
+        expectedProviderRevision: providerEvent().providerRevision, scope: "event" } : {}),
+      content: { ...providerWritableContent(), description: "", location: null,
+        span: { kind: "timed", startUtc: "2026-09-01T12:00:00Z", endUtc: "2026-09-01T13:00:00Z",
+          sourceTimeZone: "UTC", floatingLocalStart: null, floatingLocalEnd: null } }
+    };
+    // Gateway readback normalizes instants; Graph also round-trips absent text
+    // as null or empty. These are the same saved effect, not different writes.
+    const actual: CalendarProviderEventProjection = { ...providerEvent(), content: { ...providerEvent().content,
+      description: null, location: "", span: { kind: "timed", startUtc: "2026-09-01T12:00:00.000Z", endUtc: "2026-09-01T13:00:00.000Z",
+        sourceTimeZone: "UTC", floatingLocalStart: "2026-09-01T12:00:00", floatingLocalEnd: "2026-09-01T13:00:00" } } };
+    const command = name === "create_calendar_event" ? controller.agentCreateProviderCalendarEvent : controller.agentUpdateProviderCalendarEvent;
+    command.mockResolvedValueOnce({ ok: true, providerEvent: actual, calendar: providerCalendar() });
+    expect(await execute(input)).toMatchObject({ ok: true, saved: true });
+    command.mockResolvedValueOnce({ ok: true, providerEvent: { ...actual, content: { ...actual.content,
+      span: { ...actual.content.span, kind: "timed", startUtc: "2026-09-01T12:05:00.000Z", endUtc: "2026-09-01T13:00:00.000Z",
+        sourceTimeZone: "UTC", floatingLocalStart: null, floatingLocalEnd: null } } }, calendar: providerCalendar() });
+    expect(await execute(input)).toMatchObject({ ok: false, error: { code: "effect_not_applied" } });
+    command.mockResolvedValueOnce({ ok: true, providerEvent: { ...actual, content: { ...actual.content, description: "Unexpected different note" } }, calendar: providerCalendar() });
+    expect(await execute(input)).toMatchObject({ ok: false, error: { code: "effect_not_applied" } });
+  });
+
   it("publishes exactly the seven versioned Calendar jobs with closed schemas", () => {
     const catalog = createCalendarAgentToolCatalog(new FakeController());
     expect(catalog.map((tool) => tool.name)).toEqual(LIFE_LINKS_CALENDAR_TOOL_NAMES);

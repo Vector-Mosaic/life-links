@@ -43,6 +43,7 @@ import { calendarStoreContract } from "./calendar-store-contract.js";
 import { CalendarProviderGateway, calendarProviderCredentialHandle } from "../src/calendar-provider-gateway.js";
 import { PostgresCalendarProviderStateStore } from "../src/calendar-provider-postgres.js";
 import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
+import { CalendarSecretCipher, PostgresCalendarSecretStore } from "../src/calendar-secret-store.js";
 
 const databaseUrl = process.env.LIFE_LINKS_TEST_DATABASE_URL;
 const allowSchemaMutation = process.env.LIFE_LINKS_ALLOW_TEST_DB_SCHEMA === "1";
@@ -82,6 +83,30 @@ describe("Life Links Postgres integration", () => {
   fieldLedgerStoreContract(() => store);
   routineStoreContract(() => store);
   calendarStoreContract(() => store);
+
+  it("persists only encrypted Calendar credentials and serializes refresh updates across store instances", async () => {
+    const cipher = new CalendarSecretCipher(Buffer.alloc(32, 7).toString("base64"));
+    const first = new PostgresCalendarSecretStore(postgresPool);
+    const second = new PostgresCalendarSecretStore(postgresPool);
+    const identity = { id: randomUUID(), ownerId: DEMO_OWNER_ID, purpose: "credential" as const };
+    await first.create({ ...identity, encryptedPayload: cipher.seal(identity, { token: "synthetic-private-refresh-token", generation: 0 }), expiresAt: null });
+    const stored = await postgresPool.query("SELECT encrypted_payload FROM calendar_provider_secrets WHERE id=$1", [identity.id]);
+    expect(stored.rows[0].encrypted_payload).not.toContain("synthetic-private-refresh-token");
+    const advance = (secrets: PostgresCalendarSecretStore) => secrets.locked(identity.id, async (row) => {
+      const state = cipher.open<{ token: string; generation: number }>(row!);
+      return { row: { ...row!, encryptedPayload: cipher.seal(row!, { ...state, generation: state.generation + 1 }) }, value: state.generation };
+    });
+    expect((await Promise.all([advance(first), advance(second)])).sort()).toEqual([0, 1]);
+    await expect(first.locked(identity.id, async (row) => ({ row: { ...row!, ownerId: DEMO_GUEST_ID }, value: null })))
+      .rejects.toThrow("identity cannot change");
+    expect(await second.locked(identity.id, async (row) => ({ row, value: cipher.open<{ generation: number }>(row!).generation }))).toBe(2);
+    const expired = { id: randomUUID(), ownerId: DEMO_OWNER_ID, purpose: "authorization" as const };
+    await first.create({ ...expired, encryptedPayload: cipher.seal(expired, { state: "synthetic-expired" }), expiresAt: "2026-01-01T00:00:00.000Z" });
+    await second.deleteExpired("2026-09-01T00:00:00.000Z");
+    expect(await first.locked(expired.id, async (row) => ({ row, value: row }))).toBeNull();
+    await second.locked(identity.id, async () => ({ row: null, value: null }));
+    expect(await first.locked(identity.id, async (row) => ({ row, value: row }))).toBeNull();
+  });
 
   it("persists provider management with one canonical grant, stale-write protection and local-only disconnect", async () => {
     const connectionId = "postgres-provider-management";
@@ -264,7 +289,7 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(12);
+    expect(migrations.rows[0].count).toBe(13);
     const agentConnectionColumn = await adminPool.query(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -511,6 +536,10 @@ describe("Life Links Postgres integration", () => {
     const firstApply = await store.resetCompetitionFixture({ ...options, mode: "apply" });
     expect(firstApply.after).toEqual(firstApply.expected);
     expect(firstApply.shapeMatchesExpected).toBe(true);
+    const resetSecrets = new PostgresCalendarSecretStore(postgresPool);
+    const resetCipher = new CalendarSecretCipher(Buffer.alloc(32, 9).toString("base64"));
+    const resetSecret = { id: randomUUID(), ownerId: COMPETITION_OWNER_ID, purpose: "credential" as const };
+    await resetSecrets.create({ ...resetSecret, encryptedPayload: resetCipher.seal(resetSecret, { token: "synthetic-reset-probe" }), expiresAt: null });
     const resetActivity = await store.createActivity({ id: `activity-${randomUUID()}`, ownerId: COMPETITION_OWNER_ID,
       title: "Reset probe", createdAt: "2026-09-01T00:00:00.000Z" });
     await store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
@@ -527,6 +556,7 @@ describe("Life Links Postgres integration", () => {
       calendars: 1, calendarEvents: 1, calendarEventRevisions: 1
     });
     expect((await store.resetCompetitionFixture({ ...options, mode: "apply" })).after).toEqual(firstApply.expected);
+    expect(await resetSecrets.locked(resetSecret.id, async (row) => ({ row, value: row }))).toBeNull();
     expect((await store.resetCompetitionFixture(options)).shapeMatchesExpected).toBe(true);
     expect((await store.resetCompetitionFixture({ ...options, password: "wrong-password" })).shapeMatchesExpected).toBe(false);
     expect((await store.listCollectionMembers(COMPETITION_OWNER_ID, COMPETITION_CAMPING_COLLECTION_ID, { limit: 100 }))?.items).toHaveLength(48);
@@ -1175,7 +1205,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(12);
+      expect(receiptCount.rows[0].count).toBe(13);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1204,7 +1234,8 @@ describe("Life Links Postgres integration", () => {
         "009_document_attachments.sql",
         "010_general_routines.sql",
         "011_calendar.sql",
-        "012_calendar_permissions.sql"
+        "012_calendar_permissions.sql",
+        "013_calendar_authorization.sql"
       ]);
     } finally {
       await concurrent.store.close();

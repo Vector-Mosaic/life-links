@@ -2727,6 +2727,7 @@ async function replacePostgresCompetitionFixture(
   await client.query("DELETE FROM calendar_provider_sync_states WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM calendar_provider_bindings WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM calendar_provider_connections WHERE owner_id = $1", [ownerId]);
+  await client.query("DELETE FROM calendar_provider_secrets WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM calendar_event_tombstones WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM calendar_event_subject_links WHERE owner_id = $1", [ownerId]);
   await client.query("DELETE FROM calendar_event_revisions WHERE owner_id = $1", [ownerId]);

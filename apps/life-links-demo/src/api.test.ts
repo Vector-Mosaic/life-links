@@ -10,7 +10,10 @@ import {
   updateCollection, updateCollectionSection, updateLifeLink, getLifeLinkAttachmentContent, getLifeLinkAttachmentImage,
   listRoutineOccurrences, materializeRoutineOccurrences, putRoutineRunStepResult,
   restoreCalendar, restoreCalendarEvent, updateCalendar, updateCalendarEvent,
-  listCalendarProviders, listCalendarConnections, listConnectedCalendars, updateConnectedCalendar, disconnectCalendarConnection
+  listCalendarProviders, listCalendarConnections, listConnectedCalendars, updateConnectedCalendar, disconnectCalendarConnection,
+  authorizeMicrosoftCalendar, getCalendarAuthorization, completeCalendarAuthorization, cancelCalendarAuthorization,
+  discoverConnectedCalendars, selectConnectedCalendars, refreshCalendarConnection,
+  listProviderCalendarEvents, getProviderCalendarEvent, createProviderCalendarEvent, updateProviderCalendarEvent, deleteProviderCalendarEvent
 } from "./api";
 import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, ATTACHMENT_IMAGE_MAX_BYTES } from "@life-links/core";
 import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedImageFixture, attachmentTranscriptFixture } from "./attachmentImage.testFixtures";
@@ -18,6 +21,43 @@ import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedIm
 describe("Life Links API error normalization", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("routes Outlook authorization separately from exact provider event authority without credentials or agent settings", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const connectionId = "connection/one", calendarId = "calendar-one", providerEventId = "AAM/event+one=";
+    const authorizationId = "11111111-1111-4111-8111-111111111111";
+    await authorizeMicrosoftCalendar(connectionId);
+    await getCalendarAuthorization(authorizationId);
+    await completeCalendarAuthorization(authorizationId, ["AAM/calendar+one="]);
+    await cancelCalendarAuthorization(authorizationId);
+    await discoverConnectedCalendars(connectionId);
+    await selectConnectedCalendars(connectionId, ["AAM/calendar+one="]);
+    await refreshCalendarConnection(connectionId, "2026-09-01T00:00:00.000Z", "2026-10-01T00:00:00.000Z");
+    const reference = { authority: "provider" as const, connectionId, calendarId, providerEventId };
+    const content = { title: "Provider event", description: null, location: null, status: "confirmed" as const,
+      span: { kind: "all_day" as const, startDate: "2026-09-01", endDateExclusive: "2026-09-02" } };
+    const command = { authority: "provider" as const, connectionId, calendarId, commandId: "stable-command", content };
+    await listProviderCalendarEvents({ authority: "provider", connectionId, calendarId, startDate: "2026-09-01", endDate: "2026-09-02", limit: 1 }, undefined, "agent");
+    await getProviderCalendarEvent(reference, undefined, "agent");
+    await createProviderCalendarEvent(command, undefined, "agent");
+    await updateProviderCalendarEvent(providerEventId, { ...command, expectedProviderRevision: "W/\"revision\"", scope: "event" }, undefined, "agent");
+    const { content: _content, ...deletion } = command;
+    await deleteProviderCalendarEvent(providerEventId, { ...deletion, expectedProviderRevision: "W/\"revision\"", scope: "event" }, undefined, "agent");
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.slice(0, 7).every(([, init]) => !new Headers(init.headers).has("X-Life-Links-Actor"))).toBe(true);
+    expect(calls.slice(7).every(([, init]) => new Headers(init.headers).get("X-Life-Links-Actor") === "agent")).toBe(true);
+    expect(calls[0][0]).toBe("/api/calendar-providers/microsoft/authorize");
+    expect(JSON.parse(calls[0][1].body as string)).toEqual({ reconnectConnectionId: connectionId });
+    expect(JSON.parse(calls[2][1].body as string)).toEqual({ selectedCalendarIds: ["AAM/calendar+one="] });
+    expect(calls[3][1].method).toBe("DELETE");
+    expect(calls[4][0]).toBe("/api/calendar-connections/connection%2Fone/available-calendars");
+    const query = new URL(calls[7][0], "https://lifelinks.test");
+    expect(query.searchParams.get("authority")).toBe("provider"); expect(query.searchParams.get("connectionId")).toBe(connectionId);
+    expect(calls[8][0]).toContain("/api/calendar-events/AAM%2Fevent%2Bone%3D?");
+    expect(calls[10][1].method).toBe("PATCH"); expect(calls[11][1].method).toBe("DELETE");
+    expect(JSON.parse(calls[11][1].body as string)).toEqual({ ...deletion, expectedProviderRevision: "W/\"revision\"", scope: "event" });
   });
 
   it("keeps Calendar agent narrowing separate from owner settings while preserving JSON headers", async () => {

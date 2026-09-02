@@ -16,11 +16,19 @@ const contractPath = path.resolve(testDirectory, "../../../contracts/http/openap
 const passwordPath = path.resolve(testDirectory, "../src/password.ts");
 const serverPath = path.resolve(testDirectory, "../src/server.ts");
 const calendarConnectionRouterPath = path.resolve(testDirectory, "../src/calendar-connections.ts");
+const calendarNotificationRouterPath = path.resolve(testDirectory, "../src/calendar-provider-subscriptions.ts");
 const storePath = path.resolve(testDirectory, "../src/store.ts");
 const webClientPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/api.ts");
 const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/workspace/controller.ts");
 
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
+  "POST /api/calendar-providers/microsoft/authorize",
+  "GET /api/calendar-authorizations/{authorizationId}/calendars",
+  "POST /api/calendar-authorizations/{authorizationId}/complete",
+  "DELETE /api/calendar-authorizations/{authorizationId}",
+  "GET /api/calendar-connections/{connectionId}/available-calendars",
+  "POST /api/calendar-connections/{connectionId}/select",
+  "POST /api/calendar-connections/{connectionId}/refresh",
   "GET /api/calendar-providers",
   "GET /api/calendar-connections",
   "GET /api/calendar-connections/{connectionId}/calendars",
@@ -300,6 +308,15 @@ function implementedApplicationOperations(serverSource: string): string[] {
   const connectionRegistrations = [...routerSource.matchAll(/router\.(get|post|patch|put|delete)\(\s*"([^"]+)"/g)]
     .map((match) => `${match[1].toUpperCase()} ${expressRouteToOpenApi(match[2])}`);
   expect([...routerSource.matchAll(/router\.(get|post|patch|put|delete|head|options)\(/g)]).toHaveLength(connectionRegistrations.length);
+  // The one public webhook has an exact app.post rate limiter and a mounted
+  // handler for that same route; neither an unmounted route nor a second public
+  // notification endpoint may silently disappear from the inventory.
+  expect(serverSource).toContain("app.use(createCalendarProviderNotificationRouter(");
+  const notifications = [...readSource(calendarNotificationRouterPath)
+    .matchAll(/router\.(get|post|patch|put|delete|head|options)\(\s*"([^"]+)"/g)];
+  expect(notifications.map((match) => `${match[1].toUpperCase()} ${match[2]}`))
+    .toEqual(["POST /api/calendar-notifications/microsoft"]);
+  expect(literalRegistrations).toContain("POST /api/calendar-notifications/microsoft");
   return [
     ...literalRegistrations,
     ...connectionRegistrations,
@@ -334,7 +351,12 @@ function operationPathFromExpression(expression: ts.Expression): string | null {
     }
     result += `{${placeholder}}${span.literal.text}`;
   }
-  return result.split("?", 1)[0];
+  // Native and provider clients deliberately share this same route parameter;
+  // provider identity is explicit in the request discriminator, not a new URL.
+  return result.split("?", 1)[0].replace(
+    /^\/api\/calendar-events\/\{providerEventId\}$/,
+    "/api/calendar-events/{eventId}"
+  );
 }
 
 function templatePlaceholder(expression: ts.Expression): string | null {
@@ -465,14 +487,14 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(96);
+    expect(published).toHaveLength(105);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
     expect(schemas).not.toHaveProperty("Project");
     expect(objectValue(objectValue(schemas.Link, "Link").properties, "Link properties")).not.toHaveProperty("projectId");
     const operationIds = [...contractOperations(document).values()].map((operation) => operation.operationId);
-    expect(new Set(operationIds).size).toBe(96);
+    expect(new Set(operationIds).size).toBe(105);
     expect(operationIds.every((operationId) => typeof operationId === "string" && operationId.length > 0)).toBe(true);
   });
 
@@ -670,6 +692,12 @@ describe("Life Links OpenAPI v1", () => {
     const mutatingOperations = [...operations.entries()].filter(([key]) => /^(POST|PATCH|PUT|DELETE) /.test(key));
     for (const [key, operation] of mutatingOperations) {
       const parameters = (operation.parameters ?? []) as JsonObject[];
+      if (key === "POST /api/calendar-notifications/microsoft") {
+        expect(operation.security).toEqual([]);
+        expect(parameters).not.toContainEqual({ $ref: "#/components/parameters/BrowserOrigin" });
+        expect(String(operation.description)).toContain("clientState hash");
+        continue;
+      }
       expect(parameters, `${key} must describe browser Origin enforcement`).toContainEqual({
         $ref: "#/components/parameters/BrowserOrigin"
       });
@@ -863,11 +891,13 @@ describe("Life Links OpenAPI v1", () => {
       key.includes("/calendar")
     );
 
-    expect(calendarOperations).toHaveLength(18);
+    expect(calendarOperations).toHaveLength(25);
     for (const key of calendarOperations) {
       const operation = operations.get(key);
       expect(operation, key).toBeTruthy();
-      expect(operation?.security, `${key} must inherit owner session security`).toBeUndefined();
+      if (key.includes("/calendar-authorizations/") || key === "POST /api/calendar-providers/microsoft/authorize") {
+        expect(operation?.security, `${key} requires the initiating browser session`).toEqual([{ CookieSession: [] }]);
+      } else expect(operation?.security, `${key} must inherit owner session security`).toBeUndefined();
       expect(objectValue(operation?.responses, `${key} responses`)).toHaveProperty("401");
     }
 
@@ -879,9 +909,14 @@ describe("Life Links OpenAPI v1", () => {
         expect.objectContaining({ name: "X-Life-Links-Actor", in: "header", required: false,
           schema: { type: "string", enum: ["agent"] } })
       ]));
-      expect(objectValue(operation.responses, `${key} responses`)["403"]).toEqual({
-        $ref: "#/components/responses/CalendarForbidden"
-      });
+      const forbidden = objectValue(operation.responses, `${key} responses`)["403"];
+      if (key.includes("/calendar-events") && !key.endsWith("/restore")) {
+        expect(forbidden).toMatchObject({ content: { "application/json": { schema: { anyOf: [
+          { $ref: "#/components/schemas/CalendarErrorResponse" },
+          { $ref: "#/components/schemas/ProviderCalendarEventErrorResponse" },
+          { $ref: "#/components/schemas/ErrorResponse" }
+        ] } } } });
+      } else expect(forbidden).toEqual({ $ref: "#/components/responses/CalendarForbidden" });
     }
     expect(objectValue(schemas.Calendar, "Calendar").required).toContain("agentAccess");
     for (const name of ["Calendar", "CalendarCreateRequest", "CalendarPatchRequest"]) {
@@ -949,6 +984,80 @@ describe("Life Links OpenAPI v1", () => {
         content: { "application/json": { schema: { $ref: "#/components/schemas/CalendarErrorResponse" } } }
       });
     }
+  });
+
+  it("publishes explicit provider event authority without weakening native schemas or admitting outbound effects", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    for (const [operationId, native, provider] of [
+      ["createCalendarEvent", "CalendarEventCreateRequest", "ProviderCalendarEventCreateRequest"],
+      ["updateCalendarEvent", "CalendarEventRevisionRequest", "ProviderCalendarEventUpdateRequest"],
+      ["deleteCalendarEvent", "CalendarEventDeleteRequest", "ProviderCalendarEventDeleteRequest"]
+    ]) {
+      const operation = operationById(operations, operationId);
+      expect(operation.requestBody).toMatchObject({ content: { "application/json": { schema: { oneOf: [
+        { $ref: `#/components/schemas/${native}` }, { $ref: `#/components/schemas/${provider}` }
+      ] } } } });
+      expect(objectValue(schemas[native], native).additionalProperties).toBe(false);
+      const request = objectValue(schemas[provider], provider);
+      expect(request.additionalProperties).toBe(false);
+      expect(request.required).toEqual(expect.arrayContaining(["authority", "commandId", "connectionId", "calendarId"]));
+      const properties = objectValue(request.properties, "provider properties");
+      expect(properties.authority).toEqual({ const: "provider" });
+      expect(properties).not.toHaveProperty("confirmed");
+      if (operationId !== "createCalendarEvent") {
+        expect(properties.scope).toEqual({ const: "event" });
+        expect(request.required).toContain("expectedProviderRevision");
+      }
+      expect(String(operation.description)).toContain("standalone events only");
+    }
+    const content = objectValue(schemas.ProviderEventWritableContent, "writable provider content");
+    expect(content.additionalProperties).toBe(false);
+    expect(Object.keys(objectValue(content.properties, "content fields")).sort())
+      .toEqual(["title", "description", "location", "span", "status"].sort());
+    const projection = objectValue(schemas.CalendarProviderEventProjection, "provider projection");
+    expect(projection.required).toEqual(expect.arrayContaining([
+      "ownerId", "connectionId", "calendarId", "providerKey", "providerAccountId", "providerCalendarId",
+      "providerEventId", "providerRevision", "content", "synchronizedAt"
+    ]));
+    expect(objectValue(objectValue(schemas.CalendarListResponse, "Calendar listing").properties, "listing fields"))
+      .toHaveProperty("providerBindings");
+    expect(String(operationById(operations, "listCalendarEvents").description)).toContain("historical dates");
+  });
+
+  it("documents exact browser-session OAuth and the sole independently authenticated notification route", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    const callback = operationById(operations, "completeMicrosoftCalendarCallback");
+    expect(callback.security).toEqual([{ CookieSession: [] }, {}]);
+    expect(String(callback.description)).toContain("one-use state");
+    expect(String(callback.description)).toContain("PKCE S256");
+    const redirect = responseFor(document, callback, "303");
+    expect(redirect).not.toHaveProperty("content");
+    expect(redirect.headers).toMatchObject({ "Cache-Control": { schema: { const: "no-store" } },
+      "Referrer-Policy": { schema: { const: "no-referrer" } } });
+    for (const name of ["authorizeMicrosoftCalendar", "discoverAuthorizedMicrosoftCalendars",
+      "completeMicrosoftCalendarAuthorization", "cancelMicrosoftCalendarAuthorization"]) {
+      expect(operationById(operations, name).security).toEqual([{ CookieSession: [] }]);
+    }
+    expect(objectValue(schemas.CalendarProviderSelectionRequest, "selection")).toMatchObject({
+      additionalProperties: false, required: ["selectedCalendarIds"],
+      properties: { selectedCalendarIds: { minItems: 1, maxItems: 50, uniqueItems: true } }
+    });
+    const connectionProperties = objectValue(objectValue(schemas.CalendarConnectionView, "connection").properties, "connection fields");
+    expect(connectionProperties.credentialStatus).toEqual({ enum: ["ready", "reconnect_required", "not_retained"] });
+    expect(connectionProperties).not.toHaveProperty("credentialHandle");
+    expect(connectionProperties).not.toHaveProperty("accessToken");
+    const availability = objectValue(objectValue(schemas.CalendarProviderAvailability, "availability").properties, "availability fields");
+    expect(availability.authorizationAvailable).toEqual({ type: "boolean" });
+    const webhook = operationById(operations, "receiveMicrosoftCalendarNotification");
+    expect(webhook.security).toEqual([]);
+    expect(String(webhook.description)).toContain("constant-time matching clientState hash");
+    expect(String(webhook.description)).toContain("never write event truth");
+    expect(responseFor(document, webhook, "200").content).toHaveProperty("text/plain");
+    expect(responseFor(document, webhook, "202").content).toHaveProperty("text/plain");
   });
 
   it("pins the bounded canonical hierarchy contract and keeps public QR schemas compatibility-only", () => {

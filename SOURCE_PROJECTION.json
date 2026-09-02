@@ -1,6 +1,6 @@
 {
-  "canonical_source_byte_count": 39325001,
-  "canonical_source_tree_sha256": "dbe59360f20a54e72c252e15f4f81e469a1f34ee9d9e25b2143c5f8f9c7c2b75",
+  "canonical_source_byte_count": 39775842,
+  "canonical_source_tree_sha256": "9bb37c896d8e34febeb45c40e211e7f95b58a6654d447e314468ac874ead0cb5",
   "excluded_globs": [
     "**/node_modules/**",
     "**/dist/**",
@@ -131,13 +131,13 @@
       "selected_variant_id": null
     },
     {
-      "canonical_byte_count": 2239,
-      "canonical_sha256": "f0f11a70a35e8d0d4c9e9f9b0ffc81efecbf03104435890ebfdbb36980355394",
+      "canonical_byte_count": 2429,
+      "canonical_sha256": "e26e1ff3d6cf7c8cb70ed4685ec7a4d2a15598e599f29a21d208327bc0b5fa78",
       "destination": "services/life-links-api/package.json",
       "id": "standalone-api-package-scripts",
       "kind": "exact_text_replacements",
-      "projected_byte_count": 2157,
-      "projected_sha256": "3bda65b6a644027065638e1f0a1c8935b0b81bd2bd7ee409bedf3e9e495fd693",
+      "projected_byte_count": 2347,
+      "projected_sha256": "caea1f1904694635410735313fa1ccfc6f6eff18e5d8b0342f2d006af2c7329d",
       "replacements": [
         {
           "after_byte_count": 37,
@@ -195,13 +195,13 @@
       "selected_variant_id": null
     },
     {
-      "canonical_byte_count": 8201,
-      "canonical_sha256": "aafd7bdd0a4f54eb5debf9cb66d78ff85a52bc5ffb9d9f0834b84e2fc7be54dc",
+      "canonical_byte_count": 9972,
+      "canonical_sha256": "5b4da1f653c1dadaf408081e9b3a502333fe306a35a8dc703d164e4792f204e8",
       "destination": "services/life-links-api/src/config.ts",
       "id": "public-local-seed-password",
       "kind": "exact_text_replacements",
-      "projected_byte_count": 8226,
-      "projected_sha256": "8734138e14efd834cabaf6c3d09638a394743a5cc2e614ca0f495158ca0fb4d5",
+      "projected_byte_count": 9997,
+      "projected_sha256": "e7b1cb9932a12326fc41c7c3ffeeca4e0a4f83416d9d46ef49903bbbc456fa31",
       "replacements": [
         {
           "after_byte_count": 40,
@@ -235,13 +235,13 @@
       "selected_variant_id": null
     },
     {
-      "canonical_byte_count": 71085,
-      "canonical_sha256": "aaa22a1e2285ccefa62707ab8cc32764d76a68f6d8ffe9120ed4bffebfdf8e41",
+      "canonical_byte_count": 73904,
+      "canonical_sha256": "2e9cd0a933e293187e4dcfb75b45b7f663876d4c290c775cb6213af83a90e609",
       "destination": "services/life-links-api/tests/postgres.integration.test.ts",
       "id": "public-postgres-demo-identities",
       "kind": "exact_text_replacements",
-      "projected_byte_count": 71065,
-      "projected_sha256": "e16301b177d9fecc4363953a14f2f0776933a0569a211298729764db640c5271",
+      "projected_byte_count": 73884,
+      "projected_sha256": "eff5f247377f0cb6a3f9e2df87670c66d962c469bba6957defb49431103c93de",
       "replacements": [
         {
           "after_byte_count": 21,
@@ -291,13 +291,13 @@
       "selected_variant_id": null
     },
     {
-      "canonical_byte_count": 318962,
-      "canonical_sha256": "e01b54430b56fa56c12b52649296f38c069382dc223cbb62cab030595847fc18",
+      "canonical_byte_count": 372668,
+      "canonical_sha256": "02d5f900fa69a5e8ed64c470654cf47b2dc16cd695bda422dd4ffd84b06b886d",
       "destination": "contracts/http/openapi.json",
       "id": "public-openapi-metadata",
       "kind": "exact_text_replacements",
-      "projected_byte_count": 318767,
-      "projected_sha256": "82b547d1e3b792e32b6680c91a24580977dda29ab955f56d855cc250d8123d8a",
+      "projected_byte_count": 372473,
+      "projected_sha256": "9dbdda3ca7cc6fa4897e9852d50006a97652091f3fde0f6e521f7d152db926b1",
       "replacements": [
         {
           "after_byte_count": 0,
@@ -311,13 +311,13 @@
       "selected_variant_id": null
     },
     {
-      "canonical_byte_count": 59519,
-      "canonical_sha256": "5bb3e69f8d47fb62966ff3774d70e0e1b2a7b3ef9e12b72a4cf7fd1f7ead44ee",
+      "canonical_byte_count": 67280,
+      "canonical_sha256": "81d9df7262e382d9d6708699561ae92d2124170daaf20b05d87e06c1a549c4a1",
       "destination": "services/life-links-api/tests/openapi-contract.test.ts",
       "id": "standalone-openapi-included-clients",
       "kind": "exact_text_replacements",
-      "projected_byte_count": 59249,
-      "projected_sha256": "f5d9efc1b2e6dfcb2bde3a75eab73b61879619221f744129d0a491604088f195",
+      "projected_byte_count": 67010,
+      "projected_sha256": "48c7590d873ffb1c7c0f777f69df97d8e1291a22a09d635fbdd57cf9c1831ed3",
       "replacements": [
         {
           "after_byte_count": 0,
@@ -334,7 +334,7 @@
   "profile_id": "life-links-webmcp-challenge",
   "profile_path": "systems/life_links/config/publication/webmcp_challenge_public_release.profile.json",
   "profile_sha256": "783cc99fcdfb7a57058aa8a840276671443bdc74670b7a8962abe1c9177aeb1b",
-  "projection_commit": "058fd32487396dbdc8e304ab9ae10ddf04ffb72c",
+  "projection_commit": "b775c5b3ffe87d37043fef46edd0c1e47f5e592b",
   "scaffold_destinations": [
     ".dockerignore",
     ".env.example",
@@ -357,9 +357,9 @@
       "template": "systems/life_links/config/publication/templates/package.json"
     },
     {
-      "byte_count": 147156,
+      "byte_count": 150043,
       "destination": "pnpm-lock.yaml",
-      "sha256": "ee3b0604a80b86442068e4601afd652ac1f98d61827612797c4f85ddc77d6850",
+      "sha256": "679926e77f9ff6d29710995701e398f5d14ea09199672dc6d4c8d44c719b4ce2",
       "template": "systems/life_links/config/publication/templates/pnpm-lock.yaml"
     },
     {
@@ -411,9 +411,9 @@
       "template": "systems/life_links/config/publication/templates/LICENSE.mit"
     },
     {
-      "byte_count": 29082,
+      "byte_count": 50280,
       "destination": "THIRD_PARTY_NOTICES.md",
-      "sha256": "843133dad6931ab64828670b4e6f0a316d1b3e3bc931d78c3d291e69d531c473",
+      "sha256": "76de7b2db20931b202bb476a15c4f60cceb409e699f178d99d5ac6b5d45f8e5a",
       "template": "systems/life_links/config/publication/templates/THIRD_PARTY_NOTICES.md"
     },
     {
@@ -424,9 +424,9 @@
     }
   ],
   "schema_version": "life_links.source_projection.v2",
-  "source_byte_count": 39324194,
-  "source_commit": "058fd32487396dbdc8e304ab9ae10ddf04ffb72c",
-  "source_file_count": 428,
+  "source_byte_count": 39775035,
+  "source_commit": "b775c5b3ffe87d37043fef46edd0c1e47f5e592b",
+  "source_file_count": 438,
   "source_mappings": [
     {
       "destination": "apps/life-links-demo",
@@ -453,5 +453,5 @@
       "source": "systems/life_links/contracts/mcp"
     }
   ],
-  "source_tree_sha256": "17c46e9b9e2478e25c420c62405f5324bf482dc92ae453b3f2f071f319849031"
+  "source_tree_sha256": "395d9597c78bfa4f79df38c708a93a51d22e6e76901bc748f1640a9f2a98543c"
 }

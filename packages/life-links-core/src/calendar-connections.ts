@@ -12,6 +12,7 @@ export type CalendarConnectionView = {
   remoteRevocationStatus: "not_required" | "pending" | "succeeded" | "failed";
   remoteRevocationAttemptedAt: string | null;
   remoteRevocationErrorCode: "provider_revoke_failed" | null;
+  credentialStatus?: "ready" | "reconnect_required" | "not_retained";
 };
 
 export type CalendarProviderCapabilities = {
@@ -39,6 +40,18 @@ export type CalendarConnectedCalendarPatch = {
 export type CalendarProviderAvailability = {
   providerKey: "google" | "microsoft";
   displayName: string;
-  authorizationAvailable: false;
-  reason: "authorization_not_configured";
+  authorizationAvailable: boolean;
+  reason?: "authorization_not_configured";
+};
+
+/** Selection data only; authorization codes, PKCE material and tokens remain server-private. */
+export type CalendarAuthorizationDiscovery = {
+  providerKey: "microsoft";
+  providerAccountId: string;
+  calendars: Array<{
+    providerCalendarId: string;
+    displayName: string;
+    isDefault: boolean;
+    capabilities: CalendarProviderCapabilities;
+  }>;
 };

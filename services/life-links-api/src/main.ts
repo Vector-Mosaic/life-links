@@ -6,23 +6,36 @@ import { startLifeLinksServer } from "./server.js";
 import { InMemoryLifeLinksStore, type LifeLinksStore } from "./store.js";
 import { CalendarProviderGateway, InMemoryCalendarProviderStateStore, type CalendarProviderStateStore } from "./calendar-provider-gateway.js";
 import { PostgresCalendarProviderStateStore } from "./calendar-provider-postgres.js";
+import { PostgresCalendarSecretStore, InMemoryCalendarSecretStore, CalendarSecretCipher, type CalendarSecretStore } from "./calendar-secret-store.js";
+import { CalendarAuthorizationService } from "./calendar-authorization.js";
+import { MsalMicrosoftCalendarAuth } from "./calendar-microsoft-auth.js";
+import { MicrosoftGraphCalendarProviderAdapter } from "./calendar-provider-microsoft.js";
+import { CalendarProviderRuntime } from "./calendar-provider-runtime.js";
+import { CalendarProviderSubscriptionService, PostgresCalendarProviderSubscriptionStore,
+  InMemoryCalendarProviderSubscriptionStore, type CalendarProviderSubscriptionStore } from "./calendar-provider-subscriptions.js";
 
 async function main() {
   const config = readConfig();
   const logger = createLogger("life_links_main", { env: config.env });
   let store: LifeLinksStore;
   let calendarProviderState: CalendarProviderStateStore;
+  let calendarSecrets: CalendarSecretStore;
+  let calendarSubscriptions: CalendarProviderSubscriptionStore;
 
   if (config.storeMode === "postgres") {
     const postgres = createPostgresStore(config.databaseUrl);
     store = postgres.store;
     calendarProviderState = new PostgresCalendarProviderStateStore(postgres.pool);
+    calendarSecrets = new PostgresCalendarSecretStore(postgres.pool);
+    calendarSubscriptions = new PostgresCalendarProviderSubscriptionStore(postgres.pool);
     if (config.autoMigrate) {
       await runMigrations(postgres.pool, config.migrationDir, logger);
     }
   } else {
     store = new InMemoryLifeLinksStore();
     calendarProviderState = new InMemoryCalendarProviderStateStore();
+    calendarSecrets = new InMemoryCalendarSecretStore();
+    calendarSubscriptions = new InMemoryCalendarProviderSubscriptionStore();
     logger.warn("life_links.store.memory_enabled", {
       message: "DATABASE_URL is not set; using in-memory data for local development only."
     });
@@ -46,10 +59,24 @@ async function main() {
     }
   }
 
-  // Management reads and local disconnect use the real retained provider state.
-  // No adapter is enabled until its OAuth and server credential lane is wired.
-  const calendarProviderGateway = new CalendarProviderGateway([], calendarProviderState);
-  const server = startLifeLinksServer({ store, config, logger, calendarProviderGateway });
+  let calendarProviderGateway: CalendarProviderGateway;
+  const calendarAuthorizationService = config.microsoftCalendar ? new CalendarAuthorizationService(
+    calendarSecrets, new CalendarSecretCipher(config.microsoftCalendar.encryptionKey),
+    new MsalMicrosoftCalendarAuth(config.microsoftCalendar), () => calendarProviderGateway
+  ) : undefined;
+  const adapters = calendarAuthorizationService ? [new MicrosoftGraphCalendarProviderAdapter({
+    credentialResolver: calendarAuthorizationService, credentialRevoker: calendarAuthorizationService
+  })] : [];
+  calendarProviderGateway = new CalendarProviderGateway(adapters, calendarProviderState);
+  const calendarSubscriptionService = calendarAuthorizationService ? new CalendarProviderSubscriptionService({
+    gateway: calendarProviderGateway, adapter: adapters[0], store: calendarSubscriptions,
+    notificationUrl: `${config.qrBaseUrl}/api/calendar-notifications/microsoft`
+  }) : undefined;
+  calendarAuthorizationService?.setBeforeRevoke((input) => calendarSubscriptionService!.cleanupConnection(input));
+  const calendarRuntime = calendarAuthorizationService ? new CalendarProviderRuntime(calendarProviderGateway, calendarAuthorizationService, logger, 60_000, calendarSubscriptionService) : undefined;
+  const server = startLifeLinksServer({ store, config, logger, calendarProviderGateway, calendarAuthorizationService,
+    calendarSubscriptionService, wakeCalendarRuntime: () => calendarRuntime?.wake() });
+  calendarRuntime?.start();
   logger.info("life_links.server.started", {
     host: config.host,
     port: config.port,
@@ -59,6 +86,7 @@ async function main() {
 
   const stop = async () => {
     server.close();
+    await calendarRuntime?.stop();
     await store.close();
     process.exit(0);
   };

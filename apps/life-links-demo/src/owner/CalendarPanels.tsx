@@ -29,9 +29,11 @@ import {
   formatCalendarTime,
   formatDate,
   recurrenceSummary,
+  providerEventCanMutate,
   resolvedTimeZone,
   shiftCalendarAnchor,
   supportedTimeZones,
+  toLocalDateTimeInput,
   type CalendarDisplayEvent,
   type CalendarView
 } from "./calendar";
@@ -58,11 +60,18 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
   const clock = snapshot.calendarWorkspace.clock?.timeZone === timeZone ? snapshot.calendarWorkspace.clock : null;
 
   useEffect(() => {
+    const flow = snapshot.calendarWorkspace.connectionFlow;
+    if (flow?.authorizationId || flow?.error) onOpenDialog({ kind: "manage-calendars" });
+  }, [snapshot.calendarWorkspace.connectionFlow?.authorizationId, snapshot.calendarWorkspace.connectionFlow?.error]);
+
+  useEffect(() => {
     setVisibleCalendarIds((current) => {
-      const valid = current.filter((id) => calendars.some((calendar) => calendar.id === id));
-      return valid.length || !calendars.length ? valid : calendars.map((calendar) => calendar.id);
+      const nativeIds = calendars.filter((calendar) => calendar.source === "native").map((calendar) => calendar.id);
+      const validNative = current.filter((id) => nativeIds.includes(id));
+      const externalIds = snapshot.calendarWorkspace.providerBindings.filter((binding) => binding.visible).map((binding) => binding.calendarId);
+      return [...(current.length ? validNative : nativeIds), ...externalIds];
     });
-  }, [snapshot.calendarWorkspace.calendars]);
+  }, [snapshot.calendarWorkspace.calendars, snapshot.calendarWorkspace.providerBindings]);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -90,8 +99,17 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
     setSelectedDate(date);
   }, [selected?.event.id, selected?.event.currentRevisionId, timeZone]);
 
+  const selectedProvider = snapshot.calendarWorkspace.selectedProviderEvent;
+  useEffect(() => {
+    if (!selectedProvider) return;
+    const span = selectedProvider.content.span;
+    const date = span.kind === "all_day" ? span.startDate : toLocalDateTimeInput(span.startUtc, timeZone).slice(0, 10);
+    setAnchorDate(date); setSelectedDate(date);
+  }, [selectedProvider?.connectionId, selectedProvider?.calendarId, selectedProvider?.providerEventId, selectedProvider?.providerRevision, timeZone]);
+
   const events = useMemo(() => buildCalendarDisplayEvents({
     nativeEvents: snapshot.calendarWorkspace.events,
+    providerEvents: snapshot.calendarWorkspace.providerEvents,
     routineOccurrences: snapshot.routineWorkspace.calendarOccurrences,
     routines: snapshot.routineWorkspace.routines,
     calendars,
@@ -104,6 +122,7 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
     range.endDate,
     range.startDate,
     snapshot.calendarWorkspace.events,
+    snapshot.calendarWorkspace.providerEvents,
     snapshot.routineWorkspace.calendarOccurrences,
     snapshot.routineWorkspace.routines,
     timeZone,
@@ -131,9 +150,21 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
     try { localStorage.setItem("life-links-calendar-time-zone", next); } catch { /* preference only */ }
   }
   function toggleCalendar(calendarId: string) {
+    const binding = snapshot.calendarWorkspace.providerBindings.find((entry) => entry.calendarId === calendarId);
+    const calendar = calendars.find((entry) => entry.id === calendarId);
+    if (binding && calendar) {
+      void controller.updateConnectedCalendar(binding.connectionId, calendarId, calendar.updatedAt, { visible: !binding.visible }).catch(() => undefined);
+      return;
+    }
     setVisibleCalendarIds((ids) => ids.includes(calendarId) ? ids.filter((id) => id !== calendarId) : [...ids, calendarId]);
   }
   function openEvent(event: CalendarDisplayEvent) {
+    if (event.providerEvent) {
+      void controller.openProviderCalendarEvent({ authority: "provider", connectionId: event.providerEvent.connectionId,
+        calendarId: event.providerEvent.calendarId, providerEventId: event.providerEvent.providerEventId }).catch(() => undefined);
+      onOpenDetails();
+      return;
+    }
     if (event.source === "routine" && event.routineId) {
       void controller.openRoutine(event.routineId);
       return;
@@ -189,6 +220,7 @@ export function CalendarWorkspacePanel({ controller, snapshot, onOpenDialog, onO
 }
 
 export function CalendarDetailPanel({ controller, snapshot, onOpenDialog }: Pick<CalendarPanelProps, "controller" | "snapshot" | "onOpenDialog">) {
+  if (snapshot.calendarWorkspace.selectedProviderEvent) return <ProviderCalendarDetailPanel snapshot={snapshot} onOpenDialog={onOpenDialog} />;
   const selected = snapshot.calendarWorkspace.selectedEvent;
   if (!selected) return <div className="ll-empty">Select a Calendar event to see its exact time, authority, recurrence, and connected context.</div>;
   const calendar = snapshot.calendarWorkspace.calendars.find((candidate) => candidate.id === selected.event.calendarId);
@@ -212,6 +244,31 @@ export function CalendarDetailPanel({ controller, snapshot, onOpenDialog }: Pick
     <section className="ll-detail-section"><h3>Authority</h3><dl className="ll-calendar-facts"><div><dt>Write authority</dt><dd>Life Links</dd></div><div><dt>Source</dt><dd>{calendar?.source ?? "native"}</dd></div><div><dt>Status</dt><dd>{revision.status}</dd></div><div><dt>Revision</dt><dd>{revision.revisionNumber}</dd></div></dl></section>
     <section className="ll-detail-section"><h3>Connected context</h3>{revision.subjectLinks.length ? <ul className="ll-routine-context-list">{revision.subjectLinks.map((link, index) => <li key={`${link.kind}-${index}`}><span className="ll-chip ll-neutral">{subjectKind(link.kind)}</span><span>{subjectId(link)}</span></li>)}</ul> : <p className="ll-muted">No Life Link, Collection, or Routine context attached.</p>}</section>
     <details className="ll-record-meta"><summary>Calendar event details</summary><dl><dt>Event ID</dt><dd>{selected.event.id}</dd><dt>Calendar ID</dt><dd>{selected.event.calendarId}</dd><dt>Revision ID</dt><dd>{selected.event.currentRevisionId}</dd><dt>Updated</dt><dd>{new Date(selected.event.updatedAt).toLocaleString()}</dd></dl></details>
+  </article>;
+}
+
+function ProviderCalendarDetailPanel({ snapshot, onOpenDialog }: Pick<CalendarPanelProps, "snapshot" | "onOpenDialog">) {
+  const event = snapshot.calendarWorkspace.selectedProviderEvent!;
+  const calendar = snapshot.calendarWorkspace.calendars.find((item) => item.id === event.calendarId);
+  const binding = snapshot.calendarWorkspace.providerBindings.find((item) => item.calendarId === event.calendarId && item.connectionId === event.connectionId);
+  const reference = { authority: "provider" as const, connectionId: event.connectionId, calendarId: event.calendarId, providerEventId: event.providerEventId };
+  const mutable = providerEventCanMutate(event);
+  const actions = [
+    ...(mutable && binding?.capabilities.update ? [{ label: "Edit provider event", icon: <Pencil size={17} />, onClick: () => onOpenDialog({ kind: "edit-provider-event", reference }) }] : []),
+    ...(mutable && binding?.capabilities.delete ? [{ label: "Delete provider event", icon: <Trash2 size={17} />, onClick: () => onOpenDialog({ kind: "delete-provider-event", reference }), danger: true }] : [])
+  ];
+  const span = event.content.span;
+  return <article className="ll-detail-content ll-calendar-detail" data-calendar-provider-event-id={event.providerEventId}>
+    <p className="ll-context-row">My Calendar / {calendar?.title ?? event.calendarId}</p>
+    <div className="ll-title-row ll-detail-title-row"><h2>{event.content.title}</h2>{actions.length > 0 && <ActionMenu label={`Actions for ${event.content.title}`} className="ll-icon-button ll-primary ll-detail-plus" items={actions}><Plus size={21} /></ActionMenu>}</div>
+    <div className="ll-detail-badges"><span className="ll-chip ll-neutral">{event.providerKey === "microsoft-graph-calendar" ? "Microsoft Outlook" : event.providerKey}</span><span className="ll-chip ll-blue">{calendar?.title ?? event.calendarId}</span></div>
+    <section className="ll-calendar-when"><Clock3 size={20} /><div><strong>{span.kind === "all_day" ? `${span.startDate} — ${span.endDateExclusive} (exclusive end)` : `${span.startUtc} — ${span.endUtc}`}</strong><span>{span.kind === "all_day" ? "All-day calendar dates" : `Source time zone: ${span.sourceTimeZone ?? "Not supplied"}`}</span></div></section>
+    {event.content.location && <section className="ll-calendar-when"><MapPin size={20} /><strong>{event.content.location}</strong></section>}
+    {event.content.description && <section className="ll-detail-section"><h3>Description</h3><p className="ll-preserve-lines">{event.content.description}</p></section>}
+    <section className="ll-detail-section"><h3>Authority</h3><dl className="ll-calendar-facts"><div><dt>Write authority</dt><dd>Provider — changes are sent to the original calendar</dd></div><div><dt>Account</dt><dd>{event.providerAccountId}</dd></div><div><dt>Provider Calendar</dt><dd>{event.providerCalendarId}</dd></div><div><dt>Last synchronized</dt><dd>{event.synchronizedAt}</dd></div><div><dt>Status</dt><dd>{event.content.status}</dd></div></dl></section>
+    {!mutable && <p className="ll-inline-note">This provider event is read only here: recurring events, floating times, attendee invitations, and online meeting changes are not supported by this editing lane.</p>}
+    {event.content.providerSeriesId && <section className="ll-detail-section"><h3>Provider recurrence</h3><p>{event.content.providerRecurrence?.kind ?? "Series-linked event"}</p><p>Exact series: {event.content.providerSeriesId}</p></section>}
+    <details className="ll-record-meta"><summary>Provider event details</summary><dl><dt>Provider event ID</dt><dd>{event.providerEventId}</dd><dt>Provider revision</dt><dd>{event.providerRevision}</dd><dt>Connection ID</dt><dd>{event.connectionId}</dd></dl></details>
   </article>;
 }
 

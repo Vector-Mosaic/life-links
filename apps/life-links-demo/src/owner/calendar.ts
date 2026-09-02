@@ -1,5 +1,9 @@
 import {
   materializeCalendarEventWindow,
+  normalizeCalendarEventSpan,
+  type CalendarProviderEventProjection,
+  type ProviderEventSpan,
+  type CalendarEventSpanInput,
   type CalendarEventInstance,
   type CalendarEventRevisionRecord,
   type CalendarRecord,
@@ -18,7 +22,8 @@ export type CalendarRange = {
 
 export type CalendarDisplayEvent = {
   id: string;
-  source: "native" | "routine";
+  source: "native" | "routine" | "provider";
+  providerEvent?: CalendarProviderEventProjection;
   eventId: string | null;
   routineId: string | null;
   occurrenceId: string | null;
@@ -96,6 +101,7 @@ export function supportedTimeZones(): string[] {
 
 export function buildCalendarDisplayEvents(input: {
   nativeEvents: readonly CalendarEventDetail[];
+  providerEvents?: readonly CalendarProviderEventProjection[];
   routineOccurrences: readonly RoutineOccurrenceRecord[];
   routines: readonly RoutineSummaryRecord[];
   calendars: readonly CalendarRecord[];
@@ -108,6 +114,23 @@ export function buildCalendarDisplayEvents(input: {
   const routineById = new Map(input.routines.map((routine) => [routine.id, routine]));
 
   const result: CalendarDisplayEvent[] = [];
+  for (const projection of input.providerEvents ?? []) {
+    const calendar = calendarById.get(projection.calendarId);
+    if (!calendar || calendar.deletedAt || (input.visibleCalendarIds && !input.visibleCalendarIds.has(calendar.id))) continue;
+    const content = projection.content;
+    const span = content.span;
+    const start = span.kind === "all_day" ? span.startDate : dateParts(new Date(span.startUtc), input.timeZone).date;
+    const end = span.kind === "all_day" ? toIsoDate(addDays(parseIsoDate(span.endDateExclusive), -1)) : dateParts(new Date(span.endUtc), input.timeZone).date;
+    if (end < input.startDate || start > input.endDate) continue;
+    const days = span.kind === "all_day" ? dateRange(parseIsoDate(maxDate(start, input.startDate)), parseIsoDate(minDate(end, input.endDate))).days : [start];
+    for (const date of days) result.push({
+      id: JSON.stringify(["provider", projection.connectionId, projection.calendarId, projection.providerEventId, date]),
+      source: "provider", providerEvent: projection, eventId: null, routineId: null, occurrenceId: null,
+      calendarId: projection.calendarId, title: content.title, description: content.description ?? "", location: content.location ?? "",
+      date, endDate: end, allDay: span.kind === "all_day", startInstant: span.kind === "timed" ? span.startUtc : null,
+      endInstant: span.kind === "timed" ? span.endUtc : null, status: content.status, color: calendar.color, recurrence: null, revisionId: projection.providerRevision
+    });
+  }
   const definitions = input.nativeEvents.filter((detail) => {
     const calendar = calendarById.get(detail.event.calendarId);
     return Boolean(calendar && !calendar.deletedAt && (!input.visibleCalendarIds || input.visibleCalendarIds.has(calendar.id)));
@@ -154,6 +177,27 @@ export function buildCalendarDisplayEvents(input: {
 export function formatCalendarTime(event: CalendarDisplayEvent, timeZone: string): string {
   if (event.allDay || !event.startInstant) return "All day";
   return new Intl.DateTimeFormat([], { hour: "numeric", minute: "2-digit", timeZone }).format(new Date(event.startInstant));
+}
+
+export function providerEventCanMutate(event: CalendarProviderEventProjection): boolean {
+  return !event.content.providerSeriesId && (!event.content.providerRecurrence || event.content.providerRecurrence.kind === "single") &&
+    !(event.content.outboundEffects?.attendeeCount) && !event.content.outboundEffects?.hasOnlineMeeting &&
+    (event.content.span.kind !== "timed" || (!event.content.span.floatingLocalStart && !event.content.span.floatingLocalEnd));
+}
+
+export function providerSpanForEditor(span: ProviderEventSpan) {
+  if (span.kind === "all_day") return span;
+  let timeZone = span.sourceTimeZone ?? "UTC";
+  try { new Intl.DateTimeFormat("en", { timeZone }); } catch { timeZone = "UTC"; }
+  // Display the already-authoritative instants; re-resolving their local clocks could reject a valid DST fold.
+  return { kind: "zoned" as const, startLocalDateTime: toLocalDateTimeInput(span.startUtc, timeZone), endLocalDateTime: toLocalDateTimeInput(span.endUtc, timeZone), timeZone,
+    startInstant: span.startUtc, endInstant: span.endUtc };
+}
+
+export function providerWritableSpan(input: CalendarEventSpanInput): ProviderEventSpan {
+  const span = normalizeCalendarEventSpan(input);
+  return span.kind === "all_day" ? span : { kind: "timed", startUtc: span.startInstant, endUtc: span.endInstant,
+    sourceTimeZone: span.timeZone, floatingLocalStart: null, floatingLocalEnd: null };
 }
 
 export function formatDate(date: string, _timeZone: string, options: Intl.DateTimeFormatOptions): string {

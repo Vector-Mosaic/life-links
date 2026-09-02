@@ -15,6 +15,13 @@ import {
   type ActivityPatch,
   type ActivityRecord,
   type CalendarActor,
+  type CalendarProviderBindingView,
+  type CalendarProviderEventProjection,
+  type ProviderCalendarEventReference,
+  type ProviderCalendarEventCreateInput,
+  type ProviderCalendarEventUpdateInput,
+  type ProviderCalendarEventDeleteInput,
+  type ProviderCalendarEventDeletionResponse,
   type CalendarConnectedCalendarPatch,
   type CalendarEventEditTargetInput,
   type CalendarEventRecord,
@@ -56,6 +63,18 @@ import {
   createCalendar,
   createCalendarEvent,
   listCalendarProviders,
+  listProviderCalendarEvents,
+  getProviderCalendarEvent,
+  createProviderCalendarEvent,
+  updateProviderCalendarEvent,
+  deleteProviderCalendarEvent,
+  authorizeMicrosoftCalendar,
+  getCalendarAuthorization,
+  completeCalendarAuthorization,
+  cancelCalendarAuthorization,
+  discoverConnectedCalendars,
+  selectConnectedCalendars,
+  refreshCalendarConnection,
   listCalendarConnections,
   listConnectedCalendars,
   updateConnectedCalendar,
@@ -152,6 +171,7 @@ import {
 import {
   LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
   type AgentCalendarDeletionPreview,
+  type AgentProviderCalendarDeletionPreview,
   type AgentCalendarDeletionResult,
   type AgentCalendarEventDetail,
   type AgentCalendarEventInstance,
@@ -205,6 +225,18 @@ import type {
 } from "./types";
 
 export type LifeLinksWorkspaceApi = {
+  listProviderCalendarEvents: typeof listProviderCalendarEvents;
+  getProviderCalendarEvent: typeof getProviderCalendarEvent;
+  createProviderCalendarEvent: typeof createProviderCalendarEvent;
+  updateProviderCalendarEvent: typeof updateProviderCalendarEvent;
+  deleteProviderCalendarEvent: typeof deleteProviderCalendarEvent;
+  authorizeMicrosoftCalendar: typeof authorizeMicrosoftCalendar;
+  getCalendarAuthorization: typeof getCalendarAuthorization;
+  completeCalendarAuthorization: typeof completeCalendarAuthorization;
+  cancelCalendarAuthorization: typeof cancelCalendarAuthorization;
+  discoverConnectedCalendars: typeof discoverConnectedCalendars;
+  selectConnectedCalendars: typeof selectConnectedCalendars;
+  refreshCalendarConnection: typeof refreshCalendarConnection;
   listCalendarProviders: typeof listCalendarProviders;
   listCalendarConnections: typeof listCalendarConnections;
   listConnectedCalendars: typeof listConnectedCalendars;
@@ -293,6 +325,18 @@ export type LifeLinksWorkspaceApi = {
 };
 
 const defaultApi: LifeLinksWorkspaceApi = {
+  listProviderCalendarEvents,
+  getProviderCalendarEvent,
+  createProviderCalendarEvent,
+  updateProviderCalendarEvent,
+  deleteProviderCalendarEvent,
+  authorizeMicrosoftCalendar,
+  getCalendarAuthorization,
+  completeCalendarAuthorization,
+  cancelCalendarAuthorization,
+  discoverConnectedCalendars,
+  selectConnectedCalendars,
+  refreshCalendarConnection,
   listCalendarProviders,
   listCalendarConnections,
   listConnectedCalendars,
@@ -534,6 +578,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private calendarClockLoadRevision = 0;
   private calendarWindowLoadRevision = 0;
   private calendarConnectionsLoadRevision = 0;
+  private calendarConnectionFlowRevision = 0;
   private calendarSelectionRevision = 0;
   private searchRevision = 0;
   private selectionRevision = 0;
@@ -551,6 +596,10 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     result: AgentCalendarDeletionResult | null;
   }>();
   private agentCalendarDeletionApplication: object | null = null;
+  private readonly agentProviderCalendarDeletionPreviews = new Map<string, {
+    preview: AgentProviderCalendarDeletionPreview; authorized: boolean; commandId: string;
+    result: ProviderCalendarEventDeletionResponse | null;
+  }>();
   private settleAgentCalendarDeletion: ((confirmed: boolean) => void) | null = null;
   private historyRevision = 0;
   private snapshot: LifeLinksWorkspaceSnapshot;
@@ -1066,8 +1115,10 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       loadRevision === this.calendarWorkspaceLoadRevision && this.snapshot.workspaceMode === "calendar";
     this.updateCalendarWorkspace({ loading: true, error: "" });
     try {
+      const providerBindings: CalendarProviderBindingView[] = [];
       let calendars = await readAllPages(async (cursor) => {
         const page = await this.api.listCalendars({ limit: 100, ...(cursor ? { cursor } : {}), signal });
+        providerBindings.push(...(page.providerBindings ?? []));
         signal?.throwIfAborted();
         return { items: page.calendars, nextCursor: page.nextCursor, truncated: page.truncated };
       });
@@ -1085,6 +1136,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       }
       this.updateCalendarWorkspace({
         calendars,
+        providerBindings,
         calendarsNextCursor: null,
         calendarsComplete: true,
         loading: false,
@@ -1099,6 +1151,17 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async openCalendar(updateHistory = true): Promise<void> {
+    const returnParams = new URLSearchParams(this.route.pathname().split("?")[1] ?? "");
+    const authorizationId = returnParams.get("calendarAuthorization");
+    const authorizationError = returnParams.get("calendarConnectionError");
+    if (authorizationId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authorizationId)) {
+      this.updateCalendarWorkspace({ connectionFlow: { authorizationId, connectionId: null, discovery: null, loading: false, error: "", feedback: "Outlook authorization returned. Choose the exact calendars to connect." } });
+    } else if (authorizationError) {
+      const feedback = authorizationError === "cancelled" ? "Outlook connection was canceled. No calendars were added."
+        : authorizationError === "session_expired" ? "The Outlook authorization session expired. Start Connect again."
+          : "Outlook authorization could not be completed. Start Connect again.";
+      this.updateCalendarWorkspace({ connectionFlow: { authorizationId: null, connectionId: null, discovery: null, loading: false, error: feedback, feedback: "" } });
+    }
     const navigation = ++this.navigationRevision;
     ++this.routineSelectionRevision;
     ++this.routineRunLookupRevision;
@@ -1109,11 +1172,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       collectionMemberDetails: {}, collectionMemberMemberships: {}, collectionComplete: false, collectionLoading: false,
       selectedLifeLinkId: null, selectedLifeLinkDetail: null, selectedLifeLinkMemberships: [],
       membershipsComplete: true, membershipsLoading: false, detailsOpen: false,
-      activeView: "workspace", routePathname: "/calendar", routeQrId: null, routeLifeLinkId: null,
+      activeView: "workspace", routePathname: authorizationId || authorizationError ? this.route.pathname() : "/calendar", routeQrId: null, routeLifeLinkId: null,
       publicQrState: null, canonicalEditingId: null, error: ""
     });
-    this.updateCalendarWorkspace({ selectedEvent: null, latestTombstone: null, error: "" });
-    if (updateHistory && this.route.pathname() !== "/calendar") this.route.push("/calendar");
+    this.updateCalendarWorkspace({ selectedEvent: null, selectedProviderEvent: null, latestTombstone: null, error: "" });
+    if (updateHistory && !authorizationId && !authorizationError && this.route.pathname() !== "/calendar") this.route.push("/calendar");
     await Promise.all([
       this.loadCalendarWorkspace(),
       this.loadRoutineWorkspace().catch((error) => {
@@ -1125,6 +1188,10 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async openCalendarEvent(eventId: string, updateHistory = true, actor: CalendarActor = "human", signal?: AbortSignal): Promise<void> {
+    const query = new URLSearchParams(this.route.pathname().split("?")[1] ?? "");
+    if (!updateHistory && query.get("authority") === "provider" && query.get("connectionId") && query.get("calendarId")) {
+      return this.openProviderCalendarEvent({ authority: "provider", providerEventId: eventId, connectionId: query.get("connectionId")!, calendarId: query.get("calendarId")! }, updateHistory, actor, signal);
+    }
     const navigation = ++this.navigationRevision;
     const ownerId = this.snapshot.currentUser?.id;
     const ownerRevision = this.ownerRevision;
@@ -1138,7 +1205,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       activeView: "workspace", routePathname: pathname, routeQrId: null, routeLifeLinkId: null,
       publicQrState: null, canonicalEditingId: null, error: ""
     });
-    this.updateCalendarWorkspace({ selectedEvent: null, latestTombstone: null, loading: true, error: "" });
+    this.updateCalendarWorkspace({ selectedEvent: null, selectedProviderEvent: null, latestTombstone: null, loading: true, error: "" });
     if (updateHistory && this.route.pathname() !== pathname) this.route.push(pathname);
     try {
       const [, , response] = await Promise.all([
@@ -1213,10 +1280,24 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         }),
         this.loadRoutineCalendarWindow(options)
       ]);
+      const providerEvents: CalendarProviderEventProjection[] = [];
+      for (const binding of this.snapshot.calendarWorkspace.providerBindings.filter((entry) => entry.visible && entry.capabilities.read)) {
+        const projections = await readAllPages(async (cursor) => {
+          const page = await this.api.listProviderCalendarEvents({ authority: "provider", connectionId: binding.connectionId, calendarId: binding.calendarId,
+            startDate: options.startDate, endDate: options.endDate, limit: 100, ...(cursor ? { cursor } : {}) }, options.signal);
+          options.signal?.throwIfAborted();
+          if (page.providerEvents.some((entry) => entry.ownerId !== ownerId || entry.calendarId !== binding.calendarId || entry.connectionId !== binding.connectionId)) {
+            throw new Error("Provider Calendar events could not be verified for this account.");
+          }
+          return { items: page.providerEvents, nextCursor: page.nextCursor, truncated: page.truncated };
+        });
+        providerEvents.push(...projections);
+      }
       options.signal?.throwIfAborted();
       if (!current()) return;
       this.updateCalendarWorkspace({
         events,
+        providerEvents,
         eventsNextCursor: null,
         eventsComplete: true,
         range: { startDate: options.startDate, endDate: options.endDate },
@@ -1237,6 +1318,72 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     signal?.throwIfAborted();
     if (sameOwner()) this.updateCalendarWorkspace((current) => ({ calendars: mergeById(current.calendars, [calendar]), error: "" }));
     return calendar;
+  }
+
+  async openProviderCalendarEvent(reference: ProviderCalendarEventReference, updateHistory = true, actor: CalendarActor = "human", signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureCalendarOwner();
+    await this.openCalendar(false);
+    signal?.throwIfAborted();
+    if (!sameOwner()) return;
+    const selection = ++this.calendarSelectionRevision;
+    const pathname = `${ownerCalendarEventPath(reference.providerEventId)}?${new URLSearchParams({ authority: "provider", connectionId: reference.connectionId, calendarId: reference.calendarId })}`;
+    if (updateHistory && this.route.pathname() !== pathname) this.route.push(pathname);
+    this.update({ routePathname: pathname });
+    this.updateCalendarWorkspace({ selectedEvent: null, selectedProviderEvent: null, latestTombstone: null, loading: true, error: "" });
+    try {
+      const { providerEvent } = await this.api.getProviderCalendarEvent(reference, signal, actor);
+      signal?.throwIfAborted();
+      if (!sameOwner() || selection !== this.calendarSelectionRevision) return;
+      if (!sameProviderReference(reference, providerEvent) || providerEvent.ownerId !== this.snapshot.currentUser?.id) throw new Error("The provider returned a different event identity.");
+      this.updateCalendarWorkspace((current) => ({ providerEvents: mergeProviderEvents(current.providerEvents, [providerEvent]), selectedProviderEvent: providerEvent, loading: false, error: "" }));
+      this.update({ detailsOpen: true });
+    } catch (error) {
+      if (sameOwner() && selection === this.calendarSelectionRevision && !signal?.aborted) this.updateCalendarWorkspace({ loading: false, error: messageFromError(error) });
+      throw error;
+    }
+  }
+
+  async createExternalCalendarEvent(input: ProviderCalendarEventCreateInput, signal?: AbortSignal, actor: CalendarActor = "human"): Promise<CalendarProviderEventProjection> {
+    const sameOwner = this.captureCalendarOwner();
+    const { providerEvent } = await this.api.createProviderCalendarEvent(input, signal, actor);
+    signal?.throwIfAborted();
+    if (providerEvent.connectionId !== input.connectionId || providerEvent.calendarId !== input.calendarId) throw new Error("The provider returned a different Calendar.");
+    if (sameOwner()) this.showProviderCalendarEvent(providerEvent);
+    return providerEvent;
+  }
+
+  async updateExternalCalendarEvent(providerEventId: string, input: ProviderCalendarEventUpdateInput, signal?: AbortSignal, actor: CalendarActor = "human"): Promise<CalendarProviderEventProjection> {
+    const sameOwner = this.captureCalendarOwner();
+    const { providerEvent } = await this.api.updateProviderCalendarEvent(providerEventId, input, signal, actor);
+    signal?.throwIfAborted();
+    if (!sameProviderReference({ ...input, providerEventId }, providerEvent)) throw new Error("The provider returned a different event.");
+    if (sameOwner()) this.showProviderCalendarEvent(providerEvent);
+    return providerEvent;
+  }
+
+  async deleteExternalCalendarEvent(providerEventId: string, input: ProviderCalendarEventDeleteInput, signal?: AbortSignal, actor: CalendarActor = "human") {
+    const sameOwner = this.captureCalendarOwner();
+    const result = await this.api.deleteProviderCalendarEvent(providerEventId, input, signal, actor);
+    signal?.throwIfAborted();
+    if (result.authority !== "provider" || result.kind !== "delete" || result.connectionId !== input.connectionId || result.calendarId !== input.calendarId || result.providerEventId !== providerEventId || result.deletedProviderRevision !== input.expectedProviderRevision) throw new Error("The provider deletion did not match the confirmed event.");
+    if (sameOwner()) {
+      const reference = { ...input, providerEventId };
+      this.updateCalendarWorkspace((current) => ({
+        providerEvents: current.providerEvents.filter((entry) => !sameProviderReference(reference, entry)),
+        selectedProviderEvent: current.selectedProviderEvent && sameProviderReference(reference, current.selectedProviderEvent) ? null : current.selectedProviderEvent,
+        error: ""
+      }));
+    }
+    return result;
+  }
+
+  private showProviderCalendarEvent(providerEvent: CalendarProviderEventProjection): void {
+    if (providerEvent.ownerId !== this.snapshot.currentUser?.id) throw new Error("The provider event belongs to another account.");
+    this.updateCalendarWorkspace((current) => ({ providerEvents: mergeProviderEvents(current.providerEvents, [providerEvent]), selectedProviderEvent: providerEvent,
+      selectedEvent: null, latestTombstone: null, error: "" }));
+    const pathname = `${ownerCalendarEventPath(providerEvent.providerEventId)}?${new URLSearchParams({ authority: "provider", connectionId: providerEvent.connectionId, calendarId: providerEvent.calendarId })}`;
+    if (this.route.pathname() !== pathname) this.route.push(pathname);
+    this.update({ workspaceMode: "calendar", routePathname: pathname, detailsOpen: true });
   }
 
   async updateNativeCalendar(calendarId: string, expectedUpdatedAt: string, patch: CalendarPatch, signal?: AbortSignal): Promise<CalendarRecord> {
@@ -1296,11 +1443,94 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const { calendar } = await this.api.updateConnectedCalendar(connectionId, calendarId, expectedUpdatedAt, patch, signal);
     signal?.throwIfAborted();
     if (sameOwner()) {
-      this.updateCalendarWorkspace((current) => ({ calendars: mergeById(current.calendars, [calendar.calendar]) }));
+      this.updateCalendarWorkspace((current) => ({ calendars: mergeById(current.calendars, [calendar.calendar]),
+        providerBindings: current.providerBindings.map((binding) => binding.connectionId === connectionId && binding.calendarId === calendarId ? { ...binding, visible: calendar.visible, capabilities: calendar.capabilities } : binding) }));
       if (calendar.calendar.agentAccess !== "write") this.invalidateCalendarAgentPreviews(calendarId);
       await this.loadCalendarConnections(signal);
+      if (patch.visible && this.snapshot.calendarWorkspace.range) await this.loadCalendarWindow({ ...this.snapshot.calendarWorkspace.range, signal });
     }
     return calendar;
+  }
+
+  async beginMicrosoftCalendarAuthorization(reconnectConnectionId?: string, signal?: AbortSignal): Promise<string> {
+    const sameOwner = this.captureCalendarOwner();
+    const response = await this.api.authorizeMicrosoftCalendar(reconnectConnectionId, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner()) throw new Error("The signed-in account changed.");
+    const destination = new URL(response.authorizationUrl);
+    if (destination.protocol !== "https:" || destination.hostname !== "login.microsoftonline.com" || destination.username || destination.password) {
+      throw new Error("The server returned an unsupported Outlook sign-in destination.");
+    }
+    return destination.href;
+  }
+
+  async loadCalendarConnectionDiscovery(connectionId?: string, signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureCalendarOwner();
+    const revision = ++this.calendarConnectionFlowRevision;
+    const authorizationId = connectionId ? null : this.snapshot.calendarWorkspace.connectionFlow.authorizationId;
+    if (!connectionId && !authorizationId) return;
+    this.updateCalendarWorkspace({ connectionFlow: { authorizationId, connectionId: connectionId ?? null, discovery: null, loading: true, error: "", feedback: "" } });
+    try {
+      const discovery = connectionId
+        ? await this.api.discoverConnectedCalendars(connectionId, signal)
+        : await this.api.getCalendarAuthorization(authorizationId!, signal);
+      signal?.throwIfAborted();
+      if (sameOwner() && revision === this.calendarConnectionFlowRevision) {
+        this.updateCalendarWorkspace({ connectionFlow: { authorizationId, connectionId: connectionId ?? null, discovery, loading: false, error: "", feedback: "Newly linked calendars start with no agent access." } });
+      }
+    } catch (error) {
+      if (sameOwner() && revision === this.calendarConnectionFlowRevision && !signal?.aborted) {
+        this.updateCalendarWorkspace((current) => ({ connectionFlow: { ...current.connectionFlow, loading: false, error: messageFromError(error) } }));
+      }
+      if (!signal?.aborted) throw error;
+    }
+  }
+
+  async completeCalendarConnectionSelection(selectedCalendarIds: string[], signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureCalendarOwner();
+    const flow = this.snapshot.calendarWorkspace.connectionFlow;
+    if (!flow.discovery || (!flow.authorizationId && !flow.connectionId)) throw new Error("Load the available calendars first.");
+    const available = new Set(flow.discovery.calendars.filter((calendar) => calendar.capabilities.read).map((calendar) => calendar.providerCalendarId));
+    if (!selectedCalendarIds.length || new Set(selectedCalendarIds).size !== selectedCalendarIds.length || selectedCalendarIds.some((id) => !available.has(id))) {
+      throw new Error("Choose one or more exact available calendars.");
+    }
+    if (flow.authorizationId) await this.api.completeCalendarAuthorization(flow.authorizationId, selectedCalendarIds, signal);
+    else await this.api.selectConnectedCalendars(flow.connectionId!, selectedCalendarIds, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner()) return;
+    ++this.calendarConnectionFlowRevision;
+    this.updateCalendarWorkspace({ connectionFlow: { authorizationId: null, connectionId: null, discovery: null, loading: false, error: "", feedback: "Selected calendars connected. New calendars have no agent access until you choose it below." } });
+    if (this.route.pathname().includes("calendarAuthorization=")) this.route.push("/calendar");
+    await this.loadCalendarWorkspace(signal);
+    await this.loadCalendarConnections(signal);
+    const range = this.snapshot.calendarWorkspace.range;
+    if (range) await this.loadCalendarWindow({ ...range, signal });
+  }
+
+  async cancelCalendarConnectionSelection(signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureCalendarOwner();
+    const authorizationId = this.snapshot.calendarWorkspace.connectionFlow.authorizationId;
+    ++this.calendarConnectionFlowRevision;
+    if (authorizationId) await this.api.cancelCalendarAuthorization(authorizationId, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner()) return;
+    this.updateCalendarWorkspace({ connectionFlow: { authorizationId: null, connectionId: null, discovery: null, loading: false, error: "", feedback: "Calendar selection canceled." } });
+    if (this.route.pathname().includes("calendarAuthorization=")) this.route.push("/calendar");
+  }
+
+  async refreshConnectedCalendarAccount(connectionId: string, signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureCalendarOwner();
+    const range = this.snapshot.calendarWorkspace.range;
+    const today = this.snapshot.calendarWorkspace.clock?.today;
+    if (!range && !today) throw new Error("Wait for the Calendar date to load before refreshing.");
+    const start = range?.startDate ?? today!;
+    const end = new Date(`${range?.endDate ?? today}T00:00:00.000Z`);
+    end.setUTCDate(end.getUTCDate() + 1);
+    await this.api.refreshCalendarConnection(connectionId, `${start}T00:00:00.000Z`, end.toISOString(), signal);
+    signal?.throwIfAborted();
+    if (!sameOwner()) return;
+    await this.loadCalendarConnections(signal);
+    if (range) await this.loadCalendarWindow({ ...range, signal });
   }
 
   async disconnectCalendarConnection(connectionId: string, disposition: "purge" | "retain_private_stale", signal?: AbortSignal) {
@@ -1313,6 +1543,9 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       for (const id of ids) this.invalidateCalendarAgentPreviews(id);
       this.updateCalendarWorkspace((current) => ({
         calendars: current.calendars.filter((calendar) => !ids.has(calendar.id)),
+        providerBindings: current.providerBindings.filter((entry) => entry.connectionId !== connectionId),
+        providerEvents: current.providerEvents.filter((entry) => entry.connectionId !== connectionId),
+        ...(current.selectedProviderEvent?.connectionId === connectionId ? { selectedProviderEvent: null } : {}),
         events: current.events.filter((detail) => !ids.has(detail.event.calendarId)),
         ...(current.selectedEvent && ids.has(current.selectedEvent.event.calendarId) ? { selectedEvent: null, latestTombstone: null } : {})
       }));
@@ -1322,9 +1555,13 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   private invalidateCalendarAgentPreviews(calendarId: string) {
-    if (this.snapshot.agentCalendarDeletionConfirmation?.event.event.calendarId === calendarId) this.confirmAgentCalendarDeletion(false);
+    const confirmation = this.snapshot.agentCalendarDeletionConfirmation;
+    if (confirmation && ("providerEvent" in confirmation ? confirmation.providerEvent.calendarId : confirmation.event.event.calendarId) === calendarId) this.confirmAgentCalendarDeletion(false);
     for (const [key, entry] of this.agentCalendarDeletionPreviews) {
       if (entry.preview.event.event.calendarId === calendarId) this.agentCalendarDeletionPreviews.delete(key);
+    }
+    for (const [key, entry] of this.agentProviderCalendarDeletionPreviews) {
+      if (entry.preview.providerEvent.calendarId === calendarId) this.agentProviderCalendarDeletionPreviews.delete(key);
     }
   }
 
@@ -1353,6 +1590,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     this.updateCalendarWorkspace((current) => ({
       events: mergeCalendarEvents(current.events, [response.calendarEvent]),
       selectedEvent: response.calendarEvent,
+      selectedProviderEvent: null,
       latestTombstone: response.latestTombstone,
       error: ""
     }));
@@ -1473,6 +1711,17 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       signal?.throwIfAborted();
       if (this.agentCalendarOwnerId() !== ownerId) return { ok: false as const, code: "calendar_unavailable" as const };
       const allowed = input.calendarIds ? new Set(input.calendarIds) : null;
+      const providerEvents: CalendarProviderEventProjection[] = [];
+      for (const calendar of calendars) {
+        const binding = calendar.providerBinding;
+        if (!binding || !agentCanReadCalendar(calendar, ownerId) || (allowed && !allowed.has(calendar.id))) continue;
+        const events = await readAllPages(async (cursor) => {
+          const page = await this.api.listProviderCalendarEvents({ authority: "provider", connectionId: binding.connectionId,
+            calendarId: calendar.id, startDate: input.startDate, endDate: input.endDate, limit: 100, ...(cursor ? { cursor } : {}) }, signal, "agent");
+          return { items: page.providerEvents, nextCursor: page.nextCursor, truncated: page.truncated };
+        });
+        providerEvents.push(...events.filter((event) => event.ownerId === ownerId && providerEventMatchesCalendar(event, calendar)));
+      }
       const calendarById = new Map((await this.readAgentCalendars(signal))
         .filter((calendar) => agentCanReadCalendar(calendar, ownerId))
         .map((calendar) => [calendar.id, calendar]));
@@ -1481,7 +1730,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         .filter((detail) => detail.event.ownerId === ownerId && detail.event.deletedAt === null &&
           calendarById.has(detail.event.calendarId) && (!allowed || allowed.has(detail.event.calendarId)));
       const nativeInstances: AgentCalendarEventInstance[] = [...calendarById.values()]
-        .filter((calendar) => !allowed || allowed.has(calendar.id))
+        .filter((calendar) => calendar.source === "native" && (!allowed || allowed.has(calendar.id)))
         .flatMap((calendar) => materializeCalendarEventWindow({
           definitions: definitions.filter((detail) => detail.event.calendarId === calendar.id),
           startDate: input.startDate,
@@ -1500,12 +1749,19 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
           occurrence,
           routine: routineById.get(occurrence.routineId)!
         }));
-      const instances = [...nativeInstances, ...routineProjections]
+      const providerInstances: AgentCalendarEventInstance[] = providerEvents.flatMap((providerEvent) => {
+        const calendar = calendarById.get(providerEvent.calendarId);
+        return calendar && providerEventMatchesCalendar(providerEvent, calendar)
+          ? [{ source: "provider_event" as const, providerEvent, calendar: agentCalendarRecord(calendar) }] : [];
+      });
+      const instances = [...nativeInstances, ...routineProjections, ...providerInstances]
         .sort((left, right) => calendarAgentInstanceSortKey(left).localeCompare(calendarAgentInstanceSortKey(right)) ||
           calendarAgentInstanceId(left).localeCompare(calendarAgentInstanceId(right)));
       const offset = decodeCalendarAgentCursor(input.cursor, "events");
       if (offset === null || offset > instances.length) return { ok: false as const, code: "effect_not_applied" as const };
-      const page = instances.slice(offset, offset + input.limit);
+      const candidates = instances.slice(offset, offset + input.limit);
+      // Provider identities and revision metadata are larger; keep a provider page within the tool's byte budget.
+      const page = candidates.some((entry) => entry.source === "provider_event") ? candidates.slice(0, 1) : candidates;
       return {
         ok: true as const,
         instances: page,
@@ -1515,6 +1771,107 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     } catch (error) {
       return calendarAgentReadFailure(error, signal, "calendar_unavailable");
     }
+  }
+
+  async agentInspectProviderCalendarEvent(input: ProviderCalendarEventReference, signal?: AbortSignal) {
+    const ownerId = this.agentCalendarOwnerId();
+    if (!ownerId) return { ok: false as const, code: "calendar_event_unavailable" as const };
+    try {
+      await this.openProviderCalendarEvent(input, true, "agent", signal);
+      const providerEvent = this.snapshot.calendarWorkspace.selectedProviderEvent;
+      const calendar = (await this.readAgentCalendars(signal)).find((entry) => entry.id === input.calendarId);
+      if (this.agentCalendarOwnerId() !== ownerId || !calendar || !agentCanReadCalendar(calendar, ownerId) || !providerEvent ||
+          !sameProviderReference(input, providerEvent) || !providerEventMatchesCalendar(providerEvent, calendar)) {
+        return { ok: false as const, code: "calendar_event_unavailable" as const };
+      }
+      return { ok: true as const, providerEvent, calendar: agentCalendarRecord(calendar) };
+    } catch (error) { return calendarAgentReadFailure(error, signal, "calendar_event_unavailable"); }
+  }
+
+  async agentCreateProviderCalendarEvent(input: ProviderCalendarEventCreateInput, signal?: AbortSignal) {
+    const ownerId = this.agentCalendarOwnerId();
+    if (!ownerId) return { ok: false as const, code: "calendar_unavailable" as const };
+    try {
+      const calendar = (await this.readAgentCalendars(signal)).find((entry) => entry.id === input.calendarId);
+      if (!calendar || !agentCanWriteProviderCalendar(calendar, ownerId, input.connectionId, "create") || this.agentCalendarOwnerId() !== ownerId) {
+        return { ok: false as const, code: "calendar_unavailable" as const };
+      }
+      await this.openCalendar();
+      if (this.agentCalendarOwnerId() !== ownerId) return { ok: false as const, code: "cancelled" as const };
+      const providerEvent = await this.createExternalCalendarEvent(input, signal, "agent");
+      if (this.agentCalendarOwnerId() !== ownerId || !providerEventMatchesCalendar(providerEvent, calendar)) return { ok: false as const, code: "effect_not_applied" as const };
+      return { ok: true as const, providerEvent, calendar: agentCalendarRecord(calendar) };
+    } catch (error) { return calendarAgentWriteFailure(error, signal, "calendar_unavailable"); }
+  }
+
+  async agentUpdateProviderCalendarEvent(input: ProviderCalendarEventUpdateInput & { providerEventId: string }, signal?: AbortSignal) {
+    const ownerId = this.agentCalendarOwnerId();
+    if (!ownerId) return { ok: false as const, code: "calendar_event_unavailable" as const };
+    try {
+      const calendar = (await this.readAgentCalendars(signal)).find((entry) => entry.id === input.calendarId);
+      if (!calendar || !agentCanWriteProviderCalendar(calendar, ownerId, input.connectionId, "update") || this.agentCalendarOwnerId() !== ownerId) {
+        return { ok: false as const, code: "calendar_event_unavailable" as const };
+      }
+      const { providerEventId, ...command } = input;
+      // The gateway owns exact-revision validation and stable-command replay, including a lost successful response.
+      const providerEvent = await this.updateExternalCalendarEvent(providerEventId, command, signal, "agent");
+      if (this.agentCalendarOwnerId() !== ownerId || !sameProviderReference(input, providerEvent) || !providerEventMatchesCalendar(providerEvent, calendar)) return { ok: false as const, code: "effect_not_applied" as const };
+      return { ok: true as const, providerEvent, calendar: agentCalendarRecord(calendar) };
+    } catch (error) { return calendarAgentWriteFailure(error, signal, "calendar_event_unavailable"); }
+  }
+
+  async agentPrepareProviderCalendarEventDeletion(input: ProviderCalendarEventReference & { expectedProviderRevision: string; scope: "event" }, signal?: AbortSignal) {
+    const inspected = await this.agentInspectProviderCalendarEvent(input, signal);
+    if (!inspected.ok) return inspected;
+    if (inspected.calendar.agentAccess !== "write" || !inspected.calendar.capabilities?.delete) return { ok: false as const, code: "calendar_event_unavailable" as const };
+    if (inspected.providerEvent.providerRevision !== input.expectedProviderRevision) return { ok: false as const, code: "stale_calendar_event" as const };
+    if (input.scope !== "event" || !providerEventAllowsStandaloneMutation(inspected.providerEvent)) return { ok: false as const, code: "unsupported_calendar_authority" as const };
+    const preview: AgentProviderCalendarDeletionPreview = {
+      id: `provider-calendar-delete-preview-${this.commandId()}`, providerEvent: inspected.providerEvent, calendar: inspected.calendar, scope: "event",
+      knownEffects: ["This deletes the exact original event in the provider calendar, not only its Life Links display.",
+        "Life Links cannot restore this provider deletion.", "No attendees, invitations, online meetings, or recurring series are changed."]
+    };
+    if (this.agentProviderCalendarDeletionPreviews.size >= 5) this.agentProviderCalendarDeletionPreviews.delete(this.agentProviderCalendarDeletionPreviews.keys().next().value!);
+    this.agentProviderCalendarDeletionPreviews.set(preview.id, { preview, authorized: false, commandId: `provider-calendar-delete-${this.commandId()}`, result: null });
+    return { ok: true as const, preview };
+  }
+
+  async agentApplyProviderCalendarEventDeletion(previewId: string, signal?: AbortSignal) {
+    if (this.agentCalendarDeletionApplication) return { ok: false as const, code: "confirmation_required" as const };
+    const entry = this.agentProviderCalendarDeletionPreviews.get(previewId);
+    if (!entry) return { ok: false as const, code: "confirmation_required" as const };
+    const ownerId = this.agentCalendarOwnerId();
+    if (!ownerId || entry.preview.providerEvent.ownerId !== ownerId) return { ok: false as const, code: "calendar_event_unavailable" as const };
+    const admission = {};
+    this.agentCalendarDeletionApplication = admission;
+    const target = entry.preview.providerEvent;
+    try {
+      const calendar = (await this.readAgentCalendars(signal)).find((item) => item.id === target.calendarId);
+      if (!calendar || !agentCanWriteProviderCalendar(calendar, ownerId, target.connectionId, "delete") || this.agentCalendarOwnerId() !== ownerId) return { ok: false as const, code: "calendar_event_unavailable" as const };
+      if (entry.result) return { ok: true as const, result: entry.result };
+      if (!entry.authorized) {
+        const { providerEvent } = await this.api.getProviderCalendarEvent({ authority: "provider", connectionId: target.connectionId, calendarId: target.calendarId, providerEventId: target.providerEventId }, signal, "agent");
+        if (!providerEventMatchesCalendar(providerEvent, calendar) || !sameProviderReference(target, providerEvent) || providerEvent.providerRevision !== target.providerRevision || !providerEventAllowsStandaloneMutation(providerEvent)) return { ok: false as const, code: "stale_calendar_event" as const };
+        if (this.agentCalendarOwnerId() !== ownerId || this.agentProviderCalendarDeletionPreviews.get(previewId) !== entry) return { ok: false as const, code: "cancelled" as const };
+        const accepted = await new Promise<boolean>((resolve) => {
+          const abort = () => this.confirmAgentCalendarDeletion(false);
+          this.settleAgentCalendarDeletion = (confirmed) => { signal?.removeEventListener("abort", abort); resolve(confirmed); };
+          signal?.addEventListener("abort", abort, { once: true });
+          this.update({ agentCalendarDeletionConfirmation: entry.preview });
+          if (signal?.aborted) abort();
+        });
+        if (!accepted) return { ok: false as const, code: "confirmation_cancelled" as const };
+        entry.authorized = true;
+      }
+      signal?.throwIfAborted();
+      if (this.agentCalendarDeletionApplication !== admission || this.agentCalendarOwnerId() !== ownerId || this.agentProviderCalendarDeletionPreviews.get(previewId) !== entry) return { ok: false as const, code: "cancelled" as const };
+      const result = await this.deleteExternalCalendarEvent(target.providerEventId, { authority: "provider", commandId: entry.commandId,
+        connectionId: target.connectionId, calendarId: target.calendarId, expectedProviderRevision: target.providerRevision, scope: "event" }, signal, "agent");
+      if (this.agentCalendarOwnerId() !== ownerId) return { ok: false as const, code: "cancelled" as const };
+      entry.result = result;
+      return { ok: true as const, result };
+    } catch (error) { return calendarAgentWriteFailure(error, signal, "calendar_event_unavailable"); }
+    finally { if (this.agentCalendarDeletionApplication === admission) this.agentCalendarDeletionApplication = null; }
   }
 
   async agentInspectCalendarEvent(input: AgentInspectCalendarEventInput, signal?: AbortSignal) {
@@ -1720,6 +2077,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       this.updateCalendarWorkspace((workspace) => ({
         events: mergeCalendarEvents(workspace.events, [response.calendarEvent]),
         selectedEvent: response.calendarEvent,
+        selectedProviderEvent: null,
         latestTombstone: response.latestTombstone,
         error: ""
       }));
@@ -1944,6 +2302,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     this.agentCalendarDeletionApplication = null;
     this.agentChangePreviews.clear();
     this.agentCalendarDeletionPreviews.clear();
+    this.agentProviderCalendarDeletionPreviews.clear();
     this.active = false;
     this.lifecycle += 1;
     this.ownerRevision += 1;
@@ -3121,6 +3480,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     this.agentCalendarDeletionApplication = null;
     this.agentChangePreviews.clear();
     this.agentCalendarDeletionPreviews.clear();
+    this.agentProviderCalendarDeletionPreviews.clear();
     this.pendingChangeCommands.clear();
     ++this.ownerRevision;
     ++this.navigationRevision;
@@ -3174,6 +3534,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     this.agentCalendarDeletionApplication = null;
     this.agentChangePreviews.clear();
     this.agentCalendarDeletionPreviews.clear();
+    this.agentProviderCalendarDeletionPreviews.clear();
     if (!this.snapshot.currentUser) {
       this.update({ error: "Log in to disconnect your agent." });
       return;
@@ -3478,12 +3839,15 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       ? this.currentAgentOwnerId() : null;
   }
 
-  private readAgentCalendars(signal?: AbortSignal) {
-    return readAllPages(async (cursor) => {
+  private async readAgentCalendars(signal?: AbortSignal): Promise<AgentReadableCalendar[]> {
+    const bindings = new Map<string, CalendarProviderBindingView>();
+    const calendars = await readAllPages(async (cursor) => {
       const page = await this.api.listCalendars({ ...(cursor ? { cursor } : {}), limit: 100, signal, actor: "agent" });
       signal?.throwIfAborted();
+      for (const binding of page.providerBindings ?? []) bindings.set(binding.calendarId, binding);
       return { items: page.calendars, nextCursor: page.nextCursor, truncated: page.truncated };
     });
+    return calendars.map((calendar) => ({ ...calendar, providerBinding: bindings.get(calendar.id) }));
   }
 
   private async refreshCollections(navigation = this.navigationRevision, options: WorkspaceCommandOptions = {}) {
@@ -4087,9 +4451,11 @@ function emptyRoutineWorkspaceState(): RoutineWorkspaceState {
 
 function emptyCalendarWorkspaceState(): CalendarWorkspaceState {
   return {
+    connectionFlow: { authorizationId: null, connectionId: null, discovery: null, loading: false, error: "", feedback: "" },
     connectionManagement: { providers: [], connections: [], calendars: [], loading: false, loaded: false, error: "" },
     clock: null,
     calendars: [], calendarsNextCursor: null, calendarsComplete: false,
+    providerBindings: [], providerEvents: [], selectedProviderEvent: null,
     events: [], eventsNextCursor: null, eventsComplete: false, range: null,
     selectedEvent: null, latestTombstone: null, loading: false, error: ""
   };
@@ -4251,25 +4617,61 @@ async function readQrState(api: LifeLinksWorkspaceApi, qrId: string): Promise<Qr
   }
 }
 
-function agentCanReadCalendar(calendar: CalendarRecord, ownerId: string): boolean {
-  return calendar.ownerId === ownerId && calendar.source === "native" && calendar.deletedAt === null &&
+function sameProviderReference(reference: Pick<ProviderCalendarEventReference, "connectionId" | "calendarId" | "providerEventId">, event: CalendarProviderEventProjection): boolean {
+  return reference.connectionId === event.connectionId && reference.calendarId === event.calendarId && reference.providerEventId === event.providerEventId;
+}
+
+function mergeProviderEvents(existing: CalendarProviderEventProjection[], incoming: CalendarProviderEventProjection[]): CalendarProviderEventProjection[] {
+  const merged = [...existing];
+  for (const entry of incoming) {
+    const index = merged.findIndex((current) => sameProviderReference(entry, current));
+    if (index < 0) merged.push(entry); else merged[index] = entry;
+  }
+  return merged;
+}
+
+type AgentReadableCalendar = CalendarRecord & { providerBinding?: CalendarProviderBindingView };
+
+function providerEventMatchesCalendar(event: CalendarProviderEventProjection, calendar: AgentReadableCalendar): boolean {
+  const binding = calendar.providerBinding;
+  return Boolean(binding && event.ownerId === calendar.ownerId && event.calendarId === calendar.id &&
+    event.connectionId === binding.connectionId && event.providerKey === binding.providerKey &&
+    event.providerAccountId === binding.providerAccountId && event.providerCalendarId === binding.providerCalendarId);
+}
+
+function agentCanWriteProviderCalendar(calendar: AgentReadableCalendar, ownerId: string, connectionId: string, operation: "create" | "update" | "delete"): boolean {
+  return agentCanReadCalendar(calendar, ownerId) && calendar.source === "external" && calendar.agentAccess === "write" &&
+    calendar.providerBinding?.connectionId === connectionId && calendar.providerBinding.capabilities[operation];
+}
+
+function providerEventAllowsStandaloneMutation(event: CalendarProviderEventProjection): boolean {
+  return event.content.providerSeriesId === null && (!event.content.providerRecurrence || event.content.providerRecurrence.kind === "single") &&
+    !(event.content.outboundEffects?.attendeeCount || event.content.outboundEffects?.hasOnlineMeeting) &&
+    (event.content.span.kind === "all_day" || (!event.content.span.floatingLocalStart && !event.content.span.floatingLocalEnd));
+}
+
+function agentCanReadCalendar(calendar: AgentReadableCalendar, ownerId: string): boolean {
+  return calendar.ownerId === ownerId && (calendar.source === "native" || Boolean(calendar.providerBinding?.capabilities.read)) && calendar.deletedAt === null &&
     (calendar.agentAccess === "read" || calendar.agentAccess === "write");
 }
 
-function agentCalendarRecord(calendar: CalendarRecord): AgentCalendarRecord {
+function agentCalendarRecord(calendar: AgentReadableCalendar): AgentCalendarRecord {
+  const binding = calendar.providerBinding;
+  const writable = !binding || binding.capabilities.create || binding.capabilities.update || binding.capabilities.delete;
   return {
     id: calendar.id,
     title: calendar.title,
     timeZone: calendar.timeZone,
-    provider: "life_links",
-    providerConnectionId: null,
-    providerAccountId: null,
-    providerCalendarId: null,
-    writeAuthority: "life_links",
-    humanAccess: "write",
+    provider: binding ? binding.providerKey === "microsoft-graph-calendar" ? "microsoft" : binding.providerKey === "google-calendar" ? "google" : "caldav" : "life_links",
+    providerConnectionId: binding?.connectionId ?? null,
+    providerAccountId: binding?.providerAccountId ?? null,
+    providerCalendarId: binding?.providerCalendarId ?? null,
+    writeAuthority: binding ? writable ? "provider" : "read_only" : "life_links",
+    humanAccess: writable ? "write" : "read",
     agentAccess: calendar.agentAccess,
     isDefault: calendar.isDefault,
-    updatedAt: calendar.updatedAt
+    updatedAt: calendar.updatedAt,
+    ...(binding ? { capabilities: binding.capabilities } : {})
   };
 }
 
@@ -4291,11 +4693,13 @@ function decodeCalendarAgentCursor(cursor: string | undefined, kind: "calendars"
 
 function calendarAgentInstanceSortKey(entry: AgentCalendarEventInstance): string {
   if (entry.source === "routine_projection") return entry.occurrence.plannedFor;
+  if (entry.source === "provider_event") return entry.providerEvent.content.span.kind === "all_day" ? `${entry.providerEvent.content.span.startDate}T00:00:00` : entry.providerEvent.content.span.startUtc;
   const span = entry.instance.span;
   return span.kind === "all_day" ? `${span.startDate}T00:00:00` : span.startInstant;
 }
 
 function calendarAgentInstanceId(entry: AgentCalendarEventInstance): string {
+  if (entry.source === "provider_event") return JSON.stringify([entry.providerEvent.connectionId, entry.providerEvent.calendarId, entry.providerEvent.providerEventId]);
   return entry.source === "routine_projection" ? `routine:${entry.occurrence.id}` : entry.instance.instanceId;
 }
 

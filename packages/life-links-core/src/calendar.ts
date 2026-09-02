@@ -1,4 +1,5 @@
 import { MAX_BODY_LENGTH, MAX_TITLE_LENGTH } from "./limits.js";
+import type { CalendarProviderCapabilities } from "./calendar-connections.js";
 
 export const CALENDAR_ID_PREFIX = "calendar-";
 export const CALENDAR_EVENT_ID_PREFIX = "calendar-event-";
@@ -43,6 +44,96 @@ export class CalendarDomainError extends Error {
 export type CalendarSource = "native" | "external";
 export type CalendarAgentAccess = "none" | "read" | "write";
 export type CalendarActor = "human" | "agent";
+
+/** Provider observations are not native event revisions or editable provider credentials. */
+export type ProviderTimedEventSpan = {
+  kind: "timed";
+  startUtc: string;
+  endUtc: string;
+  sourceTimeZone: string | null;
+  floatingLocalStart: string | null;
+  floatingLocalEnd: string | null;
+};
+export type ProviderAllDayEventSpan = { kind: "all_day"; startDate: string; endDateExclusive: string };
+export type ProviderEventSpan = ProviderTimedEventSpan | ProviderAllDayEventSpan;
+export type ProviderEventContent = {
+  title: string;
+  description: string | null;
+  location: string | null;
+  span: ProviderEventSpan;
+  providerSeriesId: string | null;
+  status: "confirmed" | "tentative" | "canceled";
+  providerRecurrence?: { kind: "single" | "series_master" | "occurrence" | "exception"; originalStartUtc: string | null };
+  outboundEffects?: { attendeeCount: number; hasOnlineMeeting: boolean };
+};
+export type ProviderEventSnapshot = {
+  providerEventId: string;
+  providerRevision: string;
+  content: ProviderEventContent;
+  /** Only authoritative provider evidence may establish a deliberate restore. */
+  revivesProviderRevision?: string;
+};
+export type CalendarProviderEventProjection = {
+  ownerId: string;
+  connectionId: string;
+  calendarId: string;
+  providerKey: string;
+  providerAccountId: string;
+  providerCalendarId: string;
+  providerEventId: string;
+  providerRevision: string;
+  content: ProviderEventContent;
+  synchronizedAt: string;
+};
+/** Metadata is filtered against the same Calendar grant as the returned Calendar. */
+export type CalendarProviderBindingView = Pick<CalendarProviderEventProjection,
+  "calendarId" | "connectionId" | "providerKey" | "providerAccountId" | "providerCalendarId"
+> & { capabilities: CalendarProviderCapabilities; visible: boolean };
+export type ProviderCalendarEventReference = {
+  authority: "provider";
+  connectionId: string;
+  calendarId: string;
+  providerEventId: string;
+};
+export type ProviderCalendarEventWritableContent = Pick<ProviderEventContent,
+  "title" | "description" | "location" | "span" | "status"
+>;
+export type ProviderCalendarEventCreateInput = {
+  authority: "provider";
+  commandId: string;
+  connectionId: string;
+  calendarId: string;
+  content: ProviderCalendarEventWritableContent;
+};
+/** Recurring provider writes remain refused until their explicit scoped lane is qualified. */
+export type ProviderCalendarEventUpdateInput = ProviderCalendarEventCreateInput & {
+  expectedProviderRevision: string;
+  scope: "event";
+};
+export type ProviderCalendarEventDeleteInput = Omit<ProviderCalendarEventUpdateInput, "content">;
+export type ProviderCalendarEventQueryInput = {
+  authority: "provider";
+  connectionId: string;
+  calendarId: string;
+  startDate: string;
+  endDate: string;
+  cursor?: string | null;
+  limit?: number;
+};
+export type ProviderCalendarEventPage = {
+  providerEvents: CalendarProviderEventProjection[];
+  nextCursor: string | null;
+  truncated: boolean;
+};
+export type ProviderCalendarEventResponse = { providerEvent: CalendarProviderEventProjection };
+export type ProviderCalendarEventDeletionResponse = {
+  authority: "provider";
+  kind: "delete";
+  connectionId: string;
+  calendarId: string;
+  providerEventId: string;
+  deletedProviderRevision: string;
+};
 
 export type CalendarRecord = {
   id: string;

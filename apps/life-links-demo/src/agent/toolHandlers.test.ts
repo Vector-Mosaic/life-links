@@ -89,6 +89,11 @@ function snapshot(overrides: Partial<AgentToolWorkspaceSnapshot> = {}): AgentToo
 }
 
 class FakeController implements LifeLinksAgentToolController {
+  readonly agentInspectProviderCalendarEvent = vi.fn<LifeLinksAgentToolController["agentInspectProviderCalendarEvent"]>(async () => ({ ok: false, code: "calendar_event_unavailable" }));
+  readonly agentCreateProviderCalendarEvent = vi.fn<LifeLinksAgentToolController["agentCreateProviderCalendarEvent"]>(async () => ({ ok: false, code: "calendar_unavailable" }));
+  readonly agentUpdateProviderCalendarEvent = vi.fn<LifeLinksAgentToolController["agentUpdateProviderCalendarEvent"]>(async () => ({ ok: false, code: "calendar_event_unavailable" }));
+  readonly agentPrepareProviderCalendarEventDeletion = vi.fn<LifeLinksAgentToolController["agentPrepareProviderCalendarEventDeletion"]>(async () => ({ ok: false, code: "calendar_event_unavailable" }));
+  readonly agentApplyProviderCalendarEventDeletion = vi.fn<LifeLinksAgentToolController["agentApplyProviderCalendarEventDeletion"]>(async () => ({ ok: false, code: "confirmation_required" }));
   readonly agentListAuthorizedCalendars = vi.fn<LifeLinksAgentToolController["agentListAuthorizedCalendars"]>(async () => ({ ok: true, calendars: [], nextCursor: null, truncated: false }));
   readonly agentQueryCalendarEvents = vi.fn<LifeLinksAgentToolController["agentQueryCalendarEvents"]>(async () => ({ ok: true, instances: [], nextCursor: null, truncated: false }));
   readonly agentInspectCalendarEvent = vi.fn<LifeLinksAgentToolController["agentInspectCalendarEvent"]>(async () => ({ ok: false, code: "calendar_event_unavailable" }));

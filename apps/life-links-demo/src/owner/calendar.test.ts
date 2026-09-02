@@ -6,11 +6,12 @@ import {
   type CalendarEventDefinition,
   type CalendarConnectionView,
   type CalendarRecord,
+  type CalendarProviderEventProjection,
   type RoutineOccurrenceRecord,
   type RoutineSummaryRecord
 } from "@life-links/core";
 
-import { buildCalendarDisplayEvents, calendarRange, shiftCalendarAnchor } from "./calendar";
+import { buildCalendarDisplayEvents, calendarRange, shiftCalendarAnchor, providerEventCanMutate, providerSpanForEditor, providerWritableSpan } from "./calendar";
 import { CalendarDialogHost } from "./CalendarDialogs";
 import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
 import type { LifeLinksWorkspaceController } from "../workspace/controller";
@@ -80,13 +81,33 @@ describe("Calendar manager permission presentation", () => {
     expect(markup).toContain("Retry loading connections");
     expect(markup).not.toContain("No external accounts are connected");
   });
+
+  it("enables only configured Outlook sign-in, preserves exact discovery choices, and does not imply agent consent", () => {
+    const markup = calendarManagerMarkup([], {
+      providers: [{ providerKey: "microsoft", displayName: "Microsoft Outlook", authorizationAvailable: true }]
+    }, { authorizationId: "11111111-1111-4111-8111-111111111111", connectionId: null, loading: false, error: "", feedback: "",
+      discovery: { providerKey: "microsoft", providerAccountId: "exact-test-account", calendars: [
+        { providerCalendarId: "provider/exact+id=", displayName: "Work Calendar", isDefault: true, capabilities: { read: true, create: true, update: true, delete: true } }
+      ] } });
+    expect(markup).toMatch(/<button class="ll-button" title="Continue to Microsoft sign-in">[^]*?Connect Microsoft Outlook<\/button>/);
+    expect(markup).toContain("exact-test-account"); expect(markup).toContain("Work Calendar (provider default)");
+    expect(markup).toContain("New calendars start with No access for agents");
+    expect(markup).not.toContain('type="checkbox" checked=""');
+    expect(markup).toContain("Cancel selection"); expect(markup).toContain("Connect selected calendars");
+  });
+
+  it("distinguishes removal of saved Outlook credentials from Microsoft account consent", () => {
+    const markup = calendarManagerMarkup([], { connections: [connection({ providerKey: "microsoft-graph-calendar", status: "disconnected", remoteRevocationStatus: "succeeded", credentialStatus: "not_retained" })] });
+    expect(markup).toContain("saved credentials were removed"); expect(markup).toContain("Microsoft account consent may remain");
+    expect(markup).not.toContain("provider access was revoked");
+  });
 });
 
-function calendarManagerMarkup(calendars: CalendarRecord[], connectionOverrides: Partial<LifeLinksWorkspaceSnapshot["calendarWorkspace"]["connectionManagement"]> = {}) {
+function calendarManagerMarkup(calendars: CalendarRecord[], connectionOverrides: Partial<LifeLinksWorkspaceSnapshot["calendarWorkspace"]["connectionManagement"]> = {}, connectionFlow?: LifeLinksWorkspaceSnapshot["calendarWorkspace"]["connectionFlow"]) {
   return renderToStaticMarkup(createElement(CalendarDialogHost, {
     dialog: { kind: "manage-calendars" },
     controller: {} as LifeLinksWorkspaceController,
-    snapshot: { calendarWorkspace: { calendars, connectionManagement: {
+    snapshot: { calendarWorkspace: { calendars, connectionFlow, connectionManagement: {
       providers: [
         { providerKey: "google", displayName: "Google Calendar", authorizationAvailable: false, reason: "authorization_not_configured" },
         { providerKey: "microsoft", displayName: "Microsoft Outlook", authorizationAvailable: false, reason: "authorization_not_configured" }
@@ -101,6 +122,23 @@ function connection(patch: Partial<CalendarConnectionView> = {}): CalendarConnec
 }
 
 describe("dedicated Calendar view helpers", () => {
+  it("renders exact provider identities in the existing calendar while preserving zone and read-only recurring/effect boundaries", () => {
+    const providerEvent: CalendarProviderEventProjection = {
+      ownerId, connectionId: "connection-test", calendarId: calendar.id, providerKey: "microsoft-graph-calendar", providerAccountId: "test-account", providerCalendarId: "provider-calendar", providerEventId: "provider/event+one=", providerRevision: "revision-one", synchronizedAt: calendar.updatedAt,
+      content: { title: "Provider appointment", description: null, location: null, providerSeriesId: null, status: "confirmed",
+        span: { kind: "timed", startUtc: "2026-09-02T01:00:00.000Z", endUtc: "2026-09-02T02:00:00.000Z", sourceTimeZone: "America/New_York", floatingLocalStart: null, floatingLocalEnd: null },
+        providerRecurrence: { kind: "single", originalStartUtc: null }, outboundEffects: { attendeeCount: 0, hasOnlineMeeting: false } }
+    };
+    const input = { nativeEvents: [], providerEvents: [providerEvent], routineOccurrences: [], routines: [], calendars: [{ ...calendar, source: "external" as const }], startDate: "2026-09-01", endDate: "2026-09-01", timeZone: "America/New_York" };
+    expect(buildCalendarDisplayEvents(input)).toMatchObject([{ source: "provider", date: "2026-09-01", providerEvent, eventId: null, revisionId: "revision-one" }]);
+    expect(buildCalendarDisplayEvents({ ...input, visibleCalendarIds: new Set() })).toEqual([]);
+    expect(providerEventCanMutate(providerEvent)).toBe(true);
+    expect(providerEventCanMutate({ ...providerEvent, content: { ...providerEvent.content, providerSeriesId: "series" } })).toBe(false);
+    expect(providerEventCanMutate({ ...providerEvent, content: { ...providerEvent.content, outboundEffects: { attendeeCount: 1, hasOnlineMeeting: false } } })).toBe(false);
+    expect(providerSpanForEditor(providerEvent.content.span)).toMatchObject({ kind: "zoned", startLocalDateTime: "2026-09-01T21:00", timeZone: "America/New_York" });
+    expect(providerWritableSpan({ kind: "zoned", startLocalDateTime: "2026-09-01T21:00", endLocalDateTime: "2026-09-01T22:00", timeZone: "America/New_York" })).toEqual(providerEvent.content.span);
+    expect(providerSpanForEditor({ kind: "timed", startUtc: "2026-11-01T06:30:00.000Z", endUtc: "2026-11-01T07:30:00.000Z", sourceTimeZone: "America/New_York", floatingLocalStart: null, floatingLocalEnd: null })).toMatchObject({ startInstant: "2026-11-01T06:30:00.000Z", startLocalDateTime: "2026-11-01T01:30" });
+  });
   it("produces stable month, week, day, and agenda ranges across navigation", () => {
     expect(calendarRange("month", "2026-09-16")).toMatchObject({ startDate: "2026-08-30", endDate: "2026-10-03" });
     expect(calendarRange("week", "2026-09-16")).toMatchObject({ startDate: "2026-09-13", endDate: "2026-09-19" });

@@ -13,6 +13,8 @@ import {
   type CollectionRecord,
   type CollectionSectionRecord,
   type CalendarRecord,
+  type CalendarProviderBindingView,
+  type CalendarProviderEventProjection,
   type CalendarEventSpanInput,
   type LifeLinkDetail,
   type LifeLinkChangePreview,
@@ -2642,6 +2644,18 @@ class FakeRoute implements WorkspaceBrowserRoute {
 
 function fakeApi() {
   return {
+    authorizeMicrosoftCalendar: vi.fn<LifeLinksWorkspaceApi["authorizeMicrosoftCalendar"]>(),
+    getCalendarAuthorization: vi.fn<LifeLinksWorkspaceApi["getCalendarAuthorization"]>(),
+    completeCalendarAuthorization: vi.fn<LifeLinksWorkspaceApi["completeCalendarAuthorization"]>(),
+    cancelCalendarAuthorization: vi.fn<LifeLinksWorkspaceApi["cancelCalendarAuthorization"]>(async () => undefined),
+    discoverConnectedCalendars: vi.fn<LifeLinksWorkspaceApi["discoverConnectedCalendars"]>(),
+    selectConnectedCalendars: vi.fn<LifeLinksWorkspaceApi["selectConnectedCalendars"]>(),
+    refreshCalendarConnection: vi.fn<LifeLinksWorkspaceApi["refreshCalendarConnection"]>(async () => ({ refreshed: true })),
+    listProviderCalendarEvents: vi.fn<LifeLinksWorkspaceApi["listProviderCalendarEvents"]>(async () => ({ providerEvents: [], nextCursor: null, truncated: false })),
+    getProviderCalendarEvent: vi.fn<LifeLinksWorkspaceApi["getProviderCalendarEvent"]>(),
+    createProviderCalendarEvent: vi.fn<LifeLinksWorkspaceApi["createProviderCalendarEvent"]>(),
+    updateProviderCalendarEvent: vi.fn<LifeLinksWorkspaceApi["updateProviderCalendarEvent"]>(),
+    deleteProviderCalendarEvent: vi.fn<LifeLinksWorkspaceApi["deleteProviderCalendarEvent"]>(),
     listCalendarProviders: vi.fn<LifeLinksWorkspaceApi["listCalendarProviders"]>(async () => ({ providers: [] })),
     listCalendarConnections: vi.fn<LifeLinksWorkspaceApi["listCalendarConnections"]>(async () => ({ connections: [] })),
     listConnectedCalendars: vi.fn<LifeLinksWorkspaceApi["listConnectedCalendars"]>(async () => ({ calendars: [] })),
@@ -2786,6 +2800,106 @@ function fakeApi() {
     }))
   } satisfies LifeLinksWorkspaceApi;
 }
+
+describe("Outlook provider workspace", () => {
+  beforeEach(() => { vi.stubGlobal("window", { localStorage: new MemoryStorage() }); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const externalCalendar: CalendarRecord = { ...nativeCalendar, source: "external", isDefault: false, title: "Outlook test" };
+  const binding: CalendarProviderBindingView = { calendarId: externalCalendar.id, connectionId: "connection-outlook", providerKey: "microsoft-graph-calendar", providerAccountId: "test-account", providerCalendarId: "AAM/cal+one=", visible: true, capabilities: { read: true, create: true, update: true, delete: true } };
+  const providerEvent: CalendarProviderEventProjection = { ...binding, ownerId: owner.id, providerEventId: "AAM/event+one=", providerRevision: "W/\"exact-revision\"", synchronizedAt: nativeCalendar.updatedAt,
+    content: { title: "Outlook appointment", description: "Original description", location: "Room 1", status: "confirmed", providerSeriesId: null,
+      providerRecurrence: { kind: "single", originalStartUtc: null }, outboundEffects: { attendeeCount: 0, hasOnlineMeeting: false },
+      span: { kind: "timed", startUtc: "2026-09-01T13:00:00.000Z", endUtc: "2026-09-01T14:00:00.000Z", sourceTimeZone: "America/New_York", floatingLocalStart: null, floatingLocalEnd: null } } };
+  const reference = { authority: "provider" as const, connectionId: binding.connectionId, calendarId: binding.calendarId, providerEventId: providerEvent.providerEventId };
+  async function setup(path = "/calendar") {
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [externalCalendar], providerBindings: [binding], nextCursor: null, truncated: false });
+    api.listProviderCalendarEvents.mockResolvedValue({ providerEvents: [providerEvent], nextCursor: null, truncated: false });
+    api.getProviderCalendarEvent.mockResolvedValue({ providerEvent });
+    const route = new FakeRoute(path);
+    const controller = new LifeLinksWorkspaceController({ api, route, commandId: () => "stable-provider-command" });
+    await controller.start(); await controller.connectAgent();
+    return { api, controller, route };
+  }
+  it("keeps Outlook authorization drafts explicit, validates exact selection, and cancels without creating a connection", async () => {
+    const authorizationId = "11111111-1111-4111-8111-111111111111";
+    const { api, controller, route } = await setup(`/calendar?calendarAuthorization=${authorizationId}`);
+    api.getCalendarAuthorization.mockResolvedValue({ providerKey: "microsoft", providerAccountId: binding.providerAccountId,
+      calendars: [{ providerCalendarId: binding.providerCalendarId, displayName: "Work", isDefault: true, capabilities: binding.capabilities }] });
+    await controller.loadCalendarConnectionDiscovery();
+    expect(controller.getSnapshot().calendarWorkspace.connectionFlow.authorizationId).toBe(authorizationId);
+    await expect(controller.completeCalendarConnectionSelection(["unrelated-id"])).rejects.toThrow();
+    expect(api.completeCalendarAuthorization).not.toHaveBeenCalled();
+    await controller.cancelCalendarConnectionSelection();
+    expect(api.cancelCalendarAuthorization).toHaveBeenCalledWith(authorizationId, undefined);
+    expect(route.pathname()).toBe("/calendar");
+    controller.dispose();
+  });
+  it("admits only the server's exact Microsoft HTTPS authorization destination", async () => {
+    const { api, controller } = await setup();
+    api.authorizeMicrosoftCalendar.mockResolvedValue({ authorizationUrl: "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize?state=opaque" });
+    await expect(controller.beginMicrosoftCalendarAuthorization(binding.connectionId)).resolves.toContain("https://login.microsoftonline.com/");
+    api.authorizeMicrosoftCalendar.mockResolvedValue({ authorizationUrl: "https://login.microsoftonline.com.evil.test/authorize" });
+    await expect(controller.beginMicrosoftCalendarAuthorization()).rejects.toThrow("unsupported Outlook");
+    controller.dispose();
+  });
+  it("lists/query/inspects exact provider identities through narrowed reads and pages provider entries one at a time", async () => {
+    const { api, controller } = await setup();
+    api.listProviderCalendarEvents.mockResolvedValue({ providerEvents: [providerEvent, { ...providerEvent, providerEventId: "second-event" }], nextCursor: null, truncated: false });
+    await expect(controller.agentListAuthorizedCalendars({ limit: 2 })).resolves.toMatchObject({ ok: true, calendars: [{ provider: "microsoft", writeAuthority: "provider", providerCalendarId: binding.providerCalendarId, capabilities: binding.capabilities }] });
+    const page = await controller.agentQueryCalendarEvents({ startDate: "2026-09-01", endDate: "2026-09-01", limit: 2 });
+    expect(page).toMatchObject({ ok: true, instances: [{ source: "provider_event", providerEvent }], nextCursor: "calendar-agent-events-1", truncated: true });
+    expect(api.listProviderCalendarEvents).toHaveBeenCalledWith(expect.objectContaining({ authority: "provider", calendarId: binding.calendarId }), undefined, "agent");
+    await expect(controller.agentInspectProviderCalendarEvent(reference)).resolves.toMatchObject({ ok: true, providerEvent });
+    expect(controller.getSnapshot().calendarWorkspace.selectedProviderEvent).toEqual(providerEvent);
+    controller.dispose();
+  });
+  it("shares provider writes with the visible UI without masquerading as native events, preserving stable retry identity", async () => {
+    const { api, controller, route } = await setup();
+    const { providerSeriesId: _series, providerRecurrence: _recurrence, outboundEffects: _effects, ...content } = providerEvent.content;
+    const create = { authority: "provider" as const, commandId: "stable-create", connectionId: binding.connectionId, calendarId: binding.calendarId, content };
+    api.createProviderCalendarEvent.mockResolvedValue({ providerEvent });
+    await expect(controller.agentCreateProviderCalendarEvent(create)).resolves.toMatchObject({ ok: true });
+    expect(controller.getSnapshot().calendarWorkspace.selectedEvent).toBeNull();
+    expect(route.pathname()).toContain("authority=provider");
+    const update = { ...create, commandId: "stable-update", expectedProviderRevision: providerEvent.providerRevision, scope: "event" as const, providerEventId: providerEvent.providerEventId };
+    api.updateProviderCalendarEvent.mockResolvedValue({ providerEvent: { ...providerEvent, providerRevision: "next-revision" } });
+    await expect(controller.agentUpdateProviderCalendarEvent(update)).resolves.toMatchObject({ ok: true });
+    await expect(controller.agentUpdateProviderCalendarEvent(update)).resolves.toMatchObject({ ok: true });
+    expect(api.updateProviderCalendarEvent.mock.calls[0]).toEqual(api.updateProviderCalendarEvent.mock.calls[1]);
+    expect(api.createCalendarEvent).not.toHaveBeenCalled(); expect(api.updateCalendarEvent).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+  it("requires one visible confirmation and rechecks live grants even for a completed provider deletion replay", async () => {
+    const { api, controller } = await setup();
+    const prepared = await controller.agentPrepareProviderCalendarEventDeletion({ ...reference, expectedProviderRevision: providerEvent.providerRevision, scope: "event" });
+    expect(prepared.ok).toBe(true); if (!prepared.ok) return;
+    const pending = controller.agentApplyProviderCalendarEventDeletion(prepared.preview.id);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentCalendarDeletionConfirmation).toMatchObject({ providerEvent }));
+    expect(api.deleteProviderCalendarEvent).not.toHaveBeenCalled();
+    api.deleteProviderCalendarEvent.mockResolvedValue({ kind: "delete", ...reference, deletedProviderRevision: providerEvent.providerRevision });
+    controller.confirmAgentCalendarDeletion(true);
+    await expect(pending).resolves.toMatchObject({ ok: true });
+    await expect(controller.agentApplyProviderCalendarEventDeletion(prepared.preview.id)).resolves.toMatchObject({ ok: true });
+    expect(api.deleteProviderCalendarEvent).toHaveBeenCalledTimes(1);
+    api.listCalendars.mockResolvedValue({ calendars: [{ ...externalCalendar, agentAccess: "read" }], providerBindings: [binding], nextCursor: null, truncated: false });
+    await expect(controller.agentApplyProviderCalendarEventDeletion(prepared.preview.id)).resolves.toMatchObject({ ok: false, code: "calendar_event_unavailable" });
+    controller.dispose();
+  });
+  it("refuses recurring provider deletion and never applies a canceled confirmation", async () => {
+    const { api, controller } = await setup();
+    api.getProviderCalendarEvent.mockResolvedValueOnce({ providerEvent: { ...providerEvent, content: { ...providerEvent.content, providerSeriesId: "series" } } });
+    await expect(controller.agentPrepareProviderCalendarEventDeletion({ ...reference, expectedProviderRevision: providerEvent.providerRevision, scope: "event" })).resolves.toMatchObject({ ok: false, code: "unsupported_calendar_authority" });
+    const prepared = await controller.agentPrepareProviderCalendarEventDeletion({ ...reference, expectedProviderRevision: providerEvent.providerRevision, scope: "event" });
+    if (!prepared.ok) throw new Error("Expected a standalone preview");
+    const pending = controller.agentApplyProviderCalendarEventDeletion(prepared.preview.id);
+    await vi.waitFor(() => expect(controller.getSnapshot().agentCalendarDeletionConfirmation).not.toBeNull());
+    controller.confirmAgentCalendarDeletion(false);
+    await expect(pending).resolves.toMatchObject({ ok: false, code: "confirmation_cancelled" });
+    expect(api.deleteProviderCalendarEvent).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+});
 
 describe("shared owner changes and agent confirmation", () => {
   beforeEach(() => { vi.stubGlobal("window", { localStorage: new MemoryStorage() }); });
