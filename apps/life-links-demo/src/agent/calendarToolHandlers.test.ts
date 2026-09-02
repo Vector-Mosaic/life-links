@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import Ajv from "ajv";
 import { type CalendarProviderEventProjection, MAX_LIFE_LINK_TOOL_OUTPUT_BYTES } from "@life-links/core";
+import { createLifeLinksAgentToolCatalog, type LifeLinksAgentToolController } from "./toolHandlers";
+import { LIFE_LINKS_PAGE_TOOL_NAMES } from "./browserWebMcpHost";
 
 import {
   LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
@@ -175,17 +177,48 @@ function tools(controller: CalendarAgentToolController) {
 }
 
 describe("Calendar page-bound agent tools", () => {
+  it("keeps all 21 real tool descriptors below the browser budget with page metadata and eight KiB headroom", () => {
+    const inertController = new Proxy({} as LifeLinksAgentToolController, {
+      get: () => () => { throw new Error("Descriptor inspection must not invoke controller actions."); }
+    });
+    const catalog = createLifeLinksAgentToolCatalog(inertController);
+    expect(catalog.map((tool) => tool.name)).toEqual(LIFE_LINKS_PAGE_TOOL_NAMES);
+    const origin = "https://life-links-api-production-1398.up.railway.app";
+    const descriptors = catalog.map(({ name, title, description, inputSchema, annotations }) => ({
+      name, title, description, inputSchema, annotations, origin, pageUrl: `${origin}/calendar`
+    }));
+    expect(new TextEncoder().encode(JSON.stringify(descriptors)).byteLength).toBeLessThanOrEqual(65_536 - 8_192);
+  });
+
   it("admits explicit provider tool shapes without weakening native shapes or accepting side-effect fields", () => {
     const catalog = tools(new FakeController());
     const ajv = new Ajv();
     const create = ajv.compile(catalog.get("create_calendar_event")!.inputSchema);
+    const nativeInput = { eventId, revisionId, calendarId, title: "Native event",
+      span: { kind: "all_day", startDate: "2026-09-01", endDateExclusive: "2026-09-02" } };
+    expect(create(nativeInput)).toBe(true);
+    expect(create({ ...nativeInput, commandId: "provider-command" })).toBe(false);
+    expect(create({ ...nativeInput, span: { ...nativeInput.span, startUtc: "2026-09-01T00:00:00Z" } })).toBe(false);
     const input = { authority: "provider", commandId: "command-one", connectionId: "connection-one", calendarId, content: providerWritableContent() };
     expect(create(input)).toBe(true);
     expect(create({ ...input, revisionId })).toBe(false);
     expect(create({ ...input, content: { ...input.content, attendees: [] } })).toBe(false);
     const update = ajv.compile(catalog.get("update_calendar_event")!.inputSchema);
+    const nativeUpdate = { eventId, revisionId: nextRevisionId, expectedCurrentRevisionId: revisionId,
+      target: { scope: "event", eventId }, patch: { title: "Updated native event" } };
+    expect(update(nativeUpdate)).toBe(true);
+    expect(update({ ...nativeUpdate, patch: {} })).toBe(false);
     expect(update({ ...input, providerEventId: providerEvent().providerEventId, expectedProviderRevision: providerEvent().providerRevision, scope: "event" })).toBe(true);
     expect(update({ ...input, providerEventId: providerEvent().providerEventId, expectedProviderRevision: providerEvent().providerRevision, scope: "series" })).toBe(false);
+    const inspect = ajv.compile(catalog.get("inspect_calendar_event")!.inputSchema);
+    expect(inspect({ eventId, part: "subject_links", expectedCurrentRevisionId: revisionId })).toBe(true);
+    expect(inspect({ ...providerReference(), part: "title", expectedProviderRevision: providerEvent().providerRevision })).toBe(true);
+    expect(inspect({ ...providerReference(), part: "subject_links" })).toBe(false);
+    expect(inspect({ eventId, part: "title" })).toBe(false);
+    const prepare = ajv.compile(catalog.get("prepare_calendar_event_deletion")!.inputSchema);
+    expect(prepare({ eventId, expectedCurrentRevisionId: revisionId, target: { scope: "event", eventId } })).toBe(true);
+    expect(prepare({ ...providerReference(), expectedProviderRevision: providerEvent().providerRevision, scope: "event" })).toBe(true);
+    expect(prepare({ ...providerReference(), expectedProviderRevision: providerEvent().providerRevision, scope: "series" })).toBe(false);
   });
 
   it("returns provider identities and bounded revision-pinned text without treating provider projections as native events", async () => {
