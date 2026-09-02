@@ -26,7 +26,7 @@ export function CollectionChangeDialog({ input, controller, snapshot, onClose, o
   const lifetime = useRef<AbortController | null>(null);
   const targetRequest = useRef(0);
   const moving = input.operation === "move";
-  const movingSections = input.scope === "contents" && input.sectionIds.length > 0;
+  const movingSections = moving && input.scope === "contents" && input.sectionIds.length > 0;
   useEffect(() => {
     const abort = new AbortController(); lifetime.current = abort;
     if (moving) void controller.loadCollections();

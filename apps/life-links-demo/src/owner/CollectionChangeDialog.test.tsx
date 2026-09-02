@@ -37,6 +37,12 @@ describe("Collection bulk change dialog", () => {
     expect(document.body.textContent).toContain("Network interrupted"); expect(applied).not.toHaveBeenCalled(); await click("Delete");
     expect(prepare).toHaveBeenCalledOnce(); expect(apply.mock.calls.map(([id]) => id)).toEqual([preview.id, preview.id]); expect(applied).toHaveBeenCalledOnce();
   });
+  it("describes Section deletion as retaining items, never as a Section move", async () => {
+    await render({ operation: "delete", scope: "contents", source: { collectionId: source.id, expectedUpdatedAt: date }, sectionIds: ["section-exact"], members: [] });
+    expect(document.body.textContent).toContain("Deleting a Section leaves its items in the Collection.");
+    expect(document.body.textContent).not.toContain("Sections keep their identities and bring their assignments.");
+    expect(apply).not.toHaveBeenCalled();
+  });
   it("pins the selected destination revision and preserves the source appearance in a move preview", async () => {
     const input: CollectionChangeDraft = { operation: "move", scope: "contents", source: { collectionId: source.id, expectedUpdatedAt: date }, sectionIds: [], members: [{ lifeLinkId: "life-link-tent", sourceSectionId: "section-exact" }] };
     await render(input); expect(prepare).not.toHaveBeenCalled();
