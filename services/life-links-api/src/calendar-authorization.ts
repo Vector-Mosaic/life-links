@@ -4,9 +4,18 @@ import { CalendarProviderGateway, calendarProviderCredentialHandle, calendarProv
 import type { CalendarProviderCredentialResolver, CalendarProviderCredentialRevoker } from "./calendar-provider-credentials.js";
 import { CalendarSecretCipher, type CalendarSecretRow, type CalendarSecretStore } from "./calendar-secret-store.js";
 import type { MicrosoftCalendarAuth, MicrosoftCalendarTokenState } from "./calendar-microsoft-auth.js";
+import type { GoogleCalendarAuth, GoogleCalendarTokenState } from "./calendar-google-auth.js";
 
-const MICROSOFT_PROVIDER = "microsoft-graph-calendar";
+export type CalendarAuthorizationProvider = "microsoft" | "google";
+const PROVIDERS = { microsoft: "microsoft-graph-calendar", google: "google-calendar" } as const;
+export function calendarAuthorizationProvider(providerKey: string): CalendarAuthorizationProvider {
+  if (providerKey === PROVIDERS.microsoft) return "microsoft";
+  if (providerKey === PROVIDERS.google) return "google";
+  throw new CalendarAuthorizationError("authorization_unavailable");
+}
 type Authorization = {
+  // Missing only in the already-deployed Microsoft payload format.
+  provider?: CalendarAuthorizationProvider;
   sessionId: string;
   stateHash: string;
   nonce: string;
@@ -19,7 +28,9 @@ type Authorization = {
   providerAccountId: string | null;
   selectedCalendarIds: string[] | null;
 };
-type Credential = MicrosoftCalendarTokenState & { status: "ready" | "reconnect_required"; connectionId: string };
+type Credential = (MicrosoftCalendarTokenState | GoogleCalendarTokenState) & {
+  provider?: CalendarAuthorizationProvider; status: "ready" | "reconnect_required"; connectionId: string
+};
 export type CalendarCredentialCleanup = (input: {
   ownerId: string; connectionId: string; credentialHandle: CalendarProviderCredentialHandle; providerAccountId: string;
   replacementCredentialHandle?: CalendarProviderCredentialHandle;
@@ -38,30 +49,43 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
   constructor(
     readonly secrets: CalendarSecretStore,
     private readonly cipher: CalendarSecretCipher,
-    private readonly microsoft: MicrosoftCalendarAuth,
+    private readonly microsoft: MicrosoftCalendarAuth | undefined,
     private readonly gateway: () => CalendarProviderGateway,
-    private readonly now: () => Date = () => new Date()
+    private readonly now: () => Date = () => new Date(),
+    private readonly google?: GoogleCalendarAuth
   ) {}
 
-  async start(ownerId: string, sessionId: string, reconnectConnectionId?: string): Promise<{ authorizationUrl: string }> {
+  supportsProvider(provider: CalendarAuthorizationProvider): boolean {
+    return provider === "microsoft" ? Boolean(this.microsoft) : Boolean(this.google);
+  }
+  #auth(provider: CalendarAuthorizationProvider) {
+    const auth = provider === "microsoft" ? this.microsoft : this.google;
+    if (!auth) throw new CalendarAuthorizationError("authorization_unavailable");
+    return auth;
+  }
+
+  async start(ownerId: string, sessionId: string, reconnectConnectionId?: string,
+    provider: CalendarAuthorizationProvider = "microsoft"): Promise<{ authorizationUrl: string }> {
     if (!ownerId || !sessionId) throw new CalendarAuthorizationError("session_expired");
+    const auth = this.#auth(provider);
     const previous = reconnectConnectionId ? await this.gateway().getConnection(ownerId, reconnectConnectionId) : null;
-    if (previous && previous.providerKey !== MICROSOFT_PROVIDER) throw new CalendarAuthorizationError("authorization_failed");
+    if (previous && previous.providerKey !== PROVIDERS[provider]) throw new CalendarAuthorizationError("authorization_failed");
     const id = randomUUID(), stateSecret = randomBytes(32).toString("base64url");
     const authorization: Authorization = {
-      sessionId, stateHash: sha(stateSecret), nonce: randomBytes(32).toString("base64url"),
+      provider, sessionId, stateHash: sha(stateSecret), nonce: randomBytes(32).toString("base64url"),
       codeVerifier: randomBytes(48).toString("base64url"), status: "pending",
       credentialId: randomUUID(), connectionId: previous?.connectionId ?? randomUUID(), reconnect: Boolean(previous),
       expectedProviderAccountId: previous?.providerAccountId ?? null, providerAccountId: null, selectedCalendarIds: null
     };
     const row = this.#row(id, ownerId, "authorization", authorization, 10 * 60_000);
-    const authorizationUrl = await this.microsoft.authorizationUrl({ state: `${id}.${stateSecret}`, nonce: authorization.nonce,
+    const authorizationUrl = await auth.authorizationUrl({ state: `${id}.${stateSecret}`, nonce: authorization.nonce,
       codeChallenge: createHash("sha256").update(authorization.codeVerifier).digest("base64url") });
     await this.secrets.create(row);
     return { authorizationUrl };
   }
 
-  async callback(input: { ownerId: string; sessionId: string; state: string; code?: string; error?: string }): Promise<string> {
+  async callback(input: { ownerId: string; sessionId: string; state: string; code?: string; error?: string;
+    provider?: CalendarAuthorizationProvider }): Promise<string> {
     const pieces = input.state.split(".");
     if (pieces.length !== 2 || !/^[a-f0-9-]{36}$/.test(pieces[0]) || !/^[A-Za-z0-9_-]{43}$/.test(pieces[1])) {
       throw new CalendarAuthorizationError("authorization_failed");
@@ -70,7 +94,8 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
     // Consume before exchanging the code: failed, cancelled and repeated callbacks cannot reuse state.
     const authorization = await this.secrets.locked(id, async (row) => {
       const state = this.#authorization(row, input.ownerId, input.sessionId);
-      if (state.status !== "pending" || !timingSafeEqual(Buffer.from(state.stateHash), Buffer.from(sha(stateSecret)))) {
+      if ((state.provider ?? "microsoft") !== (input.provider ?? "microsoft") || state.status !== "pending"
+        || !timingSafeEqual(Buffer.from(state.stateHash), Buffer.from(sha(stateSecret)))) {
         throw new CalendarAuthorizationError("authorization_failed");
       }
       state.status = input.error ? "failed" : "redeeming";
@@ -79,12 +104,13 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
     if (input.error) throw new CalendarAuthorizationError(input.error === "access_denied" ? "cancelled" : "authorization_failed");
     try {
       if (!input.code || input.code.length > 16_384) throw new CalendarAuthorizationError("authorization_failed");
-      const tokens = await this.microsoft.redeem({ code: input.code, nonce: authorization.nonce, codeVerifier: authorization.codeVerifier });
+      const provider = authorization.provider ?? "microsoft";
+      const tokens = await this.#auth(provider).redeem({ code: input.code, nonce: authorization.nonce, codeVerifier: authorization.codeVerifier });
       if (authorization.expectedProviderAccountId && tokens.providerAccountId !== authorization.expectedProviderAccountId) {
         throw new CalendarAuthorizationError("authorization_failed");
       }
       await this.secrets.create(this.#row(authorization.credentialId, input.ownerId, "credential", {
-        ...tokens, status: "ready", connectionId: authorization.connectionId
+        ...tokens, provider, status: "ready", connectionId: authorization.connectionId
       }, 30 * 60_000));
       await this.secrets.locked(id, async (row) => {
         const current = this.#authorization(row, input.ownerId, input.sessionId);
@@ -102,9 +128,10 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
 
   async discover(ownerId: string, sessionId: string, id: string): Promise<CalendarAuthorizationDiscovery> {
     const state = await this.#readAuthorization(ownerId, sessionId, id);
-    const discovery = await this.gateway().discoverExternalCalendars({ ownerId, providerKey: MICROSOFT_PROVIDER,
+    const provider = state.provider ?? "microsoft";
+    const discovery = await this.gateway().discoverExternalCalendars({ ownerId, providerKey: PROVIDERS[provider],
       expectedProviderAccountId: state.providerAccountId!, credentialHandle: calendarProviderCredentialHandle(state.credentialId) });
-    return { providerKey: "microsoft", providerAccountId: discovery.providerAccountId,
+    return { providerKey: provider, providerAccountId: discovery.providerAccountId,
       calendars: discovery.calendars.map((calendar) => ({ ...calendar, isDefault: calendar.isDefault === true })) };
   }
 
@@ -122,7 +149,7 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
       }
       if (state.status === "completed") return { row, value: null };
       const credentialHandle = calendarProviderCredentialHandle(state.credentialId);
-      const discovery = await this.gateway().discoverExternalCalendars({ ownerId, providerKey: MICROSOFT_PROVIDER,
+      const discovery = await this.gateway().discoverExternalCalendars({ ownerId, providerKey: PROVIDERS[state.provider ?? "microsoft"],
         expectedProviderAccountId: state.providerAccountId, credentialHandle });
       const selection = selectedCalendarIds.map((providerCalendarId) => {
         const remote = discovery.calendars.find((calendar) => calendar.providerCalendarId === providerCalendarId);
@@ -153,7 +180,7 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
         { beforeCredentialReplacement: this.#beforeRevoke });
         await this.gateway().selectExternalCalendars({ ownerId, connectionId: state.connectionId, calendars, initialWindow: this.initialWindow() });
       } else await this.gateway().connectExternalAccount({ ownerId, connectionId: state.connectionId,
-        providerKey: MICROSOFT_PROVIDER, expectedProviderAccountId: state.providerAccountId,
+        providerKey: PROVIDERS[state.provider ?? "microsoft"], expectedProviderAccountId: state.providerAccountId,
         credentialHandle, calendars, initialWindow: this.initialWindow() });
       await this.secrets.locked(state.credentialId, async (credential) => {
         if (!credential || credential.ownerId !== ownerId) throw new CalendarAuthorizationError("authorization_failed");
@@ -185,15 +212,20 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
   }
 
   async resolve(input: { credentialHandle: CalendarProviderCredentialHandle; providerKey: string }) {
-    if (input.providerKey !== MICROSOFT_PROVIDER) throw new CalendarAuthorizationError("authorization_unavailable");
+    const provider = calendarAuthorizationProvider(input.providerKey);
+    this.#auth(provider);
     const result = await this.secrets.locked(input.credentialHandle, async (row) => {
       if (!row || row.purpose !== "credential" || (row.expiresAt && row.expiresAt <= this.now().toISOString())) {
         throw new CalendarAuthorizationError("authorization_failed");
       }
       const credential = this.cipher.open<Credential>(row);
+      if ((credential.provider ?? "microsoft") !== provider) throw new CalendarAuthorizationError("authorization_failed");
       try {
-        const refreshed = await this.microsoft.refresh(credential);
-        return { row: this.#updated(row, { ...refreshed.state, connectionId: credential.connectionId, status: "ready" }),
+        const refreshed = provider === "google"
+          ? await this.google!.refresh(credential)
+          : await this.microsoft!.refresh(credential as MicrosoftCalendarTokenState);
+        if (refreshed.state.providerAccountId !== credential.providerAccountId) throw new CalendarAuthorizationError("authorization_failed");
+        return { row: this.#updated(row, { ...refreshed.state, provider, connectionId: credential.connectionId, status: "ready" }),
           value: { accessToken: refreshed.accessToken, providerAccountId: credential.providerAccountId,
             ...(refreshed.renewedAccessToken === true ? { renewedAccessToken: true as const } : {}) } };
       } catch {
@@ -205,20 +237,22 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
   }
 
   async revoke(input: { credentialHandle: CalendarProviderCredentialHandle; providerKey: string; providerAccountId: string }): Promise<void> {
-    if (input.providerKey !== MICROSOFT_PROVIDER) throw new CalendarAuthorizationError("authorization_unavailable");
+    const provider = calendarAuthorizationProvider(input.providerKey);
     const cleanup = await this.secrets.locked(input.credentialHandle, async (row) => {
       if (!row) return { row, value: null };
       const credential = this.cipher.open<Credential>(row);
-      if (row.purpose !== "credential" || credential.providerAccountId !== input.providerAccountId) throw new CalendarAuthorizationError("authorization_failed");
+      if (row.purpose !== "credential" || (credential.provider ?? "microsoft") !== provider
+        || credential.providerAccountId !== input.providerAccountId) throw new CalendarAuthorizationError("authorization_failed");
       return { row, value: { ownerId: row.ownerId, connectionId: credential.connectionId,
         credentialHandle: input.credentialHandle, providerAccountId: input.providerAccountId } };
     });
     if (cleanup) await this.#beforeRevoke?.(cleanup);
     await this.secrets.locked(input.credentialHandle, async (row) => {
-      if (row && (row.purpose !== "credential" || this.cipher.open<Credential>(row).providerAccountId !== input.providerAccountId)) {
+      if (row && (row.purpose !== "credential" || (this.cipher.open<Credential>(row).provider ?? "microsoft") !== provider
+        || this.cipher.open<Credential>(row).providerAccountId !== input.providerAccountId)) {
         throw new CalendarAuthorizationError("authorization_failed");
       }
-      // Local application cache removal only. Never revokeSignInSessions or claim Microsoft consent was removed.
+      // Remove only this application's retained credential. Provider-side consent may remain.
       return { row: null, value: undefined };
     });
   }

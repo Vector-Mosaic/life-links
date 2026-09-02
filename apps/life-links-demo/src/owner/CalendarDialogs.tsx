@@ -300,13 +300,17 @@ function CalendarConnectionsSection({ controller, management, flow }: {
 
   useEffect(() => { setSelectedIds([]); }, [flow?.discovery]);
 
-  async function connect(reconnectConnectionId?: string) {
-    setPending(reconnectConnectionId ?? "microsoft"); setError("");
+  async function connect(provider: "microsoft" | "google", reconnectConnectionId?: string) {
+    const abort = lifetime.current;
+    if (!abort || abort.signal.aborted) return;
+    setPending(reconnectConnectionId ?? provider); setError("");
     try {
-      const authorizationUrl = await controller.beginMicrosoftCalendarAuthorization(reconnectConnectionId, lifetime.current?.signal);
-      if (!lifetime.current?.signal.aborted) window.location.assign(authorizationUrl);
-    } catch (issue) { setError(messageFromIssue(issue, "Outlook sign-in could not be started.")); }
-    finally { setPending(null); }
+      const authorizationUrl = provider === "microsoft"
+        ? await controller.beginMicrosoftCalendarAuthorization(reconnectConnectionId, abort.signal)
+        : await controller.beginGoogleCalendarAuthorization(reconnectConnectionId, abort.signal);
+      if (!abort.signal.aborted) window.location.assign(authorizationUrl);
+    } catch (issue) { if (!abort.signal.aborted) setError(messageFromIssue(issue, `${provider === "microsoft" ? "Outlook" : "Google"} sign-in could not be started.`)); }
+    finally { if (!abort.signal.aborted) setPending(null); }
   }
 
   async function selectCalendars() {
@@ -351,7 +355,11 @@ function CalendarConnectionsSection({ controller, management, flow }: {
     <h3>External calendars</h3>
     <p>Connect an account, then choose its exact calendars. Provider sign-in does not grant the agent access to those calendars.</p>
     {!management.providers.some((provider) => provider.authorizationAvailable) && <p>New account connections are not available yet.</p>}
-    {management.providers.map((provider) => <button className="ll-button" key={provider.providerKey} disabled={Boolean(pending) || !provider.authorizationAvailable || provider.providerKey !== "microsoft"} title={provider.authorizationAvailable ? "Continue to Microsoft sign-in" : "Account authorization is not available yet"} onClick={() => void connect()}><Cloud size={16} />Connect {provider.displayName}</button>)}
+    {management.providers.map((provider) => {
+      const authorizationProvider = calendarAuthorizationProvider(provider.providerKey);
+      const available = authorizationProvider !== null && provider.authorizationAvailable;
+      return <button className="ll-button" key={provider.providerKey} disabled={Boolean(pending) || !available} title={available ? `Continue to ${authorizationProvider === "microsoft" ? "Microsoft" : "Google"} sign-in` : "Account authorization is not available yet"} onClick={() => { if (authorizationProvider) void connect(authorizationProvider); }}><Cloud size={16} />Connect {provider.displayName}</button>;
+    })}
     {flow?.feedback && <p role="status">{flow.feedback}</p>}
     {flow?.error && <div className="ll-inline-warning" role="alert"><p>{flow.error}</p>{(flow.authorizationId || flow.connectionId) && <button className="ll-button" disabled={Boolean(pending)} onClick={() => void controller.loadCalendarConnectionDiscovery(flow.connectionId ?? undefined, lifetime.current?.signal).catch(() => undefined)}>Retry calendar discovery</button>}</div>}
     {flow?.loading && <p role="status">Finding calendars in the selected account…</p>}
@@ -365,14 +373,16 @@ function CalendarConnectionsSection({ controller, management, flow }: {
     {(management.error || error) && <div className="ll-inline-warning" role="alert"><p>{error || management.error}</p><button className="ll-button" disabled={management.loading || Boolean(pending)} onClick={() => { setError(""); void controller.loadCalendarConnections(lifetime.current?.signal).catch(() => undefined); }}>Retry loading connections</button></div>}
     {management.loaded && !management.error && !management.connections.length && <p>No external accounts are connected.</p>}
     <div className="ll-calendar-connection-list">{management.connections.map((connection) => {
-      const providerName = management.providers.find((provider) => provider.providerKey === connection.providerKey)?.displayName ?? connection.providerKey;
+      const authorizationProvider = calendarAuthorizationProvider(connection.providerKey);
+      const provider = management.providers.find((entry) => authorizationProvider ? calendarAuthorizationProvider(entry.providerKey) === authorizationProvider : entry.providerKey === connection.providerKey);
+      const providerName = provider?.displayName ?? (authorizationProvider === "microsoft" ? "Microsoft Outlook" : authorizationProvider === "google" ? "Google Calendar" : connection.providerKey);
       const calendars = management.calendars.filter((view) => view.connectionId === connection.connectionId && !view.calendar.deletedAt);
       const active = connection.status === "active";
-      const isMicrosoft = connection.providerKey === "microsoft" || connection.providerKey === "microsoft-graph-calendar";
-      const canAuthorize = isMicrosoft && management.providers.some((provider) => provider.providerKey === "microsoft" && provider.authorizationAvailable);
+      const canAuthorize = authorizationProvider !== null && provider?.authorizationAvailable === true;
+      const reconnectLabel = authorizationProvider === "google" ? "Reconnect Google Calendar" : "Reconnect Outlook";
       return <article className="ll-calendar-connection" key={connection.connectionId}>
         <header><div><h4>{providerName}</h4><p className="ll-calendar-account-identity">Account: {connection.providerAccountId}</p></div><span className="ll-chip">{connection.status === "active" ? "Connected" : connection.status === "provisioning" ? "Connecting" : "Disconnected"}</span></header>
-        {connection.status === "disconnected" ? <><p>{revocationStatusText(connection)}</p>{canAuthorize && <button className="ll-button" disabled={Boolean(pending)} onClick={() => void connect(connection.connectionId)}>Reconnect Outlook</button>}</> : <>
+        {connection.status === "disconnected" ? <><p>{revocationStatusText(connection)}</p>{canAuthorize && <button className="ll-button" disabled={Boolean(pending)} onClick={() => { if (authorizationProvider) void connect(authorizationProvider, connection.connectionId); }}>{reconnectLabel}</button>}</> : <>
           {connection.credentialStatus === "reconnect_required" && <p className="ll-inline-warning" role="status">This account needs to reconnect before Life Links can read or change its provider events.</p>}
           <p>Select which already-linked calendars appear in your Calendar view. Visibility does not change agent access.</p>
           {!calendars.length && <p>No calendars have been selected for this account.</p>}
@@ -384,7 +394,7 @@ function CalendarConnectionsSection({ controller, management, flow }: {
             </div>;
           })}</div>
           <p>An agent also needs the connected Calendar-v2 grant, and can never exceed the provider's permissions.</p>
-          {isMicrosoft && active ? <div><button className="ll-button" disabled={Boolean(pending) || flow?.loading} onClick={() => void controller.loadCalendarConnectionDiscovery(connection.connectionId, lifetime.current?.signal).catch(() => undefined)}>Choose additional calendars</button><button className="ll-button" disabled={Boolean(pending)} onClick={() => void refresh(connection.connectionId)}>Refresh events</button>{canAuthorize && <button className="ll-button" disabled={Boolean(pending)} onClick={() => void connect(connection.connectionId)}>Reconnect Outlook</button>}</div> : <p>Finding additional calendars for this account is not available yet.</p>}
+          {authorizationProvider && active ? <div><button className="ll-button" disabled={Boolean(pending) || flow?.loading} onClick={() => void controller.loadCalendarConnectionDiscovery(connection.connectionId, lifetime.current?.signal).catch(() => undefined)}>Choose additional calendars</button><button className="ll-button" disabled={Boolean(pending)} onClick={() => void refresh(connection.connectionId)}>Refresh events</button>{canAuthorize && <button className="ll-button" disabled={Boolean(pending)} onClick={() => void connect(authorizationProvider, connection.connectionId)}>{reconnectLabel}</button>}</div> : <p>Finding additional calendars for this account is not available yet.</p>}
           {disconnectId === connection.connectionId ? <div className="ll-calendar-disconnect-confirmation" role="group" aria-label={`Confirm disconnect ${providerName}`}>
             <strong>Disconnect {providerName}?</strong><p>Life Links will stop using this account and remove its cached events from this view. Your original calendars and events at {providerName} will not be deleted. Provider access revocation may remain pending or fail; its status will be shown separately.</p>
             <button className="ll-button" disabled={Boolean(pending)} onClick={() => setDisconnectId(null)}>Cancel</button><button className="ll-button ll-danger" disabled={Boolean(pending)} onClick={() => void disconnect(connection)}>{pending === connection.connectionId ? "Disconnecting…" : "Yes, disconnect"}</button>
@@ -417,11 +427,18 @@ function providerCapabilityText(view: CalendarConnectedCalendarView): string {
 }
 
 function revocationStatusText(connection: CalendarConnectionView): string {
+  if (calendarAuthorizationProvider(connection.providerKey) === "google" && connection.remoteRevocationStatus === "succeeded") return "Life Links access is off and its saved credentials were removed. Google account consent may remain; you can review it in Google. Original provider events were not deleted.";
   if ((connection.providerKey === "microsoft" || connection.providerKey === "microsoft-graph-calendar") && connection.remoteRevocationStatus === "succeeded") return "Life Links access is off and its saved credentials were removed. Microsoft account consent may remain; you can review it in Microsoft. Original provider events were not deleted.";
   if (connection.remoteRevocationStatus === "succeeded") return "Life Links access is off and provider access was revoked. Original provider events were not deleted.";
   if (connection.remoteRevocationStatus === "pending") return "Life Links access is off. Provider access revocation is still pending; your original provider events were not deleted.";
   if (connection.remoteRevocationStatus === "failed") return "Life Links access is off, but provider access revocation failed. Review this app's access in your provider account. Original provider events were not deleted.";
   return "Life Links access is off. No remote revocation was required; original provider events were not deleted.";
+}
+
+function calendarAuthorizationProvider(providerKey: string): "microsoft" | "google" | null {
+  if (providerKey === "microsoft" || providerKey === "microsoft-graph-calendar") return "microsoft";
+  if (providerKey === "google" || providerKey === "google-calendar") return "google";
+  return null;
 }
 
 function buildRecurrence(input: { frequency: "none" | CalendarRecurrenceRule["frequency"]; interval: number; weekdays: CalendarWeekday[]; startDate: string; endKind: CalendarRecurrenceEnd["kind"]; untilDate: string; count: number }): CalendarRecurrenceRule | null {

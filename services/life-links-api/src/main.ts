@@ -4,12 +4,14 @@ import { runMigrations } from "./migrations.js";
 import { createPostgresStore } from "./postgres-store.js";
 import { startLifeLinksServer } from "./server.js";
 import { InMemoryLifeLinksStore, type LifeLinksStore } from "./store.js";
-import { CalendarProviderGateway, InMemoryCalendarProviderStateStore, type CalendarProviderStateStore } from "./calendar-provider-gateway.js";
+import { CalendarProviderGateway, InMemoryCalendarProviderStateStore, type CalendarProviderStateStore, type CalendarProviderAdapter } from "./calendar-provider-gateway.js";
 import { PostgresCalendarProviderStateStore } from "./calendar-provider-postgres.js";
 import { PostgresCalendarSecretStore, InMemoryCalendarSecretStore, CalendarSecretCipher, type CalendarSecretStore } from "./calendar-secret-store.js";
 import { CalendarAuthorizationService } from "./calendar-authorization.js";
 import { MsalMicrosoftCalendarAuth } from "./calendar-microsoft-auth.js";
 import { MicrosoftGraphCalendarProviderAdapter } from "./calendar-provider-microsoft.js";
+import { GoogleCalendarProviderAdapter } from "./calendar-provider-google.js";
+import { GoogleOAuthCalendarAuth } from "./calendar-google-auth.js";
 import { CalendarProviderRuntime } from "./calendar-provider-runtime.js";
 import { CalendarProviderSubscriptionService, PostgresCalendarProviderSubscriptionStore,
   InMemoryCalendarProviderSubscriptionStore, type CalendarProviderSubscriptionStore } from "./calendar-provider-subscriptions.js";
@@ -60,23 +62,33 @@ async function main() {
   }
 
   let calendarProviderGateway: CalendarProviderGateway;
-  const calendarAuthorizationService = config.microsoftCalendar ? new CalendarAuthorizationService(
-    calendarSecrets, new CalendarSecretCipher(config.microsoftCalendar.encryptionKey),
-    new MsalMicrosoftCalendarAuth(config.microsoftCalendar), () => calendarProviderGateway
+  const calendarEncryptionKey = config.microsoftCalendar?.encryptionKey ?? config.googleCalendar?.encryptionKey;
+  const calendarAuthorizationService = calendarEncryptionKey ? new CalendarAuthorizationService(
+    calendarSecrets, new CalendarSecretCipher(calendarEncryptionKey),
+    config.microsoftCalendar ? new MsalMicrosoftCalendarAuth(config.microsoftCalendar) : undefined, () => calendarProviderGateway,
+    () => new Date(), config.googleCalendar ? new GoogleOAuthCalendarAuth(config.googleCalendar) : undefined
   ) : undefined;
-  const adapters = calendarAuthorizationService ? [new MicrosoftGraphCalendarProviderAdapter({
+  const microsoftAdapter = calendarAuthorizationService && config.microsoftCalendar ? new MicrosoftGraphCalendarProviderAdapter({
     credentialResolver: calendarAuthorizationService, credentialRevoker: calendarAuthorizationService,
     onRenewedCredentialUsed: () => logger.info("life_links.calendar_credentials.renewal_used", {
       provider: "microsoft", acquisition: "silent_renewal", graph_result: "accepted"
     })
-  })] : [];
+  }) : undefined;
+  const adapters: CalendarProviderAdapter[] = microsoftAdapter ? [microsoftAdapter] : [];
+  if (calendarAuthorizationService && config.googleCalendar) adapters.push(new GoogleCalendarProviderAdapter({
+    credentialResolver: calendarAuthorizationService, credentialRevoker: calendarAuthorizationService
+  }));
   calendarProviderGateway = new CalendarProviderGateway(adapters, calendarProviderState);
-  const calendarSubscriptionService = calendarAuthorizationService ? new CalendarProviderSubscriptionService({
-    gateway: calendarProviderGateway, adapter: adapters[0], store: calendarSubscriptions,
+  const calendarSubscriptionService = microsoftAdapter ? new CalendarProviderSubscriptionService({
+    gateway: calendarProviderGateway, adapter: microsoftAdapter, store: calendarSubscriptions,
     notificationUrl: `${config.qrBaseUrl}/api/calendar-notifications/microsoft`
   }) : undefined;
-  calendarAuthorizationService?.setBeforeRevoke((input) => calendarSubscriptionService!.cleanupConnection(input));
-  const calendarRuntime = calendarAuthorizationService ? new CalendarProviderRuntime(calendarProviderGateway, calendarAuthorizationService, logger, 60_000, calendarSubscriptionService) : undefined;
+  calendarAuthorizationService?.setBeforeRevoke(async (input) => {
+    const connection = await calendarProviderGateway.store.getConnection(input.connectionId);
+    if (connection?.providerKey === "microsoft-graph-calendar") await calendarSubscriptionService?.cleanupConnection(input);
+  });
+  const calendarRuntime = calendarAuthorizationService ? new CalendarProviderRuntime(calendarProviderGateway, calendarAuthorizationService,
+    logger, 60_000, calendarSubscriptionService, adapters.map((adapter) => adapter.providerKey)) : undefined;
   const server = startLifeLinksServer({ store, config, logger, calendarProviderGateway, calendarAuthorizationService,
     calendarSubscriptionService, wakeCalendarRuntime: () => calendarRuntime?.wake() });
   calendarRuntime?.start();

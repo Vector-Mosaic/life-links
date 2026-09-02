@@ -64,7 +64,8 @@ describe("Calendar manager permission presentation", () => {
     expect(markup).toContain('<option value="write" disabled="">Read and allowed changes</option>');
     expect(markup).toContain('type="checkbox" checked=""');
     expect(markup).toContain("Visibility does not change agent access");
-    expect(markup).toContain("Finding additional calendars for this account is not available yet");
+    expect(markup).toContain("Choose additional calendars");
+    expect(markup).toContain("Refresh events");
     expect(markup).toContain("Disconnect account");
   });
 
@@ -100,6 +101,51 @@ describe("Calendar manager permission presentation", () => {
     const markup = calendarManagerMarkup([], { connections: [connection({ providerKey: "microsoft-graph-calendar", status: "disconnected", remoteRevocationStatus: "succeeded", credentialStatus: "not_retained" })] });
     expect(markup).toContain("saved credentials were removed"); expect(markup).toContain("Microsoft account consent may remain");
     expect(markup).not.toContain("provider access was revoked");
+  });
+
+  it("enables configured Google sign-in and reconnects the exact Google connection without Outlook labels", () => {
+    const markup = calendarManagerMarkup([], {
+      providers: [
+        { providerKey: "google", displayName: "Google Calendar", authorizationAvailable: true },
+        { providerKey: "microsoft", displayName: "Microsoft Outlook", authorizationAvailable: false }
+      ],
+      connections: [connection({ providerKey: "google-calendar", credentialStatus: "reconnect_required" })]
+    });
+    const buttons = markup.match(/<button\b[^>]*>[^]*?<\/button>/g) ?? [];
+    expect(buttons.find((button) => button.includes("Connect Google Calendar"))).toContain('title="Continue to Google sign-in"');
+    expect(buttons.find((button) => button.includes("Connect Google Calendar"))).not.toContain("disabled");
+    expect(buttons.find((button) => button.includes("Connect Microsoft Outlook"))).toContain("disabled");
+    expect(markup).toContain("Reconnect Google Calendar");
+    expect(markup).not.toContain("Reconnect Outlook");
+    expect(markup).toContain("Choose additional calendars");
+    expect(markup).toContain("Refresh events");
+    expect(markup).toContain("This account needs to reconnect");
+    expect(markup).not.toContain("No external accounts are connected");
+  });
+
+  it("keeps Google reconnect provider-specific after disconnection without claiming Google consent revocation", () => {
+    const markup = calendarManagerMarkup([], {
+      providers: [{ providerKey: "google", displayName: "Google Calendar", authorizationAvailable: true }],
+      connections: [connection({ providerKey: "google-calendar", status: "disconnected", remoteRevocationStatus: "succeeded", credentialStatus: "not_retained" })]
+    });
+    expect(markup).toContain("Reconnect Google Calendar");
+    expect(markup).not.toContain("Reconnect Outlook");
+    expect(markup).toContain("Google account consent may remain");
+    expect(markup).toContain("saved credentials were removed");
+    expect(markup).not.toContain("provider access was revoked");
+    expect(markup).not.toContain("Disconnect account");
+  });
+
+  it("does not turn Microsoft availability into Google reconnect authority", () => {
+    const markup = calendarManagerMarkup([], {
+      providers: [
+        { providerKey: "google", displayName: "Google Calendar", authorizationAvailable: false },
+        { providerKey: "microsoft", displayName: "Microsoft Outlook", authorizationAvailable: true }
+      ],
+      connections: [connection({ providerKey: "google-calendar", status: "disconnected", remoteRevocationStatus: "succeeded" })]
+    });
+    expect(markup).not.toContain("Reconnect Google Calendar");
+    expect(markup).not.toContain("Reconnect Outlook");
   });
 });
 

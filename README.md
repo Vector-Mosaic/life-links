@@ -23,6 +23,11 @@ application from work completed for the challenge.
   export, and Find Mode;
 - rich notes, truth-labelled Summary/Condition/Experience/Plan context, media,
   explicit public-field selection, authentication, and PostgreSQL persistence;
+- general private Routines with scheduled occurrences, resumable runs and
+  immutable completed-session history;
+- a dedicated private Calendar with native past/future events, timezone-aware
+  month/week/day/agenda views, read-only Routine projections and selected
+  external calendars with explicit per-calendar agent permissions;
 - one human/agent physical-locator derivation that selects the nearest
   QR-bound container from canonical ancestry without storing a second location
   field; and
@@ -77,9 +82,10 @@ the decision to the right physical tub.
 
 An authenticated owner selects **Connect Agent** once on the owner workspace.
 Life Links saves that connection for the owner across reloads, browser restarts,
-logout/login, and future visits. Eligible signed-in owner pages then register
-exactly fourteen page tools through `document.modelContext.registerTool` without a
-second prompt. Only **Disconnect Agent** revokes the saved connection:
+logout/login, and future visits. Eligible signed-in owner pages register the
+granted catalog through `document.modelContext.registerTool`. The legacy v1
+grant contains these fourteen tools without repeated per-tool prompts. Only
+**Disconnect Agent** revokes the saved connection:
 
 - `inspect_current_life_link`
 - `search_my_life_links`
@@ -95,6 +101,24 @@ second prompt. Only **Disconnect Agent** revokes the saved connection:
 - `prepare_life_link_change`
 - `apply_life_link_change`
 - `read_life_link_attachment`
+
+An explicit owner upgrade to **Calendar v2** adds seven tools, for twenty-one
+total; an existing v1 connection is never silently upgraded:
+
+- `list_my_calendars`
+- `query_my_calendar_events`
+- `inspect_calendar_event`
+- `create_calendar_event`
+- `update_calendar_event`
+- `prepare_calendar_event_deletion`
+- `apply_calendar_event_deletion`
+
+The Calendar tools share native/provider-discriminated routes, exact calendar
+and event identities, revision checks and the same visible controller. External
+calendars start at **No access** for agents; the owner may select read or write
+within provider capabilities. Visibility does not grant access. Deleting a
+provider event changes its original and requires one app-observed confirmation;
+it does not use native-event restore. Routine projections remain read-only.
 
 The tools reuse the ordinary application controller and authorization paths.
 They create visible page effects, reject stale or unauthorized context, and do
@@ -124,12 +148,16 @@ continuation. It does not upload attachments or provide arbitrary binary
 transport.
 Find Mode prepares the target; the human performs the scan.
 
-Together these fourteen tools are the curated logical page-bound WebMCP
+These v1/v2 grants are profiles of one curated logical page-bound WebMCP
 interface registered by an eligible live owner page. They are not a remote or
 server MCP endpoint, background/delegated identity, or guarantee that any named
 host implements the page registration API.
 
 ## Run locally
+
+Use Node.js **20.19.0 or newer** and the pinned pnpm 10.14.0 workspace. The
+Google OAuth implementation pins `google-auth-library` **10.9.1** and preserves
+that Node runtime floor.
 
 ```bash
 pnpm install --frozen-lockfile
@@ -216,14 +244,45 @@ qualification.
 `webmcp-field-ledger-family-v3` fixture; a predecessor runtime identity is not
 successor qualification.
 
+## External calendar setup and support status
+
+Outlook uses Life Links' own Microsoft application, certificate-backed MSAL
+authorization, encrypted PostgreSQL token custody and exact calendar selection.
+The deployed Outlook baseline has bounded human/agent, permission, retry,
+disconnect/reconnect and ordinary continued-access refresh proof. The browser
+host can time out waiting for a deletion dialog; confirming in the app and
+retrying the same preview reconciles the operation. Uninterrupted confirmation
+transport and universal provider/account compatibility are not claimed.
+
+Google source support uses the same authorization owner, provider gateway,
+manager and twenty-one-tool catalog. Connect and reconnect select the exact
+provider; Google redirects to its own sign-in host. Its dedicated Web OAuth
+client and runtime configuration are not yet created/configured, and its live
+product roundtrip is not yet qualified. Source support is not a live deployment
+claim. Both optional providers are disabled in `.env.example` by default.
+
+To configure an external provider, use PostgreSQL and the same HTTPS origin as
+`QR_BASE_URL`. Register the provider-specific callback shown in `.env.example`,
+supply only that application's private runtime credentials, and preserve the
+32-byte Calendar encryption key for existing encrypted data. Google requests
+`openid`, `email`, `https://www.googleapis.com/auth/calendar.calendarlist.readonly`
+and `https://www.googleapis.com/auth/calendar.events`; it does not use Gmail,
+administrator/DWD access or another client's refresh credentials. Discovery and
+selection do not themselves authorize agents. Disconnect removes Life Links'
+local access/saved credentials without deleting provider events; provider-side
+application consent may remain.
+
 ## Third-party software
 
-The prior production dependency inventory, selected dual-license options,
-upstream attributions, and license terms are recorded in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Its qualification warning is
-current: the notice body has not yet been regenerated for the successor's final
-production lockfile/native closure, so it does not establish redistribution
-eligibility.
+The retained production inventories, selected dual-license options, upstream
+attributions and license terms are recorded in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The added
+`google-auth-library@10.9.1` dependency delta is reconciled: all 15 added versions
+and licenses match the frozen production inventory from cloud run `33626746438`,
+and their upstream attributions are retained in the Google appendix. The notice
+file binds the exact lock and inventory digests. Earlier inventory/native
+evidence retains its exact scope; this delta check does not claim a new audit
+of the complete historical dependency closure.
 
 ## License
 
@@ -249,15 +308,12 @@ competition registration, terms acceptance, judge credentials, and final
 submission remain separately verifiable; this source tree does not infer those
 events merely because the implementation or documentation exists.
 
-The Field Ledger successor passes local controlled-host, native-Chrome, and
-complete v3 family-journey verification with all fourteen tools and the 2 KB
-output bound; it has not been deployed in this workstream. BC-270 qualification
-is in progress: the clean projected clone's frozen install, selected
-unit/contract/build checks, production dependency audit, browser, Postgres, and
-interface execution pass at their recorded scopes. Release qualification is
-still blocked on exact `@napi-rs/canvas` native Rust/Skia source/license closure.
-Exact Debian corresponding-source retention is complete at its recorded
-image-bound/offline-verified scope. The recorded BC-180 public/hosted
-evidence belongs to the preceding five-tool family-adventure release, not this
-fourteen-tool successor. Publication, hosted qualification, and submission
-acceptance remain separate gates; BC-280 has not started.
+The Field Ledger, Routines and native Calendar/Outlook baseline has been publicly
+released and deployed. Earlier family-journey/native-Chrome results and later
+Calendar/Outlook checks remain tied to their exact source and release scope;
+they do not automatically qualify every host or a new provider. Google is the
+current additive source candidate, with own-client setup, cloud/deployment and
+live product qualification still pending. The admitted native source/license
+evidence is retained; the former duplicate Rust/Skia reconstruction is not a
+release prerequisite. Screenshots, video, final supported-host presentation and
+submission acceptance remain separately verifiable work.

@@ -4,7 +4,7 @@ import { CalendarDomainError, type CalendarProviderAvailability } from "@life-li
 import { CalendarProviderGateway, CalendarProviderGatewayError, calendarProviderLocalCalendarId } from "./calendar-provider-gateway.js";
 import type { Logger } from "./logger.js";
 import { assertHumanCalendarActor } from "./store.js";
-import { CalendarAuthorizationError, type CalendarAuthorizationService } from "./calendar-authorization.js";
+import { CalendarAuthorizationError, calendarAuthorizationProvider, type CalendarAuthorizationService } from "./calendar-authorization.js";
 
 export const CALENDAR_PROVIDER_AVAILABILITY: readonly CalendarProviderAvailability[] = [
   { providerKey: "google", displayName: "Google Calendar", authorizationAvailable: false, reason: "authorization_not_configured" },
@@ -52,7 +52,7 @@ export function createCalendarConnectionRouter(deps: {
 
   router.get("/api/calendar-providers", deps.requireAuthenticated, route(async (_request, response) => {
     response.json({ providers: CALENDAR_PROVIDER_AVAILABILITY.map((provider) =>
-      provider.providerKey === "microsoft" && deps.authorization
+      deps.authorization?.supportsProvider(provider.providerKey)
         ? { providerKey: provider.providerKey, displayName: provider.displayName, authorizationAvailable: true }
         : provider) });
   }));
@@ -66,17 +66,19 @@ export function createCalendarConnectionRouter(deps: {
     if (!identity) throw new CalendarAuthorizationError("session_expired");
     return identity;
   };
-  router.post("/api/calendar-providers/microsoft/authorize", deps.requireAuthenticated, route(async (request, response, ownerId) => {
+  const beginAuthorization = (provider: "microsoft" | "google") => route(async (request, response, ownerId) => {
     if (!plainObject(request.body) || Object.keys(request.body).some((key) => key !== "reconnectConnectionId")) {
       throw new CalendarAuthorizationError("authorization_failed");
     }
     response.setHeader("Cache-Control", "no-store");
     response.json(await authorization().start(ownerId, session(request), request.body.reconnectConnectionId === undefined
-      ? undefined : routeId(request.body.reconnectConnectionId)));
-  }));
+      ? undefined : routeId(request.body.reconnectConnectionId), provider));
+  });
+  router.post("/api/calendar-providers/microsoft/authorize", deps.requireAuthenticated, beginAuthorization("microsoft"));
+  router.post("/api/calendar-providers/google/authorize", deps.requireAuthenticated, beginAuthorization("google"));
   // Top-level GET retains the SameSite=Lax owner cookie. The one-use state is
   // bound to that exact initiating authenticated session, not merely an owner ID.
-  router.get("/api/calendar-providers/microsoft/callback", async (request, response) => {
+  const finishAuthorization = (provider: "microsoft" | "google"): RequestHandler => async (request, response) => {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Referrer-Policy", "no-referrer");
     try {
@@ -84,7 +86,7 @@ export function createCalendarConnectionRouter(deps: {
       if (!ownerId) throw new CalendarAuthorizationError("session_expired");
       const value = (key: string) => typeof request.query[key] === "string" ? request.query[key] as string : undefined;
       const id = await authorization().callback({ ownerId, sessionId: session(request), state: value("state") ?? "",
-        code: value("code"), error: value("error") });
+        code: value("code"), error: value("error"), provider });
       response.redirect(303, `/calendar?calendarAuthorization=${encodeURIComponent(id)}`);
     } catch (error) {
       const code = error instanceof CalendarAuthorizationError && ["cancelled", "session_expired"].includes(error.code)
@@ -92,7 +94,9 @@ export function createCalendarConnectionRouter(deps: {
       deps.logger.warn("life_links.calendar_authorization.rejected", { msg: "Calendar authorization did not complete", reason: code });
       response.redirect(303, `/calendar?calendarConnectionError=${code}`);
     }
-  });
+  };
+  router.get("/api/calendar-providers/microsoft/callback", finishAuthorization("microsoft"));
+  router.get("/api/calendar-providers/google/callback", finishAuthorization("google"));
   router.get("/api/calendar-authorizations/:authorizationId/calendars", deps.requireAuthenticated, route(async (request, response, ownerId) => {
     response.setHeader("Cache-Control", "no-store");
     response.json(await authorization().discover(ownerId, session(request), routeId(request.params.authorizationId)));
@@ -107,7 +111,7 @@ export function createCalendarConnectionRouter(deps: {
   }));
   router.get("/api/calendar-connections/:connectionId/available-calendars", deps.requireAuthenticated, route(async (request, response, ownerId) => {
     const discovery = await deps.gateway.discoverConnectionCalendars({ ownerId, connectionId: routeId(request.params.connectionId) });
-    response.json({ providerKey: "microsoft", providerAccountId: discovery.providerAccountId,
+    response.json({ providerKey: calendarAuthorizationProvider(discovery.providerKey), providerAccountId: discovery.providerAccountId,
       calendars: discovery.calendars.map((calendar) => ({ ...calendar, isDefault: calendar.isDefault === true })) });
   }));
   router.post("/api/calendar-connections/:connectionId/select", deps.requireAuthenticated, route(async (request, response, ownerId) => {
@@ -144,7 +148,7 @@ export function createCalendarConnectionRouter(deps: {
   router.get("/api/calendar-connections", deps.requireAuthenticated, route(async (_request, response, ownerId) => {
     const connections = await deps.gateway.listConnections(ownerId);
     response.json({ connections: await Promise.all(connections.map(async (connection) => ({ ...connection,
-      ...(deps.authorization && connection.providerKey === "microsoft-graph-calendar" ? {
+      ...(deps.authorization && ["microsoft-graph-calendar", "google-calendar"].includes(connection.providerKey) ? {
         credentialStatus: await deps.authorization.credentialStatus(ownerId, connection.connectionId)
       } : {})
     }))) });

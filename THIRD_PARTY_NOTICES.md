@@ -1,27 +1,25 @@
 # Third-Party Notices
 
-## Source successor qualification boundary
+## Current source-candidate notice boundary
 
-The audited JavaScript inventory below belongs to the prior release lockfile,
-not the expanded attachment successor. The API Dockerfile now also builds
-pinned FFmpeg 9.0.1 and whisper.cpp 1.8.6 with a local multilingual base model,
-and installs the specified Debian LibreOffice/font packages. The image retains
-FFmpeg/whisper.cpp license files and corresponding source archives under
-`/opt/life-links`, and Debian package notices under `/usr/share/doc`.
-The Dockerfile records their build configuration and exact source/model hashes.
-BC-270 has regenerated and inspected the successor production dependency
-closure, but this notice body has intentionally not been replaced while exact
-redistribution closure remains unresolved. Before publishing a successor source
-release or redistributing its image, regenerate the notice body from the final
-frozen production lockfile and close the remaining blocker: bind the shipped
-`@napi-rs/canvas` native binary to its exact applicable source/license closure,
-including Rust/Skia inputs. Exact corresponding Debian source packages for the
-image's installed binary-package set are retained in the recorded image-bound
-bundle and pass strict network-free verification. Runtime notices under
-`/usr/share/doc` would not by themselves have constituted that retention.
-BC-270 therefore remains in progress and release-blocked. Neither
-this warning, the prior inventory below, nor a successful local build establishes
-release eligibility or redistribution clearance.
+The retained JavaScript inventory and Outlook additions below keep their exact
+recorded scope. The new Google source candidate pins `google-auth-library@10.9.1`.
+The [Google dependency appendix](#google-authentication-dependency-additions)
+reconciles all 15 added package versions and their installed upstream notices
+with the production inventory from cloud run `33626746438`, source
+`61a5a5e1da132a4dc90fdfd7fe9bad7c08a6c2fc`. The frozen standalone lock SHA-256 is
+`fdbff87fffbdf277502d689ac0c9cf0ebebe2438dfb03dba6adb565eef723cc2`;
+the retained `pnpm licenses list --prod --json` output SHA-256 is
+`69697aef6c2d4ace9666ba4060132b58ad941c0c23baa1a21513966aa707b29c`.
+All 15 exact versions and declared licenses match. This closes the Google-added
+dependency-notice delta, not a fresh audit of the complete historical closure.
+
+Previously admitted native evidence is retained: applicable canvas/Rust/Skia
+source and notices, image-bound Debian corresponding sources, and the packaged
+FFmpeg/whisper.cpp license/source material. The former duplicate native rebuild
+is not a release prerequisite. This Google inventory task neither reruns nor
+supersedes that evidence, and the historical inventory below does not by itself
+establish new-candidate notice completeness or legal clearance.
 
 ## Previously audited JavaScript closure
 
@@ -779,6 +777,8 @@ Redistribution and use in source and binary forms, with or without modification,
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+<a id="apache-license-2-0-terms"></a>
+
 ### ecdsa-sig-formatter@1.0.11 (Apache-2.0)
 
 Apache License
@@ -1057,3 +1057,115 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
 LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## Google authentication dependency additions
+
+This is the bounded Google source-candidate delta: 15 added package versions,
+11 declaring MIT and four declaring Apache-2.0. Each version and license was
+checked against its installed `package.json` and bundled license text. The
+local installation is flat, with `node-fetch@3.3.2` and
+`data-uri-to-buffer@4.0.1` nested under `gaxios`; different top-level versions
+were not substituted. No existing package version, inventory, or native notice
+is superseded by this appendix. Each of these 15 package versions also appears
+exactly once with the same license in the cloud frozen production inventory
+identified above. This exact-delta check does not re-audit the unrelated
+historical inventory.
+
+### MIT package notices
+
+The complete [common MIT terms](#common-mit-terms) above apply to all 11
+packages below together with their following package-specific copyright
+notices. Source filenames are relative to each exact package distribution.
+The `data-uri-to-buffer` distribution has no separate LICENSE file; its
+`README.md` includes the complete MIT license and copyright notice instead.
+
+| Exact package version | Upstream notice source | Copyright notice |
+| --- | --- | --- |
+| `agent-base@7.1.4` | `LICENSE` | Copyright (c) 2013 Nathan Rajlich &lt;nathan@tootallnate.net&gt; |
+| `bignumber.js@9.3.1` | `LICENCE.md` | Copyright © `<2025>` `Michael Mclaughlin` |
+| `data-uri-to-buffer@4.0.1` | `README.md`, License section | Copyright (c) 2014 Nathan Rajlich &lt;nathan@tootallnate.net&gt; |
+| `extend@3.0.2` | `LICENSE` | Copyright (c) 2014 Stefan Thomas |
+| `fetch-blob@3.2.0` | `LICENSE` | Copyright (c) 2019 David Frank |
+| `formdata-polyfill@4.0.10` | `LICENSE` | Copyright (c) 2016 Jimmy Karl Roland Wärting |
+| `https-proxy-agent@7.0.6` | `LICENSE` | Copyright (c) 2013 Nathan Rajlich &lt;nathan@tootallnate.net&gt; |
+| `json-bigint@1.0.0` | `LICENSE` | Copyright (c) 2013 Andrey Sidorov |
+| `node-domexception@1.0.0` | `LICENSE` | Copyright (c) 2021 Jimmy Wärting |
+| `node-fetch@3.3.2` | `LICENSE.md` | Copyright (c) 2016 - 2020 Node Fetch Team |
+| `web-streams-polyfill@3.3.3` | `LICENSE` | Copyright (c) 2024 Mattias Buelens; Copyright (c) 2016 Diwank Singh Tomer |
+
+### Apache-2.0 package notices
+
+| Exact package version | Upstream license source |
+| --- | --- |
+| `gaxios@7.3.1` | `LICENSE` |
+| `gcp-metadata@8.1.2` | `LICENSE` |
+| `google-auth-library@10.9.1` | `LICENSE` |
+| `google-logging-utils@1.1.3` | `LICENSE` |
+
+These four upstream LICENSE files are byte-identical, each with SHA-256
+`cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30`.
+Their complete Apache License 2.0 terms, sections 1–9, match the terms already
+reproduced under [ecdsa-sig-formatter](#apache-license-2-0-terms)
+after whitespace normalization. Those terms are reused here, not the separate
+D2L attribution in that package's application example. No separate NOTICE
+file was found in these four installed package distributions.
+
+The following copyright notices occur in their distributed JavaScript source
+headers and are retained here with each package's identity:
+
+`gaxios@7.3.1`:
+
+```text
+Copyright 2018 Google LLC
+Copyright 2019 Google LLC
+Copyright 2019 Google, LLC
+Copyright 2024 Google LLC
+```
+
+`gcp-metadata@8.1.2`:
+
+```text
+Copyright 2018 Google LLC
+Copyright 2022 Google LLC
+```
+
+`google-auth-library@10.9.1`:
+
+```text
+Copyright 2012 Google LLC
+Copyright 2013 Google LLC
+Copyright 2014 Google LLC
+Copyright 2015 Google LLC
+Copyright 2017 Google LLC
+Copyright 2018 Google LLC
+Copyright 2019 Google LLC
+Copyright 2020 Google LLC
+Copyright 2021 Google LLC
+Copyright 2022 Google LLC
+Copyright 2023 Google LLC
+Copyright 2024 Google LLC
+Copyright 2025 Google LLC
+Copyright 2026 Google LLC
+```
+
+`google-logging-utils@1.1.3`:
+
+```text
+Copyright 2021-2024 Google LLC
+Copyright 2022-2024 Google LLC
+Copyright 2024 Google LLC
+```
+
+```text
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```

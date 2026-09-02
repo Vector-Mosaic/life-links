@@ -23,6 +23,7 @@ const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-
 
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
   "POST /api/calendar-providers/microsoft/authorize",
+  "POST /api/calendar-providers/google/authorize",
   "GET /api/calendar-authorizations/{authorizationId}/calendars",
   "POST /api/calendar-authorizations/{authorizationId}/complete",
   "DELETE /api/calendar-authorizations/{authorizationId}",
@@ -487,14 +488,14 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(105);
+    expect(published).toHaveLength(107);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
     expect(schemas).not.toHaveProperty("Project");
     expect(objectValue(objectValue(schemas.Link, "Link").properties, "Link properties")).not.toHaveProperty("projectId");
     const operationIds = [...contractOperations(document).values()].map((operation) => operation.operationId);
-    expect(new Set(operationIds).size).toBe(105);
+    expect(new Set(operationIds).size).toBe(published.length);
     expect(operationIds.every((operationId) => typeof operationId === "string" && operationId.length > 0)).toBe(true);
   });
 
@@ -891,11 +892,11 @@ describe("Life Links OpenAPI v1", () => {
       key.includes("/calendar")
     );
 
-    expect(calendarOperations).toHaveLength(25);
+    expect(calendarOperations).toHaveLength(26);
     for (const key of calendarOperations) {
       const operation = operations.get(key);
       expect(operation, key).toBeTruthy();
-      if (key.includes("/calendar-authorizations/") || key === "POST /api/calendar-providers/microsoft/authorize") {
+      if (key.includes("/calendar-authorizations/") || /^POST \/api\/calendar-providers\/(microsoft|google)\/authorize$/.test(key)) {
         expect(operation?.security, `${key} requires the initiating browser session`).toEqual([{ CookieSession: [] }]);
       } else expect(operation?.security, `${key} must inherit owner session security`).toBeUndefined();
       expect(objectValue(operation?.responses, `${key} responses`)).toHaveProperty("401");

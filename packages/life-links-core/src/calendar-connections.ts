@@ -46,7 +46,7 @@ export type CalendarProviderAvailability = {
 
 /** Selection data only; authorization codes, PKCE material and tokens remain server-private. */
 export type CalendarAuthorizationDiscovery = {
-  providerKey: "microsoft";
+  providerKey: "microsoft" | "google";
   providerAccountId: string;
   calendars: Array<{
     providerCalendarId: string;

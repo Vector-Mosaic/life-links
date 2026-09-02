@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 
 import {
+  assertStandaloneProviderWrite,
+  CalendarProviderGatewayError,
   ProviderCursorExpiredError,
   ProviderRevisionConflictError,
   ProviderTransientError,
@@ -31,6 +33,7 @@ type GoogleCalendarEntry = {
   summaryOverride?: unknown;
   accessRole?: unknown;
   deleted?: unknown;
+  primary?: unknown;
 };
 
 type GoogleEventDateTime = {
@@ -49,8 +52,14 @@ type GoogleEvent = {
   start?: unknown;
   end?: unknown;
   recurringEventId?: unknown;
+  recurrence?: unknown;
+  originalStartTime?: unknown;
   attendees?: unknown;
+  attendeesOmitted?: unknown;
   conferenceData?: unknown;
+  hangoutLink?: unknown;
+  eventType?: unknown;
+  locked?: unknown;
   extendedProperties?: unknown;
 };
 
@@ -103,6 +112,7 @@ export class GoogleCalendarProviderAdapter implements CalendarProviderAdapter {
         calendars.push({
           providerCalendarId,
           displayName,
+          isDefault: entry.primary === true,
           capabilities: googleCapabilities(entry.accessRole)
         });
         if (calendars.length > MAX_DISCOVERY_CALENDARS) {
@@ -211,6 +221,7 @@ export class GoogleCalendarProviderAdapter implements CalendarProviderAdapter {
       expectedProviderAccountId: input.providerAccountId
     });
     assertWritableStatus(input.content);
+    assertStandaloneProviderWrite(input.content);
     const providerEventId = deterministicGoogleEventId(input.commandId);
     const body = {
       id: providerEventId,
@@ -223,7 +234,7 @@ export class GoogleCalendarProviderAdapter implements CalendarProviderAdapter {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body)
-    }, { allowedStatuses: [409] });
+    }, { allowedStatuses: [409], authorizeDispatch: input.authorizeDispatch });
     if (response.status === 409) {
       const existing = await this.#readRawEvent(credential.accessToken, input.providerCalendarId, providerEventId);
       const privateProperties = isRecord(existing?.extendedProperties) && isRecord(existing.extendedProperties.private)
@@ -246,21 +257,30 @@ export class GoogleCalendarProviderAdapter implements CalendarProviderAdapter {
       expectedProviderAccountId: input.providerAccountId
     });
     assertWritableStatus(input.content);
+    assertStandaloneProviderWrite(input.content);
     const current = await this.#readRawEvent(credential.accessToken, input.providerCalendarId, input.providerEventId);
     if (!current || current.status === "cancelled" || current.status === "canceled") {
       throw new ProviderRevisionConflictError(null);
     }
+    assertGoogleWriteEvidence(current);
+    const currentContent = mapGoogleEvent(current).content;
+    assertStandaloneProviderWrite(currentContent);
     const currentRevision = googleRevision(current, input.providerEventId);
     if (currentRevision !== input.expectedProviderRevision) {
       throw new ProviderRevisionConflictError(currentRevision);
+    }
+    const patch = toGoogleEventPatch(currentContent, input.content);
+    if (!Object.keys(patch).length) {
+      await input.authorizeDispatch?.();
+      return;
     }
     const url = new URL(`${this.#apiBase}/calendars/${encodeURIComponent(input.providerCalendarId)}/events/${encodeURIComponent(input.providerEventId)}`);
     url.searchParams.set("sendUpdates", "none");
     const response = await this.#request(url, credential.accessToken, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", "If-Match": input.expectedProviderRevision },
-      body: JSON.stringify(toGoogleEventBody(input.content))
-    }, { allowedStatuses: [404, 412] });
+      body: JSON.stringify(patch)
+    }, { allowedStatuses: [404, 412], authorizeDispatch: input.authorizeDispatch });
     if (response.status === 404 || response.status === 412) {
       throw new ProviderRevisionConflictError(await this.#currentRevision(
         credential.accessToken,
@@ -280,6 +300,8 @@ export class GoogleCalendarProviderAdapter implements CalendarProviderAdapter {
     if (!current || current.status === "cancelled" || current.status === "canceled") {
       throw new ProviderRevisionConflictError(null);
     }
+    assertGoogleWriteEvidence(current);
+    assertStandaloneProviderWrite(mapGoogleEvent(current).content);
     const currentRevision = googleRevision(current, input.providerEventId);
     if (currentRevision !== input.expectedProviderRevision) {
       throw new ProviderRevisionConflictError(currentRevision);
@@ -289,7 +311,7 @@ export class GoogleCalendarProviderAdapter implements CalendarProviderAdapter {
     const response = await this.#request(url, credential.accessToken, {
       method: "DELETE",
       headers: { "If-Match": input.expectedProviderRevision }
-    }, { allowedStatuses: [404, 412] });
+    }, { allowedStatuses: [404, 412], authorizeDispatch: input.authorizeDispatch });
     if (response.status === 404 || response.status === 412) {
       throw new ProviderRevisionConflictError(await this.#currentRevision(
         credential.accessToken,
@@ -311,7 +333,9 @@ export class GoogleCalendarProviderAdapter implements CalendarProviderAdapter {
     const url = `${this.#apiBase}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`;
     const response = await this.#request(url, accessToken, undefined, { allowedStatuses: [404] });
     if (response.status === 404) return null;
-    return await jsonObject(response) as GoogleEvent;
+    const event = await jsonObject(response) as GoogleEvent;
+    if (requiredString(event.id) !== eventId) throw malformedGoogleResponse();
+    return event;
   }
 
   async #currentRevision(accessToken: string, calendarId: string, eventId: string): Promise<string | null> {
@@ -323,13 +347,16 @@ export class GoogleCalendarProviderAdapter implements CalendarProviderAdapter {
     input: string | URL,
     accessToken: string,
     init: RequestInit = {},
-    options: { allowedStatuses?: number[]; cursorRequest?: boolean } = {}
+    options: { allowedStatuses?: number[]; cursorRequest?: boolean; authorizeDispatch?: () => Promise<void> } = {}
   ): Promise<Response> {
     let response: Response;
+    const headers = bearerHeaders(accessToken);
+    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+    // Recheck the current grant/connection after credential and source-read
+    // awaits, immediately before the actual mutation. Preserve denial errors.
+    await options.authorizeDispatch?.();
     try {
-      const headers = bearerHeaders(accessToken);
-      new Headers(init.headers).forEach((value, key) => headers.set(key, value));
-      response = await this.#fetch(input, { ...init, headers });
+      response = await this.#fetch(input, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(20_000) });
     } catch {
       throw new ProviderTransientError("Google Calendar did not complete the request reliably.");
     }
@@ -378,6 +405,11 @@ function mapGoogleEvent(event: GoogleEvent): ProviderEventSnapshot {
       location: optionalString(event.location),
       span,
       providerSeriesId: optionalString(event.recurringEventId),
+      providerRecurrence: googleRecurrence(event),
+      ...(event.attendeesOmitted === true ? {} : {
+        outboundEffects: { attendeeCount: array(event.attendees).length,
+          hasOnlineMeeting: event.conferenceData != null || optionalString(event.hangoutLink) !== null }
+      }),
       status: event.status === "tentative" ? "tentative" : event.status === "cancelled" || event.status === "canceled" ? "canceled" : "confirmed"
     }
   };
@@ -397,6 +429,46 @@ function toGoogleEventBody(content: ProviderEventContent): Record<string, unknow
     status: content.status === "tentative" ? "tentative" : "confirmed",
     ...span
   };
+}
+
+function toGoogleEventPatch(current: ProviderEventContent, intended: ProviderEventContent): Record<string, unknown> {
+  const body = toGoogleEventBody(intended);
+  const patch: Record<string, unknown> = {};
+  if (current.title !== intended.title) patch.summary = body.summary;
+  if ((current.description ?? "") !== (intended.description ?? "")) patch.description = body.description;
+  if ((current.location ?? "") !== (intended.location ?? "")) patch.location = body.location;
+  if (current.status !== intended.status) patch.status = body.status;
+  if (current.span.kind !== intended.span.kind) {
+    patch.start = body.start;
+    patch.end = body.end;
+  } else if (current.span.kind === "timed" && intended.span.kind === "timed") {
+    // Source-zone/local mirrors are provenance. Unchanged instants must not be
+    // rewritten by a title-only edit (including fractional source seconds).
+    if (Date.parse(current.span.startUtc) !== Date.parse(intended.span.startUtc)) patch.start = body.start;
+    if (Date.parse(current.span.endUtc) !== Date.parse(intended.span.endUtc)) patch.end = body.end;
+  } else if (current.span.kind === "all_day" && intended.span.kind === "all_day") {
+    if (current.span.startDate !== intended.span.startDate) patch.start = body.start;
+    if (current.span.endDateExclusive !== intended.span.endDateExclusive) patch.end = body.end;
+  }
+  return patch;
+}
+
+function googleRecurrence(event: GoogleEvent): NonNullable<ProviderEventContent["providerRecurrence"]> {
+  const recurringEventId = optionalString(event.recurringEventId);
+  if (recurringEventId) {
+    const original = eventDateTime(event.originalStartTime);
+    // Google exposes recurring instances, including modified instances, through
+    // recurringEventId/originalStartTime rather than a separate exception flag.
+    return { kind: "occurrence", originalStartUtc: original.dateTime ? utcInstant(original.dateTime) : null };
+  }
+  return { kind: array(event.recurrence).length ? "series_master" : "single", originalStartUtc: null };
+}
+
+function assertGoogleWriteEvidence(event: GoogleEvent): void {
+  if ((event.attendeesOmitted !== undefined && event.attendeesOmitted !== false)
+    || event.locked === true || (event.eventType !== undefined && event.eventType !== "default")) {
+    throw new CalendarProviderGatewayError("provider_event_read_only", "The event's ordinary invitation-free source state is not established.");
+  }
 }
 
 function googleTimedBoundary(utc: string, local: string | null, timeZone: string | null) {

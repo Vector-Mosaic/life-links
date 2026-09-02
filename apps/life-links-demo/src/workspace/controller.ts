@@ -70,6 +70,7 @@ import {
   updateProviderCalendarEvent,
   deleteProviderCalendarEvent,
   authorizeMicrosoftCalendar,
+  authorizeGoogleCalendar,
   getCalendarAuthorization,
   completeCalendarAuthorization,
   cancelCalendarAuthorization,
@@ -232,6 +233,7 @@ export type LifeLinksWorkspaceApi = {
   updateProviderCalendarEvent: typeof updateProviderCalendarEvent;
   deleteProviderCalendarEvent: typeof deleteProviderCalendarEvent;
   authorizeMicrosoftCalendar: typeof authorizeMicrosoftCalendar;
+  authorizeGoogleCalendar: typeof authorizeGoogleCalendar;
   getCalendarAuthorization: typeof getCalendarAuthorization;
   completeCalendarAuthorization: typeof completeCalendarAuthorization;
   cancelCalendarAuthorization: typeof cancelCalendarAuthorization;
@@ -332,6 +334,7 @@ const defaultApi: LifeLinksWorkspaceApi = {
   updateProviderCalendarEvent,
   deleteProviderCalendarEvent,
   authorizeMicrosoftCalendar,
+  authorizeGoogleCalendar,
   getCalendarAuthorization,
   completeCalendarAuthorization,
   cancelCalendarAuthorization,
@@ -1156,11 +1159,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const authorizationId = returnParams.get("calendarAuthorization");
     const authorizationError = returnParams.get("calendarConnectionError");
     if (authorizationId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authorizationId)) {
-      this.updateCalendarWorkspace({ connectionFlow: { authorizationId, connectionId: null, discovery: null, loading: false, error: "", feedback: "Outlook authorization returned. Choose the exact calendars to connect." } });
+      this.updateCalendarWorkspace({ connectionFlow: { authorizationId, connectionId: null, discovery: null, loading: false, error: "", feedback: "Calendar authorization returned. Choose the exact calendars to connect." } });
     } else if (authorizationError) {
-      const feedback = authorizationError === "cancelled" ? "Outlook connection was canceled. No calendars were added."
-        : authorizationError === "session_expired" ? "The Outlook authorization session expired. Start Connect again."
-          : "Outlook authorization could not be completed. Start Connect again.";
+      const feedback = authorizationError === "cancelled" ? "Calendar connection was canceled. No calendars were added."
+        : authorizationError === "session_expired" ? "The Calendar authorization session expired. Start Connect again."
+          : "Calendar authorization could not be completed. Start Connect again.";
       this.updateCalendarWorkspace({ connectionFlow: { authorizationId: null, connectionId: null, discovery: null, loading: false, error: feedback, feedback: "" } });
     }
     const navigation = ++this.navigationRevision;
@@ -1454,13 +1457,25 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async beginMicrosoftCalendarAuthorization(reconnectConnectionId?: string, signal?: AbortSignal): Promise<string> {
+    return this.beginCalendarProviderAuthorization("microsoft", reconnectConnectionId, signal);
+  }
+
+  async beginGoogleCalendarAuthorization(reconnectConnectionId?: string, signal?: AbortSignal): Promise<string> {
+    return this.beginCalendarProviderAuthorization("google", reconnectConnectionId, signal);
+  }
+
+  private async beginCalendarProviderAuthorization(provider: "microsoft" | "google", reconnectConnectionId?: string, signal?: AbortSignal): Promise<string> {
     const sameOwner = this.captureCalendarOwner();
-    const response = await this.api.authorizeMicrosoftCalendar(reconnectConnectionId, signal);
+    signal?.throwIfAborted();
+    const response = provider === "microsoft"
+      ? await this.api.authorizeMicrosoftCalendar(reconnectConnectionId, signal)
+      : await this.api.authorizeGoogleCalendar(reconnectConnectionId, signal);
     signal?.throwIfAborted();
     if (!sameOwner()) throw new Error("The signed-in account changed.");
     const destination = new URL(response.authorizationUrl);
-    if (destination.protocol !== "https:" || destination.hostname !== "login.microsoftonline.com" || destination.username || destination.password) {
-      throw new Error("The server returned an unsupported Outlook sign-in destination.");
+    const expectedHost = provider === "microsoft" ? "login.microsoftonline.com" : "accounts.google.com";
+    if (destination.protocol !== "https:" || destination.hostname !== expectedHost || destination.port || destination.username || destination.password) {
+      throw new Error(`The server returned an unsupported ${provider === "microsoft" ? "Outlook" : "Google"} sign-in destination.`);
     }
     return destination.href;
   }

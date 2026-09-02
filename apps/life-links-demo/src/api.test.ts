@@ -11,7 +11,7 @@ import {
   listRoutineOccurrences, materializeRoutineOccurrences, putRoutineRunStepResult,
   restoreCalendar, restoreCalendarEvent, updateCalendar, updateCalendarEvent,
   listCalendarProviders, listCalendarConnections, listConnectedCalendars, updateConnectedCalendar, disconnectCalendarConnection,
-  authorizeMicrosoftCalendar, getCalendarAuthorization, completeCalendarAuthorization, cancelCalendarAuthorization,
+  authorizeMicrosoftCalendar, authorizeGoogleCalendar, getCalendarAuthorization, completeCalendarAuthorization, cancelCalendarAuthorization,
   discoverConnectedCalendars, selectConnectedCalendars, refreshCalendarConnection,
   listProviderCalendarEvents, getProviderCalendarEvent, createProviderCalendarEvent, updateProviderCalendarEvent, deleteProviderCalendarEvent
 } from "./api";
@@ -21,6 +21,21 @@ import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedIm
 describe("Life Links API error normalization", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("routes Google authorization and exact reconnect through the shared human-only client flow", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=opaque" }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const abort = new AbortController();
+    await authorizeGoogleCalendar(undefined, abort.signal);
+    await authorizeGoogleCalendar("exact-google-connection", abort.signal);
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([path]) => path)).toEqual(["/api/calendar-providers/google/authorize", "/api/calendar-providers/google/authorize"]);
+    expect(calls.map(([, init]) => JSON.parse(init.body as string))).toEqual([{}, { reconnectConnectionId: "exact-google-connection" }]);
+    for (const [, init] of calls) {
+      expect(init).toMatchObject({ method: "POST", credentials: "include", signal: abort.signal });
+      expect(new Headers(init.headers).has("X-Life-Links-Actor")).toBe(false);
+    }
   });
 
   it("routes Outlook authorization separately from exact provider event authority without credentials or agent settings", async () => {

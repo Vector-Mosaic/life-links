@@ -598,6 +598,12 @@ export function authorizeMicrosoftCalendar(reconnectConnectionId?: string, signa
   });
 }
 
+export function authorizeGoogleCalendar(reconnectConnectionId?: string, signal?: AbortSignal) {
+  return apiFetch<{ authorizationUrl: string }>("/api/calendar-providers/google/authorize", {
+    method: "POST", body: JSON.stringify(reconnectConnectionId ? { reconnectConnectionId } : {}), signal
+  });
+}
+
 export function getCalendarAuthorization(authorizationId: string, signal?: AbortSignal) {
   return apiFetch<CalendarAuthorizationDiscovery>(`/api/calendar-authorizations/${encodeURIComponent(authorizationId)}/calendars`, { signal });
 }

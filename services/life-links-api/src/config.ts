@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_QR_BASE_URL } from "@life-links/core";
 import { attachmentRuntime, type AttachmentNativeRuntime } from "./attachment-native-runtime.js";
 import type { MicrosoftCalendarAuthConfig } from "./calendar-microsoft-auth.js";
+import type { GoogleCalendarAuthConfig } from "./calendar-google-auth.js";
 
 export type StoreMode = "postgres" | "memory";
 export type SeedProfile = "legacy-demo" | "competition";
@@ -45,6 +46,7 @@ export type LifeLinksConfig = {
   rateLimitClaimMax: number;
   rateLimitBatchMax: number;
   microsoftCalendar?: MicrosoftCalendarAuthConfig & { encryptionKey: string };
+  googleCalendar?: GoogleCalendarAuthConfig & { encryptionKey: string };
 };
 
 const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -87,6 +89,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
 
   return {
     microsoftCalendar: readMicrosoftCalendarConfig(env, storeMode),
+    googleCalendar: readGoogleCalendarConfig(env, storeMode),
     attachmentRuntime: attachmentRuntime(env),
     host: env.HOST ?? "0.0.0.0",
     port: Number(env.PORT ?? "3002"),
@@ -148,6 +151,24 @@ function readMicrosoftCalendarConfig(env: NodeJS.ProcessEnv, storeMode: StoreMod
     || url.pathname !== "/api/calendar-providers/microsoft/callback"
     || url.origin !== new URL(env.QR_BASE_URL ?? "").origin) throw new Error("Microsoft Calendar callback must match the application HTTPS origin.");
   return { clientId, redirectUri, certificateThumbprint, certificatePrivateKey, encryptionKey };
+}
+
+function readGoogleCalendarConfig(env: NodeJS.ProcessEnv, storeMode: StoreMode): LifeLinksConfig["googleCalendar"] {
+  if (env.LIFE_LINKS_GOOGLE_CALENDAR_ENABLED !== "true") return undefined;
+  if (storeMode !== "postgres") throw new Error("Google Calendar requires the durable PostgreSQL store.");
+  const clientId = env.LIFE_LINKS_GOOGLE_CLIENT_ID ?? "";
+  const clientSecret = env.LIFE_LINKS_GOOGLE_CLIENT_SECRET ?? "";
+  const redirectUri = env.LIFE_LINKS_GOOGLE_REDIRECT_URI ?? "";
+  const encryptionKey = env.LIFE_LINKS_CALENDAR_ENCRYPTION_KEY ?? "";
+  if (!/^[A-Za-z0-9-]+\.apps\.googleusercontent\.com$/.test(clientId)
+    || clientSecret.length < 16 || clientSecret.length > 4096 || /\s/.test(clientSecret)
+    || Buffer.from(encryptionKey, "base64").length !== 32) throw new Error("Google Calendar credentials are incomplete.");
+  let url: URL;
+  try { url = new URL(redirectUri); } catch { throw new Error("Google Calendar callback is invalid."); }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash
+    || url.pathname !== "/api/calendar-providers/google/callback"
+    || url.origin !== new URL(env.QR_BASE_URL ?? "").origin) throw new Error("Google Calendar callback must match the application HTTPS origin.");
+  return { clientId, clientSecret, redirectUri, encryptionKey };
 }
 
 function requireChallengeQrBaseUrl(value: string | undefined): string {

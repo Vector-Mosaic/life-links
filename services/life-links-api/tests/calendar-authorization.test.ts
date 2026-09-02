@@ -5,6 +5,7 @@ import { CalendarSecretCipher, InMemoryCalendarSecretStore } from "../src/calend
 import { calendarProviderCredentialHandle, calendarProviderLocalCalendarId, CalendarProviderGateway, InMemoryCalendarProviderStateStore } from "../src/calendar-provider-gateway.js";
 import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
 import { MsalMicrosoftCalendarAuth, type MicrosoftCalendarAuth } from "../src/calendar-microsoft-auth.js";
+import type { GoogleCalendarAuth } from "../src/calendar-google-auth.js";
 import express from "express";
 import request from "supertest";
 import { createCalendarConnectionRouter } from "../src/calendar-connections.js";
@@ -59,6 +60,175 @@ function harness() {
     }
   };
 }
+
+function googleHarness() {
+  const h = harness();
+  const now = () => new Date("2026-09-02T12:34:00Z");
+  const providerState = new InMemoryCalendarProviderStateStore();
+  const definitions = ["agent-tests", "not-selected"].map((providerCalendarId) => ({
+    providerCalendarId, displayName: providerCalendarId,
+    capabilities: { read: true, create: true, update: true, delete: true }, events: []
+  }));
+  const google: GoogleCalendarAuth = {
+    authorizationUrl: vi.fn(async ({ state }) => `https://accounts.google.com/o/oauth2/v2/auth?state=${state}`),
+    redeem: vi.fn(async () => ({ cache: "private-google-cache", providerAccountId: "google-sub-one" })),
+    refresh: vi.fn(async (state) => ({ state: { ...state, cache: "private-google-refreshed-cache" }, accessToken: "private-google-token" }))
+  };
+  const adapter = new DeterministicFakeCalendarProviderAdapter("google-calendar", "google-sub-one", definitions);
+  const gateway = new CalendarProviderGateway([adapter], providerState, { now });
+  const service = new CalendarAuthorizationService(h.store, h.cipher, h.auth, () => gateway, now, google);
+  async function authorized(reconnectConnectionId?: string) {
+    const started = await service.start("owner-one", "session-one", reconnectConnectionId, "google");
+    return service.callback({ ownerId: "owner-one", sessionId: "session-one", provider: "google", code: "private-google-code",
+      state: new URL(started.authorizationUrl).searchParams.get("state")! });
+  }
+  return { ...h, service, gateway, providerState, adapter, definitions, google, now, authorized };
+}
+
+describe("Google authorization through the shared Calendar service", () => {
+  it("leaves Google disabled unless configured and requires PostgreSQL plus its exact application HTTPS callback", () => {
+    expect(readConfig({ NODE_ENV: "test" }).googleCalendar).toBeUndefined();
+    expect(readConfig({ NODE_ENV: "test", LIFE_LINKS_GOOGLE_CALENDAR_ENABLED: "false",
+      LIFE_LINKS_GOOGLE_CLIENT_ID: "invalid", LIFE_LINKS_GOOGLE_REDIRECT_URI: "invalid" }).googleCalendar).toBeUndefined();
+    expect(() => readConfig({ NODE_ENV: "test", LIFE_LINKS_GOOGLE_CALENDAR_ENABLED: "true" })).toThrow(/PostgreSQL/);
+    const env = { NODE_ENV: "test", DATABASE_URL: "postgresql://synthetic.invalid/test", LIFE_LINKS_STORE: "postgres",
+      QR_BASE_URL: "https://life-links.example", LIFE_LINKS_GOOGLE_CALENDAR_ENABLED: "true",
+      LIFE_LINKS_GOOGLE_CLIENT_ID: "synthetic-client.apps.googleusercontent.com", LIFE_LINKS_GOOGLE_CLIENT_SECRET: "synthetic-private-client-secret",
+      LIFE_LINKS_CALENDAR_ENCRYPTION_KEY: Buffer.alloc(32, 3).toString("base64"),
+      LIFE_LINKS_GOOGLE_REDIRECT_URI: "https://life-links.example/api/calendar-providers/google/callback" };
+    expect(readConfig(env).googleCalendar).toMatchObject({ clientId: env.LIFE_LINKS_GOOGLE_CLIENT_ID,
+      redirectUri: env.LIFE_LINKS_GOOGLE_REDIRECT_URI });
+    expect(readConfig(env).microsoftCalendar).toBeUndefined();
+    for (const redirect of ["http://life-links.example/api/calendar-providers/google/callback",
+      "https://other.example/api/calendar-providers/google/callback", "https://life-links.example/api/calendar-providers/microsoft/callback",
+      `${env.LIFE_LINKS_GOOGLE_REDIRECT_URI}?next=foreign`, `${env.LIFE_LINKS_GOOGLE_REDIRECT_URI}#fragment`]) {
+      expect(() => readConfig({ ...env, LIFE_LINKS_GOOGLE_REDIRECT_URI: redirect })).toThrow(/callback/);
+    }
+    for (const invalid of [{ LIFE_LINKS_GOOGLE_CLIENT_ID: "not-a-google-client" }, { LIFE_LINKS_GOOGLE_CLIENT_SECRET: "" },
+      { LIFE_LINKS_CALENDAR_ENCRYPTION_KEY: Buffer.alloc(16).toString("base64") }]) {
+      expect(() => readConfig({ ...env, ...invalid })).toThrow(/credentials/);
+    }
+  });
+
+  it("binds Google callback state to its provider, initiating owner and session before redeeming once", async () => {
+    const h = googleHarness();
+    const started = await h.service.start("owner-one", "session-one", undefined, "google");
+    const callback = { ownerId: "owner-one", sessionId: "session-one", provider: "google" as const,
+      code: "private-google-code", state: new URL(started.authorizationUrl).searchParams.get("state")! };
+    await expect(h.service.callback({ ...callback, provider: "microsoft" })).rejects.toThrow("authorization_failed");
+    await expect(h.service.callback({ ...callback, ownerId: "other-owner" })).rejects.toThrow("authorization_not_found");
+    await expect(h.service.callback({ ...callback, sessionId: "different-session" })).rejects.toThrow("session_expired");
+    await expect(h.service.callback({ ...callback, state: `${callback.state.split(".")[0]}.${"x".repeat(43)}` })).rejects.toThrow("authorization_failed");
+    expect(h.google.redeem).not.toHaveBeenCalled();
+    const id = await h.service.callback(callback);
+    await expect(h.service.callback(callback)).rejects.toThrow("authorization_failed");
+    expect(h.google.redeem).toHaveBeenCalledTimes(1);
+    const authorize = vi.mocked(h.google.authorizationUrl).mock.calls[0][0];
+    expect(authorize.codeChallenge).toMatch(/^[\w-]{43}$/);
+    expect(h.google.redeem).toHaveBeenCalledWith({ code: callback.code, nonce: authorize.nonce, codeVerifier: expect.stringMatching(/^[\w-]{64}$/) });
+    expect(await h.service.discover("owner-one", "session-one", id)).toMatchObject({ providerKey: "google", providerAccountId: "google-sub-one" });
+    expect(h.auth.redeem).not.toHaveBeenCalled();
+    expect(JSON.stringify([...h.store.rows.values()])).not.toMatch(/private-google-code|private-google-cache|codeVerifier|google-sub-one/);
+    expect(await h.gateway.listConnections("owner-one")).toEqual([]);
+  });
+
+  it("selects only discovered Google calendars with default-none access and exact retry identity", async () => {
+    const h = googleHarness(); const id = await h.authorized();
+    await expect(h.service.complete("owner-one", "session-one", id, ["foreign-calendar"])).rejects.toThrow("calendar_selection_invalid");
+    expect(await h.gateway.listConnections("owner-one")).toEqual([]);
+    const completed = await h.service.complete("owner-one", "session-one", id, ["agent-tests"]);
+    expect(completed.connection).toMatchObject({ providerKey: "google-calendar", providerAccountId: "google-sub-one", status: "active" });
+    expect(completed.calendars).toHaveLength(1);
+    const calendarId = calendarProviderLocalCalendarId(completed.connection.connectionId, "agent-tests");
+    expect(completed.calendars[0]).toMatchObject({ providerCalendarId: "agent-tests", calendar: { id: calendarId, agentAccess: "none" } });
+    expect((await h.providerState.getCanonicalCalendar(calendarId))?.agentAccess).toBe("none");
+    expect(await h.gateway.listCalendars("owner-one", completed.connection.connectionId, "agent")).toEqual([]);
+    await expect(h.service.complete("owner-one", "session-one", id, ["agent-tests"])).resolves.toEqual(completed);
+    await expect(h.service.complete("owner-one", "session-one", id, ["not-selected"])).rejects.toThrow("calendar_selection_invalid");
+    expect(await h.gateway.listConnections("owner-one")).toHaveLength(1);
+    expect(await h.gateway.listConnections("other-owner")).toEqual([]);
+    expect([...h.store.rows.values()].find((row) => row.purpose === "credential")?.expiresAt).toBeNull();
+  });
+
+  it("reconnects only the same Google account without duplicating canonical calendar identity", async () => {
+    const h = googleHarness(); const first = await h.service.complete("owner-one", "session-one", await h.authorized(), ["agent-tests"]);
+    const connectionId = first.connection.connectionId;
+    await expect(h.service.start("owner-one", "session-one", connectionId, "microsoft")).rejects.toThrow("authorization_failed");
+    const failedStart = await h.service.start("owner-one", "session-one", connectionId, "google");
+    vi.mocked(h.google.redeem).mockResolvedValueOnce({ cache: "private-wrong-account-cache", providerAccountId: "other-google-sub" });
+    await expect(h.service.callback({ ownerId: "owner-one", sessionId: "session-one", provider: "google", code: "wrong-account-code",
+      state: new URL(failedStart.authorizationUrl).searchParams.get("state")! })).rejects.toThrow("authorization_failed");
+    expect((await h.gateway.getConnection("owner-one", connectionId)).status).toBe("active");
+    expect([...h.store.rows.values()].filter((row) => row.purpose === "credential")).toHaveLength(1);
+    await h.gateway.disconnectConnection({ ownerId: "owner-one", connectionId, localProjectionDisposition: "purge" });
+    // The fake adapter's previous grant was revoked. A fresh provider authorization
+    // reuses the durable state and the same provider account, like a process reload.
+    const adapter = new DeterministicFakeCalendarProviderAdapter("google-calendar", "google-sub-one", h.definitions);
+    const gateway = new CalendarProviderGateway([adapter], h.providerState, { now: h.now });
+    const restarted = new CalendarAuthorizationService(h.store, h.cipher, h.auth, () => gateway, h.now, h.google);
+    const started = await restarted.start("owner-one", "session-one", connectionId, "google");
+    const id = await restarted.callback({ ownerId: "owner-one", sessionId: "session-one", provider: "google", code: "new-google-code",
+      state: new URL(started.authorizationUrl).searchParams.get("state")! });
+    const result = await restarted.complete("owner-one", "session-one", id, ["agent-tests"]);
+    expect(result.connection).toMatchObject({ connectionId, providerKey: "google-calendar", providerAccountId: "google-sub-one", status: "active" });
+    expect(result.calendars[0].calendar.id).toBe(first.calendars[0].calendar.id);
+    expect(result.calendars[0].calendar.agentAccess).toBe("none");
+    expect(await gateway.listConnections("owner-one")).toHaveLength(1);
+    expect((await h.providerState.getConnection(connectionId))?.credentialHandle).toBe(
+      h.cipher.open<{ credentialId: string }>(h.store.rows.get(id)!).credentialId);
+  });
+
+  it("refuses cross-provider credential resolution and revocation even when account IDs match", async () => {
+    const h = googleHarness(); await h.authorized();
+    vi.mocked(h.auth.redeem).mockResolvedValueOnce({ cache: "private-microsoft-cache", homeAccountId: "home-account", localAccountId: "local-account",
+      providerAccountId: "google-sub-one", tenantId: "tenant-one" });
+    const started = await h.service.start("owner-one", "session-one");
+    await h.service.callback({ ownerId: "owner-one", sessionId: "session-one", code: "microsoft-code",
+      state: new URL(started.authorizationUrl).searchParams.get("state")! });
+    const credentials = [...h.store.rows.values()].filter((row) => row.purpose === "credential");
+    expect(credentials).toHaveLength(2);
+    for (const credential of credentials) {
+      const payload = h.cipher.open<{ provider: string }>(credential);
+      const wrongKey = payload.provider === "google" ? "microsoft-graph-calendar" : "google-calendar";
+      const input = { credentialHandle: calendarProviderCredentialHandle(credential.id), providerKey: wrongKey };
+      await expect(h.service.resolve(input)).rejects.toThrow("authorization_failed");
+      await expect(h.service.revoke({ ...input, providerAccountId: "google-sub-one" })).rejects.toThrow("authorization_failed");
+      expect(h.store.rows.get(credential.id)).toEqual(credential);
+    }
+    expect(h.auth.refresh).not.toHaveBeenCalled();
+    expect(h.google.refresh).not.toHaveBeenCalled();
+    const googleCredential = credentials.find((row) => h.cipher.open<{ provider: string }>(row).provider === "google")!;
+    expect(await h.service.resolve({ credentialHandle: calendarProviderCredentialHandle(googleCredential.id), providerKey: "google-calendar" }))
+      .toEqual({ accessToken: "private-google-token", providerAccountId: "google-sub-one" });
+  });
+
+  it("keeps untagged deployed Microsoft authorization and credential records Microsoft-only across reload", async () => {
+    const h = googleHarness();
+    const started = await h.service.start("owner-one", "session-one");
+    const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+    const authorizationRow = h.store.rows.get(state.split(".")[0])!;
+    const authorization = h.cipher.open<Record<string, unknown>>(authorizationRow);
+    delete authorization.provider;
+    h.store.rows.set(authorizationRow.id, { ...authorizationRow, encryptedPayload: h.cipher.seal(authorizationRow, authorization) });
+    const restarted = new CalendarAuthorizationService(h.store, h.cipher, h.auth, () => h.gateway, h.now, h.google);
+    await expect(restarted.callback({ ownerId: "owner-one", sessionId: "session-one", state, code: "legacy-code", provider: "google" }))
+      .rejects.toThrow("authorization_failed");
+    await restarted.callback({ ownerId: "owner-one", sessionId: "session-one", state, code: "legacy-code" });
+    const row = [...h.store.rows.values()].find((entry) => entry.purpose === "credential")!;
+    const credential = h.cipher.open<Record<string, unknown>>(row);
+    delete credential.provider;
+    h.store.rows.set(row.id, { ...row, encryptedPayload: h.cipher.seal(row, credential) });
+    const input = { credentialHandle: calendarProviderCredentialHandle(row.id), providerKey: "microsoft-graph-calendar" };
+    await expect(restarted.resolve({ ...input, providerKey: "google-calendar" })).rejects.toThrow("authorization_failed");
+    await expect(restarted.revoke({ ...input, providerKey: "google-calendar", providerAccountId: "account-one" })).rejects.toThrow("authorization_failed");
+    expect(await restarted.resolve(input)).toEqual({ accessToken: "private-test-token", providerAccountId: "account-one" });
+    expect(h.auth.refresh).toHaveBeenCalledWith(expect.objectContaining({ homeAccountId: "home-account", tenantId: "tenant-one" }));
+    expect(h.cipher.open(h.store.rows.get(row.id)!)).toMatchObject({ provider: "microsoft", cache: "private-refreshed-cache" });
+    expect(h.google.refresh).not.toHaveBeenCalled();
+    await restarted.revoke({ ...input, providerAccountId: "account-one" });
+    expect(h.store.rows.has(row.id)).toBe(false);
+  });
+});
 
 describe("Calendar authorization and private MSAL cache", () => {
   it("leaves OAuth disabled by default and requires persistent storage and the exact HTTPS callback", () => {

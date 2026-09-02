@@ -2646,6 +2646,7 @@ class FakeRoute implements WorkspaceBrowserRoute {
 function fakeApi() {
   return {
     authorizeMicrosoftCalendar: vi.fn<LifeLinksWorkspaceApi["authorizeMicrosoftCalendar"]>(),
+    authorizeGoogleCalendar: vi.fn<LifeLinksWorkspaceApi["authorizeGoogleCalendar"]>(),
     getCalendarAuthorization: vi.fn<LifeLinksWorkspaceApi["getCalendarAuthorization"]>(),
     completeCalendarAuthorization: vi.fn<LifeLinksWorkspaceApi["completeCalendarAuthorization"]>(),
     cancelCalendarAuthorization: vi.fn<LifeLinksWorkspaceApi["cancelCalendarAuthorization"]>(async () => undefined),
@@ -2842,6 +2843,83 @@ describe("Outlook provider workspace", () => {
     await expect(controller.beginMicrosoftCalendarAuthorization(binding.connectionId)).resolves.toContain("https://login.microsoftonline.com/");
     api.authorizeMicrosoftCalendar.mockResolvedValue({ authorizationUrl: "https://login.microsoftonline.com.evil.test/authorize" });
     await expect(controller.beginMicrosoftCalendarAuthorization()).rejects.toThrow("unsupported Outlook");
+    controller.dispose();
+  });
+  it("starts Google authorization and exact reconnect only at Google's own HTTPS destination", async () => {
+    const { api, controller } = await setup();
+    const abort = new AbortController();
+    const authorizationUrl = "https://accounts.google.com/o/oauth2/v2/auth?state=opaque";
+    api.authorizeGoogleCalendar.mockResolvedValue({ authorizationUrl });
+    await expect(controller.beginGoogleCalendarAuthorization("connection-google", abort.signal)).resolves.toBe(authorizationUrl);
+    expect(api.authorizeGoogleCalendar).toHaveBeenCalledWith("connection-google", abort.signal);
+    expect(api.authorizeMicrosoftCalendar).not.toHaveBeenCalled();
+    for (const invalid of [
+      "https://accounts.google.com.evil.test/o/oauth2/v2/auth",
+      "http://accounts.google.com/o/oauth2/v2/auth",
+      "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize",
+      "https://accounts.google.com:8443/o/oauth2/v2/auth",
+      "https://user:password@accounts.google.com/o/oauth2/v2/auth"
+    ]) {
+      api.authorizeGoogleCalendar.mockResolvedValueOnce({ authorizationUrl: invalid });
+      await expect(controller.beginGoogleCalendarAuthorization()).rejects.toThrow("unsupported Google");
+    }
+    controller.dispose();
+  });
+  it("does not return a Google redirect after cancellation or a signed-in owner change", async () => {
+    const { api, controller } = await setup();
+    const alreadyAborted = new AbortController();
+    alreadyAborted.abort();
+    await expect(controller.beginGoogleCalendarAuthorization(undefined, alreadyAborted.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(api.authorizeGoogleCalendar).not.toHaveBeenCalled();
+    const delayed = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["authorizeGoogleCalendar"]>>>();
+    const abort = new AbortController();
+    api.authorizeGoogleCalendar.mockReturnValueOnce(delayed.promise);
+    const canceled = controller.beginGoogleCalendarAuthorization(undefined, abort.signal);
+    abort.abort();
+    delayed.resolve({ authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=opaque" });
+    await expect(canceled).rejects.toMatchObject({ name: "AbortError" });
+    const ownerChanged = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["authorizeGoogleCalendar"]>>>();
+    api.authorizeGoogleCalendar.mockReturnValueOnce(ownerChanged.promise);
+    const pending = controller.beginGoogleCalendarAuthorization();
+    await controller.logout();
+    ownerChanged.resolve({ authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=opaque" });
+    await expect(pending).rejects.toThrow("signed-in account changed");
+    controller.dispose();
+  });
+  it("uses the common Google discovery/selection/cancellation flow without changing agent permissions", async () => {
+    const authorizationId = "11111111-1111-4111-8111-111111111111";
+    const { api, controller, route } = await setup(`/calendar?calendarAuthorization=${authorizationId}`);
+    expect(controller.getSnapshot().calendarWorkspace.connectionFlow.feedback).toBe("Calendar authorization returned. Choose the exact calendars to connect.");
+    api.getCalendarAuthorization.mockResolvedValue({ providerKey: "google", providerAccountId: "google-subject-exact",
+      calendars: [{ providerCalendarId: "exact-calendar@group.calendar.google.com", displayName: "Agent Tests", isDefault: false, capabilities: binding.capabilities }] });
+    await controller.loadCalendarConnectionDiscovery();
+    expect(controller.getSnapshot().calendarWorkspace.connectionFlow.discovery?.providerKey).toBe("google");
+    await expect(controller.completeCalendarConnectionSelection(["wrong-calendar"])).rejects.toThrow("exact available calendars");
+    expect(api.completeCalendarAuthorization).not.toHaveBeenCalled();
+    await controller.completeCalendarConnectionSelection(["exact-calendar@group.calendar.google.com"]);
+    expect(api.completeCalendarAuthorization).toHaveBeenCalledWith(authorizationId, ["exact-calendar@group.calendar.google.com"], undefined);
+    expect(api.updateConnectedCalendar).not.toHaveBeenCalled();
+    expect(controller.getSnapshot().calendarWorkspace.connectionFlow.feedback).toContain("no agent access");
+    expect(route.pathname()).toBe("/calendar");
+    controller.dispose();
+
+    const canceled = await setup(`/calendar?calendarAuthorization=${authorizationId}`);
+    await canceled.controller.cancelCalendarConnectionSelection();
+    expect(canceled.api.cancelCalendarAuthorization).toHaveBeenCalledWith(authorizationId, undefined);
+    expect(canceled.api.completeCalendarAuthorization).not.toHaveBeenCalled();
+    expect(canceled.route.pathname()).toBe("/calendar");
+    canceled.controller.dispose();
+  });
+  it.each([
+    ["cancelled", "Calendar connection was canceled. No calendars were added."],
+    ["session_expired", "The Calendar authorization session expired. Start Connect again."],
+    ["authorization_failed", "Calendar authorization could not be completed. Start Connect again."]
+  ])("keeps %s callback feedback provider-neutral without starting another authorization", async (code, feedback) => {
+    const { api, controller } = await setup(`/calendar?calendarConnectionError=${code}`);
+    expect(controller.getSnapshot().calendarWorkspace.connectionFlow.error).toBe(feedback);
+    expect(api.authorizeGoogleCalendar).not.toHaveBeenCalled();
+    expect(api.authorizeMicrosoftCalendar).not.toHaveBeenCalled();
+    expect(api.completeCalendarAuthorization).not.toHaveBeenCalled();
     controller.dispose();
   });
   it("lists/query/inspects exact provider identities through narrowed reads and pages provider entries one at a time", async () => {
