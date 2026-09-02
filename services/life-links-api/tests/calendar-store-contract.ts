@@ -9,6 +9,76 @@ const id = (prefix: string) => `${prefix}-${randomUUID()}`;
 
 export function calendarStoreContract(getStore: () => LifeLinksStore): void {
   describe("native Calendar store contract", () => {
+    it("enforces current native Calendar agent grants, owner isolation, catalog version, and revocation at the store boundary", async () => {
+      const store = getStore();
+      const createdAt = "2026-09-01T12:00:00.000Z";
+      const calendars = await Promise.all((["none", "read", "write"] as const).map((agentAccess) => store.createCalendar({
+        id: id("calendar"), ownerId: DEMO_OWNER_ID, title: agentAccess, timeZone: "UTC", agentAccess, createdAt
+      })));
+      const events = await Promise.all(calendars.map((calendar) => store.createCalendarEvent({
+        id: id("calendar-event"), revisionId: id("calendar-event-revision"), ownerId: DEMO_OWNER_ID,
+        calendarId: calendar.id, title: calendar.title, createdAt,
+        span: { kind: "all_day", startDate: "2026-09-01", endDateExclusive: "2026-09-02" }
+      })));
+      const [hidden, readOnly, writable] = calendars;
+      const [hiddenEvent, readEvent, writableEvent] = events;
+      const write = {
+        ownerId: DEMO_OWNER_ID, eventId: writableEvent.event.id,
+        expectedCurrentRevisionId: writableEvent.currentRevision.id,
+        revisionId: id("calendar-event-revision"), title: "Agent changed",
+        span: { kind: "all_day" as const, startDate: "2026-09-01", endDateExclusive: "2026-09-02" },
+        createdAt: "2026-09-01T12:01:00.000Z"
+      };
+      await expect(store.listCalendars(DEMO_OWNER_ID, {}, "agent")).rejects.toMatchObject({ code: "calendar_access_denied" });
+      await store.connectAgent(DEMO_OWNER_ID, "life-links-page-webmcp-v1");
+      await expect(store.reviseCalendarEvent(DEMO_OWNER_ID, write, "agent"))
+        .rejects.toMatchObject({ reason: "calendar_agent_connection_required" });
+      await store.connectAgent(DEMO_OWNER_ID, "life-links-calendar-v2");
+      await store.connectAgent(DEMO_GUEST_ID, "life-links-calendar-v2");
+      expect((await store.listCalendars(DEMO_OWNER_ID, {}, "agent")).items.map((calendar) => calendar.id))
+        .toEqual([readOnly.id, writable.id]);
+      expect(await store.getCalendar(DEMO_OWNER_ID, hidden.id, "agent")).toBeNull();
+      expect(await store.getCalendarEvent(DEMO_OWNER_ID, hiddenEvent.event.id, "agent")).toBeNull();
+      expect(await store.listCalendarEventRevisions(DEMO_OWNER_ID, hiddenEvent.event.id, "agent")).toBeNull();
+      expect(await store.listCalendarEventTombstones(DEMO_OWNER_ID, hiddenEvent.event.id, "agent")).toBeNull();
+      expect((await store.listCalendarEvents(DEMO_OWNER_ID, {}, "agent")).items.map((event) => event.event.id).sort())
+        .toEqual([readEvent.event.id, writableEvent.event.id].sort());
+      expect((await store.listCalendarEvents(DEMO_OWNER_ID, { calendarId: hidden.id }, "agent")).items).toEqual([]);
+      expect(await store.getCalendarEvent(DEMO_GUEST_ID, writableEvent.event.id, "agent")).toBeNull();
+      expect((await store.listCalendars(DEMO_OWNER_ID)).items).toHaveLength(3);
+      await expect(store.updateCalendar(DEMO_OWNER_ID, {
+        calendarId: readOnly.id, expectedUpdatedAt: readOnly.updatedAt, patch: { agentAccess: "write" }
+      }, "agent")).rejects.toMatchObject({ reason: "calendar_settings_human_only" });
+      await expect(store.createCalendarEvent({
+        id: id("calendar-event"), revisionId: id("calendar-event-revision"), ownerId: DEMO_OWNER_ID,
+        calendarId: readOnly.id, title: "Forbidden", span: write.span, createdAt
+      }, "agent")).rejects.toMatchObject({ reason: "agent_calendar_write_denied" });
+      await expect(store.reviseCalendarEvent(DEMO_OWNER_ID, {
+        ...write, eventId: readEvent.event.id, expectedCurrentRevisionId: readEvent.currentRevision.id
+      }, "agent")).rejects.toMatchObject({ reason: "agent_calendar_write_denied" });
+
+      const revised = await store.reviseCalendarEvent(DEMO_OWNER_ID, write, "agent");
+      expect(revised?.currentRevision.title).toBe("Agent changed");
+      expect(await store.reviseCalendarEvent(DEMO_OWNER_ID, write, "agent")).toEqual(revised);
+      const revoked = await store.updateCalendar(DEMO_OWNER_ID, {
+        calendarId: writable.id, expectedUpdatedAt: writable.updatedAt, patch: { agentAccess: "none" }
+      });
+      expect(revoked?.agentAccess).toBe("none");
+      await expect(store.updateCalendar(DEMO_OWNER_ID, {
+        calendarId: writable.id, expectedUpdatedAt: writable.updatedAt, patch: { agentAccess: "write" }
+      })).rejects.toMatchObject({ code: "stale_calendar" });
+      await expect(store.reviseCalendarEvent(DEMO_OWNER_ID, write, "agent"))
+        .rejects.toMatchObject({ reason: "agent_calendar_write_denied" });
+      await expect(store.softDeleteCalendarEvent(DEMO_OWNER_ID, {
+        eventId: writableEvent.event.id, expectedCurrentRevisionId: revised!.currentRevision.id,
+        tombstoneId: id("calendar-event-tombstone"), deletedAt: "2026-09-01T12:02:00.000Z"
+      }, "agent")).rejects.toMatchObject({ reason: "agent_calendar_write_denied" });
+      expect((await store.getCalendarEvent(DEMO_OWNER_ID, writableEvent.event.id))?.event.deletedAt).toBeNull();
+      await store.disconnectAgent(DEMO_OWNER_ID);
+      await expect(store.getCalendarEvent(DEMO_OWNER_ID, readEvent.event.id, "agent"))
+        .rejects.toMatchObject({ reason: "calendar_agent_connection_required" });
+    });
+
     it("persists owner-private past events, recurrence lineage, immutable revisions, tombstones, and typed subject links", async () => {
       const store = getStore();
       const createdAt = "2026-09-01T12:00:00.000Z";

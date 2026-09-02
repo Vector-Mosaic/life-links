@@ -1,13 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { createElement, type ReactNode } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it, vi } from "vitest";
 import {
   resolveCalendarZonedDateTime,
   type CalendarEventDefinition,
+  type CalendarConnectionView,
   type CalendarRecord,
   type RoutineOccurrenceRecord,
   type RoutineSummaryRecord
 } from "@life-links/core";
 
 import { buildCalendarDisplayEvents, calendarRange, shiftCalendarAnchor } from "./calendar";
+import { CalendarDialogHost } from "./CalendarDialogs";
+import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
+import type { LifeLinksWorkspaceController } from "../workspace/controller";
+
+vi.mock("./FieldLedgerPrimitives", () => ({
+  Dialog: ({ children }: { children: ReactNode }) => children
+}));
 
 const ownerId = "owner-calendar-test";
 const calendar: CalendarRecord = {
@@ -17,11 +27,78 @@ const calendar: CalendarRecord = {
   color: "#7FC9B3",
   timeZone: "America/New_York",
   source: "native",
+  agentAccess: "write",
   isDefault: true,
   createdAt: "2026-08-01T00:00:00.000Z",
   updatedAt: "2026-08-01T00:00:00.000Z",
   deletedAt: null
 };
+
+describe("Calendar manager permission presentation", () => {
+  it("shows the persisted native permission and all three explicit choices independently from visibility", () => {
+    const markup = calendarManagerMarkup([{ ...calendar, agentAccess: "none" }]);
+    expect(markup).toContain("Agent: No access");
+    expect(markup).toContain('<option value="none">No access</option>');
+    expect(markup).toContain('<option value="read">Read only</option>');
+    expect(markup).toContain('<option value="write" selected="">Read and edit</option>');
+    expect(markup).toContain("Showing or hiding a Calendar does not change agent access");
+    expect(markup).toContain("Calendar-v2 grant");
+  });
+
+  it("does not present provider calendars as editable native calendars or pretend OAuth is available", () => {
+    const markup = calendarManagerMarkup([{ ...calendar, source: "external", title: "Provider-owned calendar" }]);
+    expect(markup).not.toContain("Provider-owned calendar");
+    expect(markup).toContain("New account connections are not available yet");
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>[^]*?Connect Google Calendar<\/button>/);
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>[^]*?Connect Microsoft Outlook<\/button>/);
+  });
+
+  it("renders only controller-provided bound calendars and caps external agent choices to provider capabilities", () => {
+    const markup = calendarManagerMarkup([], {
+      connections: [connection()],
+      calendars: [{ calendar: { ...calendar, source: "external", agentAccess: "read" }, connectionId: "connection-test", providerCalendarId: "calendar-provider-test", providerDisplayName: "Work schedule", capabilities: { read: true, create: false, update: false, delete: false }, visible: true }]
+    });
+    expect(markup).toContain("Work schedule");
+    expect(markup).toContain("Provider is read only");
+    expect(markup).toContain('<option value="write" disabled="">Read and allowed changes</option>');
+    expect(markup).toContain('type="checkbox" checked=""');
+    expect(markup).toContain("Visibility does not change agent access");
+    expect(markup).toContain("Finding additional calendars for this account is not available yet");
+    expect(markup).toContain("Disconnect account");
+  });
+
+  it("distinguishes local disconnection from failed remote revocation without exposing editable bindings", () => {
+    const markup = calendarManagerMarkup([], { connections: [connection({ status: "disconnected", remoteRevocationStatus: "failed", remoteRevocationErrorCode: "provider_revoke_failed" })] });
+    expect(markup).toContain("Life Links access is off, but provider access revocation failed");
+    expect(markup).toContain("Original provider events were not deleted");
+    expect(markup).not.toContain("Disconnect account");
+  });
+
+  it("shows connection-loading failure and retry without inventing an empty connected-account result", () => {
+    const markup = calendarManagerMarkup([], { loaded: false, error: "Connections are unavailable." });
+    expect(markup).toContain("Connections are unavailable.");
+    expect(markup).toContain("Retry loading connections");
+    expect(markup).not.toContain("No external accounts are connected");
+  });
+});
+
+function calendarManagerMarkup(calendars: CalendarRecord[], connectionOverrides: Partial<LifeLinksWorkspaceSnapshot["calendarWorkspace"]["connectionManagement"]> = {}) {
+  return renderToStaticMarkup(createElement(CalendarDialogHost, {
+    dialog: { kind: "manage-calendars" },
+    controller: {} as LifeLinksWorkspaceController,
+    snapshot: { calendarWorkspace: { calendars, connectionManagement: {
+      providers: [
+        { providerKey: "google", displayName: "Google Calendar", authorizationAvailable: false, reason: "authorization_not_configured" },
+        { providerKey: "microsoft", displayName: "Microsoft Outlook", authorizationAvailable: false, reason: "authorization_not_configured" }
+      ], connections: [], calendars: [], loaded: true, loading: false, error: "", ...connectionOverrides
+    } } } as unknown as LifeLinksWorkspaceSnapshot,
+    onClose() {}
+  }));
+}
+
+function connection(patch: Partial<CalendarConnectionView> = {}): CalendarConnectionView {
+  return { ownerId, connectionId: "connection-test", providerKey: "google", providerAccountId: "synthetic-provider-account", status: "active", connectedAt: "2026-08-01T00:00:00.000Z", disconnectedAt: null, remoteRevocationStatus: "not_required", remoteRevocationAttemptedAt: null, remoteRevocationErrorCode: null, ...patch };
+}
 
 describe("dedicated Calendar view helpers", () => {
   it("produces stable month, week, day, and agenda ranges across navigation", () => {

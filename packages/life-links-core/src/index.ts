@@ -1674,3 +1674,4 @@ export * from "./competitionFixture.js";
 export * from "./attachments.js";
 export * from "./routines.js";
 export * from "./calendar.js";
+export * from "./calendar-connections.js";

@@ -3,8 +3,15 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   createCanonicalExternalCalendar,
   normalizeCalendarId,
+  type CalendarAgentAccess,
+  type CalendarConnectionView,
+  type CalendarConnectedCalendarView,
+  type CalendarConnectedCalendarPatch,
+  type CalendarProviderCapabilities,
   type CalendarRecord
 } from "@life-links/core";
+
+export type { CalendarProviderCapabilities } from "@life-links/core";
 
 /**
  * Server-only reference to a credential-vault record. Provider adapters may
@@ -25,35 +32,20 @@ export function calendarProviderCredentialHandle(vaultRecordId: string): Calenda
 }
 
 export type CalendarProviderKey = string;
-export type CalendarAgentGrant = "none" | "read" | "write";
-export type CalendarProviderConnectionStatus = "provisioning" | "active" | "disconnected";
-export type CalendarProviderRevocationStatus = "not_required" | "pending" | "succeeded" | "failed";
-
-export type CalendarProviderCapabilities = {
-  read: boolean;
-  create: boolean;
-  update: boolean;
-  delete: boolean;
-};
+export type CalendarAgentGrant = CalendarAgentAccess;
+export type CalendarProviderConnectionStatus = CalendarConnectionView["status"];
+export type CalendarProviderRevocationStatus = CalendarConnectionView["remoteRevocationStatus"];
 
 export type ProviderAccountIdentity = {
   providerKey: CalendarProviderKey;
   providerAccountId: string;
 };
 
-export type CalendarProviderConnectionRecord = ProviderAccountIdentity & {
-  ownerId: string;
-  connectionId: string;
-  status: CalendarProviderConnectionStatus;
+export type CalendarProviderConnectionRecord = CalendarConnectionView & {
   credentialHandle: CalendarProviderCredentialHandle | null;
-  connectedAt: string;
-  disconnectedAt: string | null;
-  remoteRevocationStatus: CalendarProviderRevocationStatus;
-  remoteRevocationAttemptedAt: string | null;
-  remoteRevocationErrorCode: "provider_revoke_failed" | null;
 };
 
-export type CalendarProviderConnectionView = Omit<CalendarProviderConnectionRecord, "credentialHandle">;
+export type CalendarProviderConnectionView = CalendarConnectionView;
 
 /**
  * Provider-specific metadata bound to one canonical Life Links Calendar.
@@ -324,12 +316,18 @@ export type CalendarProviderSyncMutation = {
  * CAS, cursor, projections, and tombstones.
  */
 export interface CalendarProviderStateStore {
+  listConnections(ownerId: string): Promise<CalendarProviderConnectionRecord[]>;
   getConnection(connectionId: string): Promise<CalendarProviderConnectionRecord | null>;
   saveConnection(connection: CalendarProviderConnectionRecord): Promise<void>;
   listCalendars(connectionId: string): Promise<CalendarProviderBindingRecord[]>;
   getCalendar(connectionId: string, calendarId: string): Promise<CalendarProviderBindingRecord | null>;
+  getCanonicalCalendar(calendarId: string): Promise<CalendarRecord | null>;
+  getManagedCalendar(connectionId: string, calendarId: string): Promise<CalendarConnectedCalendarView | null>;
   provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord): Promise<void>;
-  updateCalendarBinding(calendar: CalendarProviderBindingRecord): Promise<void>;
+  updateCalendarBinding(calendar: CalendarProviderBindingRecord, options?: {
+    expectedUpdatedAt: string;
+    updatedAt: string;
+  }): Promise<void>;
   rollbackProvisioning(connectionId: string): Promise<void>;
   getSyncState(connectionId: string, calendarId: string): Promise<CalendarProviderSyncState | null>;
   listProjections(connectionId: string, calendarId: string): Promise<CalendarProviderEventProjection[]>;
@@ -363,6 +361,7 @@ export class CalendarProviderGatewayError extends Error {
       | "connection_inactive"
       | "calendar_not_found"
       | "calendar_read_only"
+      | "calendar_settings_conflict"
       | "agent_calendar_access_denied"
       | "provider_batch_incomplete"
       | "sync_state_conflict"
@@ -527,6 +526,61 @@ export class CalendarProviderGateway {
     return safeConnection(await this.#ownedConnection(ownerId, connectionId, true));
   }
 
+  async listConnections(ownerId: string): Promise<CalendarProviderConnectionView[]> {
+    assertIdentifier(ownerId, "ownerId");
+    return (await this.store.listConnections(ownerId)).map(safeConnection);
+  }
+
+  async listManagedCalendars(ownerId: string, connectionId: string): Promise<CalendarConnectedCalendarView[]> {
+    await this.#ownedConnection(ownerId, connectionId, true);
+    const bindings = await this.store.listCalendars(connectionId);
+    return Promise.all(bindings.map((binding) => this.#managedCalendar(binding)));
+  }
+
+  async updateCalendarSettings(input: {
+    ownerId: string;
+    connectionId: string;
+    calendarId: string;
+    expectedUpdatedAt: string;
+    patch: CalendarConnectedCalendarPatch;
+  }): Promise<CalendarConnectedCalendarView> {
+    const calendarId = canonicalCalendarId(input.calendarId);
+    await this.#ownedConnection(input.ownerId, input.connectionId, false);
+    const binding = await this.store.getCalendar(input.connectionId, calendarId);
+    if (!binding || binding.ownerId !== input.ownerId) {
+      throw new CalendarProviderGatewayError("calendar_not_found", "The exact provider Calendar was not found.");
+    }
+    const current = await this.#managedCalendar(binding);
+    if (!isRecord(input.patch) || !Object.keys(input.patch).length
+      || Object.keys(input.patch).some((key) => key !== "visible" && key !== "agentAccess")
+      || (input.patch.visible !== undefined && typeof input.patch.visible !== "boolean")) {
+      throw new CalendarProviderGatewayError("invalid_input", "Calendar settings contain missing or unsupported fields.");
+    }
+    const expectedUpdatedAt = normalizeUtcInstant(input.expectedUpdatedAt, "expectedUpdatedAt");
+    if (expectedUpdatedAt !== current.calendar.updatedAt) {
+      throw new CalendarProviderGatewayError("calendar_settings_conflict", "Calendar settings changed. Reload before saving.");
+    }
+    const agentGrant = input.patch.agentAccess === undefined
+      ? current.calendar.agentAccess
+      : normalizeAgentGrant(input.patch.agentAccess);
+    assertAgentGrant(agentGrant, binding.capabilities);
+    const changed = { ...binding, agentGrant, visible: input.patch.visible ?? binding.visible };
+    await this.store.updateCalendarBinding(changed, {
+      expectedUpdatedAt,
+      updatedAt: nextCalendarSettingsTimestamp(this.#now().toISOString(), current.calendar.updatedAt)
+    });
+    return this.#managedCalendar(changed);
+  }
+
+  async #managedCalendar(binding: CalendarProviderBindingRecord): Promise<CalendarConnectedCalendarView> {
+    const managed = await this.store.getManagedCalendar(binding.connectionId, binding.calendarId);
+    const calendar = managed?.calendar;
+    if (!calendar || calendar.ownerId !== binding.ownerId || calendar.source !== "external" || calendar.deletedAt !== null) {
+      throw new CalendarProviderGatewayError("calendar_not_found", "The canonical external Calendar was not found.");
+    }
+    return managed!;
+  }
+
   async listCalendars(
     ownerId: string,
     connectionId: string,
@@ -545,21 +599,10 @@ export class CalendarProviderGateway {
     connectionId: string;
     calendarId: string;
     agentGrant: CalendarAgentGrant;
+    expectedUpdatedAt: string;
   }): Promise<CalendarProviderBindingRecord> {
-    const calendarId = canonicalCalendarId(input.calendarId);
-    const { calendar } = await this.#ownedCalendar(
-      input.ownerId,
-      input.connectionId,
-      calendarId,
-      "read",
-      "owner",
-      false
-    );
-    const agentGrant = normalizeAgentGrant(input.agentGrant);
-    assertAgentGrant(agentGrant, calendar.capabilities);
-    const changed = { ...calendar, agentGrant };
-    await this.store.updateCalendarBinding(changed);
-    return cloneCalendar(changed);
+    await this.updateCalendarSettings({ ...input, patch: { agentAccess: input.agentGrant } });
+    return (await this.store.getCalendar(input.connectionId, input.calendarId))!;
   }
 
   async listProjections(
@@ -987,6 +1030,9 @@ export class CalendarProviderGateway {
     connectionId: string;
     localProjectionDisposition: "retain_private_stale" | "purge";
   }): Promise<CalendarProviderConnectionView> {
+    if (input.localProjectionDisposition !== "purge" && input.localProjectionDisposition !== "retain_private_stale") {
+      throw new CalendarProviderGatewayError("invalid_input", "An explicit local projection disposition is required.");
+    }
     const connection = await this.#ownedConnection(input.ownerId, input.connectionId, true);
     if (connection.status === "disconnected" && input.localProjectionDisposition === "purge") {
       await this.store.purgeConnectionProjections(connection.connectionId);
@@ -1008,7 +1054,7 @@ export class CalendarProviderGateway {
       ...connection,
       status: "disconnected",
       disconnectedAt: connection.disconnectedAt ?? this.#now().toISOString(),
-      remoteRevocationStatus: connection.credentialHandle ? "pending" : "succeeded",
+      remoteRevocationStatus: connection.remoteRevocationStatus === "succeeded" ? "succeeded" : "pending",
       remoteRevocationAttemptedAt: null,
       remoteRevocationErrorCode: null
     };
@@ -1025,15 +1071,13 @@ export class CalendarProviderGateway {
   }
 
   async #attemptRemoteRevocation(connection: CalendarProviderConnectionRecord): Promise<CalendarProviderConnectionRecord> {
-    if (!connection.credentialHandle) {
-      const succeeded = {
+    if (!connection.credentialHandle || !this.#adapters.has(connection.providerKey)) {
+      const pending = {
         ...connection,
-        remoteRevocationStatus: "succeeded" as const,
-        remoteRevocationAttemptedAt: connection.remoteRevocationAttemptedAt ?? this.#now().toISOString(),
-        remoteRevocationErrorCode: null
+        remoteRevocationStatus: "pending" as const
       };
-      await this.store.saveConnection(succeeded);
-      return succeeded;
+      await this.store.saveConnection(pending);
+      return pending;
     }
     const attemptedAt = this.#now().toISOString();
     try {
@@ -1157,24 +1201,45 @@ export class CalendarProviderGateway {
 export class InMemoryCalendarProviderStateStore implements CalendarProviderStateStore {
   readonly #connections = new Map<string, CalendarProviderConnectionRecord>();
   readonly #canonicalCalendars = new Map<string, CalendarRecord>();
-  readonly #calendars = new Map<string, CalendarProviderBindingRecord>();
+  readonly #calendars = new Map<string, Omit<CalendarProviderBindingRecord, "agentGrant">>();
   readonly #syncStates = new Map<string, CalendarProviderSyncState>();
   readonly #projections = new Map<string, CalendarProviderEventProjection>();
   readonly #tombstones = new Map<string, CalendarProviderEventTombstone>();
   readonly #outbox = new Map<string, CalendarProviderOutboxRecord>();
   readonly #hints = new Map<string, CalendarProviderWebhookHint>();
 
+  async listConnections(ownerId: string) {
+    return [...this.#connections.values()].filter((connection) => connection.ownerId === ownerId)
+      .sort((left, right) => left.connectedAt.localeCompare(right.connectedAt) || left.connectionId.localeCompare(right.connectionId))
+      .map((connection) => cloneConnection(connection)!);
+  }
   async getConnection(connectionId: string) { return cloneConnection(this.#connections.get(connectionId) ?? null); }
   async saveConnection(connection: CalendarProviderConnectionRecord) { this.#connections.set(connection.connectionId, cloneConnection(connection)!); }
   async listCalendars(connectionId: string) {
-    return [...this.#calendars.values()].filter((calendar) => calendar.connectionId === connectionId).map(cloneCalendar);
+    return [...this.#calendars.values()].filter((calendar) => calendar.connectionId === connectionId)
+      .map((calendar) => this.#bindingView(calendar));
   }
   async getCalendar(connectionId: string, calendarId: string) {
-    return cloneCalendarOrNull(this.#calendars.get(calendarKey(connectionId, calendarId)) ?? null);
+    const calendar = this.#calendars.get(calendarKey(connectionId, calendarId));
+    return calendar ? this.#bindingView(calendar) : null;
+  }
+  #bindingView(binding: Omit<CalendarProviderBindingRecord, "agentGrant">): CalendarProviderBindingRecord {
+    const canonical = this.#canonicalCalendars.get(binding.calendarId);
+    if (!canonical) throw new CalendarProviderGatewayError("calendar_not_found", "The canonical external Calendar was not found.");
+    return { ...binding, capabilities: { ...binding.capabilities }, agentGrant: canonical.agentAccess };
   }
   async getCanonicalCalendar(calendarId: string) {
     const calendar = this.#canonicalCalendars.get(calendarId);
     return calendar ? { ...calendar } : null;
+  }
+  async getManagedCalendar(connectionId: string, calendarId: string): Promise<CalendarConnectedCalendarView | null> {
+    const binding = this.#calendars.get(calendarKey(connectionId, calendarId));
+    const calendar = this.#canonicalCalendars.get(calendarId);
+    return binding && calendar ? {
+      calendar: { ...calendar }, connectionId,
+      providerCalendarId: binding.providerCalendarId, providerDisplayName: binding.providerDisplayName,
+      capabilities: { ...binding.capabilities }, visible: binding.visible
+    } : null;
   }
   async provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord) {
     assertCalendarProvisioningPair(calendar, binding);
@@ -1197,22 +1262,33 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
       throw new CalendarProviderGatewayError("invalid_input", "The owner already has a default Calendar.");
     }
     this.#canonicalCalendars.set(calendar.id, { ...calendar });
-    this.#calendars.set(key, cloneCalendar(binding));
+    const { agentGrant: _grant, ...metadata } = cloneCalendar(binding);
+    this.#calendars.set(key, metadata);
   }
-  async updateCalendarBinding(calendar: CalendarProviderBindingRecord) {
+  async updateCalendarBinding(calendar: CalendarProviderBindingRecord, options?: { expectedUpdatedAt: string; updatedAt: string }) {
     const key = calendarKey(calendar.connectionId, calendar.calendarId);
     const existing = this.#calendars.get(key);
     const canonical = this.#canonicalCalendars.get(calendar.calendarId);
     if (!existing || !canonical) {
       throw new CalendarProviderGatewayError("calendar_not_found", "The canonical external Calendar binding was not found.");
     }
-    assertCalendarProvisioningPair(canonical, calendar);
+    assertCalendarProvisioningPair({ ...canonical, agentAccess: calendar.agentGrant }, calendar);
     if (existing.ownerId !== calendar.ownerId || existing.providerKey !== calendar.providerKey
       || existing.providerAccountId !== calendar.providerAccountId
       || existing.providerCalendarId !== calendar.providerCalendarId) {
       throw new CalendarProviderGatewayError("provider_identity_mismatch", "The provider Calendar binding identity cannot change.");
     }
-    this.#calendars.set(key, cloneCalendar(calendar));
+    if (options && (canonical.updatedAt !== options.expectedUpdatedAt
+      || this.#connections.get(calendar.connectionId)?.status !== "active")) {
+      throw new CalendarProviderGatewayError("calendar_settings_conflict", "Calendar settings changed. Reload before saving.");
+    }
+    this.#canonicalCalendars.set(canonical.id, {
+      ...canonical,
+      agentAccess: calendar.agentGrant,
+      updatedAt: options?.updatedAt ?? nextCalendarSettingsTimestamp(new Date().toISOString(), canonical.updatedAt)
+    });
+    const { agentGrant: _grant, ...metadata } = cloneCalendar(calendar);
+    this.#calendars.set(key, metadata);
   }
   async rollbackProvisioning(connectionId: string) {
     const connection = this.#connections.get(connectionId);
@@ -1351,16 +1427,18 @@ export function assertCalendarProvisioningPair(
       color: calendar.color,
       timeZone: calendar.timeZone,
       isDefault: calendar.isDefault,
+      agentAccess: calendar.agentAccess,
       createdAt: calendar.createdAt
     });
   } catch {
     throw new CalendarProviderGatewayError("invalid_input", "The canonical external Calendar is invalid.");
   }
   if (calendar.source !== "external" || calendar.deletedAt !== null
-    || calendar.updatedAt !== normalized.updatedAt
+    || !Number.isFinite(Date.parse(calendar.updatedAt)) || Date.parse(calendar.updatedAt) < Date.parse(normalized.updatedAt)
     || calendar.id !== normalized.id || calendar.ownerId !== normalized.ownerId
     || calendar.title !== normalized.title || calendar.color !== normalized.color
     || calendar.timeZone !== normalized.timeZone || calendar.isDefault !== normalized.isDefault
+    || calendar.agentAccess !== normalized.agentAccess || binding.agentGrant !== calendar.agentAccess
     || calendar.createdAt !== normalized.createdAt
     || binding.calendarId !== calendar.id || binding.ownerId !== calendar.ownerId) {
     throw new CalendarProviderGatewayError(
@@ -1383,6 +1461,10 @@ export function assertCalendarProvisioningPair(
 function safeConnection(connection: CalendarProviderConnectionRecord): CalendarProviderConnectionView {
   const { credentialHandle: _credentialHandle, ...safe } = connection;
   return { ...safe };
+}
+
+function nextCalendarSettingsTimestamp(now: string, previous: string): string {
+  return new Date(Math.max(Date.parse(now), Date.parse(previous) + 1)).toISOString();
 }
 
 function requiredCredential(connection: CalendarProviderConnectionRecord): CalendarProviderCredentialHandle {
@@ -1586,6 +1668,7 @@ function normalizeCalendarSelection(
         color: value.color,
         timeZone: value.timeZone,
         isDefault: value.isDefault,
+        agentAccess: agentGrant,
         createdAt
       }),
       providerCalendarId: value.providerCalendarId,

@@ -56,6 +56,7 @@ describe("native Calendar core domain", () => {
       color: "#5fae95",
       timeZone: "America/New_York",
       source: "native",
+      agentAccess: "write",
       isDefault: true,
       createdAt: CREATED,
       updatedAt: CREATED,
@@ -65,9 +66,13 @@ describe("native Calendar core domain", () => {
     const renamed = applyCalendarPatch(calendar, {
       calendarId: calendar.id,
       expectedUpdatedAt: calendar.updatedAt,
-      patch: { title: "Family", timeZone: "UTC" }
+      patch: { title: "Family", timeZone: "UTC", agentAccess: "read" }
     }, UPDATED);
-    expect(renamed).toMatchObject({ title: "Family", timeZone: "UTC", updatedAt: UPDATED });
+    expect(renamed).toMatchObject({ title: "Family", timeZone: "UTC", agentAccess: "read", updatedAt: UPDATED });
+    expect(() => applyCalendarPatch(calendar, {
+      calendarId: calendar.id, expectedUpdatedAt: calendar.updatedAt,
+      patch: { agentAccess: "admin" as never }
+    }, UPDATED)).toThrow(expect.objectContaining({ reason: "invalid_agent_access" }));
     expect(() => applyCalendarPatch(renamed, {
       calendarId: renamed.id,
       expectedUpdatedAt: CREATED,
@@ -104,6 +109,7 @@ describe("native Calendar core domain", () => {
       color: "#336699",
       timeZone: "America/New_York",
       source: "external",
+      agentAccess: "none",
       isDefault: false,
       createdAt: CREATED,
       updatedAt: CREATED,

@@ -3876,9 +3876,25 @@ textarea {
 .ll-calendar-manager-list > button:hover, .ll-calendar-manager-list > button.selected { border-color: var(--ll-line); background: var(--ll-selected); }
 .ll-calendar-manager-list > button span:nth-child(2) { display: flex; flex-direction: column; min-width: 0; }
 .ll-calendar-manager-list small { margin-top: 2px; color: var(--ll-muted); }
+.ll-calendar-manager .ll-calendar-access-help { margin: -4px 0 0; color: var(--ll-muted); font-size: 12px; line-height: 1.5; }
 .ll-calendar-connections { grid-column: 1 / -1; padding-top: 18px; border-top: 1px solid var(--ll-line); }
 .ll-calendar-connections p { color: var(--ll-muted); font-size: 12px; }
 .ll-calendar-connections .ll-button { margin: 8px 8px 0 0; }
+.ll-calendar-connection-list { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; }
+.ll-calendar-connection { min-width: 0; padding: 14px; border: 1px solid var(--ll-line); border-radius: 9px; background: var(--ll-canvas); }
+.ll-calendar-connection > header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.ll-calendar-connection > header > div { min-width: 0; }
+.ll-calendar-connection h4 { margin: 0; font-size: 14px; }
+.ll-calendar-connection .ll-calendar-account-identity { margin: 4px 0 0; overflow-wrap: anywhere; }
+.ll-calendar-connection .ll-chip { flex: none; }
+.ll-connected-calendar-list { display: flex; flex-direction: column; }
+.ll-connected-calendar { display: grid; grid-template-columns: minmax(0,1fr) minmax(170px,.55fr); gap: 12px; align-items: start; padding: 12px 0; border-bottom: 1px solid var(--ll-line-soft); }
+.ll-connected-calendar > div { min-width: 0; }
+.ll-connected-calendar label { display: flex; flex-direction: column; gap: 5px; font-size: 12px; overflow-wrap: anywhere; }
+.ll-connected-calendar label.ll-checkbox-label { flex-direction: row; align-items: flex-start; }
+.ll-connected-calendar small { display: block; margin: 5px 0 0; color: var(--ll-muted); line-height: 1.5; }
+.ll-connected-calendar select { width: 100%; padding: 8px; border: 1px solid var(--ll-line); border-radius: 7px; background: var(--ll-paper); color: var(--ll-ink); font: inherit; }
+.ll-calendar-disconnect-confirmation { padding: 12px; margin-top: 12px; border: 1px solid var(--ll-copper); border-radius: 8px; }
 .ll-calendar-form-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
 .ll-calendar-recurrence { margin: 4px 0; padding: 14px; border: 1px solid var(--ll-line); border-radius: 9px; }
 .ll-calendar-recurrence legend { padding: 0 6px; font-size: 12px; font-weight: 650; }
@@ -3929,6 +3945,7 @@ textarea {
   .ll-calendar-agenda-event .ll-chip { margin-left: 32px; }
   .ll-calendar-agenda-day, .ll-calendar-manager, .ll-calendar-form-grid { grid-template-columns: minmax(0,1fr); }
   .ll-calendar-connections { grid-column: auto; }
+  .ll-connected-calendar { grid-template-columns: minmax(0,1fr); }
 }
 .ll-dialog .ll-record-editor { width: 100%; max-height: none; overflow: visible; padding: 0; background: transparent; border: 0; box-shadow: none; color: var(--ll-ink); }
 .ll-record-editor input, .ll-record-editor textarea, .ll-record-editor select { background: var(--ll-paper); border-color: var(--ll-line); color: var(--ll-ink); }

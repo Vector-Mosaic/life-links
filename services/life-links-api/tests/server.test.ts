@@ -550,6 +550,98 @@ describe("Life Links API", () => {
     ]));
   });
 
+  it("narrows native Calendar agent HTTP access without changing the human owner path", async () => {
+    await login();
+    const calendars = [];
+    for (const agentAccess of ["none", "read", "write"]) {
+      const created = await ctx.agent.post("/api/calendars").send({ title: agentAccess, timeZone: "UTC", agentAccess });
+      expect(created.status).toBe(201);
+      expect(created.body.calendar.agentAccess).toBe(agentAccess);
+      calendars.push(created.body.calendar);
+    }
+    const [hidden, readOnly, writable] = calendars;
+    const span = { kind: "all_day", startDate: "2026-09-01", endDateExclusive: "2026-09-02" };
+    const hiddenEvent = await ctx.agent.post("/api/calendar-events").send({ calendarId: hidden.id, title: "Private", span });
+    expect(hiddenEvent.status).toBe(201);
+    expect((await ctx.agent.get("/api/calendars").set("X-Life-Links-Actor", "agent")).status).toBe(403);
+    await ctx.store.connectAgent("demo-owner", "life-links-page-webmcp-v1");
+    expect((await ctx.agent.get("/api/calendars").set("X-Life-Links-Actor", "agent")).status).toBe(403);
+    await ctx.store.connectAgent("demo-owner", "life-links-calendar-v2");
+
+    const agentCalendars = await ctx.agent.get("/api/calendars").set("X-Life-Links-Actor", "agent");
+    expect(agentCalendars.status).toBe(200);
+    expect(agentCalendars.body.calendars.map((calendar: { id: string }) => calendar.id)).toEqual([readOnly.id, writable.id]);
+    expect((await ctx.agent.get("/api/calendars")).body.calendars).toHaveLength(3);
+    expect((await ctx.agent.get("/api/calendars").set("X-Life-Links-Actor", "human")).status).toBe(400);
+    expect((await ctx.agent.get(`/api/calendars/${hidden.id}`).set("X-Life-Links-Actor", "agent")).status).toBe(404);
+    expect((await ctx.agent.get(`/api/calendar-events/${hiddenEvent.body.calendarEvent.event.id}`)
+      .set("X-Life-Links-Actor", "agent")).status).toBe(404);
+    const filtered = await ctx.agent.get("/api/calendar-events").set("X-Life-Links-Actor", "agent")
+      .query({ calendarId: hidden.id, startDate: "2026-09-01", endDate: "2026-09-02" });
+    expect(filtered.status).toBe(200);
+    expect(filtered.body.calendarEvents).toEqual([]);
+    expect((await ctx.agent.post("/api/calendars").set("X-Life-Links-Actor", "agent")
+      .send({ title: "Agent escalation", timeZone: "UTC" })).status).toBe(403);
+    expect((await ctx.agent.patch(`/api/calendars/${readOnly.id}`).set("X-Life-Links-Actor", "agent")
+      .send({ expectedUpdatedAt: readOnly.updatedAt, agentAccess: "write" })).status).toBe(403);
+    expect((await ctx.agent.post("/api/calendar-events").set("X-Life-Links-Actor", "agent")
+      .send({ calendarId: readOnly.id, title: "Forbidden", span })).status).toBe(403);
+
+    const created = await ctx.agent.post("/api/calendar-events").set("X-Life-Links-Actor", "agent")
+      .send({ calendarId: writable.id, title: "Agent-created", span });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    const eventId = created.body.calendarEvent.event.id;
+    const changed = await ctx.agent.patch(`/api/calendar-events/${eventId}`).set("X-Life-Links-Actor", "agent")
+      .send({ expectedCurrentRevisionId: created.body.calendarEvent.currentRevision.id,
+        target: { scope: "event", eventId }, title: "Agent-edited", span });
+    expect(changed.status).toBe(200);
+    const deleted = await ctx.agent.delete(`/api/calendar-events/${eventId}`).set("X-Life-Links-Actor", "agent")
+      .send({ expectedCurrentRevisionId: changed.body.calendarEvent.currentRevision.id, target: { scope: "event", eventId } });
+    expect(deleted.status).toBe(200);
+    const restored = await ctx.agent.post(`/api/calendar-events/${eventId}/restore`).set("X-Life-Links-Actor", "agent")
+      .send({ expectedCurrentRevisionId: changed.body.calendarEvent.currentRevision.id, tombstoneId: deleted.body.latestTombstone.id });
+    expect(restored.status).toBe(200);
+    expect(restored.body.calendarEvent.event.deletedAt).toBeNull();
+
+    const revoked = await ctx.agent.patch(`/api/calendars/${writable.id}`)
+      .send({ expectedUpdatedAt: writable.updatedAt, agentAccess: "none" });
+    expect(revoked.status).toBe(200);
+    expect((await ctx.agent.get(`/api/calendar-events/${eventId}`).set("X-Life-Links-Actor", "agent")).status).toBe(404);
+    expect((await ctx.agent.get(`/api/calendar-events/${eventId}`)).body.calendarEvent.currentRevision.title).toBe("Agent-edited");
+  });
+
+  it.each(["calendar grant", "agent connection"])("rechecks native Calendar %s revocation after HTTP preflight and before saving", async (revocation) => {
+    await login();
+    await ctx.store.connectAgent("demo-owner", "life-links-calendar-v2");
+    const calendar = await ctx.agent.post("/api/calendars").send({ title: "Race", timeZone: "UTC" });
+    const span = { kind: "all_day", startDate: "2026-09-01", endDateExclusive: "2026-09-02" };
+    const created = await ctx.agent.post("/api/calendar-events").send({ calendarId: calendar.body.calendar.id, title: "Before", span });
+    expect(created.status).toBe(201);
+    const eventId = created.body.calendarEvent.event.id;
+    const originalRevise = ctx.store.reviseCalendarEvent.bind(ctx.store);
+    // Insert a real authoritative revocation after the server has read the event.
+    // The real mutation must check again; the interception does not fake success.
+    const pendingWrite = vi.spyOn(ctx.store, "reviseCalendarEvent").mockImplementationOnce(async (ownerId, command, actor) => {
+      expect(actor).toBe("agent");
+      if (revocation === "calendar grant") {
+        await ctx.store.updateCalendar(ownerId, { calendarId: calendar.body.calendar.id,
+          expectedUpdatedAt: calendar.body.calendar.updatedAt, patch: { agentAccess: "none" } });
+      } else {
+        await ctx.store.disconnectAgent(ownerId);
+      }
+      return originalRevise(ownerId, command, actor);
+    });
+    const denied = await ctx.agent.patch(`/api/calendar-events/${eventId}`).set("X-Life-Links-Actor", "agent")
+      .send({ expectedCurrentRevisionId: created.body.calendarEvent.currentRevision.id,
+        target: { scope: "event", eventId }, title: "Must not save", span });
+    expect(pendingWrite).toHaveBeenCalledOnce();
+    pendingWrite.mockRestore();
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe("calendar_access_denied");
+    expect((await ctx.store.getCalendarEvent("demo-owner", eventId))?.currentRevision.title).toBe("Before");
+    expect(await ctx.store.listCalendarEventRevisions("demo-owner", eventId)).toHaveLength(1);
+  });
+
   it("applies the existing browser-origin guard to native Calendar mutations", async () => {
     const guarded = await createSeededAgent({
       env: { ORIGIN_CHECK_ENABLED: "true", ORIGIN_CHECK_ALLOW_MISSING: "false" }

@@ -189,6 +189,7 @@ describe("provider-neutral Calendar gateway", () => {
       ownerId: OWNER_ID,
       ...LOCAL_CALENDAR_FIELDS,
       source: "external",
+      agentAccess: "read",
       createdAt: "2026-09-01T12:00:00.000Z",
       updatedAt: "2026-09-01T12:00:00.000Z",
       deletedAt: null
@@ -441,7 +442,8 @@ describe("provider-neutral Calendar gateway", () => {
       ownerId: OWNER_ID,
       connectionId: CONNECTION_ID,
       calendarId: CALENDAR_ID,
-      agentGrant: "write"
+      agentGrant: "write",
+      expectedUpdatedAt: (await noAgent.store.getCanonicalCalendar(CALENDAR_ID))!.updatedAt
     })).toMatchObject({ agentGrant: "write" });
     await expect(noAgent.gateway.executeCommand({
       kind: "create",

@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CalendarDays, Check, Cloud, Pencil, Plus, Trash2 } from "lucide-react";
 import type {
   CalendarEventEditTargetInput,
   CalendarEventStatus,
+  CalendarAgentAccess,
+  CalendarConnectedCalendarPatch,
+  CalendarConnectedCalendarView,
+  CalendarConnectionView,
   CalendarRecurrenceEnd,
   CalendarRecurrenceRule,
   CalendarWeekday
@@ -172,33 +176,128 @@ function DeleteEventDialog({ controller, snapshot, onClose, eventId }: Props & {
 }
 
 function ManageCalendarsDialog({ controller, snapshot, onClose }: Props) {
-  const calendars = snapshot.calendarWorkspace.calendars.filter((calendar) => !calendar.deletedAt);
+  const calendars = snapshot.calendarWorkspace.calendars.filter((calendar) => !calendar.deletedAt && calendar.source === "native");
   const [editingId, setEditingId] = useState<string | null>(null);
   const editing = calendars.find((calendar) => calendar.id === editingId);
   const [title, setTitle] = useState("");
   const [color, setColor] = useState("#7FC9B3");
   const [timeZone, setTimeZone] = useState(resolvedTimeZone());
   const [isDefault, setIsDefault] = useState(false);
+  const [agentAccess, setAgentAccess] = useState<CalendarAgentAccess>("write");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
-    setTitle(editing?.title ?? ""); setColor(editing?.color ?? "#7FC9B3"); setTimeZone(editing?.timeZone ?? resolvedTimeZone()); setIsDefault(editing?.isDefault ?? false);
-  }, [editingId]);
+    setTitle(editing?.title ?? ""); setColor(editing?.color ?? "#7FC9B3"); setTimeZone(editing?.timeZone ?? resolvedTimeZone()); setIsDefault(editing?.isDefault ?? false); setAgentAccess(editing?.agentAccess ?? "write");
+  }, [editingId, editing?.updatedAt]);
   async function save() {
     setSaving(true); setError("");
     try {
       if (!title.trim()) throw new Error("Add a Calendar name.");
-      if (editing) await controller.updateNativeCalendar(editing.id, editing.updatedAt, { title: title.trim(), color, timeZone, isDefault });
-      else await controller.createNativeCalendar({ title: title.trim(), color, timeZone, isDefault });
-      setEditingId(null); setTitle(""); setIsDefault(false);
+      if (editing) await controller.updateNativeCalendar(editing.id, editing.updatedAt, { title: title.trim(), color, timeZone, isDefault, agentAccess });
+      else await controller.createNativeCalendar({ title: title.trim(), color, timeZone, isDefault, agentAccess });
+      setEditingId(null); setTitle(""); setIsDefault(false); setAgentAccess("write");
     } catch (issue) { setError(messageFromIssue(issue, "The Calendar could not be saved.")); }
     finally { setSaving(false); }
   }
   return <Dialog title="Manage calendars" onClose={onClose} wide><div className="ll-calendar-manager">
-    <section><h3>Your Life Links calendars</h3><div className="ll-calendar-manager-list">{calendars.map((calendar) => <button key={calendar.id} onClick={() => setEditingId(calendar.id)} className={editingId === calendar.id ? "selected" : ""}><span className="ll-calendar-color" style={{ background: calendar.color }} /><span><strong>{calendar.title}</strong><small>{calendar.timeZone}{calendar.isDefault ? " · Default" : ""}</small></span><Pencil size={15} /></button>)}</div><button className="ll-text-button" onClick={() => { setEditingId(null); setTitle(""); setColor("#7FC9B3"); setTimeZone(resolvedTimeZone()); setIsDefault(false); }}><Plus size={15} />New Calendar</button></section>
-    <form className="ll-form" onSubmit={(event) => { event.preventDefault(); void save(); }}><h3>{editing ? `Edit ${editing.title}` : "New Calendar"}</h3><label>Name<input required maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>Color<input type="color" value={color} onChange={(event) => setColor(event.target.value)} /></label><label>Default time zone<select value={timeZone} onChange={(event) => setTimeZone(event.target.value)}>{supportedTimeZones().map((zone) => <option value={zone} key={zone}>{zone}</option>)}</select></label><label className="ll-checkbox-label"><input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} />Use as my default Calendar</label>{error && <p className="ll-inline-warning" role="alert">{error}</p>}<button className="ll-button ll-primary" disabled={saving || !title.trim()}><Check size={16} />{saving ? "Saving…" : editing ? "Save Calendar" : "Create Calendar"}</button></form>
-    <section className="ll-calendar-connections"><h3>External calendars</h3><p>Provider connections will appear here after their OAuth adapters and account authorization are qualified. No provider account is connected by this screen today.</p><button className="ll-button" disabled><Cloud size={16} />Google Calendar · Not connected</button><button className="ll-button" disabled><Cloud size={16} />Microsoft Outlook · Not connected</button></section>
+    <section><h3>Your Life Links calendars</h3><div className="ll-calendar-manager-list">{calendars.map((calendar) => <button key={calendar.id} onClick={() => setEditingId(calendar.id)} className={editingId === calendar.id ? "selected" : ""}><span className="ll-calendar-color" style={{ background: calendar.color }} /><span><strong>{calendar.title}</strong><small>{calendar.timeZone}{calendar.isDefault ? " · Default" : ""}</small><small>Agent: {agentAccessLabel(calendar.agentAccess)}</small></span><Pencil size={15} /></button>)}</div><button className="ll-text-button" onClick={() => { setEditingId(null); setTitle(""); setColor("#7FC9B3"); setTimeZone(resolvedTimeZone()); setIsDefault(false); setAgentAccess("write"); }}><Plus size={15} />New Calendar</button></section>
+    <form className="ll-form" onSubmit={(event) => { event.preventDefault(); void save(); }}><h3>{editing ? `Edit ${editing.title}` : "New Calendar"}</h3><label>Name<input required maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>Color<input type="color" value={color} onChange={(event) => setColor(event.target.value)} /></label><label>Default time zone<select value={timeZone} onChange={(event) => setTimeZone(event.target.value)}>{supportedTimeZones().map((zone) => <option value={zone} key={zone}>{zone}</option>)}</select></label><label className="ll-checkbox-label"><input type="checkbox" checked={isDefault} onChange={(event) => setIsDefault(event.target.checked)} />Use as my default Calendar</label><CalendarAgentAccessSelect value={agentAccess} onChange={setAgentAccess} disabled={saving} /><p className="ll-calendar-access-help">Showing or hiding a Calendar does not change agent access. Your agent must also be connected with Calendar tools enabled (the Calendar-v2 grant). Deleting events still requires your confirmation.</p>{error && <p className="ll-inline-warning" role="alert">{error}</p>}<button className="ll-button ll-primary" disabled={saving || !title.trim()}><Check size={16} />{saving ? "Saving…" : editing ? "Save Calendar" : "Create Calendar"}</button></form>
+    <CalendarConnectionsSection controller={controller} management={snapshot.calendarWorkspace.connectionManagement} />
   </div></Dialog>;
+}
+
+function CalendarConnectionsSection({ controller, management }: {
+  controller: LifeLinksWorkspaceController;
+  management: LifeLinksWorkspaceSnapshot["calendarWorkspace"]["connectionManagement"];
+}) {
+  const lifetime = useRef<AbortController | null>(null);
+  const [pending, setPending] = useState<string | null>(null);
+  const [disconnectId, setDisconnectId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const abort = new AbortController();
+    lifetime.current = abort;
+    void controller.loadCalendarConnections(abort.signal).catch(() => undefined);
+    return () => { abort.abort(); lifetime.current = null; };
+  }, [controller]);
+
+  async function update(view: CalendarConnectedCalendarView, patch: CalendarConnectedCalendarPatch) {
+    setPending(view.calendar.id); setError("");
+    try {
+      await controller.updateConnectedCalendar(view.connectionId, view.calendar.id, view.calendar.updatedAt, patch, lifetime.current?.signal);
+    } catch (issue) { setError(messageFromIssue(issue, "The connected Calendar could not be updated.")); }
+    finally { setPending(null); }
+  }
+
+  async function disconnect(connection: CalendarConnectionView) {
+    setPending(connection.connectionId); setError("");
+    try {
+      await controller.disconnectCalendarConnection(connection.connectionId, "purge", lifetime.current?.signal);
+      setDisconnectId(null);
+    } catch (issue) { setError(messageFromIssue(issue, "The connection could not be disconnected. Refresh its status before trying again.")); }
+    finally { setPending(null); }
+  }
+
+  return <section className="ll-calendar-connections">
+    <h3>External calendars</h3>
+    <p>New account connections are not available yet. Google Calendar and Microsoft Outlook sign-in will be enabled after their OAuth connection is ready.</p>
+    {management.providers.map((provider) => <button className="ll-button" key={provider.providerKey} disabled title="Account authorization is not available yet"><Cloud size={16} />Connect {provider.displayName}</button>)}
+    {management.loading && <p role="status">Loading Calendar connections…</p>}
+    {(management.error || error) && <div className="ll-inline-warning" role="alert"><p>{error || management.error}</p><button className="ll-button" disabled={management.loading || Boolean(pending)} onClick={() => { setError(""); void controller.loadCalendarConnections(lifetime.current?.signal).catch(() => undefined); }}>Retry loading connections</button></div>}
+    {management.loaded && !management.error && !management.connections.length && <p>No external accounts are connected.</p>}
+    <div className="ll-calendar-connection-list">{management.connections.map((connection) => {
+      const providerName = management.providers.find((provider) => provider.providerKey === connection.providerKey)?.displayName ?? connection.providerKey;
+      const calendars = management.calendars.filter((view) => view.connectionId === connection.connectionId && !view.calendar.deletedAt);
+      const active = connection.status === "active";
+      return <article className="ll-calendar-connection" key={connection.connectionId}>
+        <header><div><h4>{providerName}</h4><p className="ll-calendar-account-identity">Account: {connection.providerAccountId}</p></div><span className="ll-chip">{connection.status === "active" ? "Connected" : connection.status === "provisioning" ? "Connecting" : "Disconnected"}</span></header>
+        {connection.status === "disconnected" ? <p>{revocationStatusText(connection)}</p> : <>
+          <p>Select which already-linked calendars appear in your Calendar view. Visibility does not change agent access.</p>
+          {!calendars.length && <p>No calendars have been selected for this account.</p>}
+          <div className="ll-connected-calendar-list">{calendars.map((view) => {
+            const canWrite = view.capabilities.read && (view.capabilities.create || view.capabilities.update || view.capabilities.delete);
+            return <div className="ll-connected-calendar" key={view.calendar.id}>
+              <div><label className="ll-checkbox-label"><input type="checkbox" checked={view.visible} disabled={!active || Boolean(pending) || (!view.visible && !view.capabilities.read)} onChange={(event) => void update(view, { visible: event.target.checked })} />{view.providerDisplayName || view.calendar.title}</label><small>{view.calendar.timeZone} · {providerCapabilityText(view)}</small></div>
+              <CalendarAgentAccessSelect value={view.calendar.agentAccess} canRead={view.capabilities.read} canWrite={canWrite} disabled={!active || Boolean(pending)} writeLabel={view.capabilities.update ? "Read and edit" : "Read and allowed changes"} onChange={(agentAccess) => void update(view, { agentAccess })} />
+            </div>;
+          })}</div>
+          <p>Finding additional calendars for this account is not available yet. An agent also needs the connected Calendar-v2 grant, and can never exceed the provider's permissions.</p>
+          {disconnectId === connection.connectionId ? <div className="ll-calendar-disconnect-confirmation" role="group" aria-label={`Confirm disconnect ${providerName}`}>
+            <strong>Disconnect {providerName}?</strong><p>Life Links will stop using this account and remove its cached events from this view. Your original calendars and events at {providerName} will not be deleted. Provider access revocation may remain pending or fail; its status will be shown separately.</p>
+            <button className="ll-button" disabled={Boolean(pending)} onClick={() => setDisconnectId(null)}>Cancel</button><button className="ll-button ll-danger" disabled={Boolean(pending)} onClick={() => void disconnect(connection)}>{pending === connection.connectionId ? "Disconnecting…" : "Yes, disconnect"}</button>
+          </div> : <button className="ll-button" disabled={Boolean(pending)} onClick={() => setDisconnectId(connection.connectionId)}>Disconnect account</button>}
+        </>}
+      </article>;
+    })}</div>
+  </section>;
+}
+
+function CalendarAgentAccessSelect({ value, onChange, disabled = false, canRead = true, canWrite = true, writeLabel = "Read and edit" }: {
+  value: CalendarAgentAccess;
+  onChange(value: CalendarAgentAccess): void;
+  disabled?: boolean;
+  canRead?: boolean;
+  canWrite?: boolean;
+  writeLabel?: string;
+}) {
+  return <label>Agent access<select value={value} disabled={disabled} onChange={(event) => onChange(event.target.value as CalendarAgentAccess)}><option value="none">No access</option><option value="read" disabled={!canRead}>Read only</option><option value="write" disabled={!canRead || !canWrite}>{writeLabel}</option></select></label>;
+}
+
+function agentAccessLabel(value: CalendarAgentAccess): string {
+  return value === "none" ? "No access" : value === "read" ? "Read only" : "Read and edit";
+}
+
+function providerCapabilityText(view: CalendarConnectedCalendarView): string {
+  if (!view.capabilities.read) return "Provider access unavailable";
+  const actions = [view.capabilities.create && "create", view.capabilities.update && "edit", view.capabilities.delete && "delete"].filter(Boolean);
+  return actions.length ? `Provider allows reading and: ${actions.join(", ")}` : "Provider is read only";
+}
+
+function revocationStatusText(connection: CalendarConnectionView): string {
+  if (connection.remoteRevocationStatus === "succeeded") return "Life Links access is off and provider access was revoked. Original provider events were not deleted.";
+  if (connection.remoteRevocationStatus === "pending") return "Life Links access is off. Provider access revocation is still pending; your original provider events were not deleted.";
+  if (connection.remoteRevocationStatus === "failed") return "Life Links access is off, but provider access revocation failed. Review this app's access in your provider account. Original provider events were not deleted.";
+  return "Life Links access is off. No remote revocation was required; original provider events were not deleted.";
 }
 
 function buildRecurrence(input: { frequency: "none" | CalendarRecurrenceRule["frequency"]; interval: number; weekdays: CalendarWeekday[]; startDate: string; endKind: CalendarRecurrenceEnd["kind"]; untilDate: string; count: number }): CalendarRecurrenceRule | null {

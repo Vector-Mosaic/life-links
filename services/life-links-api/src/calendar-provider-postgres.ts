@@ -1,5 +1,5 @@
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import type { CalendarRecord } from "@life-links/core";
+import type { CalendarRecord, CalendarConnectedCalendarView } from "@life-links/core";
 
 import {
   CalendarProviderGatewayError,
@@ -41,6 +41,21 @@ type ProviderBindingRow = QueryResultRow & {
   capabilities: CalendarProviderBindingRecord["capabilities"];
   agent_grant: CalendarProviderBindingRecord["agentGrant"];
   visible: boolean;
+  calendar_updated_at: Date | string;
+};
+
+type CanonicalCalendarRow = QueryResultRow & {
+  id: string;
+  owner_id: string;
+  title: string;
+  color: string;
+  time_zone: string;
+  source: CalendarRecord["source"];
+  is_default: boolean;
+  agent_access: CalendarRecord["agentAccess"];
+  created_at: Date | string;
+  updated_at: Date | string;
+  deleted_at: Date | string | null;
 };
 
 type ProviderSyncRow = QueryResultRow & {
@@ -112,6 +127,10 @@ type BindingIdentity = {
   providerCalendarId: string;
 };
 
+const bindingReadSql = `SELECT b.*, c.agent_access AS agent_grant, c.updated_at AS calendar_updated_at
+  FROM calendar_provider_bindings b
+  JOIN calendars c ON c.id = b.calendar_id AND c.owner_id = b.owner_id`;
+
 /**
  * Durable PostgreSQL implementation of the provider boundary. It deliberately
  * stores only credential-vault handles; OAuth secrets remain outside this
@@ -119,6 +138,14 @@ type BindingIdentity = {
  */
 export class PostgresCalendarProviderStateStore implements CalendarProviderStateStore {
   constructor(private readonly pool: Pool) {}
+
+  async listConnections(ownerId: string): Promise<CalendarProviderConnectionRecord[]> {
+    const result = await this.pool.query<ProviderConnectionRow>(
+      "SELECT * FROM calendar_provider_connections WHERE owner_id = $1 ORDER BY connected_at, connection_id",
+      [ownerId]
+    );
+    return result.rows.map(mapConnection);
+  }
 
   async getConnection(connectionId: string): Promise<CalendarProviderConnectionRecord | null> {
     const result = await this.pool.query<ProviderConnectionRow>(
@@ -166,7 +193,7 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
 
   async listCalendars(connectionId: string): Promise<CalendarProviderBindingRecord[]> {
     const result = await this.pool.query<ProviderBindingRow>(
-      "SELECT * FROM calendar_provider_bindings WHERE connection_id = $1 ORDER BY lower(provider_display_name), calendar_id",
+      `${bindingReadSql} WHERE b.connection_id = $1 ORDER BY lower(b.provider_display_name), b.calendar_id`,
       [connectionId]
     );
     return result.rows.map(mapBinding);
@@ -174,15 +201,37 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
 
   async getCalendar(connectionId: string, calendarId: string): Promise<CalendarProviderBindingRecord | null> {
     const result = await this.pool.query<ProviderBindingRow>(
-      "SELECT * FROM calendar_provider_bindings WHERE connection_id = $1 AND calendar_id = $2",
+      `${bindingReadSql} WHERE b.connection_id = $1 AND b.calendar_id = $2`,
       [connectionId, calendarId]
     );
     return result.rows[0] ? mapBinding(result.rows[0]) : null;
   }
 
+  async getCanonicalCalendar(calendarId: string): Promise<CalendarRecord | null> {
+    const result = await this.pool.query<CanonicalCalendarRow>("SELECT * FROM calendars WHERE id = $1", [calendarId]);
+    const row = result.rows[0];
+    return row ? mapCanonicalCalendar(row) : null;
+  }
+
+  async getManagedCalendar(connectionId: string, calendarId: string): Promise<CalendarConnectedCalendarView | null> {
+    const result = await this.pool.query<{ canonical: CanonicalCalendarRow; binding: ProviderBindingRow } & QueryResultRow>(
+      `SELECT to_jsonb(c) AS canonical, to_jsonb(b) AS binding FROM calendar_provider_bindings b
+       JOIN calendars c ON c.id = b.calendar_id AND c.owner_id = b.owner_id
+       WHERE b.connection_id = $1 AND b.calendar_id = $2`,
+      [connectionId, calendarId]
+    );
+    const row = result.rows[0];
+    return row ? {
+      calendar: mapCanonicalCalendar(row.canonical), connectionId,
+      providerCalendarId: row.binding.provider_calendar_id, providerDisplayName: row.binding.provider_display_name,
+      capabilities: { ...row.binding.capabilities }, visible: row.binding.visible
+    } : null;
+  }
+
   async provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord): Promise<void> {
     assertCalendarProvisioningPair(calendar, binding);
     await this.withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`owner:${calendar.ownerId}`]);
       const connectionResult = await client.query<ProviderConnectionRow>(
         "SELECT * FROM calendar_provider_connections WHERE connection_id = $1 FOR UPDATE",
         [binding.connectionId]
@@ -198,8 +247,8 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
       }
       await client.query(
         `INSERT INTO calendars (
-           id, owner_id, title, color, time_zone, source, is_default, created_at, updated_at, deleted_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+           id, owner_id, title, color, time_zone, source, is_default, created_at, updated_at, deleted_at, agent_access
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
         [
           calendar.id,
           calendar.ownerId,
@@ -210,32 +259,58 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
           calendar.isDefault,
           calendar.createdAt,
           calendar.updatedAt,
-          calendar.deletedAt
+          calendar.deletedAt,
+          calendar.agentAccess
         ]
       );
       await client.query(
         `INSERT INTO calendar_provider_bindings (
            connection_id, owner_id, provider_key, provider_account_id, calendar_id,
-           provider_calendar_id, provider_display_name, capabilities, agent_grant, visible
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10)`,
+           provider_calendar_id, provider_display_name, capabilities, visible
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)`,
         bindingValues(binding)
       );
     });
   }
 
-  async updateCalendarBinding(calendar: CalendarProviderBindingRecord): Promise<void> {
-    const result = await this.pool.query(
-      `UPDATE calendar_provider_bindings SET
-         provider_display_name = $7,
-         capabilities = $8::jsonb,
-         agent_grant = $9,
-         visible = $10
-       WHERE connection_id = $1 AND owner_id = $2 AND provider_key = $3
-         AND provider_account_id = $4 AND calendar_id = $5 AND provider_calendar_id = $6
-       RETURNING calendar_id`,
-      bindingValues(calendar)
-    );
-    assertOwnedWrite(result.rowCount, "The provider Calendar binding identity does not match its canonical Calendar.");
+  async updateCalendarBinding(calendar: CalendarProviderBindingRecord, options?: {
+    expectedUpdatedAt: string;
+    updatedAt: string;
+  }): Promise<void> {
+    await this.withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`owner:${calendar.ownerId}`]);
+      const connection = await client.query<ProviderConnectionRow>(
+        "SELECT * FROM calendar_provider_connections WHERE connection_id = $1 AND owner_id = $2 FOR UPDATE",
+        [calendar.connectionId, calendar.ownerId]
+      );
+      const current = await client.query<ProviderBindingRow>(
+        `${bindingReadSql} WHERE b.connection_id = $1 AND b.calendar_id = $2 FOR UPDATE OF b, c`,
+        [calendar.connectionId, calendar.calendarId]
+      );
+      const row = current.rows[0];
+      if (!connection.rows[0] || !row || row.owner_id !== calendar.ownerId
+        || row.provider_key !== calendar.providerKey || row.provider_account_id !== calendar.providerAccountId
+        || row.provider_calendar_id !== calendar.providerCalendarId) {
+        throw new CalendarProviderGatewayError("provider_identity_mismatch", "The provider Calendar binding identity does not match its canonical Calendar.");
+      }
+      if (options && (iso(row.calendar_updated_at) !== options.expectedUpdatedAt || connection.rows[0].status !== "active")) {
+        throw new CalendarProviderGatewayError("calendar_settings_conflict", "Calendar settings changed. Reload before saving.");
+      }
+      const updatedAt = options?.updatedAt
+        ?? new Date(Math.max(Date.now(), Date.parse(iso(row.calendar_updated_at)) + 1)).toISOString();
+      await client.query(
+        `UPDATE calendar_provider_bindings SET provider_display_name = $7, capabilities = $8::jsonb, visible = $9
+         WHERE connection_id = $1 AND owner_id = $2 AND provider_key = $3
+           AND provider_account_id = $4 AND calendar_id = $5 AND provider_calendar_id = $6`,
+        bindingValues(calendar)
+      );
+      const canonical = await client.query(
+        `UPDATE calendars SET agent_access = $3, updated_at = $4
+         WHERE id = $1 AND owner_id = $2 AND source = 'external' AND deleted_at IS NULL`,
+        [calendar.calendarId, calendar.ownerId, calendar.agentGrant, updatedAt]
+      );
+      assertOwnedWrite(canonical.rowCount, "The canonical external Calendar is unavailable.");
+    });
   }
 
   async rollbackProvisioning(connectionId: string): Promise<void> {
@@ -608,6 +683,14 @@ function mapBinding(row: ProviderBindingRow): CalendarProviderBindingRecord {
   };
 }
 
+function mapCanonicalCalendar(row: CanonicalCalendarRow): CalendarRecord {
+  return {
+    id: row.id, ownerId: row.owner_id, title: row.title, color: row.color, timeZone: row.time_zone,
+    source: row.source, isDefault: row.is_default, agentAccess: row.agent_access,
+    createdAt: iso(row.created_at), updatedAt: iso(row.updated_at), deletedAt: nullableIso(row.deleted_at)
+  };
+}
+
 function mapSyncState(row: ProviderSyncRow): CalendarProviderSyncState {
   return {
     connectionId: row.connection_id,
@@ -690,7 +773,6 @@ function bindingValues(binding: CalendarProviderBindingRecord): unknown[] {
     binding.providerCalendarId,
     binding.providerDisplayName,
     JSON.stringify(binding.capabilities),
-    binding.agentGrant,
     binding.visible
   ];
 }

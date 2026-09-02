@@ -76,6 +76,7 @@ import {
   type UpdateRoutineScheduleCommand,
   type FinalizeRoutineRunCommand,
   type CalendarRecord,
+  type CalendarActor,
   type CalendarEventRecord,
   type CalendarEventRevisionRecord,
   type CalendarEventTombstoneRecord,
@@ -172,6 +173,25 @@ export const LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID = "life-links-calendar-v2" as c
 export type AgentToolCatalogId =
   | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID
   | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID;
+
+export function assertHumanCalendarActor(actor: CalendarActor): void {
+  if (actor !== "human") {
+    throw new CalendarDomainError("calendar_access_denied", "Calendar settings require the owner.", { reason: "calendar_settings_human_only" });
+  }
+}
+
+export function assertCalendarAgentConnection(
+  user: Pick<StoredUser, "agentConnectedAt" | "agentToolCatalogId"> | null | undefined,
+  actor: CalendarActor
+): void {
+  if (actor === "agent" && (!user?.agentConnectedAt || user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID)) {
+    throw new CalendarDomainError("calendar_access_denied", "An active Calendar agent connection is required.", { reason: "calendar_agent_connection_required" });
+  }
+}
+
+export function calendarActorCanRead(calendar: CalendarRecord | null | undefined, actor: CalendarActor): boolean {
+  return actor === "human" || Boolean(calendar && calendar.deletedAt === null && (calendar.agentAccess === "read" || calendar.agentAccess === "write"));
+}
 
 export type SessionRecord = {
   id: string;
@@ -390,20 +410,20 @@ export type LifeLinksStore = {
   getRoutineSession(userId: string, sessionId: string): Promise<RoutineSessionProjection | null>;
   appendRoutineSessionAmendment(userId: string, command: AppendRoutineSessionAmendmentCommand): Promise<RoutineSessionAmendmentRecord | null>;
 
-  listCalendars(userId: string, page?: CalendarPageRequest): Promise<LifeLinkPage<CalendarRecord>>;
-  getCalendar(userId: string, calendarId: string): Promise<CalendarRecord | null>;
-  createCalendar(command: CreateCalendarCommand): Promise<CalendarRecord>;
-  updateCalendar(userId: string, command: UpdateCalendarCommand): Promise<CalendarRecord | null>;
-  softDeleteCalendar(userId: string, command: SoftDeleteCalendarCommand): Promise<CalendarRecord | null>;
-  restoreCalendar(userId: string, command: RestoreCalendarCommand): Promise<CalendarRecord | null>;
-  listCalendarEvents(userId: string, page?: CalendarEventPageRequest): Promise<LifeLinkPage<CalendarEventDetail>>;
-  getCalendarEvent(userId: string, eventId: string): Promise<CalendarEventDetail | null>;
-  listCalendarEventRevisions(userId: string, eventId: string): Promise<CalendarEventRevisionRecord[] | null>;
-  createCalendarEvent(command: CreateCalendarEventCommand): Promise<CanonicalCalendarEventCreation>;
-  reviseCalendarEvent(userId: string, command: ReviseCalendarEventCommand): Promise<CalendarEventDetail | null>;
-  softDeleteCalendarEvent(userId: string, command: SoftDeleteCalendarEventCommand): Promise<CalendarEventDeletion | null>;
-  restoreCalendarEvent(userId: string, command: RestoreCalendarEventCommand): Promise<CalendarEventDetail | null>;
-  listCalendarEventTombstones(userId: string, eventId: string): Promise<CalendarEventTombstoneRecord[] | null>;
+  listCalendars(userId: string, page?: CalendarPageRequest, actor?: CalendarActor): Promise<LifeLinkPage<CalendarRecord>>;
+  getCalendar(userId: string, calendarId: string, actor?: CalendarActor): Promise<CalendarRecord | null>;
+  createCalendar(command: CreateCalendarCommand, actor?: CalendarActor): Promise<CalendarRecord>;
+  updateCalendar(userId: string, command: UpdateCalendarCommand, actor?: CalendarActor): Promise<CalendarRecord | null>;
+  softDeleteCalendar(userId: string, command: SoftDeleteCalendarCommand, actor?: CalendarActor): Promise<CalendarRecord | null>;
+  restoreCalendar(userId: string, command: RestoreCalendarCommand, actor?: CalendarActor): Promise<CalendarRecord | null>;
+  listCalendarEvents(userId: string, page?: CalendarEventPageRequest, actor?: CalendarActor): Promise<LifeLinkPage<CalendarEventDetail>>;
+  getCalendarEvent(userId: string, eventId: string, actor?: CalendarActor): Promise<CalendarEventDetail | null>;
+  listCalendarEventRevisions(userId: string, eventId: string, actor?: CalendarActor): Promise<CalendarEventRevisionRecord[] | null>;
+  createCalendarEvent(command: CreateCalendarEventCommand, actor?: CalendarActor): Promise<CanonicalCalendarEventCreation>;
+  reviseCalendarEvent(userId: string, command: ReviseCalendarEventCommand, actor?: CalendarActor): Promise<CalendarEventDetail | null>;
+  softDeleteCalendarEvent(userId: string, command: SoftDeleteCalendarEventCommand, actor?: CalendarActor): Promise<CalendarEventDeletion | null>;
+  restoreCalendarEvent(userId: string, command: RestoreCalendarEventCommand, actor?: CalendarActor): Promise<CalendarEventDetail | null>;
+  listCalendarEventTombstones(userId: string, eventId: string, actor?: CalendarActor): Promise<CalendarEventTombstoneRecord[] | null>;
 
   listLinks(userId: string): Promise<LinkRecord[]>;
   createQrBatch(userId: string, count: number, qrBaseUrl: string): Promise<BatchCreateResult>;
@@ -1473,19 +1493,23 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async listCalendars(userId: string, page: CalendarPageRequest = {}): Promise<LifeLinkPage<CalendarRecord>> {
+  async listCalendars(userId: string, page: CalendarPageRequest = {}, actor: CalendarActor = "human"): Promise<LifeLinkPage<CalendarRecord>> {
+    assertCalendarAgentConnection(this.users.get(userId), actor);
     const rows = [...this.calendars.values()]
-      .filter((item) => item.ownerId === userId && (page.includeDeleted || item.deletedAt === null))
+      .filter((item) => item.ownerId === userId && (page.includeDeleted || item.deletedAt === null) && calendarActorCanRead(item, actor))
       .sort(compareCalendarRows)
       .map((item) => structuredClone(item));
     return pageCollectionRecords(rows, page);
   }
 
-  async getCalendar(userId: string, calendarId: string): Promise<CalendarRecord | null> {
-    return copyOwned(this.calendars.get(calendarId), userId);
+  async getCalendar(userId: string, calendarId: string, actor: CalendarActor = "human"): Promise<CalendarRecord | null> {
+    assertCalendarAgentConnection(this.users.get(userId), actor);
+    const calendar = copyOwned(this.calendars.get(calendarId), userId);
+    return calendar && calendarActorCanRead(calendar, actor) ? calendar : null;
   }
 
-  async createCalendar(command: CreateCalendarCommand): Promise<CalendarRecord> {
+  async createCalendar(command: CreateCalendarCommand, actor: CalendarActor = "human"): Promise<CalendarRecord> {
+    assertHumanCalendarActor(actor);
     const candidate = createCanonicalCalendar(command);
     return this.withLocks([`calendar-id:${candidate.id}`, candidate.ownerId], async () => {
       this.assertCalendarOwner(candidate.ownerId);
@@ -1500,10 +1524,12 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async updateCalendar(userId: string, command: UpdateCalendarCommand): Promise<CalendarRecord | null> {
+  async updateCalendar(userId: string, command: UpdateCalendarCommand, actor: CalendarActor = "human"): Promise<CalendarRecord | null> {
+    assertHumanCalendarActor(actor);
     return this.withOwnerLock(userId, async () => {
       const current = this.calendars.get(command.calendarId);
       if (!current || current.ownerId !== userId) return null;
+      assertNativeCalendarWriteAuthority(current);
       const candidate = applyCalendarPatch(current, command, nextTimestamp(current.updatedAt));
       if (sameCalendarPayload({ ...candidate, updatedAt: current.updatedAt }, current)) return structuredClone(current);
       if (candidate.isDefault) this.clearOtherDefaultCalendars(userId, candidate.id, candidate.updatedAt);
@@ -1512,7 +1538,8 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async softDeleteCalendar(userId: string, command: SoftDeleteCalendarCommand): Promise<CalendarRecord | null> {
+  async softDeleteCalendar(userId: string, command: SoftDeleteCalendarCommand, actor: CalendarActor = "human"): Promise<CalendarRecord | null> {
+    assertHumanCalendarActor(actor);
     return this.withOwnerLock(userId, async () => {
       const current = this.calendars.get(command.calendarId);
       if (!current || current.ownerId !== userId) return null;
@@ -1526,7 +1553,8 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async restoreCalendar(userId: string, command: RestoreCalendarCommand): Promise<CalendarRecord | null> {
+  async restoreCalendar(userId: string, command: RestoreCalendarCommand, actor: CalendarActor = "human"): Promise<CalendarRecord | null> {
+    assertHumanCalendarActor(actor);
     return this.withOwnerLock(userId, async () => {
       const current = this.calendars.get(command.calendarId);
       if (!current || current.ownerId !== userId) return null;
@@ -1540,15 +1568,16 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async listCalendarEvents(userId: string, page: CalendarEventPageRequest = {}): Promise<LifeLinkPage<CalendarEventDetail>> {
+  async listCalendarEvents(userId: string, page: CalendarEventPageRequest = {}, actor: CalendarActor = "human"): Promise<LifeLinkPage<CalendarEventDetail>> {
+    assertCalendarAgentConnection(this.users.get(userId), actor);
     assertCalendarEventDateWindow(page);
     if (page.calendarId) {
       const calendar = this.calendars.get(page.calendarId);
-      if (!calendar || calendar.ownerId !== userId) return { items: [], truncated: false, nextCursor: null };
+      if (!calendar || calendar.ownerId !== userId || !calendarActorCanRead(calendar, actor)) return { items: [], truncated: false, nextCursor: null };
     }
     const wrapped = [...this.calendarEvents.values()]
       .filter((event) => event.ownerId === userId && (!page.calendarId || event.calendarId === page.calendarId) &&
-        (page.includeDeleted || event.deletedAt === null))
+        (page.includeDeleted || event.deletedAt === null) && calendarActorCanRead(this.calendars.get(event.calendarId), actor))
       .map((event) => ({ id: event.id, detail: this.memoryCalendarEventDetail(event) }))
       .filter((item) => calendarEventInDateWindow(item.detail, page))
       .sort((left, right) => compareCalendarEventDetails(left.detail, right.detail));
@@ -1556,24 +1585,28 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     return { ...paged, items: paged.items.map((item) => structuredClone(item.detail)) };
   }
 
-  async getCalendarEvent(userId: string, eventId: string): Promise<CalendarEventDetail | null> {
+  async getCalendarEvent(userId: string, eventId: string, actor: CalendarActor = "human"): Promise<CalendarEventDetail | null> {
+    assertCalendarAgentConnection(this.users.get(userId), actor);
     const event = this.calendarEvents.get(eventId);
-    return event?.ownerId === userId ? structuredClone(this.memoryCalendarEventDetail(event)) : null;
+    return event?.ownerId === userId && calendarActorCanRead(this.calendars.get(event.calendarId), actor)
+      ? structuredClone(this.memoryCalendarEventDetail(event)) : null;
   }
 
-  async listCalendarEventRevisions(userId: string, eventId: string): Promise<CalendarEventRevisionRecord[] | null> {
+  async listCalendarEventRevisions(userId: string, eventId: string, actor: CalendarActor = "human"): Promise<CalendarEventRevisionRecord[] | null> {
+    assertCalendarAgentConnection(this.users.get(userId), actor);
     const event = this.calendarEvents.get(eventId);
-    if (!event || event.ownerId !== userId) return null;
+    if (!event || event.ownerId !== userId || !calendarActorCanRead(this.calendars.get(event.calendarId), actor)) return null;
     return [...this.calendarEventRevisions.values()]
       .filter((item) => item.ownerId === userId && item.eventId === eventId)
       .sort((left, right) => left.revisionNumber - right.revisionNumber)
       .map((item) => structuredClone(item));
   }
 
-  async createCalendarEvent(command: CreateCalendarEventCommand): Promise<CanonicalCalendarEventCreation> {
+  async createCalendarEvent(command: CreateCalendarEventCommand, actor: CalendarActor = "human"): Promise<CanonicalCalendarEventCreation> {
     const candidate = createCanonicalCalendarEvent(command);
     return this.withLocks([`calendar-event-id:${candidate.event.id}`, `calendar-event-revision-id:${candidate.currentRevision.id}`, candidate.event.ownerId], async () => {
       this.assertCalendarOwner(candidate.event.ownerId);
+      this.assertAgentCalendarWrite(candidate.event.ownerId, candidate.event.calendarId, actor);
       const existingEvent = this.calendarEvents.get(candidate.event.id);
       if (existingEvent) {
         const existingRevision = this.calendarEventRevisions.get(existingEvent.currentRevisionId);
@@ -1592,10 +1625,12 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async reviseCalendarEvent(userId: string, command: ReviseCalendarEventCommand): Promise<CalendarEventDetail | null> {
+  async reviseCalendarEvent(userId: string, command: ReviseCalendarEventCommand, actor: CalendarActor = "human"): Promise<CalendarEventDetail | null> {
     return this.withOwnerLock(userId, async () => {
+      assertCalendarAgentConnection(this.users.get(userId), actor);
       const event = this.calendarEvents.get(command.eventId);
       if (!event || event.ownerId !== userId) return null;
+      this.assertAgentCalendarWrite(userId, event.calendarId, actor);
       const replayRevision = this.calendarEventRevisions.get(command.revisionId);
       if (replayRevision) {
         const previousRevision = [...this.calendarEventRevisions.values()].find((item) => item.ownerId === userId &&
@@ -1622,10 +1657,12 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async softDeleteCalendarEvent(userId: string, command: SoftDeleteCalendarEventCommand): Promise<CalendarEventDeletion | null> {
+  async softDeleteCalendarEvent(userId: string, command: SoftDeleteCalendarEventCommand, actor: CalendarActor = "human"): Promise<CalendarEventDeletion | null> {
     return this.withOwnerLock(userId, async () => {
+      assertCalendarAgentConnection(this.users.get(userId), actor);
       const event = this.calendarEvents.get(command.eventId);
       if (!event || event.ownerId !== userId) return null;
+      this.assertAgentCalendarWrite(userId, event.calendarId, actor);
       const replay = this.calendarEventTombstones.get(command.tombstoneId);
       if (replay) {
         if (replay.ownerId === userId && replay.eventId === event.id && replay.lastRevisionId === command.expectedCurrentRevisionId &&
@@ -1639,11 +1676,13 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async restoreCalendarEvent(userId: string, command: RestoreCalendarEventCommand): Promise<CalendarEventDetail | null> {
+  async restoreCalendarEvent(userId: string, command: RestoreCalendarEventCommand, actor: CalendarActor = "human"): Promise<CalendarEventDetail | null> {
     return this.withOwnerLock(userId, async () => {
+      assertCalendarAgentConnection(this.users.get(userId), actor);
       const event = this.calendarEvents.get(command.eventId);
       const tombstone = this.calendarEventTombstones.get(command.tombstoneId);
       if (!event || event.ownerId !== userId || !tombstone || tombstone.ownerId !== userId) return null;
+      this.assertAgentCalendarWrite(userId, event.calendarId, actor);
       const calendar = this.calendars.get(event.calendarId);
       if (!calendar || calendar.ownerId !== userId || calendar.deletedAt !== null) {
         calendarConflict("Deleted Calendar event cannot be restored into an unavailable Calendar.", "calendar_unavailable");
@@ -1655,9 +1694,10 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async listCalendarEventTombstones(userId: string, eventId: string): Promise<CalendarEventTombstoneRecord[] | null> {
+  async listCalendarEventTombstones(userId: string, eventId: string, actor: CalendarActor = "human"): Promise<CalendarEventTombstoneRecord[] | null> {
+    assertCalendarAgentConnection(this.users.get(userId), actor);
     const event = this.calendarEvents.get(eventId);
-    if (!event || event.ownerId !== userId) return null;
+    if (!event || event.ownerId !== userId || !calendarActorCanRead(this.calendars.get(event.calendarId), actor)) return null;
     return [...this.calendarEventTombstones.values()]
       .filter((item) => item.ownerId === userId && item.eventId === eventId)
       .sort((left, right) => left.deletedAt.localeCompare(right.deletedAt) || left.id.localeCompare(right.id))
@@ -2102,6 +2142,15 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   private assertCalendarOwner(ownerId: string): void {
     if (!this.users.has(ownerId)) {
       throw new CalendarDomainError("calendar_reference_conflict", "Calendar owner was not found.", { reason: "owner_not_found" });
+    }
+  }
+
+  private assertAgentCalendarWrite(ownerId: string, calendarId: string, actor: CalendarActor): void {
+    assertCalendarAgentConnection(this.users.get(ownerId), actor);
+    if (actor === "human") return;
+    const calendar = this.calendars.get(calendarId);
+    if (!calendar || calendar.ownerId !== ownerId || calendar.deletedAt !== null || calendar.agentAccess !== "write") {
+      throw new CalendarDomainError("calendar_access_denied", "Calendar agent write access is unavailable.", { reason: "agent_calendar_write_denied" });
     }
   }
 

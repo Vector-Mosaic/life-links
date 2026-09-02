@@ -5,6 +5,9 @@ import type {
   ActivityRecord,
   CalendarEventTombstoneRecord,
   CalendarRecord,
+  CalendarConnectionView,
+  CalendarConnectedCalendarView,
+  CalendarProviderAvailability,
   CanonicalRoutineCreation,
   LifeLinkMediaRecord,
   ChangeHistory,
@@ -167,6 +170,14 @@ export type RoutineWorkspaceState = {
 };
 
 export type CalendarWorkspaceState = {
+  connectionManagement: {
+    providers: CalendarProviderAvailability[];
+    connections: CalendarConnectionView[];
+    calendars: CalendarConnectedCalendarView[];
+    loading: boolean;
+    loaded: boolean;
+    error: string;
+  };
   clock: CalendarClock | null;
   calendars: CalendarRecord[];
   calendarsNextCursor: string | null;

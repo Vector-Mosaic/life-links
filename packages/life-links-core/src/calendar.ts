@@ -17,6 +17,7 @@ export const CALENDAR_DOMAIN_ERROR_CODES = [
   "calendar_not_found",
   "invalid_calendar_event",
   "calendar_event_not_found",
+  "calendar_access_denied",
   "stale_calendar",
   "stale_calendar_event",
   "calendar_conflict",
@@ -40,6 +41,8 @@ export class CalendarDomainError extends Error {
 }
 
 export type CalendarSource = "native" | "external";
+export type CalendarAgentAccess = "none" | "read" | "write";
+export type CalendarActor = "human" | "agent";
 
 export type CalendarRecord = {
   id: string;
@@ -48,6 +51,7 @@ export type CalendarRecord = {
   color: string;
   timeZone: string;
   source: CalendarSource;
+  agentAccess: CalendarAgentAccess;
   isDefault: boolean;
   createdAt: string;
   updatedAt: string;
@@ -61,12 +65,13 @@ export type CreateCalendarCommand = {
   color?: string;
   timeZone: string;
   isDefault?: boolean;
+  agentAccess?: CalendarAgentAccess;
   createdAt: string;
 };
 
 export type CreateExternalCalendarCommand = CreateCalendarCommand;
 
-export type CalendarPatch = Partial<Pick<CalendarRecord, "title" | "color" | "timeZone" | "isDefault">>;
+export type CalendarPatch = Partial<Pick<CalendarRecord, "title" | "color" | "timeZone" | "isDefault" | "agentAccess">>;
 
 export type UpdateCalendarCommand = {
   calendarId: string;
@@ -339,6 +344,13 @@ export function normalizeCalendarSource(value: unknown): CalendarSource {
   return value;
 }
 
+export function normalizeCalendarAgentAccess(value: unknown): CalendarAgentAccess {
+  if (value !== "none" && value !== "read" && value !== "write") {
+    throw invalidCalendar("Calendar agent access is invalid.", "invalid_agent_access");
+  }
+  return value;
+}
+
 export function createCanonicalCalendar(command: CreateCalendarCommand): CalendarRecord {
   return createCanonicalCalendarWithSource(command, "native");
 }
@@ -358,9 +370,9 @@ function createCanonicalCalendarWithSource(
 ): CalendarRecord {
   assertCalendarExactKeys(
     command,
-    ["id", "ownerId", "title", "color", "timeZone", "isDefault", "createdAt"],
+    ["id", "ownerId", "title", "color", "timeZone", "isDefault", "agentAccess", "createdAt"],
     "invalid_create_calendar",
-    ["color", "isDefault"]
+    ["color", "isDefault", "agentAccess"]
   );
   const createdAt = normalizeTimestamp(command.createdAt, "invalid_calendar");
   return {
@@ -370,6 +382,7 @@ function createCanonicalCalendarWithSource(
     color: normalizeCalendarColor(command.color ?? "#2f6f5f"),
     timeZone: normalizeCalendarIanaTimeZone(command.timeZone),
     source,
+    agentAccess: normalizeCalendarAgentAccess(command.agentAccess ?? (source === "native" ? "write" : "none")),
     isDefault: command.isDefault === undefined ? false : normalizeBoolean(command.isDefault, "invalid_default_flag"),
     createdAt,
     updatedAt: createdAt,
@@ -378,11 +391,12 @@ function createCanonicalCalendarWithSource(
 }
 
 export function normalizeCalendarPatch(value: unknown): CalendarPatch {
-  assertCalendarExactKeys(value, ["title", "color", "timeZone", "isDefault"], "invalid_calendar_patch", [
+  assertCalendarExactKeys(value, ["title", "color", "timeZone", "isDefault", "agentAccess"], "invalid_calendar_patch", [
     "title",
     "color",
     "timeZone",
-    "isDefault"
+    "isDefault",
+    "agentAccess"
   ]);
   const patch: CalendarPatch = {};
   if (hasOwn(value, "title")) {
@@ -391,6 +405,7 @@ export function normalizeCalendarPatch(value: unknown): CalendarPatch {
   if (hasOwn(value, "color")) patch.color = normalizeCalendarColor(value.color);
   if (hasOwn(value, "timeZone")) patch.timeZone = normalizeCalendarIanaTimeZone(value.timeZone);
   if (hasOwn(value, "isDefault")) patch.isDefault = normalizeBoolean(value.isDefault, "invalid_default_flag");
+  if (hasOwn(value, "agentAccess")) patch.agentAccess = normalizeCalendarAgentAccess(value.agentAccess);
   return patch;
 }
 

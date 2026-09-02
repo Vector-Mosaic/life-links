@@ -144,6 +144,7 @@ const nativeCalendar: CalendarRecord = {
   color: "#7FC9B3",
   timeZone: "America/New_York",
   source: "native",
+  agentAccess: "write",
   isDefault: true,
   createdAt: rootFixture.createdAt,
   updatedAt: rootFixture.createdAt,
@@ -265,7 +266,7 @@ describe("LifeLinksWorkspaceController", () => {
         error: ""
       }
     });
-    expect(api.getCalendarEvent).toHaveBeenCalledWith(nativeCalendarEvent.event.id);
+    expect(api.getCalendarEvent).toHaveBeenCalledWith(nativeCalendarEvent.event.id, undefined, "human");
     expect(api.listLinks).not.toHaveBeenCalled();
     expect(api.listLifeLinks).not.toHaveBeenCalled();
     controller.dispose();
@@ -353,6 +354,7 @@ describe("LifeLinksWorkspaceController", () => {
     });
     api.getMe.mockResolvedValue({ user: testOwner, qrBaseUrl: "https://example.test", agentConnection: connectedAgentConnection });
     api.listCalendars.mockResolvedValue({ calendars: [calendar], nextCursor: null, truncated: false });
+    api.getCalendar.mockResolvedValue({ calendar });
     api.getCalendarEvent.mockImplementation(async (eventId) => ({
       calendarEvent: (await store.getCalendarEvent(testOwner.id, eventId))!, latestTombstone: null
     }));
@@ -477,6 +479,100 @@ describe("LifeLinksWorkspaceController", () => {
       nextCursor: null,
       truncated: false
     });
+    controller.dispose();
+  });
+
+  it("honors current Calendar grants separately from the human workspace and sends narrowed agent requests", async () => {
+    const api = fakeApi();
+    let grant: CalendarRecord["agentAccess"] = "read";
+    api.listCalendars.mockImplementation(async () => ({ calendars: [{ ...nativeCalendar, agentAccess: grant }], nextCursor: null, truncated: false }));
+    api.getCalendar.mockImplementation(async () => ({ calendar: { ...nativeCalendar, agentAccess: grant } }));
+    api.getCalendarEvent.mockResolvedValue({ calendarEvent: nativeCalendarEvent, latestTombstone: null });
+    api.listCalendarEvents.mockResolvedValue({ calendarEvents: [nativeCalendarEvent], nextCursor: null, truncated: false });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+    await controller.connectAgent();
+    await expect(controller.agentListAuthorizedCalendars({ limit: 10 })).resolves.toMatchObject({
+      ok: true, calendars: [{ id: nativeCalendar.id, agentAccess: "read" }]
+    });
+    await expect(controller.agentInspectCalendarEvent({ eventId: nativeCalendarEvent.event.id })).resolves.toMatchObject({ ok: true });
+    expect(api.getCalendarEvent).toHaveBeenCalledWith(nativeCalendarEvent.event.id, undefined, "agent");
+    const target = { scope: "event" as const, eventId: nativeCalendarEvent.event.id };
+    await expect(controller.agentUpdateCalendarEvent({ eventId: nativeCalendarEvent.event.id,
+      expectedCurrentRevisionId: nativeCalendarEvent.currentRevision.id,
+      revisionId: "calendar-event-revision-44444444-4444-4444-8444-444444444444", target,
+      patch: { title: "Denied write" } })).resolves.toMatchObject({ ok: false });
+    await expect(controller.agentPrepareCalendarEventDeletion({ eventId: nativeCalendarEvent.event.id,
+      expectedCurrentRevisionId: nativeCalendarEvent.currentRevision.id, target })).resolves.toMatchObject({ ok: false });
+    expect(api.updateCalendarEvent).not.toHaveBeenCalled();
+    expect(api.deleteCalendarEvent).not.toHaveBeenCalled();
+    grant = "none";
+    await expect(controller.agentListAuthorizedCalendars({ limit: 10 })).resolves.toMatchObject({ ok: true, calendars: [] });
+    await expect(controller.agentQueryCalendarEvents({ startDate: "2026-08-20", endDate: "2026-08-20", limit: 10 }))
+      .resolves.toMatchObject({ ok: true, instances: [] });
+    expect(api.listCalendarEvents).toHaveBeenCalledWith(expect.objectContaining({ actor: "agent" }));
+    await expect(controller.agentInspectCalendarEvent({ eventId: nativeCalendarEvent.event.id })).resolves.toMatchObject({ ok: false });
+    // Owner data stays present; a denied agent read is not a deletion or an owner visibility setting.
+    expect(controller.getSnapshot().calendarWorkspace.calendars).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("refuses a Calendar deletion prepared before access was revoked", async () => {
+    const api = fakeApi();
+    api.listCalendars.mockResolvedValue({ calendars: [nativeCalendar], nextCursor: null, truncated: false });
+    api.getCalendarEvent.mockResolvedValue({ calendarEvent: nativeCalendarEvent, latestTombstone: null });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/calendar") });
+    await controller.start();
+    await controller.connectAgent();
+    const prepared = await controller.agentPrepareCalendarEventDeletion({ eventId: nativeCalendarEvent.event.id,
+      expectedCurrentRevisionId: nativeCalendarEvent.currentRevision.id,
+      target: { scope: "event", eventId: nativeCalendarEvent.event.id } });
+    if (!prepared.ok) throw new Error("Expected preview under initial write grant.");
+    api.getCalendar.mockResolvedValue({ calendar: { ...nativeCalendar, agentAccess: "read" } });
+    await expect(controller.agentApplyCalendarEventDeletion(prepared.preview.id)).resolves.toMatchObject({ ok: false });
+    expect(controller.getSnapshot().agentCalendarDeletionConfirmation).toBeNull();
+    expect(api.deleteCalendarEvent).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("rejects Calendar controller calls under the older fourteen-tool grant", async () => {
+    const api = fakeApi();
+    api.getMe.mockResolvedValue({ user: owner, qrBaseUrl: "https://example.test", agentConnection: {
+      ...connectedAgentConnection, toolCatalogId: "life-links-page-webmcp-v1"
+    } });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    await expect(controller.agentListAuthorizedCalendars({ limit: 10 })).resolves.toMatchObject({ ok: false });
+    expect(api.listCalendars).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("loads Calendar connection settings and refuses stale readback after logout", async () => {
+    const api = fakeApi();
+    const connection = {
+      ownerId: owner.id, connectionId: "connection-synthetic", providerKey: "google", providerAccountId: "synthetic-account",
+      status: "active" as const, connectedAt: rootFixture.createdAt, disconnectedAt: null,
+      remoteRevocationStatus: "not_required" as const, remoteRevocationAttemptedAt: null, remoteRevocationErrorCode: null
+    };
+    const bound = { calendar: { ...nativeCalendar, source: "external" as const, agentAccess: "none" as const },
+      connectionId: connection.connectionId, providerCalendarId: "provider-synthetic", providerDisplayName: "Personal",
+      capabilities: { read: true, create: false, update: false, delete: false }, visible: true };
+    api.listCalendarConnections.mockResolvedValue({ connections: [connection] });
+    api.listConnectedCalendars.mockResolvedValue({ calendars: [bound] });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    await controller.loadCalendarConnections();
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement).toMatchObject({
+      loaded: true, connections: [connection], calendars: [bound]
+    });
+    const delayed = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listConnectedCalendars"]>>>();
+    api.listConnectedCalendars.mockImplementationOnce(() => delayed.promise);
+    const pending = controller.loadCalendarConnections();
+    await vi.waitFor(() => expect(api.listConnectedCalendars).toHaveBeenCalledTimes(2));
+    await controller.logout();
+    delayed.resolve({ calendars: [bound] });
+    await pending;
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement).toMatchObject({ loaded: false, calendars: [], connections: [] });
     controller.dispose();
   });
 
@@ -2546,6 +2642,11 @@ class FakeRoute implements WorkspaceBrowserRoute {
 
 function fakeApi() {
   return {
+    listCalendarProviders: vi.fn<LifeLinksWorkspaceApi["listCalendarProviders"]>(async () => ({ providers: [] })),
+    listCalendarConnections: vi.fn<LifeLinksWorkspaceApi["listCalendarConnections"]>(async () => ({ connections: [] })),
+    listConnectedCalendars: vi.fn<LifeLinksWorkspaceApi["listConnectedCalendars"]>(async () => ({ calendars: [] })),
+    updateConnectedCalendar: vi.fn<LifeLinksWorkspaceApi["updateConnectedCalendar"]>(),
+    disconnectCalendarConnection: vi.fn<LifeLinksWorkspaceApi["disconnectCalendarConnection"]>(),
     getLifeLinkAttachmentContent: vi.fn<LifeLinksWorkspaceApi["getLifeLinkAttachmentContent"]>(),
     getLifeLinkAttachmentImage: vi.fn<LifeLinksWorkspaceApi["getLifeLinkAttachmentImage"]>(),
     getChangeHistory: vi.fn<LifeLinksWorkspaceApi["getChangeHistory"]>(async () => ({ limit: 5, entries: [] })),
@@ -2558,6 +2659,7 @@ function fakeApi() {
     deleteCalendar: vi.fn<LifeLinksWorkspaceApi["deleteCalendar"]>(),
     deleteCalendarEvent: vi.fn<LifeLinksWorkspaceApi["deleteCalendarEvent"]>(),
     getCalendarEvent: vi.fn<LifeLinksWorkspaceApi["getCalendarEvent"]>(),
+    getCalendar: vi.fn<LifeLinksWorkspaceApi["getCalendar"]>(async () => ({ calendar: nativeCalendar })),
     getCalendarClock: vi.fn<LifeLinksWorkspaceApi["getCalendarClock"]>(async (timeZone) => ({
       serverTime: "2026-09-01T16:00:00.000Z", timeZone, today: "2026-09-01"
     })),

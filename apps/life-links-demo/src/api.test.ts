@@ -9,7 +9,8 @@ import {
   removeCollectionSection, replaceCollectionSectionAssignments, setLifeLinkQrBinding,
   updateCollection, updateCollectionSection, updateLifeLink, getLifeLinkAttachmentContent, getLifeLinkAttachmentImage,
   listRoutineOccurrences, materializeRoutineOccurrences, putRoutineRunStepResult,
-  restoreCalendar, restoreCalendarEvent, updateCalendar, updateCalendarEvent
+  restoreCalendar, restoreCalendarEvent, updateCalendar, updateCalendarEvent,
+  listCalendarProviders, listCalendarConnections, listConnectedCalendars, updateConnectedCalendar, disconnectCalendarConnection
 } from "./api";
 import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, ATTACHMENT_IMAGE_MAX_BYTES } from "@life-links/core";
 import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedImageFixture, attachmentTranscriptFixture } from "./attachmentImage.testFixtures";
@@ -17,6 +18,46 @@ import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedIm
 describe("Life Links API error normalization", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it("keeps Calendar agent narrowing separate from owner settings while preserving JSON headers", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const calendarId = "calendar-00000000-0000-4000-8000-000000000001";
+    const eventId = "calendar-event-00000000-0000-4000-8000-000000000001";
+    const revisionId = "calendar-event-revision-00000000-0000-4000-8000-000000000001";
+    const span = { kind: "all_day" as const, startDate: "2026-09-01", endDateExclusive: "2026-09-02" };
+    await listCalendars({ actor: "agent" });
+    await getCalendar(calendarId, undefined, "agent");
+    await listCalendarEvents({ startDate: "2026-09-01", endDate: "2026-09-01", actor: "agent" });
+    await getCalendarEvent(eventId, undefined, "agent");
+    await createCalendarEvent({ id: eventId, revisionId, calendarId, title: "Agent event", lineage: { kind: "standalone" }, span }, undefined, "agent");
+    await updateCalendarEvent(eventId, { revisionId, expectedCurrentRevisionId: revisionId, title: "Updated", span,
+      target: { scope: "event", eventId } }, undefined, "agent");
+    await deleteCalendarEvent(eventId, { expectedCurrentRevisionId: revisionId, target: { scope: "event", eventId } }, undefined, "agent");
+    await updateCalendar(calendarId, "2026-09-01T00:00:00.000Z", { agentAccess: "none" });
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.slice(0, 7).map(([, init]) => new Headers(init.headers).get("X-Life-Links-Actor"))).toEqual(Array(7).fill("agent"));
+    expect(new Headers(calls[7][1].headers).has("X-Life-Links-Actor")).toBe(false);
+    expect(calls.every(([, init]) => new Headers(init.headers).get("Content-Type") === "application/json")).toBe(true);
+  });
+
+  it("uses the owner Calendar connection contract without provider credentials", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await listCalendarProviders();
+    await listCalendarConnections();
+    await listConnectedCalendars("connection/one");
+    await updateConnectedCalendar("connection/one", "calendar/one", "2026-09-01T00:00:00.000Z", { visible: false, agentAccess: "none" });
+    await disconnectCalendarConnection("connection/one", "purge");
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([path]) => path)).toEqual([
+      "/api/calendar-providers", "/api/calendar-connections", "/api/calendar-connections/connection%2Fone/calendars",
+      "/api/calendar-connections/connection%2Fone/calendars/calendar%2Fone", "/api/calendar-connections/connection%2Fone/disconnect"
+    ]);
+    expect(JSON.parse(calls[3][1].body as string)).toEqual({ expectedUpdatedAt: "2026-09-01T00:00:00.000Z", visible: false, agentAccess: "none" });
+    expect(JSON.parse(calls[4][1].body as string)).toEqual({ localProjectionDisposition: "purge" });
+    expect(calls.every(([, init]) => !new Headers(init.headers).has("X-Life-Links-Actor"))).toBe(true);
   });
 
   it.each(["docx", "xlsx", "video", "animation"] as const)("delivers selected %s coordinates, bytes and identity through the private API", async (kind) => {

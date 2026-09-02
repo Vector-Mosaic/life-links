@@ -6,6 +6,11 @@ import type {
   ActivityPatch,
   ActivityRecord,
   AppendRoutineSessionAmendmentCommand,
+  CalendarActor,
+  CalendarConnectionView,
+  CalendarConnectedCalendarView,
+  CalendarConnectedCalendarPatch,
+  CalendarProviderAvailability,
   CalendarEventEditTargetInput,
   CalendarEventRecord,
   CalendarEventRevisionRecord,
@@ -120,11 +125,11 @@ async function apiFetch<T>(path: string, init: RequestInit = {}, maxResponseByte
   const bodyIsFormData = init.body instanceof FormData;
   const response = await fetch(path, {
     credentials: "include",
+    ...init,
     headers: {
       ...(bodyIsFormData ? {} : { "Content-Type": "application/json" }),
       ...(init.headers ?? {})
-    },
-    ...init
+    }
   });
 
   if (!response.ok) {
@@ -571,13 +576,42 @@ export function appendRoutineSessionAmendment(sessionId: string, input: RoutineS
   );
 }
 
-export type CalendarPageOptions = PageOptions & { includeDeleted?: boolean };
+export type CalendarPageOptions = PageOptions & { includeDeleted?: boolean; actor?: CalendarActor };
+
+export function listCalendarProviders(signal?: AbortSignal) {
+  return apiFetch<{ providers: CalendarProviderAvailability[] }>("/api/calendar-providers", { signal });
+}
+
+export function listCalendarConnections(signal?: AbortSignal) {
+  return apiFetch<{ connections: CalendarConnectionView[] }>("/api/calendar-connections", { signal });
+}
+
+export function listConnectedCalendars(connectionId: string, signal?: AbortSignal) {
+  return apiFetch<{ calendars: CalendarConnectedCalendarView[] }>(`/api/calendar-connections/${encodeURIComponent(connectionId)}/calendars`, { signal });
+}
+
+export function updateConnectedCalendar(connectionId: string, calendarId: string, expectedUpdatedAt: string, patch: CalendarConnectedCalendarPatch, signal?: AbortSignal) {
+  return apiFetch<{ calendar: CalendarConnectedCalendarView }>(`/api/calendar-connections/${encodeURIComponent(connectionId)}/calendars/${encodeURIComponent(calendarId)}`, {
+    method: "PATCH", body: JSON.stringify({ expectedUpdatedAt, ...patch }), signal
+  });
+}
+
+export function disconnectCalendarConnection(connectionId: string, localProjectionDisposition: "purge" | "retain_private_stale", signal?: AbortSignal) {
+  return apiFetch<{ connection: CalendarConnectionView }>(`/api/calendar-connections/${encodeURIComponent(connectionId)}/disconnect`, {
+    method: "POST", body: JSON.stringify({ localProjectionDisposition }), signal
+  });
+}
 export type CalendarEventListOptions = PageOptions & {
   startDate: string;
   endDate: string;
   calendarId?: string;
   includeDeleted?: boolean;
+  actor?: CalendarActor;
 };
+
+function calendarActorHeaders(actor: CalendarActor = "human"): Record<string, string> {
+  return actor === "agent" ? { "X-Life-Links-Actor": "agent" } : {};
+}
 
 function calendarPageSuffix(options: CalendarPageOptions): string {
   const query = new URLSearchParams();
@@ -589,7 +623,7 @@ function calendarPageSuffix(options: CalendarPageOptions): string {
 
 export function listCalendars(options: CalendarPageOptions = {}) {
   const suffix = calendarPageSuffix(options);
-  return apiFetch<CalendarPageResponse>(`/api/calendars${suffix}`, { signal: options.signal });
+  return apiFetch<CalendarPageResponse>(`/api/calendars${suffix}`, { signal: options.signal, headers: calendarActorHeaders(options.actor) });
 }
 
 export function createCalendar(input: CalendarCreateInput, signal?: AbortSignal) {
@@ -598,8 +632,8 @@ export function createCalendar(input: CalendarCreateInput, signal?: AbortSignal)
   });
 }
 
-export function getCalendar(calendarId: string, signal?: AbortSignal) {
-  return apiFetch<{ calendar: CalendarRecord }>(`/api/calendars/${encodeURIComponent(calendarId)}`, { signal });
+export function getCalendar(calendarId: string, signal?: AbortSignal, actor?: CalendarActor) {
+  return apiFetch<{ calendar: CalendarRecord }>(`/api/calendars/${encodeURIComponent(calendarId)}`, { signal, headers: calendarActorHeaders(actor) });
 }
 
 export function updateCalendar(
@@ -631,28 +665,28 @@ export function listCalendarEvents(options: CalendarEventListOptions) {
   if (options.limit !== undefined) query.set("limit", String(options.limit));
   if (options.calendarId) query.set("calendarId", options.calendarId);
   if (options.includeDeleted !== undefined) query.set("includeDeleted", String(options.includeDeleted));
-  return apiFetch<CalendarEventPageResponse>(`/api/calendar-events?${query.toString()}`, { signal: options.signal });
+  return apiFetch<CalendarEventPageResponse>(`/api/calendar-events?${query.toString()}`, { signal: options.signal, headers: calendarActorHeaders(options.actor) });
 }
 
-export function createCalendarEvent(input: CalendarEventCreateInput, signal?: AbortSignal) {
+export function createCalendarEvent(input: CalendarEventCreateInput, signal?: AbortSignal, actor?: CalendarActor) {
   return apiFetch<CalendarEventDetailResponse>("/api/calendar-events", {
-    method: "POST", body: JSON.stringify(input), signal
+    method: "POST", body: JSON.stringify(input), signal, headers: calendarActorHeaders(actor)
   });
 }
 
-export function getCalendarEvent(eventId: string, signal?: AbortSignal) {
-  return apiFetch<CalendarEventDetailResponse>(`/api/calendar-events/${encodeURIComponent(eventId)}`, { signal });
+export function getCalendarEvent(eventId: string, signal?: AbortSignal, actor?: CalendarActor) {
+  return apiFetch<CalendarEventDetailResponse>(`/api/calendar-events/${encodeURIComponent(eventId)}`, { signal, headers: calendarActorHeaders(actor) });
 }
 
-export function updateCalendarEvent(eventId: string, input: CalendarEventRevisionInput, signal?: AbortSignal) {
+export function updateCalendarEvent(eventId: string, input: CalendarEventRevisionInput, signal?: AbortSignal, actor?: CalendarActor) {
   return apiFetch<CalendarEventDetailResponse>(`/api/calendar-events/${encodeURIComponent(eventId)}`, {
-    method: "PATCH", body: JSON.stringify(input), signal
+    method: "PATCH", body: JSON.stringify(input), signal, headers: calendarActorHeaders(actor)
   });
 }
 
-export function deleteCalendarEvent(eventId: string, input: CalendarEventDeleteInput, signal?: AbortSignal) {
+export function deleteCalendarEvent(eventId: string, input: CalendarEventDeleteInput, signal?: AbortSignal, actor?: CalendarActor) {
   return apiFetch<CalendarEventDetailResponse>(`/api/calendar-events/${encodeURIComponent(eventId)}`, {
-    method: "DELETE", body: JSON.stringify(input), signal
+    method: "DELETE", body: JSON.stringify(input), signal, headers: calendarActorHeaders(actor)
   });
 }
 

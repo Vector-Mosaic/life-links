@@ -40,6 +40,9 @@ import { fieldLedgerStoreContract } from "./field-ledger-contract.js";
 import { changeHistoryStoreContract } from "./change-history-contract.js";
 import { routineStoreContract } from "./routine-store-contract.js";
 import { calendarStoreContract } from "./calendar-store-contract.js";
+import { CalendarProviderGateway, calendarProviderCredentialHandle } from "../src/calendar-provider-gateway.js";
+import { PostgresCalendarProviderStateStore } from "../src/calendar-provider-postgres.js";
+import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
 
 const databaseUrl = process.env.LIFE_LINKS_TEST_DATABASE_URL;
 const allowSchemaMutation = process.env.LIFE_LINKS_ALLOW_TEST_DB_SCHEMA === "1";
@@ -79,6 +82,56 @@ describe("Life Links Postgres integration", () => {
   fieldLedgerStoreContract(() => store);
   routineStoreContract(() => store);
   calendarStoreContract(() => store);
+
+  it("persists provider management with one canonical grant, stale-write protection and local-only disconnect", async () => {
+    const connectionId = "postgres-provider-management";
+    const calendarId = "calendar-77777777-7777-4777-8777-777777777777";
+    const providerCalendarId = "synthetic-provider-calendar";
+    const providerStore = new PostgresCalendarProviderStateStore(postgresPool);
+    const adapter = new DeterministicFakeCalendarProviderAdapter("google", "synthetic-provider-account", [{
+      providerCalendarId, displayName: "Synthetic provider calendar", capabilities: { read: true, create: true, update: true, delete: true },
+      events: [{ providerEventId: "synthetic-provider-event", providerRevision: "r1", content: {
+        title: "Synthetic event", description: null, location: null, status: "confirmed", providerSeriesId: null,
+        span: { kind: "all_day", startDate: "2026-09-01", endDateExclusive: "2026-09-02" }
+      } }]
+    }]);
+    const gateway = new CalendarProviderGateway([adapter], providerStore, { now: () => new Date("2026-09-01T12:00:00.000Z") });
+    await gateway.connectExternalAccount({ ownerId: DEMO_OWNER_ID, connectionId, providerKey: "google",
+      expectedProviderAccountId: "synthetic-provider-account", credentialHandle: calendarProviderCredentialHandle("synthetic-test-vault-handle"),
+      calendars: [{ calendarId, providerCalendarId, title: "Synthetic connected calendar", color: "#123456", timeZone: "UTC", isDefault: false }],
+      initialWindow: { startUtc: "2026-09-01T00:00:00.000Z", endUtc: "2026-09-03T00:00:00.000Z" }
+    });
+    const initial = (await gateway.listManagedCalendars(DEMO_OWNER_ID, connectionId))[0];
+    expect(initial.calendar.agentAccess).toBe("none");
+    const changed = await gateway.updateCalendarSettings({ ownerId: DEMO_OWNER_ID, connectionId, calendarId,
+      expectedUpdatedAt: initial.calendar.updatedAt, patch: { visible: false, agentAccess: "read" } });
+    expect(changed).toMatchObject({ visible: false, calendar: { agentAccess: "read" } });
+    expect((await store.getCalendar(DEMO_OWNER_ID, calendarId))?.agentAccess).toBe("read");
+    expect((await providerStore.getCalendar(connectionId, calendarId))?.agentGrant).toBe("read");
+    expect(await gateway.listConnections(DEMO_GUEST_ID)).toEqual([]);
+    await expect(gateway.updateCalendarSettings({ ownerId: DEMO_OWNER_ID, connectionId, calendarId,
+      expectedUpdatedAt: initial.calendar.updatedAt, patch: { agentAccess: "write" } }))
+      .rejects.toMatchObject({ code: "calendar_settings_conflict" });
+    const concurrent = await Promise.allSettled([
+      gateway.updateCalendarSettings({ ownerId: DEMO_OWNER_ID, connectionId, calendarId,
+        expectedUpdatedAt: changed.calendar.updatedAt, patch: { visible: true } }),
+      gateway.updateCalendarSettings({ ownerId: DEMO_OWNER_ID, connectionId, calendarId,
+        expectedUpdatedAt: changed.calendar.updatedAt, patch: { agentAccess: "write" } })
+    ]);
+    expect(concurrent.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const independentGrant = await postgresPool.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'calendar_provider_bindings' AND column_name = 'agent_grant'"
+    );
+    expect(independentGrant.rows).toEqual([]);
+    const offlineGateway = new CalendarProviderGateway([], providerStore);
+    expect(await offlineGateway.disconnectConnection({ ownerId: DEMO_OWNER_ID, connectionId, localProjectionDisposition: "purge" }))
+      .toMatchObject({ status: "disconnected", remoteRevocationStatus: "pending", remoteRevocationAttemptedAt: null });
+    expect(await providerStore.listProjections(connectionId, calendarId)).toEqual([]);
+    expect((await store.getCalendar(DEMO_OWNER_ID, calendarId))?.agentAccess).toBe("none");
+    expect((await providerStore.getCalendar(connectionId, calendarId))?.visible).toBe(false);
+    expect(adapter.eventCount(providerCalendarId)).toBe(1);
+    expect(adapter.metrics().revokeCalls).toBe(0);
+  });
 
   describe("isolated saved-change parity", () => {
     let parityStore: PostgresLifeLinksStore;
@@ -211,7 +264,7 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(11);
+    expect(migrations.rows[0].count).toBe(12);
     const agentConnectionColumn = await adminPool.query(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -1122,7 +1175,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(11);
+      expect(receiptCount.rows[0].count).toBe(12);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1150,7 +1203,8 @@ describe("Life Links Postgres integration", () => {
         "008_saved_change_history.sql",
         "009_document_attachments.sql",
         "010_general_routines.sql",
-        "011_calendar.sql"
+        "011_calendar.sql",
+        "012_calendar_permissions.sql"
       ]);
     } finally {
       await concurrent.store.close();

@@ -15,11 +15,17 @@ const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const contractPath = path.resolve(testDirectory, "../../../contracts/http/openapi.json");
 const passwordPath = path.resolve(testDirectory, "../src/password.ts");
 const serverPath = path.resolve(testDirectory, "../src/server.ts");
+const calendarConnectionRouterPath = path.resolve(testDirectory, "../src/calendar-connections.ts");
 const storePath = path.resolve(testDirectory, "../src/store.ts");
 const webClientPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/api.ts");
 const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/workspace/controller.ts");
 
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
+  "GET /api/calendar-providers",
+  "GET /api/calendar-connections",
+  "GET /api/calendar-connections/{connectionId}/calendars",
+  "PATCH /api/calendar-connections/{connectionId}/calendars/{calendarId}",
+  "POST /api/calendar-connections/{connectionId}/disconnect",
   "GET /api/calendar-clock",
   "GET /api/calendars",
   "POST /api/calendars",
@@ -288,8 +294,15 @@ function implementedApplicationOperations(serverSource: string): string[] {
     "every HTTP route registration must be a literal route or the one reviewed non-API browser fallback"
   ).toBe(literalRegistrations.length + 1);
   expect(serverSource).toContain("app.get(/^\\/(?!api\\/).*/,");
+  expect(serverSource).toContain('import { createCalendarConnectionRouter } from "./calendar-connections.js"');
+  expect(serverSource).toContain("app.use(createCalendarConnectionRouter(");
+  const routerSource = readSource(calendarConnectionRouterPath);
+  const connectionRegistrations = [...routerSource.matchAll(/router\.(get|post|patch|put|delete)\(\s*"([^"]+)"/g)]
+    .map((match) => `${match[1].toUpperCase()} ${expressRouteToOpenApi(match[2])}`);
+  expect([...routerSource.matchAll(/router\.(get|post|patch|put|delete|head|options)\(/g)]).toHaveLength(connectionRegistrations.length);
   return [
     ...literalRegistrations,
+    ...connectionRegistrations,
     "GET /qr/{qrId}"
   ].sort();
 }
@@ -452,14 +465,14 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(91);
+    expect(published).toHaveLength(96);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
     expect(schemas).not.toHaveProperty("Project");
     expect(objectValue(objectValue(schemas.Link, "Link").properties, "Link properties")).not.toHaveProperty("projectId");
     const operationIds = [...contractOperations(document).values()].map((operation) => operation.operationId);
-    expect(new Set(operationIds).size).toBe(91);
+    expect(new Set(operationIds).size).toBe(96);
     expect(operationIds.every((operationId) => typeof operationId === "string" && operationId.length > 0)).toBe(true);
   });
 
@@ -850,13 +863,33 @@ describe("Life Links OpenAPI v1", () => {
       key.includes("/calendar")
     );
 
-    expect(calendarOperations).toHaveLength(13);
+    expect(calendarOperations).toHaveLength(18);
     for (const key of calendarOperations) {
       const operation = operations.get(key);
       expect(operation, key).toBeTruthy();
       expect(operation?.security, `${key} must inherit owner session security`).toBeUndefined();
       expect(objectValue(operation?.responses, `${key} responses`)).toHaveProperty("401");
     }
+
+    const nativeOperations = calendarOperations.filter((key) => /\/api\/(?:calendars|calendar-events|calendar-clock)(?:\/|$)/.test(key));
+    expect(nativeOperations).toHaveLength(13);
+    for (const key of nativeOperations) {
+      const operation = operations.get(key)!;
+      expect(operation.parameters, `${key} must declare agent request narrowing`).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "X-Life-Links-Actor", in: "header", required: false,
+          schema: { type: "string", enum: ["agent"] } })
+      ]));
+      expect(objectValue(operation.responses, `${key} responses`)["403"]).toEqual({
+        $ref: "#/components/responses/CalendarForbidden"
+      });
+    }
+    expect(objectValue(schemas.Calendar, "Calendar").required).toContain("agentAccess");
+    for (const name of ["Calendar", "CalendarCreateRequest", "CalendarPatchRequest"]) {
+      const properties = objectValue(objectValue(schemas[name], name).properties, `${name} properties`);
+      expect(objectValue(properties.agentAccess, `${name} agentAccess`).enum).toEqual(["none", "read", "write"]);
+    }
+    expect(objectValue(objectValue(objectValue(schemas.CalendarCreateRequest, "CalendarCreateRequest").properties,
+      "CalendarCreateRequest properties").agentAccess, "create agentAccess").default).toBe("write");
 
     const eventList = operationById(operations, "listCalendarEvents");
     expect(String(eventList.description)).toContain("at most 366 days");
@@ -882,7 +915,8 @@ describe("Life Links OpenAPI v1", () => {
       "stale_calendar",
       "stale_calendar_event",
       "calendar_conflict",
-      "calendar_reference_conflict"
+      "calendar_reference_conflict",
+      "calendar_access_denied"
     ]);
     const subjectLinks = objectValue(schemas.CalendarSubjectLink, "CalendarSubjectLink").oneOf as JsonObject[];
     expect(subjectLinks.map((variant) =>

@@ -10,6 +10,7 @@ import multer from "multer";
 import QRCode from "qrcode";
 import {
   type CalendarDomainErrorCode,
+  type CalendarActor,
   type CalendarEventEditTarget,
   type CreateCalendarCommand,
   type CreateCalendarEventCommand,
@@ -111,6 +112,8 @@ import {
   ClaimIdempotencyConflictError,
   LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID,
   LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID,
+  assertCalendarAgentConnection,
+  assertHumanCalendarActor,
   type LifeLinksStore,
   type CalendarEventPageRequest,
   type CalendarPageRequest,
@@ -119,6 +122,8 @@ import {
   type StoredUser
 } from "./store.js";
 import { AttachmentContentReader, AttachmentContentRequestError } from "./attachment-content.js";
+import { createCalendarConnectionRouter } from "./calendar-connections.js";
+import type { CalendarProviderGateway } from "./calendar-provider-gateway.js";
 
 const SESSION_COOKIE = "life_links_session";
 const MEDIA_UPLOAD_FIELD = "file";
@@ -181,9 +186,10 @@ export type LifeLinksAppDeps = {
   store: LifeLinksStore;
   config: LifeLinksConfig;
   logger: Logger;
+  calendarProviderGateway?: CalendarProviderGateway;
 };
 
-export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps): Express {
+export function createLifeLinksApp({ store, config, logger, calendarProviderGateway }: LifeLinksAppDeps): Express {
   const app = express();
   const attachmentReader = new AttachmentContentReader(undefined, config.attachmentRuntime);
   app.disable("x-powered-by");
@@ -245,6 +251,12 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   app.use(rateLimitGuard(config, logger));
 
   const requireAuthenticated = requireUser(logger);
+  if (calendarProviderGateway) {
+    app.use(createCalendarConnectionRouter({
+      gateway: calendarProviderGateway, requireAuthenticated,
+      ownerId: (request) => (request as AppRequest).user?.id ?? null, logger
+    }));
+  }
 
   app.get("/healthz", (_request, response) => {
     response.json({ ok: true, service: config.component, status: "ok", ...runtimeFields(config) });
@@ -1478,6 +1490,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   });
 
   app.get("/api/calendar-clock", requireAuthenticated, (request: AppRequest, response) => {
+    readCalendarRequestActor(request);
     if (typeof request.query.timeZone !== "string") {
       rejectValidation(request, response, logger, "timeZone", "calendar_time_zone_required");
       return;
@@ -1488,21 +1501,23 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   });
 
   app.get("/api/calendars", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readCalendarRequestActor(request);
     const page = readCalendarPageQuery(request, response, logger);
     if (!page) return;
-    const result = await store.listCalendars(request.user!.id, page);
+    const result = await store.listCalendars(request.user!.id, page, actor);
     response.json({ calendars: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
   });
 
   app.post("/api/calendars", requireAuthenticated, async (request: AppRequest, response) => {
-    const input = readCalendarBody(request, response, logger, ["id", "title", "color", "timeZone", "isDefault"]);
+    const actor = readCalendarRequestActor(request, true);
+    const input = readCalendarBody(request, response, logger, ["id", "title", "color", "timeZone", "isDefault", "agentAccess"]);
     if (!input) return;
     const calendar = await store.createCalendar({
       ...input,
       id: normalizeCalendarId(input.id ?? `calendar-${randomUUID()}`),
       ownerId: request.user!.id,
       createdAt: new Date().toISOString()
-    } as unknown as CreateCalendarCommand);
+    } as unknown as CreateCalendarCommand, actor);
     logger.info("life_links.calendar.created", {
       msg: "Owner Calendar created",
       ...requestLogFields(request),
@@ -1513,17 +1528,19 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   });
 
   app.get("/api/calendars/:calendarId", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readCalendarRequestActor(request);
     const calendar = await store.getCalendar(
       request.user!.id,
-      normalizeCalendarId(paramValue(request.params.calendarId))
+      normalizeCalendarId(paramValue(request.params.calendarId)), actor
     );
     if (!calendar) { sendCalendarError(response, 404, "calendar_not_found"); return; }
     response.json({ calendar });
   });
 
   app.patch("/api/calendars/:calendarId", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readCalendarRequestActor(request, true);
     const calendarId = normalizeCalendarId(paramValue(request.params.calendarId));
-    const input = readCalendarRevisionMutation(request, response, logger, ["title", "color", "timeZone", "isDefault"]);
+    const input = readCalendarRevisionMutation(request, response, logger, ["title", "color", "timeZone", "isDefault", "agentAccess"]);
     if (!input) return;
     const { expectedUpdatedAt, ...patch } = input;
     if (!Object.keys(patch).length) {
@@ -1534,7 +1551,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       calendarId,
       expectedUpdatedAt,
       patch: normalizeCalendarPatch(patch)
-    } as UpdateCalendarCommand);
+    } as UpdateCalendarCommand, actor);
     if (!calendar) { sendCalendarError(response, 404, "calendar_not_found"); return; }
     logger.info("life_links.calendar.updated", {
       msg: "Owner Calendar updated",
@@ -1546,6 +1563,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   });
 
   app.delete("/api/calendars/:calendarId", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readCalendarRequestActor(request, true);
     const calendarId = normalizeCalendarId(paramValue(request.params.calendarId));
     const input = readCalendarRevisionMutation(request, response, logger, []);
     if (!input) return;
@@ -1553,7 +1571,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       calendarId,
       expectedUpdatedAt: input.expectedUpdatedAt,
       deletedAt: new Date().toISOString()
-    } as SoftDeleteCalendarCommand);
+    } as SoftDeleteCalendarCommand, actor);
     if (!calendar) { sendCalendarError(response, 404, "calendar_not_found"); return; }
     logger.info("life_links.calendar.deleted", {
       msg: "Owner Calendar soft-deleted",
@@ -1564,6 +1582,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   });
 
   app.post("/api/calendars/:calendarId/restore", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readCalendarRequestActor(request, true);
     const calendarId = normalizeCalendarId(paramValue(request.params.calendarId));
     const input = readCalendarRevisionMutation(request, response, logger, []);
     if (!input) return;
@@ -1571,7 +1590,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       calendarId,
       expectedUpdatedAt: input.expectedUpdatedAt,
       restoredAt: new Date().toISOString()
-    } as RestoreCalendarCommand);
+    } as RestoreCalendarCommand, actor);
     if (!calendar) { sendCalendarError(response, 404, "calendar_not_found"); return; }
     logger.info("life_links.calendar.restored", {
       msg: "Owner Calendar restored",
@@ -1582,13 +1601,15 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   });
 
   app.get("/api/calendar-events", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readCalendarRequestActor(request);
     const page = readCalendarEventPageQuery(request, response, logger);
     if (!page) return;
-    const result = await store.listCalendarEvents(request.user!.id, page);
+    const result = await store.listCalendarEvents(request.user!.id, page, actor);
     response.json({ calendarEvents: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
   });
 
   app.post("/api/calendar-events", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readCalendarRequestActor(request);
     const input = readCalendarBody(request, response, logger, [
       "id", "revisionId", "calendarId", "lineage", "title", "description", "location", "status", "span",
       "recurrence", "subjectLinks"
@@ -1603,7 +1624,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       ownerId: request.user!.id,
       calendarId: normalizeCalendarId(input.calendarId),
       createdAt: new Date().toISOString()
-    } as unknown as CreateCalendarEventCommand);
+    } as unknown as CreateCalendarEventCommand, actor);
     logger.info("life_links.calendar.event_created", {
       msg: "Owner native Calendar event created",
       ...requestLogFields(request),
@@ -1616,23 +1637,25 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   });
 
   app.get("/api/calendar-events/:eventId", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readCalendarRequestActor(request);
     const eventId = normalizeCalendarEventId(paramValue(request.params.eventId));
-    const calendarEvent = await store.getCalendarEvent(request.user!.id, eventId);
+    const calendarEvent = await store.getCalendarEvent(request.user!.id, eventId, actor);
     if (!calendarEvent) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
     const tombstones = calendarEvent.event.deletedAt === null
       ? null
-      : await store.listCalendarEventTombstones(request.user!.id, eventId);
+      : await store.listCalendarEventTombstones(request.user!.id, eventId, actor);
     response.json({ calendarEvent, latestTombstone: tombstones?.at(-1) ?? null });
   });
 
   app.patch("/api/calendar-events/:eventId", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readCalendarRequestActor(request);
     const eventId = normalizeCalendarEventId(paramValue(request.params.eventId));
     const input = readCalendarBody(request, response, logger, [
       "revisionId", "expectedCurrentRevisionId", "target", "title", "description", "location", "status", "span",
       "recurrence", "subjectLinks"
     ]);
     if (!input) return;
-    const current = await store.getCalendarEvent(request.user!.id, eventId);
+    const current = await store.getCalendarEvent(request.user!.id, eventId, actor);
     if (!current) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
     const target = readSupportedCalendarEditTarget(input.target);
     assertCalendarEventEditTargetMatches(target, current.event);
@@ -1646,7 +1669,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       eventId,
       expectedCurrentRevisionId: normalizeCalendarEventRevisionId(input.expectedCurrentRevisionId),
       createdAt: new Date().toISOString()
-    } as unknown as ReviseCalendarEventCommand);
+    } as unknown as ReviseCalendarEventCommand, actor);
     if (!calendarEvent) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
     logger.info("life_links.calendar.event_revised", {
       msg: "Owner native Calendar event revision created",
@@ -1660,12 +1683,13 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   });
 
   app.delete("/api/calendar-events/:eventId", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readCalendarRequestActor(request);
     const eventId = normalizeCalendarEventId(paramValue(request.params.eventId));
     const input = readCalendarBody(request, response, logger, [
       "tombstoneId", "expectedCurrentRevisionId", "target"
     ]);
     if (!input) return;
-    const current = await store.getCalendarEvent(request.user!.id, eventId);
+    const current = await store.getCalendarEvent(request.user!.id, eventId, actor);
     if (!current) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
     const target = readSupportedCalendarEditTarget(input.target);
     assertCalendarEventEditTargetMatches(target, current.event);
@@ -1676,9 +1700,9 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       eventId,
       expectedCurrentRevisionId: normalizeCalendarEventRevisionId(input.expectedCurrentRevisionId),
       deletedAt: new Date().toISOString()
-    } as SoftDeleteCalendarEventCommand);
+    } as SoftDeleteCalendarEventCommand, actor);
     if (!deletion) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
-    const calendarEvent = await store.getCalendarEvent(request.user!.id, eventId);
+    const calendarEvent = await store.getCalendarEvent(request.user!.id, eventId, actor);
     if (!calendarEvent) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
     logger.info("life_links.calendar.event_deleted", {
       msg: "Owner native Calendar event soft-deleted",
@@ -1692,6 +1716,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
   });
 
   app.post("/api/calendar-events/:eventId/restore", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readCalendarRequestActor(request);
     const eventId = normalizeCalendarEventId(paramValue(request.params.eventId));
     const input = readCalendarBody(request, response, logger, ["expectedCurrentRevisionId", "tombstoneId"]);
     if (!input) return;
@@ -1700,7 +1725,7 @@ export function createLifeLinksApp({ store, config, logger }: LifeLinksAppDeps):
       expectedCurrentRevisionId: normalizeCalendarEventRevisionId(input.expectedCurrentRevisionId),
       tombstoneId: normalizeCalendarEventTombstoneId(input.tombstoneId),
       restoredAt: new Date().toISOString()
-    } as RestoreCalendarEventCommand);
+    } as RestoreCalendarEventCommand, actor);
     if (!calendarEvent) { sendCalendarError(response, 404, "calendar_event_not_found"); return; }
     logger.info("life_links.calendar.event_restored", {
       msg: "Owner native Calendar event restored",
@@ -2977,11 +3002,23 @@ type RoutinePublicErrorCode =
   | "routine_conflict"
   | "routine_reference_conflict";
 
+function readCalendarRequestActor(request: AppRequest, settings = false): CalendarActor {
+  const header = request.get("X-Life-Links-Actor");
+  if (header !== undefined && header !== "agent") {
+    throw new CalendarDomainError("invalid_calendar", "Calendar actor is invalid.", { reason: "invalid_calendar_actor" });
+  }
+  const actor: CalendarActor = header === "agent" ? "agent" : "human";
+  assertCalendarAgentConnection(request.user, actor);
+  if (settings) assertHumanCalendarActor(actor);
+  return actor;
+}
+
 const CALENDAR_ERROR_MESSAGES: Record<CalendarDomainErrorCode, string> = {
   invalid_calendar: "Calendar request is invalid.",
   calendar_not_found: "Calendar was not found.",
   invalid_calendar_event: "Calendar event request is invalid.",
   calendar_event_not_found: "Calendar event was not found.",
+  calendar_access_denied: "Calendar access is not authorized.",
   stale_calendar: "Calendar changed after it was read.",
   stale_calendar_event: "Calendar event changed after it was read.",
   calendar_conflict: "Calendar operation conflicts with its current state.",
@@ -2989,6 +3026,7 @@ const CALENDAR_ERROR_MESSAGES: Record<CalendarDomainErrorCode, string> = {
 };
 
 function calendarErrorStatus(code: CalendarDomainErrorCode): number {
+  if (code === "calendar_access_denied") return 403;
   if (code === "calendar_not_found" || code === "calendar_event_not_found") return 404;
   if (
     code === "stale_calendar" ||

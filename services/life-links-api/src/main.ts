@@ -4,20 +4,25 @@ import { runMigrations } from "./migrations.js";
 import { createPostgresStore } from "./postgres-store.js";
 import { startLifeLinksServer } from "./server.js";
 import { InMemoryLifeLinksStore, type LifeLinksStore } from "./store.js";
+import { CalendarProviderGateway, InMemoryCalendarProviderStateStore, type CalendarProviderStateStore } from "./calendar-provider-gateway.js";
+import { PostgresCalendarProviderStateStore } from "./calendar-provider-postgres.js";
 
 async function main() {
   const config = readConfig();
   const logger = createLogger("life_links_main", { env: config.env });
   let store: LifeLinksStore;
+  let calendarProviderState: CalendarProviderStateStore;
 
   if (config.storeMode === "postgres") {
     const postgres = createPostgresStore(config.databaseUrl);
     store = postgres.store;
+    calendarProviderState = new PostgresCalendarProviderStateStore(postgres.pool);
     if (config.autoMigrate) {
       await runMigrations(postgres.pool, config.migrationDir, logger);
     }
   } else {
     store = new InMemoryLifeLinksStore();
+    calendarProviderState = new InMemoryCalendarProviderStateStore();
     logger.warn("life_links.store.memory_enabled", {
       message: "DATABASE_URL is not set; using in-memory data for local development only."
     });
@@ -41,7 +46,10 @@ async function main() {
     }
   }
 
-  const server = startLifeLinksServer({ store, config, logger });
+  // Management reads and local disconnect use the real retained provider state.
+  // No adapter is enabled until its OAuth and server credential lane is wired.
+  const calendarProviderGateway = new CalendarProviderGateway([], calendarProviderState);
+  const server = startLifeLinksServer({ store, config, logger, calendarProviderGateway });
   logger.info("life_links.server.started", {
     host: config.host,
     port: config.port,
