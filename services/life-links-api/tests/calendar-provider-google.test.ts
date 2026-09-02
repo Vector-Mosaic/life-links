@@ -79,7 +79,7 @@ describe("Google Calendar provider adapter", () => {
     const http = new HttpHarness();
     http.enqueue({
       items: [
-        { id: "primary@example.test", summary: "Primary", accessRole: "owner", primary: true },
+        { id: "primary@example.test", summary: "Primary", accessRole: "owner", primary: true, timeZone: "America/New_York" },
         { id: "readonly@example.test", summary: "Read only", accessRole: "reader" },
         { id: "freebusy@example.test", summary: "Busy only", accessRole: "freeBusyReader" }
       ]
@@ -94,6 +94,7 @@ describe("Google Calendar provider adapter", () => {
           providerCalendarId: "primary@example.test",
           displayName: "Primary",
           isDefault: true,
+          timeZone: "America/New_York",
           capabilities: { read: true, create: true, update: true, delete: true }
         },
         {

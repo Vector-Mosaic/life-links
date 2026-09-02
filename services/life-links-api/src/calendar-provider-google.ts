@@ -34,6 +34,7 @@ type GoogleCalendarEntry = {
   accessRole?: unknown;
   deleted?: unknown;
   primary?: unknown;
+  timeZone?: unknown;
 };
 
 type GoogleEventDateTime = {
@@ -109,10 +110,12 @@ export class GoogleCalendarProviderAdapter implements CalendarProviderAdapter {
         if (entry.deleted === true || entry.accessRole === "freeBusyReader") continue;
         const providerCalendarId = requiredString(entry.id);
         const displayName = optionalString(entry.summaryOverride) ?? optionalString(entry.summary) ?? "Untitled calendar";
+        const timeZone = optionalString(entry.timeZone);
         calendars.push({
           providerCalendarId,
           displayName,
           isDefault: entry.primary === true,
+          ...(timeZone ? { timeZone } : {}),
           capabilities: googleCapabilities(entry.accessRole)
         });
         if (calendars.length > MAX_DISCOVERY_CALENDARS) {

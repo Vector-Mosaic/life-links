@@ -464,6 +464,16 @@ function responseFor(document: JsonObject, operation: JsonObject, status: string
 }
 
 describe("Life Links OpenAPI v1", () => {
+  it("publishes optional provider Calendar timezone metadata without requiring invented zones", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    const properties = objectValue(objectValue(schemas.CalendarAuthorizationDiscovery, "discovery").properties, "discovery properties");
+    const item = objectValue(objectValue(properties.calendars, "calendars").items, "discovered Calendar");
+    expect(item.additionalProperties).toBe(false);
+    expect(item.required).not.toContain("timeZone");
+    expect(objectValue(item.properties, "Calendar properties").timeZone).toMatchObject({ type: "string", minLength: 1, maxLength: 100 });
+  });
+
   it("parses as strict JSON with only resolvable local references", () => {
     const source = readSource(contractPath);
     const document = parseStrictJson(source);

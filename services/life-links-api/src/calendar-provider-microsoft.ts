@@ -133,6 +133,8 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
           providerCalendarId: requiredString(calendar.id),
           displayName: optionalString(calendar.name) ?? "Untitled calendar",
           isDefault: calendar.isDefaultCalendar === true,
+          // Graph Calendar exposes no calendar-level time zone. Do not invent
+          // one from an event, mailbox setting, or the UTC response preference.
           capabilities: { read: true, create: writable, update: writable, delete: writable }
         });
         if (calendars.length > MAX_DISCOVERY_CALENDARS) {

@@ -155,7 +155,7 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
         const remote = discovery.calendars.find((calendar) => calendar.providerCalendarId === providerCalendarId);
         if (!remote) throw new CalendarAuthorizationError("calendar_selection_invalid");
         return { calendarId: calendarProviderLocalCalendarId(state.connectionId, providerCalendarId), providerCalendarId,
-          title: remote.displayName, color: "#4f8fbd", timeZone: "UTC", isDefault: false, visible: true, agentGrant: "none" as const };
+          title: remote.displayName, color: "#4f8fbd", timeZone: remote.timeZone ?? "UTC", isDefault: false, visible: true, agentGrant: "none" as const };
       });
       state.selectedCalendarIds = [...selectedCalendarIds];
       return { row: this.#updated(row!, state), value: selection };

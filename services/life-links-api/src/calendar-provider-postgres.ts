@@ -1,5 +1,5 @@
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
-import type { CalendarRecord, CalendarConnectedCalendarView } from "@life-links/core";
+import { normalizeCalendarIanaTimeZone, type CalendarRecord, type CalendarConnectedCalendarView } from "@life-links/core";
 
 import {
   CalendarProviderGatewayError,
@@ -296,8 +296,9 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
     } : null;
   }
 
-  async provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord): Promise<void> {
+  async provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord, options?: { providerTimeZone: string }): Promise<void> {
     assertCalendarProvisioningPair(calendar, binding);
+    const providerTimeZone = options === undefined ? undefined : normalizeCalendarIanaTimeZone(options.providerTimeZone);
     await this.withTransaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`owner:${calendar.ownerId}`]);
       const connectionResult = await client.query<ProviderConnectionRow>(
@@ -322,6 +323,15 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
           || row.provider_account_id !== binding.providerAccountId || row.provider_calendar_id !== binding.providerCalendarId) {
           throw new CalendarProviderGatewayError("provider_identity_mismatch", "The existing Calendar belongs to another provider identity.");
         }
+        if (providerTimeZone !== undefined) {
+          // The owner lock serializes settings updates. Refresh only supplied
+          // provider metadata; never restore a stale grant or local display fields.
+          await client.query(
+            `UPDATE calendars SET time_zone = $3, updated_at = GREATEST(now(), updated_at + interval '1 millisecond')
+             WHERE id = $1 AND owner_id = $2 AND source = 'external' AND deleted_at IS NULL AND time_zone <> $3`,
+            [calendar.id, calendar.ownerId, providerTimeZone]
+          );
+        }
         return;
       }
       await client.query(
@@ -333,7 +343,7 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
           calendar.ownerId,
           calendar.title,
           calendar.color,
-          calendar.timeZone,
+          providerTimeZone ?? calendar.timeZone,
           calendar.source,
           calendar.isDefault,
           calendar.createdAt,

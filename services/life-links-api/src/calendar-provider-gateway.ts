@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   createCanonicalExternalCalendar,
   normalizeCalendarId,
+  normalizeCalendarIanaTimeZone,
   type CalendarAgentAccess,
   type CalendarConnectionView,
   type CalendarConnectedCalendarView,
@@ -122,6 +123,7 @@ export type CalendarProviderDiscoveredCalendar = {
   providerCalendarId: string;
   displayName: string;
   isDefault?: boolean;
+  timeZone?: string;
   capabilities: CalendarProviderCapabilities;
 };
 
@@ -313,7 +315,7 @@ export interface CalendarProviderStateStore {
   getCalendar(connectionId: string, calendarId: string): Promise<CalendarProviderBindingRecord | null>;
   getCanonicalCalendar(calendarId: string): Promise<CalendarRecord | null>;
   getManagedCalendar(connectionId: string, calendarId: string): Promise<CalendarConnectedCalendarView | null>;
-  provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord): Promise<void>;
+  provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord, options?: { providerTimeZone: string }): Promise<void>;
   updateCalendarBinding(calendar: CalendarProviderBindingRecord, options?: {
     expectedUpdatedAt: string;
     updatedAt: string;
@@ -503,7 +505,9 @@ export class CalendarProviderGateway {
     if (connection.status !== "provisioning") throw new CalendarProviderGatewayError("connection_inactive", "The connection is no longer being provisioned.");
     try {
       for (let index = 0; index < calendars.length; index += 1) {
-        await this.store.provisionCalendar({ ...selections[index].calendar, createdAt: connection.connectedAt, updatedAt: connection.connectedAt }, calendars[index]);
+        const timeZone = discovered.get(selections[index].providerCalendarId)?.timeZone;
+        await this.store.provisionCalendar({ ...selections[index].calendar, createdAt: connection.connectedAt, updatedAt: connection.connectedAt }, calendars[index],
+          timeZone === undefined ? undefined : { providerTimeZone: timeZone });
       }
       for (const calendar of calendars) {
         await this.synchronizeCalendar({
@@ -581,7 +585,7 @@ export class CalendarProviderGateway {
         providerAccountId: connection.providerAccountId, calendarId: selection.calendar.id,
         providerCalendarId: remote.providerCalendarId, providerDisplayName: remote.displayName,
         capabilities: remote.capabilities, agentGrant: "none", visible: selection.visible
-      });
+      }, remote.timeZone === undefined ? undefined : { providerTimeZone: remote.timeZone });
       await this.synchronizeCalendar({ ownerId: input.ownerId, connectionId: input.connectionId,
         calendarId: selection.calendar.id, window });
     }
@@ -627,6 +631,11 @@ export class CalendarProviderGateway {
     }
     for (const binding of bindings) {
       const remote = discovery.calendars.find((entry) => entry.providerCalendarId === binding.providerCalendarId)!;
+      if (remote.timeZone !== undefined) {
+        const canonical = await this.store.getCanonicalCalendar(binding.calendarId);
+        if (!canonical) throw new CalendarProviderGatewayError("calendar_not_found", "The canonical external Calendar was not found.");
+        await this.store.provisionCalendar(canonical, { ...binding, agentGrant: canonical.agentAccess }, { providerTimeZone: remote.timeZone });
+      }
       await this.store.updateCalendarBinding({ ...binding, capabilities: remote.capabilities, providerDisplayName: remote.displayName,
         visible: true, agentGrant: "none" });
       await this.synchronizeCalendar({ ownerId: input.ownerId, connectionId: input.connectionId, calendarId: binding.calendarId,
@@ -1540,8 +1549,9 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
       capabilities: { ...binding.capabilities }, visible: binding.visible
     } : null;
   }
-  async provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord) {
+  async provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord, options?: { providerTimeZone: string }) {
     assertCalendarProvisioningPair(calendar, binding);
+    const providerTimeZone = options === undefined ? undefined : normalizeCalendarIanaTimeZone(options.providerTimeZone);
     const connection = this.#connections.get(binding.connectionId);
     if (!connection || (connection.status !== "provisioning" && connection.status !== "active") || connection.ownerId !== calendar.ownerId
       || connection.providerKey !== binding.providerKey || connection.providerAccountId !== binding.providerAccountId) {
@@ -1553,7 +1563,17 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
     const key = calendarKey(binding.connectionId, binding.calendarId);
     const existing = this.#calendars.get(key);
     if (existing && existing.ownerId === binding.ownerId && existing.providerKey === binding.providerKey
-      && existing.providerAccountId === binding.providerAccountId && existing.providerCalendarId === binding.providerCalendarId) return;
+      && existing.providerAccountId === binding.providerAccountId && existing.providerCalendarId === binding.providerCalendarId) {
+      const canonical = this.#canonicalCalendars.get(calendar.id);
+      if (!canonical || canonical.ownerId !== calendar.ownerId || canonical.source !== "external" || canonical.deletedAt !== null) {
+        throw new CalendarProviderGatewayError("provider_identity_mismatch", "The canonical external Calendar is unavailable.");
+      }
+      if (providerTimeZone !== undefined && canonical.timeZone !== providerTimeZone) {
+        this.#canonicalCalendars.set(canonical.id, { ...canonical, timeZone: providerTimeZone,
+          updatedAt: nextCalendarSettingsTimestamp(new Date().toISOString(), canonical.updatedAt) });
+      }
+      return;
+    }
     if (this.#canonicalCalendars.has(calendar.id) || this.#calendars.has(key)
       || [...this.#calendars.values()].some((candidate) => candidate.ownerId === binding.ownerId
         && (candidate.calendarId === binding.calendarId || (candidate.connectionId === binding.connectionId && candidate.providerCalendarId === binding.providerCalendarId)))) {
@@ -1563,7 +1583,7 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
       candidate.ownerId === calendar.ownerId && candidate.isDefault && candidate.deletedAt === null)) {
       throw new CalendarProviderGatewayError("invalid_input", "The owner already has a default Calendar.");
     }
-    this.#canonicalCalendars.set(calendar.id, { ...calendar });
+    this.#canonicalCalendars.set(calendar.id, { ...calendar, ...(providerTimeZone === undefined ? {} : { timeZone: providerTimeZone }) });
     const { agentGrant: _grant, ...metadata } = cloneCalendar(binding);
     this.#calendars.set(key, metadata);
   }
@@ -1819,10 +1839,17 @@ function normalizeDiscovery(input: CalendarProviderDiscovery): CalendarProviderD
     if (!isRecord(candidate)) throw new CalendarProviderGatewayError("invalid_input", "A discovered provider calendar has an invalid shape.");
     assertIdentifier(candidate.providerCalendarId, "providerCalendarId");
     assertBoundedString(candidate.displayName, "displayName", 1_000);
+    if (candidate.timeZone !== undefined) assertBoundedString(candidate.timeZone, "timeZone", 100);
+    let timeZone: string | undefined;
+    if (candidate.timeZone !== undefined) {
+      try { timeZone = normalizeCalendarIanaTimeZone(candidate.timeZone); }
+      catch { throw new CalendarProviderGatewayError("invalid_input", "The provider Calendar time zone is invalid."); }
+    }
     return {
       providerCalendarId: candidate.providerCalendarId,
       displayName: candidate.displayName,
       ...(typeof candidate.isDefault === "boolean" ? { isDefault: candidate.isDefault } : {}),
+      ...(timeZone === undefined ? {} : { timeZone }),
       capabilities: normalizeCapabilities(candidate.capabilities)
     };
   });

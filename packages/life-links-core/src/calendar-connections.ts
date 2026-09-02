@@ -52,6 +52,8 @@ export type CalendarAuthorizationDiscovery = {
     providerCalendarId: string;
     displayName: string;
     isDefault: boolean;
+    /** Provider-supplied IANA zone; absent when the provider exposes none. */
+    timeZone?: string;
     capabilities: CalendarProviderCapabilities;
   }>;
 };

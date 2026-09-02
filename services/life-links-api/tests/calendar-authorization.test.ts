@@ -134,13 +134,19 @@ describe("Google authorization through the shared Calendar service", () => {
 
   it("selects only discovered Google calendars with default-none access and exact retry identity", async () => {
     const h = googleHarness(); const id = await h.authorized();
+    const discover = h.adapter.discover.bind(h.adapter);
+    vi.spyOn(h.adapter, "discover").mockImplementation(async (input) => {
+      const result = await discover(input);
+      return { ...result, calendars: result.calendars.map((calendar) => ({ ...calendar, timeZone: "America/New_York" })) };
+    });
+    expect((await h.service.discover("owner-one", "session-one", id)).calendars[0].timeZone).toBe("America/New_York");
     await expect(h.service.complete("owner-one", "session-one", id, ["foreign-calendar"])).rejects.toThrow("calendar_selection_invalid");
     expect(await h.gateway.listConnections("owner-one")).toEqual([]);
     const completed = await h.service.complete("owner-one", "session-one", id, ["agent-tests"]);
     expect(completed.connection).toMatchObject({ providerKey: "google-calendar", providerAccountId: "google-sub-one", status: "active" });
     expect(completed.calendars).toHaveLength(1);
     const calendarId = calendarProviderLocalCalendarId(completed.connection.connectionId, "agent-tests");
-    expect(completed.calendars[0]).toMatchObject({ providerCalendarId: "agent-tests", calendar: { id: calendarId, agentAccess: "none" } });
+    expect(completed.calendars[0]).toMatchObject({ providerCalendarId: "agent-tests", calendar: { id: calendarId, agentAccess: "none", timeZone: "America/New_York" } });
     expect((await h.providerState.getCanonicalCalendar(calendarId))?.agentAccess).toBe("none");
     expect(await h.gateway.listCalendars("owner-one", completed.connection.connectionId, "agent")).toEqual([]);
     await expect(h.service.complete("owner-one", "session-one", id, ["agent-tests"])).resolves.toEqual(completed);
@@ -164,6 +170,11 @@ describe("Google authorization through the shared Calendar service", () => {
     // The fake adapter's previous grant was revoked. A fresh provider authorization
     // reuses the durable state and the same provider account, like a process reload.
     const adapter = new DeterministicFakeCalendarProviderAdapter("google-calendar", "google-sub-one", h.definitions);
+    const discover = adapter.discover.bind(adapter);
+    vi.spyOn(adapter, "discover").mockImplementation(async (input) => {
+      const result = await discover(input);
+      return { ...result, calendars: result.calendars.map((calendar) => ({ ...calendar, timeZone: "America/New_York" })) };
+    });
     const gateway = new CalendarProviderGateway([adapter], h.providerState, { now: h.now });
     const restarted = new CalendarAuthorizationService(h.store, h.cipher, h.auth, () => gateway, h.now, h.google);
     const started = await restarted.start("owner-one", "session-one", connectionId, "google");
@@ -173,6 +184,9 @@ describe("Google authorization through the shared Calendar service", () => {
     expect(result.connection).toMatchObject({ connectionId, providerKey: "google-calendar", providerAccountId: "google-sub-one", status: "active" });
     expect(result.calendars[0].calendar.id).toBe(first.calendars[0].calendar.id);
     expect(result.calendars[0].calendar.agentAccess).toBe("none");
+    expect(first.calendars[0].calendar.timeZone).toBe("UTC");
+    expect(result.calendars[0].calendar).toMatchObject({ ...first.calendars[0].calendar,
+      timeZone: "America/New_York", updatedAt: expect.any(String) });
     expect(await gateway.listConnections("owner-one")).toHaveLength(1);
     expect((await h.providerState.getConnection(connectionId))?.credentialHandle).toBe(
       h.cipher.open<{ credentialId: string }>(h.store.rows.get(id)!).credentialId);

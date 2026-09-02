@@ -4,7 +4,7 @@ import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 
 import { createCalendarConnectionRouter } from "../src/calendar-connections.js";
-import { CalendarProviderGateway, InMemoryCalendarProviderStateStore, calendarProviderCredentialHandle } from "../src/calendar-provider-gateway.js";
+import { CalendarProviderGateway, InMemoryCalendarProviderStateStore, calendarProviderCredentialHandle, calendarProviderLocalCalendarId } from "../src/calendar-provider-gateway.js";
 import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
 import { createLogger, type LogEvent } from "../src/logger.js";
 import { CalendarAuthorizationService } from "../src/calendar-authorization.js";
@@ -13,8 +13,8 @@ import type { GoogleCalendarAuth } from "../src/calendar-google-auth.js";
 
 const ownerId = "synthetic-calendar-owner";
 const connectionId = "synthetic-connection-one";
-const calendarId = "calendar-99999999-9999-4999-8999-999999999999";
 const providerCalendarId = "synthetic-provider-calendar";
+const calendarId = calendarProviderLocalCalendarId(connectionId, providerCalendarId);
 const vaultHandle = "synthetic-private-vault-handle-must-not-leak";
 const writable = { read: true, create: true, update: true, delete: true };
 
@@ -67,6 +67,34 @@ async function fixture(options: { readOnly?: boolean; adapterAvailable?: boolean
 const basePath = `/api/calendar-connections/${connectionId}`;
 
 describe("owner Calendar connection management", () => {
+  it("refreshes supplied provider timezone on existing selection without resetting settings or inventing missing metadata", async () => {
+    const { app, gateway, adapter } = await fixture({ googleAuthorization: true });
+    const initial = (await gateway.listManagedCalendars(ownerId, connectionId))[0];
+    const before = await gateway.updateCalendarSettings({ ownerId, connectionId, calendarId,
+      expectedUpdatedAt: initial.calendar.updatedAt, patch: { visible: false, agentAccess: "write" } });
+    const discover = adapter.discover.bind(adapter);
+    let timeZone: string | undefined = "America/New_York";
+    vi.spyOn(adapter, "discover").mockImplementation(async (input) => {
+      const result = await discover(input);
+      return { ...result, calendars: result.calendars.map((calendar) => ({ ...calendar, ...(timeZone === undefined ? {} : { timeZone }) })) };
+    });
+    const headers = { "X-Test-Owner": ownerId };
+    expect((await request(app).get(`${basePath}/available-calendars`).set(headers)).body.calendars[0].timeZone).toBe(timeZone);
+    const selected = await request(app).post(`${basePath}/select`).set(headers).send({ selectedCalendarIds: [providerCalendarId] });
+    expect(selected.status).toBe(200);
+    expect(selected.body.calendars[0]).toEqual({ ...before,
+      calendar: { ...before.calendar, timeZone, updatedAt: expect.any(String) } });
+    const updated = selected.body.calendars[0];
+    expect(updated.calendar.updatedAt).not.toBe(before.calendar.updatedAt);
+    expect((await request(app).post(`${basePath}/select`).set(headers).send({ selectedCalendarIds: [providerCalendarId] })).body.calendars[0]).toEqual(updated);
+    timeZone = undefined;
+    expect((await request(app).get(`${basePath}/available-calendars`).set(headers)).body.calendars[0]).not.toHaveProperty("timeZone");
+    expect((await request(app).post(`${basePath}/select`).set(headers).send({ selectedCalendarIds: [providerCalendarId] })).body.calendars[0]).toEqual(updated);
+    timeZone = "not-a-time-zone";
+    expect((await request(app).post(`${basePath}/select`).set(headers).send({ selectedCalendarIds: [providerCalendarId] })).status).toBe(400);
+    expect((await gateway.listManagedCalendars(ownerId, connectionId))[0]).toEqual(updated);
+  });
+
   it("routes Google OAuth through the same owner/session selection flow without granting agent access", async () => {
     const { app, store, gateway, google, secretStore, logs } = await fixture({ googleAuthorization: true });
     const headers = { "X-Test-Owner": ownerId, "X-Test-Session": "google-session" };

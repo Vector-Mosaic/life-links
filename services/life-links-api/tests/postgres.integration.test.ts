@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { Pool } from "pg";
 import request from "supertest";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   COMPETITION_CAMPING_KIT_ID,
@@ -144,6 +144,22 @@ describe("Life Links Postgres integration", () => {
         expectedUpdatedAt: changed.calendar.updatedAt, patch: { agentAccess: "write" } })
     ]);
     expect(concurrent.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    const beforeZone = (await gateway.listManagedCalendars(DEMO_OWNER_ID, connectionId))[0];
+    const discover = adapter.discover.bind(adapter);
+    let timeZone: string | undefined = "America/New_York";
+    vi.spyOn(adapter, "discover").mockImplementation(async (input) => {
+      const result = await discover(input);
+      return { ...result, calendars: result.calendars.map((calendar) => ({ ...calendar, ...(timeZone === undefined ? {} : { timeZone }) })) };
+    });
+    const selection = { ownerId: DEMO_OWNER_ID, connectionId,
+      calendars: [{ calendarId, providerCalendarId, title: "Ignored replacement title", color: "#abcdef", timeZone: "UTC", isDefault: false }],
+      initialWindow: { startUtc: "2026-09-01T00:00:00.000Z", endUtc: "2026-09-03T00:00:00.000Z" } };
+    const [refreshed] = await gateway.selectExternalCalendars(selection);
+    expect(refreshed).toEqual({ ...beforeZone, calendar: { ...beforeZone.calendar, timeZone, updatedAt: expect.any(String) } });
+    expect((await store.getCalendar(DEMO_OWNER_ID, calendarId))?.timeZone).toBe(timeZone);
+    expect((await gateway.selectExternalCalendars(selection))[0]).toEqual(refreshed);
+    timeZone = undefined;
+    expect((await gateway.selectExternalCalendars(selection))[0]).toEqual(refreshed);
     const independentGrant = await postgresPool.query(
       "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'calendar_provider_bindings' AND column_name = 'agent_grant'"
     );

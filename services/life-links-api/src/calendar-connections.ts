@@ -126,7 +126,7 @@ export function createCalendarConnectionRouter(deps: {
       const remote = discovery.calendars.find((calendar) => calendar.providerCalendarId === id);
       if (!remote) throw new CalendarAuthorizationError("calendar_selection_invalid");
       return { calendarId: calendarProviderLocalCalendarId(connectionId, id),
-        providerCalendarId: id, title: remote.displayName, color: "#4f8fbd", timeZone: "UTC", isDefault: false,
+        providerCalendarId: id, title: remote.displayName, color: "#4f8fbd", timeZone: remote.timeZone ?? "UTC", isDefault: false,
         visible: true, agentGrant: "none" as const };
     });
     await deps.gateway.selectExternalCalendars({ ownerId, connectionId, calendars, initialWindow: authorization().initialWindow() });
