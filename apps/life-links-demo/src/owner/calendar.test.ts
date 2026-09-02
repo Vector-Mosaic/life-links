@@ -126,17 +126,25 @@ describe("dedicated Calendar view helpers", () => {
     const providerEvent: CalendarProviderEventProjection = {
       ownerId, connectionId: "connection-test", calendarId: calendar.id, providerKey: "microsoft-graph-calendar", providerAccountId: "test-account", providerCalendarId: "provider-calendar", providerEventId: "provider/event+one=", providerRevision: "revision-one", synchronizedAt: calendar.updatedAt,
       content: { title: "Provider appointment", description: null, location: null, providerSeriesId: null, status: "confirmed",
-        span: { kind: "timed", startUtc: "2026-09-02T01:00:00.000Z", endUtc: "2026-09-02T02:00:00.000Z", sourceTimeZone: "America/New_York", floatingLocalStart: null, floatingLocalEnd: null },
+        span: { kind: "timed", startUtc: "2026-09-02T01:00:00.000Z", endUtc: "2026-09-02T02:00:00.000Z", sourceTimeZone: "America/New_York", floatingLocalStart: "2026-09-01T21:00:00", floatingLocalEnd: "2026-09-01T22:00:00" },
         providerRecurrence: { kind: "single", originalStartUtc: null }, outboundEffects: { attendeeCount: 0, hasOnlineMeeting: false } }
     };
     const input = { nativeEvents: [], providerEvents: [providerEvent], routineOccurrences: [], routines: [], calendars: [{ ...calendar, source: "external" as const }], startDate: "2026-09-01", endDate: "2026-09-01", timeZone: "America/New_York" };
     expect(buildCalendarDisplayEvents(input)).toMatchObject([{ source: "provider", date: "2026-09-01", providerEvent, eventId: null, revisionId: "revision-one" }]);
     expect(buildCalendarDisplayEvents({ ...input, visibleCalendarIds: new Set() })).toEqual([]);
     expect(providerEventCanMutate(providerEvent)).toBe(true);
+    if (providerEvent.content.span.kind !== "timed") throw new Error("Expected timed provider fixture");
+    for (const span of [
+      { ...providerEvent.content.span, sourceTimeZone: null },
+      { ...providerEvent.content.span, startUtc: "not-an-instant" },
+      { ...providerEvent.content.span, startUtc: "2026-09-02T01:00:00" },
+      { ...providerEvent.content.span, endUtc: providerEvent.content.span.startUtc }
+    ]) expect(providerEventCanMutate({ ...providerEvent, content: { ...providerEvent.content, span } })).toBe(false);
     expect(providerEventCanMutate({ ...providerEvent, content: { ...providerEvent.content, providerSeriesId: "series" } })).toBe(false);
     expect(providerEventCanMutate({ ...providerEvent, content: { ...providerEvent.content, outboundEffects: { attendeeCount: 1, hasOnlineMeeting: false } } })).toBe(false);
+    expect(providerEventCanMutate({ ...providerEvent, content: { ...providerEvent.content, outboundEffects: { attendeeCount: 0, hasOnlineMeeting: true } } })).toBe(false);
     expect(providerSpanForEditor(providerEvent.content.span)).toMatchObject({ kind: "zoned", startLocalDateTime: "2026-09-01T21:00", timeZone: "America/New_York" });
-    expect(providerWritableSpan({ kind: "zoned", startLocalDateTime: "2026-09-01T21:00", endLocalDateTime: "2026-09-01T22:00", timeZone: "America/New_York" })).toEqual(providerEvent.content.span);
+    expect(providerWritableSpan({ kind: "zoned", startLocalDateTime: "2026-09-01T21:00", endLocalDateTime: "2026-09-01T22:00", timeZone: "America/New_York" })).toEqual({ ...providerEvent.content.span, floatingLocalStart: null, floatingLocalEnd: null });
     expect(providerSpanForEditor({ kind: "timed", startUtc: "2026-11-01T06:30:00.000Z", endUtc: "2026-11-01T07:30:00.000Z", sourceTimeZone: "America/New_York", floatingLocalStart: null, floatingLocalEnd: null })).toMatchObject({ startInstant: "2026-11-01T06:30:00.000Z", startLocalDateTime: "2026-11-01T01:30" });
   });
   it("produces stable month, week, day, and agenda ranges across navigation", () => {

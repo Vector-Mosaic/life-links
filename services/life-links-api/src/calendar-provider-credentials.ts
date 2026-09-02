@@ -11,6 +11,8 @@ import {
 export type ResolvedCalendarProviderCredential = {
   accessToken: string;
   providerAccountId: string;
+  /** Call-scoped server-only observation, consumed by the first Graph 2xx. */
+  renewedAccessToken?: true;
 };
 
 export type CalendarProviderCredentialResolver = {
@@ -62,7 +64,8 @@ export async function resolveCalendarProviderCredential(
   if (input.expectedProviderAccountId !== undefined && resolved.providerAccountId !== input.expectedProviderAccountId) {
     throw new ProviderTransientError("The provider credential no longer matches the bound account identity.");
   }
-  return resolved;
+  return { accessToken: resolved.accessToken, providerAccountId: resolved.providerAccountId,
+    ...(resolved.renewedAccessToken === true ? { renewedAccessToken: true as const } : {}) };
 }
 
 export function bearerHeaders(accessToken: string, additional: Record<string, string> = {}): Headers {

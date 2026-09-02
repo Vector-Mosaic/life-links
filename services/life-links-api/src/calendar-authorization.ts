@@ -194,7 +194,8 @@ export class CalendarAuthorizationService implements CalendarProviderCredentialR
       try {
         const refreshed = await this.microsoft.refresh(credential);
         return { row: this.#updated(row, { ...refreshed.state, connectionId: credential.connectionId, status: "ready" }),
-          value: { accessToken: refreshed.accessToken, providerAccountId: credential.providerAccountId } };
+          value: { accessToken: refreshed.accessToken, providerAccountId: credential.providerAccountId,
+            ...(refreshed.renewedAccessToken === true ? { renewedAccessToken: true as const } : {}) } };
       } catch {
         return { row: this.#updated(row, { ...credential, status: "reconnect_required" }), value: null };
       }

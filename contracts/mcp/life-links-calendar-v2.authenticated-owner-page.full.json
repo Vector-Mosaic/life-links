@@ -3468,7 +3468,7 @@
       "systems/life_links/apps/life-links-demo/tools/webmcp-contract-snapshot.ts",
       "normalized-page-tool-catalog"
     ],
-    "source_sha256": "9a762872f817adddb2c14dd8d46604960cdeb6bfb7e9eda1a56f46e4d80b058d",
+    "source_sha256": "64e010c4f51ea2f6c07c0b9c9ebf91744c9b31cf02c2bfbce446af9f4126026a",
     "tool_execution_performed": false
   },
   "interface_id": "if.life_links.page_webmcp",

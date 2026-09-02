@@ -17,13 +17,13 @@ export type MicrosoftCalendarTokenState = {
 export interface MicrosoftCalendarAuth {
   authorizationUrl(input: { state: string; nonce: string; codeChallenge: string }): Promise<string>;
   redeem(input: { code: string; nonce: string; codeVerifier: string }): Promise<MicrosoftCalendarTokenState>;
-  refresh(state: MicrosoftCalendarTokenState): Promise<{ state: MicrosoftCalendarTokenState; accessToken: string }>;
+  refresh(state: MicrosoftCalendarTokenState): Promise<{ state: MicrosoftCalendarTokenState; accessToken: string; renewedAccessToken?: true }>;
 }
 
 /** MSAL owns the Microsoft protocol. The caller owns encrypted, partitioned cache storage. */
 export class MsalMicrosoftCalendarAuth implements MicrosoftCalendarAuth {
   constructor(private readonly config: MicrosoftCalendarAuthConfig) {}
-  #client(cache?: string) {
+  #client(cache?: string, onRefreshExchange?: () => void) {
     const client = new ConfidentialClientApplication({
       auth: {
         clientId: this.config.clientId,
@@ -38,8 +38,18 @@ export class MsalMicrosoftCalendarAuth implements MicrosoftCalendarAuth {
         networkClient: {
           sendGetRequestAsync: async <T>(url: string, options?: { headers?: Record<string, string> }) =>
             microsoftTokenRequest<T>(url, { method: "GET", headers: options?.headers }),
-          sendPostRequestAsync: async <T>(url: string, options?: { headers?: Record<string, string>; body?: string }) =>
-            microsoftTokenRequest<T>(url, { method: "POST", headers: options?.headers, body: options?.body })
+          sendPostRequestAsync: async <T>(url: string, options?: { headers?: Record<string, string>; body?: string }) => {
+            const response = await microsoftTokenRequest<T>(url, { method: "POST", headers: options?.headers, body: options?.body });
+            // Observe only this acquisition's existing refresh exchange. Never
+            // export the request/response, and never affect authentication.
+            try {
+              const body = response.body as { access_token?: unknown; error?: unknown } | null;
+              if (onRefreshExchange && new URLSearchParams(options?.body).get("grant_type") === "refresh_token"
+                  && response.status >= 200 && response.status < 300 && body && typeof body === "object"
+                  && !("error" in body) && typeof body.access_token === "string" && body.access_token) onRefreshExchange();
+            } catch { /* Passive observation cannot fail an otherwise valid acquisition. */ }
+            return response;
+          }
         }
       }
     });
@@ -73,15 +83,19 @@ export class MsalMicrosoftCalendarAuth implements MicrosoftCalendarAuth {
         localAccountId: result.uniqueId, providerAccountId: me.id, tenantId: result.tenantId };
     } catch { throw new Error("Microsoft calendar authorization failed."); }
   }
-  async refresh(state: MicrosoftCalendarTokenState): Promise<{ state: MicrosoftCalendarTokenState; accessToken: string }> {
+  async refresh(state: MicrosoftCalendarTokenState): Promise<{ state: MicrosoftCalendarTokenState; accessToken: string; renewedAccessToken?: true }> {
     try {
-      const client = this.#client(state.cache);
+      let refreshExchangeObserved = false;
+      const client = this.#client(state.cache, () => { refreshExchangeObserved = true; });
       const account = await client.getTokenCache().getAccountByHomeId(state.homeAccountId);
       if (!account || account.tenantId !== state.tenantId) throw new Error();
       const result = await client.acquireTokenSilent({ account, scopes: [...MICROSOFT_CALENDAR_SCOPES] });
       if (!result?.account || !result.accessToken || result.account.homeAccountId !== state.homeAccountId
         || result.uniqueId !== state.localAccountId || result.tenantId !== state.tenantId) throw new Error();
-      return { accessToken: result.accessToken, state: { ...state, cache: client.getTokenCache().serialize() } };
+      return { accessToken: result.accessToken, state: { ...state, cache: client.getTokenCache().serialize() },
+        // MSAL can proactively renew but return its old cached credential.
+        // Such a result must not be called a renewed credential in use.
+        ...(refreshExchangeObserved && result.fromCache === false ? { renewedAccessToken: true as const } : {}) };
     } catch { throw new Error("Microsoft calendar authorization needs reconnection."); }
   }
 }

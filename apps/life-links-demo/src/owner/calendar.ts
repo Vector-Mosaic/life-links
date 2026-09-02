@@ -180,9 +180,17 @@ export function formatCalendarTime(event: CalendarDisplayEvent, timeZone: string
 }
 
 export function providerEventCanMutate(event: CalendarProviderEventProjection): boolean {
-  return !event.content.providerSeriesId && (!event.content.providerRecurrence || event.content.providerRecurrence.kind === "single") &&
-    !(event.content.outboundEffects?.attendeeCount) && !event.content.outboundEffects?.hasOnlineMeeting &&
-    (event.content.span.kind !== "timed" || (!event.content.span.floatingLocalStart && !event.content.span.floatingLocalEnd));
+  if (event.content.providerSeriesId !== null || event.content.providerRecurrence?.kind !== "single" ||
+    event.content.outboundEffects?.attendeeCount !== 0 || event.content.outboundEffects.hasOnlineMeeting !== false) return false;
+  const span = event.content.span;
+  if (span.kind === "all_day") return true;
+  const start = Date.parse(span.startUtc), end = Date.parse(span.endUtc);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end ||
+    !/[zZ]$/.test(span.startUtc) || !/[zZ]$/.test(span.endUtc)) return false;
+  // Adapters retain derived local clocks even for exact zoned UTC instants.
+  // Only local clocks without a recorded source zone remain unresolved/floating.
+  return (!span.floatingLocalStart && !span.floatingLocalEnd) ||
+    (typeof span.sourceTimeZone === "string" && span.sourceTimeZone.trim().length > 0 && span.sourceTimeZone.length <= 256);
 }
 
 export function providerSpanForEditor(span: ProviderEventSpan) {

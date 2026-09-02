@@ -65,6 +65,8 @@ export type AgentCalendarRecord = {
   readonly title: string;
   readonly timeZone: string;
   readonly provider: AgentCalendarProvider;
+  /** Canonical binding identity for internal validation, not the display classification. */
+  readonly providerKey?: string;
   readonly providerConnectionId: string | null;
   readonly providerAccountId: string | null;
   readonly providerCalendarId: string | null;
@@ -510,14 +512,16 @@ function validProviderSpan(value: unknown, writing = false): value is ProviderEv
     || value.kind !== "timed" || typeof value.startUtc !== "string" || typeof value.endUtc !== "string"
     || !Number.isFinite(Date.parse(value.startUtc)) || !Number.isFinite(Date.parse(value.endUtc))
     || Date.parse(value.startUtc) >= Date.parse(value.endUtc)
-    || !(value.sourceTimeZone === null || isTimeZone(value.sourceTimeZone))) return false;
+    // Provider labels may be Windows names, not native IANA calculation zones.
+    // Exact UTC instants own the timing; preserve the bounded source metadata.
+    || !(value.sourceTimeZone === null || validText(value.sourceTimeZone, writing ? 100 : 256))) return false;
   return writing ? value.floatingLocalStart === null && value.floatingLocalEnd === null
     : [value.floatingLocalStart, value.floatingLocalEnd].every((field) => field === null || validText(field, 128));
 }
 function validProviderResult(event: CalendarProviderEventProjection, calendar: AgentCalendarRecord): boolean {
   return calendarReadable(calendar) && calendar.writeAuthority !== "life_links" && event.calendarId === calendar.id
     && event.connectionId === calendar.providerConnectionId && event.providerAccountId === calendar.providerAccountId
-    && event.providerCalendarId === calendar.providerCalendarId && event.providerKey === calendar.provider
+    && event.providerCalendarId === calendar.providerCalendarId && isProviderId(calendar.providerKey) && event.providerKey === calendar.providerKey
     && isProviderId(event.providerEventId) && isProviderId(event.providerRevision)
     && validText(event.content.title, 1000, true) && validProviderSpan(event.content.span);
 }

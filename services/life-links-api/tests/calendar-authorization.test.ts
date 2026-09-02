@@ -4,12 +4,29 @@ import { CalendarAuthorizationService } from "../src/calendar-authorization.js";
 import { CalendarSecretCipher, InMemoryCalendarSecretStore } from "../src/calendar-secret-store.js";
 import { calendarProviderCredentialHandle, calendarProviderLocalCalendarId, CalendarProviderGateway, InMemoryCalendarProviderStateStore } from "../src/calendar-provider-gateway.js";
 import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
-import type { MicrosoftCalendarAuth } from "../src/calendar-microsoft-auth.js";
+import { MsalMicrosoftCalendarAuth, type MicrosoftCalendarAuth } from "../src/calendar-microsoft-auth.js";
 import express from "express";
 import request from "supertest";
 import { createCalendarConnectionRouter } from "../src/calendar-connections.js";
 import { createLogger } from "../src/logger.js";
 import { readConfig } from "../src/config.js";
+
+const msal = vi.hoisted(() => ({
+  acquireTokenSilent: vi.fn(),
+  config: null as unknown as { system: { networkClient: {
+    sendPostRequestAsync(url: string, options: { body: string }): Promise<unknown>;
+  } } },
+  cache: { deserialize: vi.fn(), serialize: () => "private-msal-serialized-cache",
+    getAccountByHomeId: async () => ({ homeAccountId: "home-account", tenantId: "tenant-one" }) }
+}));
+vi.mock("@azure/msal-node", () => ({
+  LogLevel: { Error: 0 },
+  ConfidentialClientApplication: class {
+    constructor(config: typeof msal.config) { msal.config = config; }
+    getTokenCache() { return msal.cache; }
+    acquireTokenSilent(input: unknown) { return msal.acquireTokenSilent(input); }
+  }
+}));
 
 function harness() {
   const store = new InMemoryCalendarSecretStore();
@@ -250,6 +267,17 @@ describe("Calendar authorization and private MSAL cache", () => {
     await expect(restarted.resolve(input)).rejects.toThrow("authorization_failed");
   });
 
+  it("carries renewal evidence only on the resolved credential, never into persisted state", async () => {
+    const h = harness(); await h.authorized();
+    const credential = [...h.store.rows.values()].find((row) => row.purpose === "credential")!;
+    vi.mocked(h.auth.refresh).mockImplementationOnce(async (state) => ({ state, accessToken: "private-test-token", renewedAccessToken: true }));
+    const resolved = await h.service.resolve({ credentialHandle: calendarProviderCredentialHandle(credential.id), providerKey: "microsoft-graph-calendar" });
+    expect(resolved.renewedAccessToken).toBe(true);
+    expect(h.cipher.open(h.store.rows.get(credential.id)!)).not.toHaveProperty("renewedAccessToken");
+    expect(await h.service.resolve({ credentialHandle: calendarProviderCredentialHandle(credential.id), providerKey: "microsoft-graph-calendar" }))
+      .not.toHaveProperty("renewedAccessToken");
+  });
+
   it("requires reconnect to match the original Microsoft account", async () => {
     const h = harness();
     await h.service.start("owner-one", "session-one", "connection-one");
@@ -258,5 +286,54 @@ describe("Calendar authorization and private MSAL cache", () => {
     const state = new URL(result.authorizationUrl).searchParams.get("state")!;
     await expect(h.service.callback({ ownerId: "owner-one", sessionId: "session-one", state, code: "test" })).rejects.toThrow("authorization_failed");
     expect([...h.store.rows.values()].filter((row) => row.purpose === "credential")).toHaveLength(0);
+  });
+});
+
+describe("MSAL passive renewal observation", () => {
+  const state = { cache: "private-original-cache", homeAccountId: "home-account", localAccountId: "local-account",
+    tenantId: "tenant-one", providerAccountId: "account-one" };
+  const config = { clientId: "client-one", redirectUri: "https://life-links.example/callback",
+    certificateThumbprint: "a".repeat(64), certificatePrivateKey: "private-certificate-fixture" };
+
+  it.each([
+    { name: "cache hit", exchange: false, fromCache: true, status: 200, grantType: "refresh_token", expected: false },
+    { name: "renewed returned credential", exchange: true, fromCache: false, status: 200, grantType: "refresh_token", expected: true },
+    { name: "proactive refresh returning old cache", exchange: true, fromCache: true, status: 200, grantType: "refresh_token", expected: false },
+    { name: "authorization-code exchange", exchange: true, fromCache: false, status: 200, grantType: "authorization_code", expected: false },
+    { name: "failed refresh exchange", exchange: true, fromCache: false, status: 400, grantType: "refresh_token", expected: false }
+  ])("distinguishes $name without changing silent acquisition", async (scenario) => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify(scenario.status === 200
+      ? { access_token: "private-provider-bearer" } : { error: "invalid_grant" }), { status: scenario.status }));
+    vi.stubGlobal("fetch", fetcher);
+    msal.acquireTokenSilent.mockReset().mockImplementation(async () => {
+      if (scenario.exchange) await msal.config.system.networkClient.sendPostRequestAsync(
+        "https://login.microsoftonline.com/tenant-one/oauth2/v2.0/token",
+        { body: `grant_type=${scenario.grantType}&refresh_token=private-refresh-fixture&client_assertion=private-assertion-fixture` });
+      return { account: { homeAccountId: "home-account" }, uniqueId: "local-account", tenantId: "tenant-one",
+        accessToken: "private-provider-bearer", fromCache: scenario.fromCache };
+    });
+    try {
+      const result = await new MsalMicrosoftCalendarAuth(config).refresh(state);
+      expect(result.renewedAccessToken === true).toBe(scenario.expected);
+      expect(result.state).not.toHaveProperty("renewedAccessToken");
+      expect(msal.acquireTokenSilent).toHaveBeenCalledWith({ account: { homeAccountId: "home-account", tenantId: "tenant-one" },
+        scopes: ["https://graph.microsoft.com/User.Read", "https://graph.microsoft.com/Calendars.ReadWrite"] });
+      expect(fetcher).toHaveBeenCalledTimes(scenario.exchange ? 1 : 0);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
+  it.each(["wrong_account", "malformed_response", "network_failure"])("does not certify %s", async (failure) => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      if (failure === "network_failure") throw new Error("private-provider-error");
+      return new Response(failure === "malformed_response" ? "not-json" : JSON.stringify({ access_token: "private-provider-bearer" }));
+    }));
+    msal.acquireTokenSilent.mockReset().mockImplementation(async () => {
+      await msal.config.system.networkClient.sendPostRequestAsync("https://login.microsoftonline.com/tenant-one/oauth2/v2.0/token",
+        { body: "grant_type=refresh_token&refresh_token=private-refresh-fixture" });
+      return { account: { homeAccountId: "other-account" }, uniqueId: "local-account", tenantId: "tenant-one",
+        accessToken: "private-provider-bearer", fromCache: false };
+    });
+    try { await expect(new MsalMicrosoftCalendarAuth(config).refresh(state)).rejects.toThrow("Microsoft calendar authorization needs reconnection."); }
+    finally { vi.unstubAllGlobals(); }
   });
 });

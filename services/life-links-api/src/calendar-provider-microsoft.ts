@@ -18,7 +18,8 @@ import {
   resolveCalendarProviderCredential,
   type CalendarProviderCredentialResolver,
   type CalendarProviderCredentialRevoker,
-  type CalendarProviderFetch
+  type CalendarProviderFetch,
+  type ResolvedCalendarProviderCredential
 } from "./calendar-provider-credentials.js";
 
 export const MICROSOFT_GRAPH_CALENDAR_PROVIDER_KEY = "microsoft-graph-calendar";
@@ -89,16 +90,19 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
   readonly #apiBase: string;
   readonly #apiOrigin: string;
   readonly #apiPathPrefix: string;
+  readonly #onRenewedCredentialUsed?: () => void;
 
   constructor(options: {
     credentialResolver: CalendarProviderCredentialResolver;
     credentialRevoker: CalendarProviderCredentialRevoker;
     fetch?: CalendarProviderFetch;
     apiBaseUrl?: string;
+    onRenewedCredentialUsed?: () => void;
   }) {
     this.#resolver = options.credentialResolver;
     this.#revoker = options.credentialRevoker;
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.#onRenewedCredentialUsed = options.onRenewedCredentialUsed;
     this.#apiBase = (options.apiBaseUrl ?? GRAPH_API_BASE).replace(/\/$/, "");
     const parsedBase = new URL(this.#apiBase);
     this.#apiOrigin = parsedBase.origin;
@@ -110,7 +114,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       credentialHandle: input.credentialHandle,
       providerKey: this.providerKey
     });
-    const identityResponse = await this.#request(`${this.#apiBase}/me?$select=id`, credential.accessToken);
+    const identityResponse = await this.#request(`${this.#apiBase}/me?$select=id`, credential);
     const identity = await jsonObject(identityResponse);
     if (requiredString(identity.id) !== credential.providerAccountId) {
       throw new ProviderTransientError("Microsoft Graph returned an account identity that did not match the credential binding.");
@@ -119,7 +123,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     const calendars: CalendarProviderDiscovery["calendars"] = [];
     let url: string | null = `${this.#apiBase}/me/calendars?$top=100`;
     while (url) {
-      const response = await this.#request(this.#validatedGraphUrl(url), credential.accessToken);
+      const response = await this.#request(this.#validatedGraphUrl(url), credential);
       const body = await jsonObject(response);
       for (const raw of array(body.value)) {
         if (!isRecord(raw)) throw malformedGraphResponse();
@@ -164,7 +168,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     } else {
       const metadataResponse = await this.#request(
         `${this.#apiBase}/me/calendars/${encodeURIComponent(input.providerCalendarId)}?$select=id,isDefaultCalendar`,
-        credential.accessToken
+        credential
       );
       const metadata = await jsonObject(metadataResponse);
       if (requiredString(metadata.id) !== input.providerCalendarId) throw malformedGraphResponse();
@@ -190,7 +194,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       }
       const response = await this.#request(
         this.#validatedGraphUrl(url),
-        credential.accessToken,
+        credential,
         { headers: graphPreferHeaders(Math.min(remaining, 999)) },
         { cursorRequest: mode === "delta" }
       );
@@ -254,7 +258,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       providerKey: this.providerKey,
       expectedProviderAccountId: input.providerAccountId
     });
-    const event = await this.#readRawEvent(credential.accessToken, input.providerCalendarId, input.providerEventId);
+    const event = await this.#readRawEvent(credential, input.providerCalendarId, input.providerEventId);
     return event ? mapGraphEvent(event) : null;
   }
 
@@ -268,7 +272,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     assertStandaloneProviderWrite(input.content);
     const response = await this.#request(
       `${this.#apiBase}/me/calendars/${encodeURIComponent(input.providerCalendarId)}/events`,
-      credential.accessToken,
+      credential,
       {
         method: "POST",
         headers: { ...graphPreferHeaders(), "Content-Type": "application/json" },
@@ -291,7 +295,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       expectedProviderAccountId: input.providerAccountId
     });
     assertWritableStatus(input.content);
-    const current = await this.#readRawEvent(credential.accessToken, input.providerCalendarId, input.providerEventId);
+    const current = await this.#readRawEvent(credential, input.providerCalendarId, input.providerEventId);
     if (!current) throw new ProviderRevisionConflictError(null);
     assertGraphWriteEvidence(current);
     const currentContent = mapGraphEvent(current).content;
@@ -307,7 +311,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     }
     const response = await this.#request(
       `${this.#apiBase}/me/calendars/${encodeURIComponent(input.providerCalendarId)}/events/${encodeURIComponent(input.providerEventId)}`,
-      credential.accessToken,
+      credential,
       {
         method: "PATCH",
         headers: {
@@ -321,7 +325,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     );
     if (response.status === 404 || response.status === 412) {
       throw new ProviderRevisionConflictError(await this.#currentRevision(
-        credential.accessToken,
+        credential,
         input.providerCalendarId,
         input.providerEventId
       ));
@@ -334,7 +338,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       providerKey: this.providerKey,
       expectedProviderAccountId: input.providerAccountId
     });
-    const current = await this.#readRawEvent(credential.accessToken, input.providerCalendarId, input.providerEventId);
+    const current = await this.#readRawEvent(credential, input.providerCalendarId, input.providerEventId);
     if (!current) throw new ProviderRevisionConflictError(null);
     assertGraphWriteEvidence(current);
     assertStandaloneProviderWrite(mapGraphEvent(current).content);
@@ -344,7 +348,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     }
     const response = await this.#request(
       `${this.#apiBase}/me/calendars/${encodeURIComponent(input.providerCalendarId)}/events/${encodeURIComponent(input.providerEventId)}`,
-      credential.accessToken,
+      credential,
       {
         method: "DELETE",
         headers: { ...graphPreferHeaders(), "If-Match": input.expectedProviderRevision }
@@ -353,7 +357,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     );
     if (response.status === 404 || response.status === 412) {
       throw new ProviderRevisionConflictError(await this.#currentRevision(
-        credential.accessToken,
+        credential,
         input.providerCalendarId,
         input.providerEventId
       ));
@@ -375,7 +379,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     const result: MicrosoftCalendarSubscription[] = [];
     let url: string | null = `${this.#apiBase}/subscriptions`;
     while (url) {
-      const body = await jsonObject(await this.#request(this.#validatedGraphUrl(url), credential.accessToken));
+      const body = await jsonObject(await this.#request(this.#validatedGraphUrl(url), credential));
       for (const raw of array(body.value)) {
         // Listing can include other resources owned by this app. Do not inspect
         // their payloads or adopt them; lifecycle management matches exact URL,
@@ -397,7 +401,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     const credential = await resolveCalendarProviderCredential(this.#resolver, {
       ...input, providerKey: this.providerKey, expectedProviderAccountId: input.providerAccountId
     });
-    const body = await jsonObject(await this.#request(`${this.#apiBase}/subscriptions`, credential.accessToken, {
+    const body = await jsonObject(await this.#request(`${this.#apiBase}/subscriptions`, credential, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
         changeType: "created,updated,deleted", resource: `users/${encodeURIComponent(input.providerAccountId)}/events`,
         notificationUrl: input.notificationUrl, lifecycleNotificationUrl: input.notificationUrl,
@@ -415,7 +419,7 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       ...input, providerKey: this.providerKey, expectedProviderAccountId: input.providerAccountId
     });
     const response = await this.#request(`${this.#apiBase}/subscriptions/${encodeURIComponent(input.subscriptionId)}`,
-      credential.accessToken, { method: "PATCH", headers: { "Content-Type": "application/json" },
+      credential, { method: "PATCH", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ expirationDateTime: input.expiresAt }) }, { allowedStatuses: [404] });
     return response.status === 404 ? null : graphSubscription(await jsonObject(response));
   }
@@ -425,13 +429,13 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       ...input, providerKey: this.providerKey, expectedProviderAccountId: input.providerAccountId
     });
     await this.#request(`${this.#apiBase}/subscriptions/${encodeURIComponent(input.subscriptionId)}`,
-      credential.accessToken, { method: "DELETE" }, { allowedStatuses: [404] });
+      credential, { method: "DELETE" }, { allowedStatuses: [404] });
   }
 
-  async #readRawEvent(accessToken: string, calendarId: string, eventId: string): Promise<GraphEvent | null> {
+  async #readRawEvent(credential: ResolvedCalendarProviderCredential, calendarId: string, eventId: string): Promise<GraphEvent | null> {
     const response = await this.#request(
       `${this.#apiBase}/me/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
-      accessToken,
+      credential,
       { headers: graphPreferHeaders() },
       { allowedStatuses: [404] }
     );
@@ -439,8 +443,8 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
     return await jsonObject(response) as GraphEvent;
   }
 
-  async #currentRevision(accessToken: string, calendarId: string, eventId: string): Promise<string | null> {
-    const current = await this.#readRawEvent(accessToken, calendarId, eventId);
+  async #currentRevision(credential: ResolvedCalendarProviderCredential, calendarId: string, eventId: string): Promise<string | null> {
+    const current = await this.#readRawEvent(credential, calendarId, eventId);
     return current ? graphRevision(current) : null;
   }
 
@@ -459,12 +463,12 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
 
   async #request(
     input: string | URL,
-    accessToken: string,
+    credential: ResolvedCalendarProviderCredential,
     init: RequestInit = {},
     options: { allowedStatuses?: number[]; cursorRequest?: boolean; authorizeDispatch?: () => Promise<void> } = {}
   ): Promise<Response> {
     let response: Response;
-    const headers = bearerHeaders(accessToken);
+    const headers = bearerHeaders(credential.accessToken);
     new Headers(init.headers).forEach((value, key) => headers.set(key, value));
     // The callback runs after credential resolution and source-event readback,
     // immediately before the mutating request. Keep its denial unchanged.
@@ -473,6 +477,12 @@ export class MicrosoftGraphCalendarProviderAdapter implements CalendarProviderAd
       response = await this.#fetch(input, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(20_000) });
     } catch {
       throw new ProviderTransientError("Microsoft Graph did not complete the request reliably.");
+    }
+    if (response.ok && credential.renewedAccessToken === true) {
+      // This exact credential produced a successful Graph response. Consume
+      // once even if the call paginates or the observer fails; no public DTOs.
+      delete credential.renewedAccessToken;
+      try { this.#onRenewedCredentialUsed?.(); } catch { /* Logging cannot change provider success. */ }
     }
     if (response.ok || options.allowedStatuses?.includes(response.status)) return response;
     if (options.cursorRequest && response.status === 410) throw new ProviderCursorExpiredError();

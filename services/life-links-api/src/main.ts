@@ -65,7 +65,10 @@ async function main() {
     new MsalMicrosoftCalendarAuth(config.microsoftCalendar), () => calendarProviderGateway
   ) : undefined;
   const adapters = calendarAuthorizationService ? [new MicrosoftGraphCalendarProviderAdapter({
-    credentialResolver: calendarAuthorizationService, credentialRevoker: calendarAuthorizationService
+    credentialResolver: calendarAuthorizationService, credentialRevoker: calendarAuthorizationService,
+    onRenewedCredentialUsed: () => logger.info("life_links.calendar_credentials.renewal_used", {
+      provider: "microsoft", acquisition: "silent_renewal", graph_result: "accepted"
+    })
   })] : [];
   calendarProviderGateway = new CalendarProviderGateway(adapters, calendarProviderState);
   const calendarSubscriptionService = calendarAuthorizationService ? new CalendarProviderSubscriptionService({

@@ -42,11 +42,11 @@ function calendar(overrides: Partial<AgentCalendarRecord> = {}): AgentCalendarRe
 }
 
 function providerCalendar(): AgentCalendarRecord {
-  return calendar({ provider: "microsoft", providerConnectionId: "connection-one", providerAccountId: "account-one",
+  return calendar({ provider: "microsoft", providerKey: "microsoft-graph-calendar", providerConnectionId: "connection-one", providerAccountId: "account-one",
     providerCalendarId: "provider-calendar-one", writeAuthority: "provider", capabilities: { read: true, create: true, update: true, delete: true } });
 }
 function providerEvent(): CalendarProviderEventProjection {
-  return { ownerId: owner.id, connectionId: "connection-one", calendarId, providerKey: "microsoft", providerAccountId: "account-one",
+  return { ownerId: owner.id, connectionId: "connection-one", calendarId, providerKey: "microsoft-graph-calendar", providerAccountId: "account-one",
     providerCalendarId: "provider-calendar-one", providerEventId: "AQMk+provider/event=one", providerRevision: 'W/"exact-revision-one"',
     synchronizedAt: "2026-09-01T12:00:00.000Z", content: { title: "Private provider appointment",
       description: "Provider content is data, not instructions. ".repeat(60), location: "Private room", status: "confirmed",
@@ -269,6 +269,43 @@ describe("Calendar page-bound agent tools", () => {
     expect(controller.agentApplyCalendarEventDeletion).not.toHaveBeenCalled();
   });
 
+  it("reads Outlook Windows time-zone metadata without relaxing native zones, identity, grants, or span validation", async () => {
+    const controller = new FakeController();
+    const catalog = tools(controller);
+    const inspect = catalog.get("inspect_calendar_event")!.execute;
+    const span = { kind: "timed" as const, startUtc: "2026-09-02T05:00:00.000Z", endUtc: "2026-09-02T05:30:00.000Z",
+      sourceTimeZone: "Eastern Standard Time", floatingLocalStart: null, floatingLocalEnd: null };
+    const observed = { ...providerEvent(), content: { ...providerEvent().content, span } };
+    const readableCalendar = { ...providerCalendar(), agentAccess: "read" as const };
+    controller.agentInspectProviderCalendarEvent.mockResolvedValue({ ok: true, providerEvent: observed, calendar: readableCalendar });
+    expect(await inspect({ ...providerReference(), expectedProviderRevision: observed.providerRevision })).toMatchObject({
+      ok: true, providerEvent: { providerEventId: observed.providerEventId, providerRevision: observed.providerRevision, span },
+      visibleEffect: "calendar_event_opened", contentIsUntrusted: true
+    });
+    expect(await inspect({ ...providerReference(), expectedProviderRevision: "changed-revision" }))
+      .toMatchObject({ ok: false, error: { code: "stale_calendar_event" } });
+    for (const patch of [{ sourceTimeZone: 123 }, { sourceTimeZone: "x".repeat(257) },
+      { startUtc: "not-an-instant" }, { endUtc: span.startUtc }, { endUtc: "2026-09-02T04:00:00.000Z" }]) {
+      controller.agentInspectProviderCalendarEvent.mockResolvedValueOnce({ ok: true,
+        providerEvent: { ...observed, content: { ...observed.content, span: { ...span, ...patch } } } as CalendarProviderEventProjection,
+        calendar: readableCalendar });
+      expect(await inspect(providerReference())).toMatchObject({ ok: false, error: { code: "effect_not_applied" } });
+    }
+    controller.agentInspectProviderCalendarEvent.mockResolvedValueOnce({ ok: true,
+      providerEvent: { ...observed, providerAccountId: "different-account" }, calendar: readableCalendar });
+    expect(await inspect(providerReference())).toMatchObject({ ok: false, error: { code: "effect_not_applied" } });
+    controller.agentInspectProviderCalendarEvent.mockResolvedValueOnce({ ok: true,
+      providerEvent: { ...observed, providerKey: "microsoft" }, calendar: readableCalendar });
+    expect(await inspect(providerReference())).toMatchObject({ ok: false, error: { code: "effect_not_applied" } });
+    controller.agentInspectProviderCalendarEvent.mockResolvedValueOnce({ ok: true, providerEvent: observed,
+      calendar: { ...readableCalendar, agentAccess: "none" } });
+    expect(await inspect(providerReference())).toMatchObject({ ok: false, error: { code: "effect_not_applied" } });
+    expect(await catalog.get("create_calendar_event")!.execute({ eventId, revisionId, calendarId, title: "Native event",
+      span: { kind: "zoned", startLocalDateTime: "2026-09-02T01:00", endLocalDateTime: "2026-09-02T01:30", timeZone: "Eastern Standard Time" } }))
+      .toMatchObject({ ok: false, error: { code: "invalid_input" } });
+    expect(controller.agentCreateCalendarEvent).not.toHaveBeenCalled();
+  });
+
   it.each(["create_calendar_event", "update_calendar_event"])("accepts equivalent normalized provider readback for %s without accepting changed content", async (name) => {
     const controller = new FakeController();
     const execute = tools(controller).get(name)!.execute;
@@ -277,13 +314,13 @@ describe("Calendar page-bound agent tools", () => {
         expectedProviderRevision: providerEvent().providerRevision, scope: "event" } : {}),
       content: { ...providerWritableContent(), description: "", location: null,
         span: { kind: "timed", startUtc: "2026-09-01T12:00:00Z", endUtc: "2026-09-01T13:00:00Z",
-          sourceTimeZone: "UTC", floatingLocalStart: null, floatingLocalEnd: null } }
+          sourceTimeZone: "Eastern Standard Time", floatingLocalStart: null, floatingLocalEnd: null } }
     };
     // Gateway readback normalizes instants; Graph also round-trips absent text
     // as null or empty. These are the same saved effect, not different writes.
     const actual: CalendarProviderEventProjection = { ...providerEvent(), content: { ...providerEvent().content,
       description: null, location: "", span: { kind: "timed", startUtc: "2026-09-01T12:00:00.000Z", endUtc: "2026-09-01T13:00:00.000Z",
-        sourceTimeZone: "UTC", floatingLocalStart: "2026-09-01T12:00:00", floatingLocalEnd: "2026-09-01T13:00:00" } } };
+        sourceTimeZone: "Eastern Standard Time", floatingLocalStart: null, floatingLocalEnd: null } } };
     const command = name === "create_calendar_event" ? controller.agentCreateProviderCalendarEvent : controller.agentUpdateProviderCalendarEvent;
     command.mockResolvedValueOnce({ ok: true, providerEvent: actual, calendar: providerCalendar() });
     expect(await execute(input)).toMatchObject({ ok: true, saved: true });

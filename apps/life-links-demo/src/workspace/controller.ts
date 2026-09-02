@@ -1,5 +1,6 @@
 import QRCode from "qrcode";
 import { validateAttachmentTranscript } from "../attachmentTranscript";
+import { providerEventCanMutate } from "../owner/calendar";
 import {
   DEFAULT_QR_BASE_URL,
   DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
@@ -1825,7 +1826,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     if (!inspected.ok) return inspected;
     if (inspected.calendar.agentAccess !== "write" || !inspected.calendar.capabilities?.delete) return { ok: false as const, code: "calendar_event_unavailable" as const };
     if (inspected.providerEvent.providerRevision !== input.expectedProviderRevision) return { ok: false as const, code: "stale_calendar_event" as const };
-    if (input.scope !== "event" || !providerEventAllowsStandaloneMutation(inspected.providerEvent)) return { ok: false as const, code: "unsupported_calendar_authority" as const };
+    if (input.scope !== "event" || !providerEventCanMutate(inspected.providerEvent)) return { ok: false as const, code: "unsupported_calendar_authority" as const };
     const preview: AgentProviderCalendarDeletionPreview = {
       id: `provider-calendar-delete-preview-${this.commandId()}`, providerEvent: inspected.providerEvent, calendar: inspected.calendar, scope: "event",
       knownEffects: ["This deletes the exact original event in the provider calendar, not only its Life Links display.",
@@ -1851,7 +1852,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       if (entry.result) return { ok: true as const, result: entry.result };
       if (!entry.authorized) {
         const { providerEvent } = await this.api.getProviderCalendarEvent({ authority: "provider", connectionId: target.connectionId, calendarId: target.calendarId, providerEventId: target.providerEventId }, signal, "agent");
-        if (!providerEventMatchesCalendar(providerEvent, calendar) || !sameProviderReference(target, providerEvent) || providerEvent.providerRevision !== target.providerRevision || !providerEventAllowsStandaloneMutation(providerEvent)) return { ok: false as const, code: "stale_calendar_event" as const };
+        if (!providerEventMatchesCalendar(providerEvent, calendar) || !sameProviderReference(target, providerEvent) || providerEvent.providerRevision !== target.providerRevision || !providerEventCanMutate(providerEvent)) return { ok: false as const, code: "stale_calendar_event" as const };
         if (this.agentCalendarOwnerId() !== ownerId || this.agentProviderCalendarDeletionPreviews.get(previewId) !== entry) return { ok: false as const, code: "cancelled" as const };
         const accepted = await new Promise<boolean>((resolve) => {
           const abort = () => this.confirmAgentCalendarDeletion(false);
@@ -4644,12 +4645,6 @@ function agentCanWriteProviderCalendar(calendar: AgentReadableCalendar, ownerId:
     calendar.providerBinding?.connectionId === connectionId && calendar.providerBinding.capabilities[operation];
 }
 
-function providerEventAllowsStandaloneMutation(event: CalendarProviderEventProjection): boolean {
-  return event.content.providerSeriesId === null && (!event.content.providerRecurrence || event.content.providerRecurrence.kind === "single") &&
-    !(event.content.outboundEffects?.attendeeCount || event.content.outboundEffects?.hasOnlineMeeting) &&
-    (event.content.span.kind === "all_day" || (!event.content.span.floatingLocalStart && !event.content.span.floatingLocalEnd));
-}
-
 function agentCanReadCalendar(calendar: AgentReadableCalendar, ownerId: string): boolean {
   return calendar.ownerId === ownerId && (calendar.source === "native" || Boolean(calendar.providerBinding?.capabilities.read)) && calendar.deletedAt === null &&
     (calendar.agentAccess === "read" || calendar.agentAccess === "write");
@@ -4671,7 +4666,7 @@ function agentCalendarRecord(calendar: AgentReadableCalendar): AgentCalendarReco
     agentAccess: calendar.agentAccess,
     isDefault: calendar.isDefault,
     updatedAt: calendar.updatedAt,
-    ...(binding ? { capabilities: binding.capabilities } : {})
+    ...(binding ? { providerKey: binding.providerKey, capabilities: binding.capabilities } : {})
   };
 }
 

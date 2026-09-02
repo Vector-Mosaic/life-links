@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createCanonicalExternalCalendar } from "@life-links/core";
 
 import {
@@ -13,6 +13,7 @@ import {
   MICROSOFT_GRAPH_CALENDAR_PROVIDER_KEY,
   MicrosoftGraphCalendarProviderAdapter
 } from "../src/calendar-provider-microsoft.js";
+import { createLogger, type LogEvent } from "../src/logger.js";
 
 const ACCOUNT_ID = "graph-account-123";
 const HANDLE = calendarProviderCredentialHandle("vault-graph-one");
@@ -35,15 +36,18 @@ class HttpHarness {
   enqueue(body: unknown, status = 200) { this.responders.push(() => json(body, status)); }
 }
 
-function adapter(http: HttpHarness, revoked: string[] = [], beforeResolve?: () => Promise<void>) {
+function adapter(http: HttpHarness, revoked: string[] = [], beforeResolve?: () => Promise<void>,
+  observation: { renewed?: boolean; onRenewedCredentialUsed?: () => void } = {}) {
   return new MicrosoftGraphCalendarProviderAdapter({
     fetch: http.fetch,
     apiBaseUrl: API_BASE,
+    onRenewedCredentialUsed: observation.onRenewedCredentialUsed,
     credentialResolver: {
       async resolve({ providerKey }) {
         expect(providerKey).toBe(MICROSOFT_GRAPH_CALENDAR_PROVIDER_KEY);
         await beforeResolve?.();
-        return { accessToken: "secret-graph-access-token", providerAccountId: ACCOUNT_ID };
+        return { accessToken: "secret-graph-access-token", providerAccountId: ACCOUNT_ID,
+          ...(observation.renewed ? { renewedAccessToken: true as const } : {}) };
       }
     },
     credentialRevoker: {
@@ -71,6 +75,39 @@ function timed(title: string): ProviderEventContent {
 }
 
 describe("Microsoft Graph Calendar provider adapter", () => {
+  it("records one secret-safe renewal-use observation for the exact credential despite multiple Graph requests", async () => {
+    const http = new HttpHarness(); const logs: LogEvent[] = [];
+    const logger = createLogger("calendar-test", { sink: event => logs.push(event) });
+    const graph = adapter(http, [], undefined, { renewed: true, onRenewedCredentialUsed: () =>
+      logger.info("life_links.calendar_credentials.renewal_used", { provider: "microsoft", acquisition: "silent_renewal", graph_result: "accepted" }) });
+    http.enqueue({ id: ACCOUNT_ID }); http.enqueue({ value: [{ id: "one", name: "Private calendar name" }] });
+    const result = await graph.discover({ credentialHandle: HANDLE });
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({ event: "life_links.calendar_credentials.renewal_used", provider: "microsoft", acquisition: "silent_renewal", graph_result: "accepted" });
+    expect(JSON.stringify(logs)).not.toMatch(/secret-graph|graph-account|vault-graph|Private calendar/);
+    expect(JSON.stringify(result)).not.toMatch(/renewedAccessToken|secret-graph/);
+  });
+
+  it.each([200, 401, 404])("does not certify cache hits or unsuccessful Graph status %s", async (status) => {
+    for (const renewed of [false, true]) {
+      const http = new HttpHarness(); const observer = vi.fn();
+      const graph = adapter(http, [], undefined, { renewed, onRenewedCredentialUsed: observer });
+      http.enqueue(status === 200 ? graphTimedEvent("event-one", "W/\"r1\"", "Workout") : {}, status);
+      const result = graph.readEvent({ credentialHandle: HANDLE, providerAccountId: ACCOUNT_ID,
+        providerCalendarId: "calendar-one", providerEventId: "event-one" });
+      if (status === 401) await expect(result).rejects.toThrow(); else await result;
+      expect(observer).toHaveBeenCalledTimes(renewed && status === 200 ? 1 : 0);
+    }
+  });
+
+  it("does not let observer failure change successful Graph use", async () => {
+    const http = new HttpHarness();
+    const graph = adapter(http, [], undefined, { renewed: true, onRenewedCredentialUsed: () => { throw new Error("observer unavailable"); } });
+    http.enqueue(graphTimedEvent("event-one", "W/\"r1\"", "Workout"));
+    await expect(graph.readEvent({ credentialHandle: HANDLE, providerAccountId: ACCOUNT_ID,
+      providerCalendarId: "calendar-one", providerEventId: "event-one" })).resolves.toMatchObject({ providerEventId: "event-one" });
+  });
+
   it("PATCHes only the subject for a title edit without rewriting a Windows-zone source or its other semantics", async () => {
     const http = new HttpHarness(); const graph = adapter(http);
     const source = { ...graphTimedEvent("windows-event", "W/\"r1\"", "Original title"),
