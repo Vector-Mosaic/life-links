@@ -250,6 +250,65 @@ describe("Life Links Postgres integration", () => {
     });
     changeHistoryStoreContract(() => parityStore);
 
+    it("removes and explicitly reselects only one provider Calendar without admitting its old sync generation", async () => {
+      const ownerId = DEMO_OWNER_ID, connectionId = "postgres-provider-removal";
+      const calendarId = `calendar-${randomUUID()}`, siblingId = `calendar-${randomUUID()}`;
+      const createdAt = "2026-09-02T12:00:00.000Z", deletedAt = "2026-09-02T12:01:00.000Z";
+      const window = { startUtc: "2026-09-01T00:00:00.000Z", endUtc: "2026-09-03T00:00:00.000Z" };
+      const native = await parityStore.createCalendar({ id: `calendar-${randomUUID()}`, ownerId,
+        title: "Native remains", timeZone: "UTC", isDefault: false, createdAt });
+      const providerStore = new PostgresCalendarProviderStateStore(parityPool);
+      const content = { title: "Provider original", description: null, location: null, status: "confirmed" as const,
+        providerSeriesId: null, span: { kind: "all_day" as const, startDate: "2026-09-01", endDateExclusive: "2026-09-02" } };
+      const adapter = new DeterministicFakeCalendarProviderAdapter("google-calendar", "synthetic-removal-account",
+        ["remove-one", "keep-two"].map((providerCalendarId) => ({ providerCalendarId, displayName: providerCalendarId,
+          capabilities: { read: true, create: true, update: true, delete: true },
+          events: [{ providerEventId: `${providerCalendarId}-event`, providerRevision: "r1", content }] })));
+      const gateway = new CalendarProviderGateway([adapter], providerStore, { now: () => new Date(createdAt) });
+      await gateway.connectExternalAccount({ ownerId, connectionId, providerKey: "google-calendar",
+        expectedProviderAccountId: "synthetic-removal-account", credentialHandle: calendarProviderCredentialHandle("synthetic-removal-credential"),
+        calendars: [[calendarId, "remove-one"], [siblingId, "keep-two"]].map(([id, providerCalendarId]) => ({
+          calendarId: id, providerCalendarId, title: providerCalendarId, color: "#123456", timeZone: "UTC", isDefault: false, agentGrant: "read" as const })),
+        initialWindow: window });
+      const original = (await providerStore.getCanonicalCalendar(calendarId))!;
+      const binding = (await providerStore.getCalendar(connectionId, calendarId))!;
+      const sibling = (await providerStore.getManagedCalendar(connectionId, siblingId))!;
+      const siblingEvents = await providerStore.listProjections(connectionId, siblingId);
+      const projection = (await providerStore.listProjections(connectionId, calendarId))[0];
+      const sync = (await providerStore.getSyncState(connectionId, calendarId))!;
+      const lateSync = { connectionId, calendarId, expectedCalendarUpdatedAt: original.updatedAt, expectedState: null,
+        upserts: [projection], tombstones: [], removedProviderEventIds: [], state: sync };
+      await gateway.executeCommand({ kind: "create", commandId: "completed-before-local-removal", ownerId, connectionId,
+        calendarId, actor: "owner", content });
+      const originals = adapter.eventCount("remove-one");
+      const removal = { ownerId, connectionId, calendarId, expectedUpdatedAt: original.updatedAt, deletedAt };
+      await expect(providerStore.removeConnectedCalendar({ ...removal, ownerId: DEMO_GUEST_ID }))
+        .rejects.toMatchObject({ code: "calendar_not_found" });
+      await providerStore.removeConnectedCalendar(removal);
+      await providerStore.removeConnectedCalendar(removal);
+      expect(await providerStore.getCanonicalCalendar(calendarId)).toMatchObject({ deletedAt, updatedAt: original.updatedAt, agentAccess: "none" });
+      expect((await providerStore.getCalendar(connectionId, calendarId))?.visible).toBe(false);
+      expect(await providerStore.listProjections(connectionId, calendarId)).toEqual([]);
+      expect(await providerStore.getSyncState(connectionId, calendarId)).toBeNull();
+      expect(await providerStore.getOutbox("completed-before-local-removal")).toMatchObject({ status: "rejected", result: null, dispatchEvidence: null });
+      await expect(providerStore.applySyncMutation(lateSync)).rejects.toMatchObject({ code: "calendar_not_found" });
+      await expect(providerStore.provisionCalendar(original, binding)).rejects.toMatchObject({ code: "calendar_settings_conflict" });
+      await providerStore.provisionCalendar(original, binding, { expectedRemovedUpdatedAt: original.updatedAt });
+      const restored = (await providerStore.getCanonicalCalendar(calendarId))!;
+      expect(restored).toMatchObject({ id: calendarId, deletedAt: null, agentAccess: "read" });
+      expect(Date.parse(restored.updatedAt)).toBeGreaterThan(Date.parse(deletedAt));
+      await expect(providerStore.applySyncMutation(lateSync)).rejects.toMatchObject({ code: "calendar_settings_conflict" });
+      await expect(providerStore.removeConnectedCalendar(removal)).rejects.toMatchObject({ code: "calendar_settings_conflict" });
+      expect(await providerStore.listProjections(connectionId, calendarId)).toEqual([]);
+      await gateway.synchronizeCalendar({ ownerId, connectionId, calendarId, window });
+      expect(await providerStore.listProjections(connectionId, calendarId)).toHaveLength(originals);
+      expect(await providerStore.getManagedCalendar(connectionId, siblingId)).toEqual(sibling);
+      expect(await providerStore.listProjections(connectionId, siblingId)).toEqual(siblingEvents);
+      expect(await parityStore.getCalendar(ownerId, native.id)).toEqual(native);
+      expect(adapter.eventCount("remove-one")).toBe(originals);
+      expect(adapter.metrics().revokeCalls).toBe(0);
+    });
+
     it("keeps saved deletions and detached QRs unchanged through ordinary startup seed", async () => {
       const deletedId = "legacy-life-link:LL-DEMO-00001";
       const detachedId = "legacy-life-link:LL-DEMO-00002";

@@ -198,10 +198,10 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
     assertOwnedWrite(result.rowCount, "The provider connection identity belongs to another owner.");
   }
 
-  async listCalendars(connectionId: string): Promise<CalendarProviderBindingRecord[]> {
+  async listCalendars(connectionId: string, includeRemoved = false): Promise<CalendarProviderBindingRecord[]> {
     const result = await this.pool.query<ProviderBindingRow>(
-      `${bindingReadSql} WHERE b.connection_id = $1 ORDER BY lower(b.provider_display_name), b.calendar_id`,
-      [connectionId]
+      `${bindingReadSql} WHERE b.connection_id = $1 AND ($2 OR c.deleted_at IS NULL) ORDER BY lower(b.provider_display_name), b.calendar_id`,
+      [connectionId, includeRemoved]
     );
     return result.rows.map(mapBinding);
   }
@@ -223,14 +223,23 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
   async transitionConnection(connection: CalendarProviderConnectionRecord, expected: CalendarProviderConnectionExpectation) {
     return this.withTransaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`owner:${connection.ownerId}`]);
+      if (expected.requireIdleOutbox || expected.requireRetainedCalendars) {
+        await client.query("SELECT connection_id FROM calendar_provider_connections WHERE connection_id=$1 FOR UPDATE", [connection.connectionId]);
+        if (expected.requireRetainedCalendars && !(await client.query(
+          "SELECT calendar_id FROM calendar_provider_bindings WHERE connection_id=$1 LIMIT 1", [connection.connectionId]
+        )).rowCount) return false;
+        if (expected.requireIdleOutbox) await assertRemovalSafe(client, connection.connectionId, undefined, expected.removalAt);
+      }
       const result = await client.query(
         `UPDATE calendar_provider_connections SET status=$5, credential_handle=$6, connected_at=$7, disconnected_at=$8,
            remote_revocation_status=$9, remote_revocation_attempted_at=$10, remote_revocation_error_code=$11, account_email=$14
          WHERE connection_id=$1 AND owner_id=$2 AND provider_key=$3 AND provider_account_id=$4
-           AND status=$12 AND credential_handle IS NOT DISTINCT FROM $13`,
+           AND status=$12 AND credential_handle IS NOT DISTINCT FROM $13
+           AND ($15::timestamptz IS NULL OR connected_at=$15::timestamptz)`,
         [connection.connectionId, connection.ownerId, connection.providerKey, connection.providerAccountId, connection.status,
           connection.credentialHandle, connection.connectedAt, connection.disconnectedAt, connection.remoteRevocationStatus,
-          connection.remoteRevocationAttemptedAt, connection.remoteRevocationErrorCode, expected.status, expected.credentialHandle, connection.accountEmail ?? null]
+          connection.remoteRevocationAttemptedAt, connection.remoteRevocationErrorCode, expected.status, expected.credentialHandle,
+          connection.accountEmail ?? null, expected.connectedAt ?? null]
       );
       return result.rowCount === 1;
     });
@@ -241,6 +250,7 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
       `SELECT b.* FROM calendar_provider_bindings b JOIN calendar_provider_connections c ON c.connection_id=b.connection_id
        JOIN calendars cal ON cal.id=b.calendar_id AND cal.owner_id=b.owner_id
        WHERE c.status='active' AND cal.deleted_at IS NULL AND ($1::text IS NULL OR b.provider_key=$1)
+         AND b.capabilities->>'read' = 'true'
          AND ($2::text IS NULL OR (b.connection_id,b.calendar_id) > ($2,$3))
        ORDER BY b.connection_id,b.calendar_id LIMIT $4`,
       [input.providerKey ?? null, input.after?.connectionId ?? null, input.after?.calendarId ?? null, input.limit]
@@ -252,7 +262,8 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
   async listRetryableCommands(input: { providerKey?: string; limit: number; now: string }) {
     const result = await this.pool.query<ProviderOutboxRow>(
       `SELECT o.* FROM calendar_provider_outbox o JOIN calendar_provider_connections c ON c.connection_id=o.connection_id
-       WHERE c.status='active' AND o.created_at >= c.connected_at AND ($1::text IS NULL OR c.provider_key=$1)
+       JOIN calendars cal ON cal.id=o.calendar_id AND cal.owner_id=o.owner_id
+       WHERE c.status='active' AND cal.deleted_at IS NULL AND o.created_at >= c.connected_at AND ($1::text IS NULL OR c.provider_key=$1)
          AND o.command->>'actor'='owner' AND o.status IN ('pending','processing')
          AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= $2::timestamptz)
          AND (o.lease_expires_at IS NULL OR o.lease_expires_at <= $2::timestamptz)
@@ -300,9 +311,9 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
     } : null;
   }
 
-  async provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord, options?: { providerTimeZone: string }): Promise<void> {
+  async provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord, options?: { providerTimeZone?: string; expectedRemovedUpdatedAt?: string }): Promise<void> {
     assertCalendarProvisioningPair(calendar, binding);
-    const providerTimeZone = options === undefined ? undefined : normalizeCalendarIanaTimeZone(options.providerTimeZone);
+    const providerTimeZone = options?.providerTimeZone === undefined ? undefined : normalizeCalendarIanaTimeZone(options.providerTimeZone);
     await this.withTransaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`owner:${calendar.ownerId}`]);
       const connectionResult = await client.query<ProviderConnectionRow>(
@@ -326,6 +337,27 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
         if (row.owner_id !== binding.ownerId || row.provider_key !== binding.providerKey
           || row.provider_account_id !== binding.providerAccountId || row.provider_calendar_id !== binding.providerCalendarId) {
           throw new CalendarProviderGatewayError("provider_identity_mismatch", "The existing Calendar belongs to another provider identity.");
+        }
+        const canonical = (await client.query<CanonicalCalendarRow>(
+          "SELECT * FROM calendars WHERE id=$1 AND owner_id=$2 FOR UPDATE", [calendar.id, calendar.ownerId]
+        )).rows[0];
+        if (canonical?.deleted_at !== null && canonical?.deleted_at !== undefined) {
+          if (options?.expectedRemovedUpdatedAt !== iso(canonical.updated_at)) {
+            throw new CalendarProviderGatewayError("calendar_settings_conflict", "The Calendar was removed after selection began. Select it again to restore it.");
+          }
+          await client.query(
+            `UPDATE calendars SET title=$3,color=$4,time_zone=$5,is_default=$6,agent_access=$7,deleted_at=NULL,
+               updated_at=GREATEST($8::timestamptz,updated_at+interval '1 millisecond',deleted_at+interval '1 millisecond')
+             WHERE id=$1 AND owner_id=$2 AND source='external'`,
+            [calendar.id,calendar.ownerId,calendar.title,calendar.color,providerTimeZone ?? calendar.timeZone,
+              calendar.isDefault,calendar.agentAccess,calendar.updatedAt]
+          );
+          await client.query(
+            `UPDATE calendar_provider_bindings SET provider_display_name=$3,capabilities=$4::jsonb,visible=$5
+             WHERE connection_id=$1 AND calendar_id=$2`,
+            [binding.connectionId,calendar.id,binding.providerDisplayName,JSON.stringify(binding.capabilities),binding.visible]
+          );
+          return;
         }
         if (providerTimeZone !== undefined) {
           // The owner lock serializes settings updates. Refresh only supplied
@@ -408,19 +440,21 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
     });
   }
 
-  async rollbackProvisioning(connectionId: string): Promise<void> {
+  async rollbackProvisioning(connectionId: string, removal?: { expectedConnectedAt: string; now?: string }): Promise<void> {
     await this.withTransaction(async (client) => {
       const connectionResult = await client.query<ProviderConnectionRow>(
         "SELECT * FROM calendar_provider_connections WHERE connection_id = $1 FOR UPDATE",
         [connectionId]
       );
       const connection = connectionResult.rows[0];
-      if (!connection || connection.status !== "disconnected") {
+      if (!connection || connection.status !== "disconnected" || (removal &&
+        (iso(connection.connected_at) !== removal.expectedConnectedAt || connection.credential_handle !== null))) {
         throw new CalendarProviderGatewayError(
           "connection_inactive",
           "Calendar provisioning can only be rolled back after the connection is closed."
         );
       }
+      await assertRemovalSafe(client, connectionId, undefined, removal?.now);
       const calendarResult = await client.query<{ id: string; source: CalendarRecord["source"] } & QueryResultRow>(
         `SELECT calendars.id, calendars.source
          FROM calendar_provider_bindings
@@ -443,6 +477,48 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
            SELECT calendar_id FROM calendar_provider_bindings WHERE connection_id = $1
          ) AND owner_id = $2 AND source = 'external'`,
         [connectionId, connection.owner_id]
+      );
+      await client.query("DELETE FROM calendar_provider_webhook_hints WHERE connection_id=$1", [connectionId]);
+    });
+  }
+
+  async assertRemovalSafe(connectionId: string, calendarId?: string, now?: string): Promise<void> {
+    await this.withTransaction((client) => assertRemovalSafe(client, connectionId, calendarId, now));
+  }
+
+  async removeConnectedCalendar(input: { ownerId: string; connectionId: string; calendarId: string; expectedUpdatedAt: string; deletedAt: string }): Promise<void> {
+    await this.withTransaction(async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`owner:${input.ownerId}`]);
+      const connection = (await client.query<ProviderConnectionRow>(
+        "SELECT * FROM calendar_provider_connections WHERE connection_id=$1 AND owner_id=$2 FOR UPDATE", [input.connectionId,input.ownerId]
+      )).rows[0];
+      const canonical = (await client.query<CanonicalCalendarRow>(
+        `SELECT c.* FROM calendars c JOIN calendar_provider_bindings b ON b.calendar_id=c.id AND b.owner_id=c.owner_id
+         WHERE b.connection_id=$1 AND c.id=$2 AND c.owner_id=$3 AND c.source='external' FOR UPDATE OF b,c`,
+        [input.connectionId,input.calendarId,input.ownerId]
+      )).rows[0];
+      if (!connection || !canonical) throw new CalendarProviderGatewayError("calendar_not_found", "The exact external Calendar was not found.");
+      if (iso(canonical.updated_at) !== input.expectedUpdatedAt) throw new CalendarProviderGatewayError("calendar_settings_conflict", "The Calendar changed after removal was prepared.");
+      if (canonical.deleted_at !== null) return;
+      await assertRemovalSafe(client, input.connectionId, input.calendarId, input.deletedAt);
+      // Keep the original revision solely for exact removal retry. An explicit
+      // restore advances it, so previously admitted work cannot restore copies.
+      await client.query("UPDATE calendars SET title='Removed calendar',color='#2f6f5f',time_zone='UTC',deleted_at=$3,agent_access='none',is_default=false WHERE id=$1 AND owner_id=$2",
+        [input.calendarId,input.ownerId,input.deletedAt]);
+      await client.query("UPDATE calendar_provider_bindings SET provider_display_name='Removed calendar',visible=false WHERE connection_id=$1 AND calendar_id=$2", [input.connectionId,input.calendarId]);
+      await client.query("SELECT set_config('life_links.allow_calendar_delete', 'on', true)");
+      for (const table of ["calendar_provider_event_projection_revisions", "calendar_provider_event_tombstone_history",
+        "calendar_provider_event_projections", "calendar_provider_event_tombstones", "calendar_provider_sync_states"]) {
+        await client.query(`DELETE FROM ${table} WHERE connection_id=$1 AND calendar_id=$2`, [input.connectionId,input.calendarId]);
+      }
+      await client.query(
+        `UPDATE calendar_provider_outbox SET status='rejected',result=NULL,dispatch_evidence=NULL,lease_owner=NULL,
+           lease_expires_at=NULL,next_attempt_at=NULL,updated_at=$3,
+           command=jsonb_build_object('kind','delete','commandId',command_id,'ownerId',owner_id,
+             'connectionId',connection_id,'calendarId',calendar_id,'actor',command->>'actor',
+             'providerEventId',COALESCE(command->>'providerEventId','removed'),
+             'expectedProviderRevision',COALESCE(command->>'expectedProviderRevision','removed'))
+         WHERE connection_id=$1 AND calendar_id=$2`, [input.connectionId,input.calendarId,input.deletedAt]
       );
     });
   }
@@ -485,7 +561,7 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
 
   async applySyncMutation(mutation: CalendarProviderSyncMutation): Promise<void> {
     await this.withTransaction(async (client) => {
-      const identity = await lockBinding(client, mutation.connectionId, mutation.calendarId);
+      const identity = await lockBinding(client, mutation.connectionId, mutation.calendarId, mutation.expectedCalendarUpdatedAt);
       const currentResult = await client.query<ProviderSyncRow>(
         `SELECT * FROM calendar_provider_sync_states
          WHERE connection_id = $1 AND calendar_id = $2 FOR UPDATE`,
@@ -585,8 +661,10 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
     });
   }
 
-  async reserveOutbox(record: CalendarProviderOutboxRecord): Promise<{ record: CalendarProviderOutboxRecord; created: boolean }> {
-    const insert = await this.pool.query(
+  async reserveOutbox(record: CalendarProviderOutboxRecord, expectedCalendarUpdatedAt?: string): Promise<{ record: CalendarProviderOutboxRecord; created: boolean }> {
+    return this.withTransaction(async (client) => {
+    if (expectedCalendarUpdatedAt !== undefined) await lockBinding(client, record.command.connectionId, record.command.calendarId, expectedCalendarUpdatedAt);
+    const insert = await client.query(
       `INSERT INTO calendar_provider_outbox (
          command_id, owner_id, connection_id, calendar_id, fingerprint, command,
          status, attempts, created_at, updated_at, last_attempt_at, next_attempt_at,
@@ -595,9 +673,10 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
        ON CONFLICT (command_id) DO NOTHING RETURNING command_id`,
       outboxValues(record)
     );
-    const stored = await this.getOutbox(record.commandId);
-    if (!stored) throw new Error("The provider outbox reservation was not readable after insertion.");
-    return { record: stored, created: insert.rowCount === 1 };
+    const stored = await client.query<ProviderOutboxRow>("SELECT * FROM calendar_provider_outbox WHERE command_id=$1", [record.commandId]);
+    if (!stored.rows[0]) throw new Error("The provider outbox reservation was not readable after insertion.");
+    return { record: mapOutbox(stored.rows[0]), created: insert.rowCount === 1 };
+    });
   }
 
   async claimOutbox(input: {
@@ -709,15 +788,37 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
   }
 }
 
-async function lockBinding(client: PoolClient, connectionId: string, calendarId: string): Promise<BindingIdentity> {
+async function assertRemovalSafe(client: PoolClient, connectionId: string, calendarId?: string, now?: string): Promise<void> {
+  const connection = (await client.query<ProviderConnectionRow>(
+    "SELECT * FROM calendar_provider_connections WHERE connection_id=$1", [connectionId]
+  )).rows[0];
+  const records = await client.query<ProviderOutboxRow>(
+    "SELECT * FROM calendar_provider_outbox WHERE connection_id=$1 AND ($2::text IS NULL OR calendar_id=$2) FOR UPDATE",
+    [connectionId, calendarId ?? null]
+  );
+  const at = now === undefined ? Date.now() : Date.parse(now);
+  if (records.rows.some((record) =>
+    (record.lease_owner !== null && (record.lease_expires_at === null || Date.parse(iso(record.lease_expires_at)) > at)) ||
+    (connection?.status !== "disconnected" && iso(record.created_at) >= (connection ? iso(connection.connected_at) : "") &&
+      (record.status === "processing" || (record.status === "pending" && record.dispatch_evidence !== null))))) {
+    throw new CalendarProviderGatewayError("command_in_progress", "A provider write is still in progress or awaiting reconciliation; remove this Calendar after it settles.");
+  }
+}
+
+async function lockBinding(client: PoolClient, connectionId: string, calendarId: string, expectedCalendarUpdatedAt?: string): Promise<BindingIdentity> {
   const result = await client.query<ProviderBindingRow>(
-    `SELECT b.* FROM calendar_provider_bindings b
+    `SELECT b.*,cal.updated_at AS calendar_updated_at FROM calendar_provider_bindings b
      JOIN calendar_provider_connections c ON c.connection_id=b.connection_id
-     WHERE b.connection_id = $1 AND b.calendar_id = $2 AND c.status IN ('active','provisioning') FOR UPDATE OF c,b`,
+     JOIN calendars cal ON cal.id=b.calendar_id AND cal.owner_id=b.owner_id
+     WHERE b.connection_id = $1 AND b.calendar_id = $2 AND c.status IN ('active','provisioning')
+       AND cal.deleted_at IS NULL FOR UPDATE OF c,b,cal`,
     [connectionId, calendarId]
   );
   const row = result.rows[0];
   if (!row) throw new CalendarProviderGatewayError("calendar_not_found", "The exact provider Calendar binding was not found.");
+  if (expectedCalendarUpdatedAt !== undefined && iso(row.calendar_updated_at) !== expectedCalendarUpdatedAt) {
+    throw new CalendarProviderGatewayError("calendar_settings_conflict", "The Calendar changed before the provider result was saved.");
+  }
   return {
     ownerId: row.owner_id,
     providerKey: row.provider_key,

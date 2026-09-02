@@ -671,6 +671,17 @@ export function disconnectCalendarConnection(connectionId: string, localProjecti
     method: "POST", body: JSON.stringify({ localProjectionDisposition }), signal
   });
 }
+export function removeConnectedCalendar(connectionId: string, calendarId: string, expectedUpdatedAt: string, signal?: AbortSignal) {
+  return apiFetch<void>(`/api/calendar-connections/${encodeURIComponent(connectionId)}/calendars/${encodeURIComponent(calendarId)}`, {
+    method: "DELETE", body: JSON.stringify({ expectedUpdatedAt }), signal
+  });
+}
+
+export function removeCalendarConnection(connectionId: string, expectedConnectedAt: string, signal?: AbortSignal) {
+  return apiFetch<void>(`/api/calendar-connections/${encodeURIComponent(connectionId)}`, {
+    method: "DELETE", body: JSON.stringify({ expectedConnectedAt }), signal
+  });
+}
 export type CalendarEventListOptions = PageOptions & {
   startDate: string;
   endDate: string;

@@ -235,6 +235,50 @@ describe("Google authorization through the shared Calendar service", () => {
       h.cipher.open<{ credentialId: string }>(h.store.rows.get(id)!).credentialId);
   });
 
+  it("reconnects the same Google account when a previously linked Calendar was removed at the provider", async () => {
+    const h = googleHarness();
+    const first = await h.service.complete("owner-one", "session-one", await h.authorized(), ["agent-tests"], { "agent-tests": "write" });
+    const connectionId = first.connection.connectionId;
+    const missingCalendarId = first.calendars[0].calendar.id;
+    await h.gateway.disconnectConnection({ ownerId: "owner-one", connectionId, localProjectionDisposition: "purge" });
+
+    const adapter = new DeterministicFakeCalendarProviderAdapter("google-calendar", "google-sub-one",
+      h.definitions.filter((calendar) => calendar.providerCalendarId !== "agent-tests"));
+    const gateway = new CalendarProviderGateway([adapter], h.providerState, { now: h.now });
+    const restarted = new CalendarAuthorizationService(h.store, h.cipher, h.auth, () => gateway, h.now, h.google);
+    const started = await restarted.start("owner-one", "session-one", connectionId, "google");
+    const id = await restarted.callback({ ownerId: "owner-one", sessionId: "session-one", provider: "google", code: "replacement-google-code",
+      state: new URL(started.authorizationUrl).searchParams.get("state")! });
+    expect((await restarted.discover("owner-one", "session-one", id)).calendars.map((calendar) => calendar.providerCalendarId))
+      .toEqual(["not-selected"]);
+    await expect(restarted.complete("owner-one", "session-one", id, ["agent-tests"]))
+      .rejects.toThrow("calendar_selection_invalid");
+
+    const result = await restarted.complete("owner-one", "session-one", id, ["not-selected"], { "not-selected": "read" });
+    const freshCalendarId = calendarProviderLocalCalendarId(connectionId, "not-selected");
+    expect(result.connection).toMatchObject({ connectionId, providerKey: "google-calendar", providerAccountId: "google-sub-one", status: "active" });
+    expect(result.calendars).toEqual(expect.arrayContaining([
+      expect.objectContaining({ providerCalendarId: "agent-tests", visible: false,
+        capabilities: { read: false, create: false, update: false, delete: false },
+        calendar: expect.objectContaining({ id: missingCalendarId, agentAccess: "none" }) }),
+      expect.objectContaining({ providerCalendarId: "not-selected", visible: true,
+        calendar: expect.objectContaining({ id: freshCalendarId, agentAccess: "read" }) })
+    ]));
+    expect((await gateway.listCalendars("owner-one", connectionId, "agent")).map((calendar) => calendar.calendarId)).toEqual([freshCalendarId]);
+    expect((await gateway.listSynchronizationTargets()).targets.map((calendar) => calendar.calendarId)).toEqual([freshCalendarId]);
+    expect(adapter.metrics().fetchCalls.every((call) => call.providerCalendarId === "not-selected")).toBe(true);
+    await expect(gateway.listProjections("owner-one", connectionId, missingCalendarId)).rejects.toMatchObject({ code: "calendar_read_only" });
+    await expect(gateway.synchronizeCalendar({ ownerId: "owner-one", connectionId, calendarId: missingCalendarId,
+      window: h.service.initialWindow() })).rejects.toMatchObject({ code: "calendar_read_only" });
+    const missingCalendar = result.calendars.find((calendar) => calendar.calendar.id === missingCalendarId)!;
+    await expect(gateway.updateCalendarSettings({ ownerId: "owner-one", connectionId, calendarId: missingCalendarId,
+      expectedUpdatedAt: missingCalendar.calendar.updatedAt, patch: { visible: true } })).rejects.toMatchObject({ code: "calendar_read_only" });
+    await expect(gateway.updateCalendarSettings({ ownerId: "owner-one", connectionId, calendarId: missingCalendarId,
+      expectedUpdatedAt: missingCalendar.calendar.updatedAt, patch: { agentAccess: "read" } })).rejects.toMatchObject({ code: "invalid_input" });
+    expect(await restarted.complete("owner-one", "session-one", id, ["not-selected"], { "not-selected": "read" })).toEqual(result);
+    expect(await gateway.listConnections("owner-one")).toHaveLength(1);
+  });
+
   it("refuses cross-provider credential resolution and revocation even when account IDs match", async () => {
     const h = googleHarness(); await h.authorized();
     vi.mocked(h.auth.redeem).mockResolvedValueOnce({ cache: "private-microsoft-cache", homeAccountId: "home-account", localAccountId: "local-account",

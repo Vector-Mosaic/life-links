@@ -153,6 +153,206 @@ async function connected(input: {
 }
 
 describe("provider-neutral Calendar gateway", () => {
+  it("removes one external Calendar locally with exact retry, fresh explicit restoration and inert old commands", async () => {
+    const h = await connected({ agentGrant: "write" });
+    const command: CalendarProviderCommand = { kind: "create", commandId: "removed-calendar-command", ownerId: OWNER_ID,
+      connectionId: CONNECTION_ID, calendarId: CALENDAR_ID, actor: "owner", content: timed("Private event copy") };
+    await h.gateway.executeCommand(command);
+    const before = (await h.store.getCanonicalCalendar(CALENDAR_ID))!;
+    const input = { ownerId: OWNER_ID, connectionId: CONNECTION_ID, calendarId: CALENDAR_ID, expectedUpdatedAt: before.updatedAt };
+    await expect(h.gateway.removeConnectedCalendar({ ...input, ownerId: "another-owner" })).rejects.toMatchObject({ code: "connection_not_found" });
+    await expect(h.gateway.removeConnectedCalendar({ ...input, expectedUpdatedAt: "2020-01-01T00:00:00.000Z" })).rejects.toMatchObject({ code: "calendar_settings_conflict" });
+    await expect(h.gateway.removeConnectedCalendar(input)).resolves.toEqual({ removed: true });
+    await expect(h.gateway.removeConnectedCalendar(input)).resolves.toEqual({ removed: true });
+    expect(h.adapter.eventCount(PROVIDER_CALENDAR_ID)).toBe(1);
+    expect(h.adapter.metrics().commandApplies.delete).toBe(0);
+    expect(await h.store.listProjections(CONNECTION_ID, CALENDAR_ID)).toEqual([]);
+    expect(await h.store.getSyncState(CONNECTION_ID, CALENDAR_ID)).toBeNull();
+    expect(await h.gateway.listManagedCalendars(OWNER_ID, CONNECTION_ID)).toEqual([]);
+    expect(await h.gateway.listSynchronizationTargets()).toEqual({ targets: [], nextCursor: null });
+    expect(await h.store.getCanonicalCalendar(CALENDAR_ID)).toMatchObject({ title: "Removed calendar", timeZone: "UTC",
+      deletedAt: expect.any(String), agentAccess: "none", updatedAt: before.updatedAt });
+    expect((await h.store.listCalendars(CONNECTION_ID, true))[0].providerDisplayName).toBe("Removed calendar");
+    expect(await h.store.getOutbox(command.commandId)).toMatchObject({ status: "rejected", result: null, command: { kind: "delete" } });
+    expect(JSON.stringify(await h.store.getOutbox(command.commandId))).not.toContain("Private event copy");
+    await h.gateway.selectExternalCalendars({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
+      calendars: [{ calendarId: CALENDAR_ID, providerCalendarId: PROVIDER_CALENDAR_ID, ...LOCAL_CALENDAR_FIELDS }], initialWindow: WINDOW });
+    const restored = (await h.store.getCanonicalCalendar(CALENDAR_ID))!;
+    expect(restored).toMatchObject({ deletedAt: null, agentAccess: "none", id: CALENDAR_ID });
+    expect(restored.updatedAt > before.updatedAt).toBe(true);
+    await expect(h.gateway.removeConnectedCalendar(input)).rejects.toMatchObject({ code: "calendar_settings_conflict" });
+    await expect(h.gateway.executeCommand(command)).rejects.toMatchObject({ code: "provider_event_read_only" });
+    expect(h.adapter.eventCount(PROVIDER_CALENDAR_ID)).toBe(1);
+  });
+
+  it("does not resurrect a removed Calendar on account reconnect without explicit selection", async () => {
+    const h = await connected({ agentGrant: "write" });
+    h.adapter.revokeConnection = async () => {};
+    await h.gateway.removeConnectedCalendar({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, calendarId: CALENDAR_ID,
+      expectedUpdatedAt: (await h.store.getCanonicalCalendar(CALENDAR_ID))!.updatedAt });
+    await h.gateway.reconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
+      expectedProviderAccountId: PROVIDER_ACCOUNT_ID, credentialHandle: calendarProviderCredentialHandle("fresh-reconnect"), initialWindow: WINDOW });
+    expect(await h.store.listCalendars(CONNECTION_ID)).toEqual([]);
+    expect(await h.store.listCalendars(CONNECTION_ID, true)).toHaveLength(1);
+    expect((await h.store.getCanonicalCalendar(CALENDAR_ID))?.deletedAt).not.toBeNull();
+  });
+
+  it("rejects an old in-flight refresh even after the exact Calendar is explicitly restored", async () => {
+    const seed = { providerEventId: "kept-provider-original", providerRevision: "r1", content: timed("Provider original") };
+    const h = await connected({ seedEvents: [seed] });
+    const before = (await h.store.getCanonicalCalendar(CALENDAR_ID))!;
+    const release = h.adapter.holdNextFetch();
+    const refresh = h.gateway.synchronizeCalendar({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, calendarId: CALENDAR_ID, window: WINDOW });
+    const rejected = expect(refresh).rejects.toMatchObject({ code: "calendar_settings_conflict" });
+    await waitUntil(() => h.adapter.metrics().activeFetches === 1);
+    await h.gateway.removeConnectedCalendar({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, calendarId: CALENDAR_ID, expectedUpdatedAt: before.updatedAt });
+    const provision = h.store.provisionCalendar.bind(h.store);
+    let restored = false;
+    h.store.provisionCalendar = async (...args) => { await provision(...args); restored = true; };
+    const selection = h.gateway.selectExternalCalendars({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
+      calendars: [{ calendarId: CALENDAR_ID, providerCalendarId: PROVIDER_CALENDAR_ID, ...LOCAL_CALENDAR_FIELDS }], initialWindow: WINDOW });
+    await waitUntil(() => restored);
+    release();
+    await rejected;
+    await selection;
+    expect(h.adapter.eventCount(PROVIDER_CALENDAR_ID)).toBe(1);
+    expect(await h.store.listProjections(CONNECTION_ID, CALENDAR_ID)).toHaveLength(1);
+  });
+
+  it("refuses removal while a dispatched provider write is leased, then allows exact removal after it settles", async () => {
+    const h = await connected();
+    const before = (await h.store.getCanonicalCalendar(CALENDAR_ID))!;
+    const connection = (await h.store.getConnection(CONNECTION_ID))!;
+    const release = h.adapter.holdNextCreate();
+    const writing = h.gateway.executeCommand({ kind: "create", commandId: "held-removal-write", ownerId: OWNER_ID,
+      connectionId: CONNECTION_ID, calendarId: CALENDAR_ID, actor: "owner", content: timed("Held original") });
+    await waitUntil(() => h.adapter.metrics().commandAttempts.create === 1);
+    await expect(h.gateway.removeConnectedCalendar({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, calendarId: CALENDAR_ID,
+      expectedUpdatedAt: before.updatedAt })).rejects.toMatchObject({ code: "command_in_progress" });
+    await expect(h.gateway.removeCalendarConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
+      expectedConnectedAt: connection.connectedAt })).rejects.toMatchObject({ code: "command_in_progress" });
+    expect((await h.store.getConnection(CONNECTION_ID))?.status).toBe("active");
+    release();
+    await writing;
+    await h.gateway.removeConnectedCalendar({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, calendarId: CALENDAR_ID, expectedUpdatedAt: before.updatedAt });
+    expect(h.adapter.eventCount(PROVIDER_CALENDAR_ID)).toBe(1);
+  });
+
+  it("removes an account through exact credential cleanup, hides the terminal marker and allows a fresh connection identity", async () => {
+    const seed = { providerEventId: "account-provider-original", providerRevision: "r1", content: timed("Provider original") };
+    const h = await connected({ seedEvents: [seed] });
+    h.adapter.revokeConnection = vi.fn(async () => {});
+    const original = (await h.store.getConnection(CONNECTION_ID))!;
+    const input = { ownerId: OWNER_ID, connectionId: CONNECTION_ID, expectedConnectedAt: original.connectedAt };
+    await expect(h.gateway.removeCalendarConnection({ ...input, ownerId: "another-owner" })).rejects.toMatchObject({ code: "connection_not_found" });
+    await expect(h.gateway.removeCalendarConnection({ ...input, expectedConnectedAt: "2020-01-01T00:00:00.000Z" })).rejects.toMatchObject({ code: "calendar_settings_conflict" });
+    await expect(h.gateway.removeCalendarConnection(input)).resolves.toEqual({ removed: true });
+    await expect(h.gateway.removeCalendarConnection(input)).resolves.toEqual({ removed: true });
+    expect(h.adapter.revokeConnection).toHaveBeenCalledTimes(1);
+    expect(h.adapter.eventCount(PROVIDER_CALENDAR_ID)).toBe(1);
+    expect(await h.gateway.listConnections(OWNER_ID)).toEqual([]);
+    expect(await h.store.getCanonicalCalendar(CALENDAR_ID)).toBeNull();
+    expect(await h.store.listCalendars(CONNECTION_ID, true)).toEqual([]);
+    expect(await h.store.getConnection(CONNECTION_ID)).toMatchObject({ status: "disconnected", credentialHandle: null });
+    await expect(h.gateway.getConnection(OWNER_ID, CONNECTION_ID)).rejects.toMatchObject({ code: "connection_not_found" });
+    await expect(h.gateway.reconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
+      expectedProviderAccountId: PROVIDER_ACCOUNT_ID, credentialHandle: calendarProviderCredentialHandle("old-flow"), initialWindow: WINDOW }))
+      .rejects.toMatchObject({ code: "connection_not_found" });
+    await h.gateway.connectExternalAccount({ ownerId: OWNER_ID, connectionId: "fresh-connection", providerKey: PROVIDER_KEY,
+      expectedProviderAccountId: PROVIDER_ACCOUNT_ID, credentialHandle: calendarProviderCredentialHandle("fresh-credential"),
+      calendars: [{ calendarId: CALENDAR_ID, providerCalendarId: PROVIDER_CALENDAR_ID, ...LOCAL_CALENDAR_FIELDS }], initialWindow: WINDOW });
+    expect((await h.gateway.listConnections(OWNER_ID)).map((row) => row.connectionId)).toEqual(["fresh-connection"]);
+  });
+
+  it("rejects stale selection admitted before removal rather than silently restoring it", async () => {
+    const h = await connected();
+    const before = (await h.store.getCanonicalCalendar(CALENDAR_ID))!;
+    const discover = h.adapter.discover.bind(h.adapter);
+    h.adapter.discover = async () => {
+      const result = await discover();
+      await h.gateway.removeConnectedCalendar({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, calendarId: CALENDAR_ID, expectedUpdatedAt: before.updatedAt });
+      return result;
+    };
+    await expect(h.gateway.selectExternalCalendars({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
+      calendars: [{ calendarId: CALENDAR_ID, providerCalendarId: PROVIDER_CALENDAR_ID, ...LOCAL_CALENDAR_FIELDS }], initialWindow: WINDOW }))
+      .rejects.toMatchObject({ code: "calendar_settings_conflict" });
+    expect(await h.store.listCalendars(CONNECTION_ID)).toEqual([]);
+  });
+
+  it("cannot close a reconnected epoch that wins after account removal admission", async () => {
+    const h = await connected();
+    const before = (await h.store.getConnection(CONNECTION_ID))!;
+    const transition = h.store.transitionConnection.bind(h.store);
+    const later = { ...before, connectedAt: "2026-09-02T12:00:00.000Z" };
+    h.store.transitionConnection = async (connection, expected) => {
+      if (connection.status === "disconnected") await h.store.saveConnection(later);
+      return transition(connection, expected);
+    };
+    await expect(h.gateway.removeCalendarConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
+      expectedConnectedAt: before.connectedAt })).rejects.toMatchObject({ code: "connection_inactive" });
+    expect(await h.store.getConnection(CONNECTION_ID)).toMatchObject({ status: "active", connectedAt: later.connectedAt });
+    expect(h.adapter.metrics().revokeCalls).toBe(0);
+    expect(await h.store.listCalendars(CONNECTION_ID)).toHaveLength(1);
+  });
+
+  it("refuses removal while an acknowledged provider effect remains indeterminate, then reconciles without duplicating it", async () => {
+    const h = await connected();
+    const command: CalendarProviderCommand = { kind: "create", commandId: "indeterminate-removal-command", ownerId: OWNER_ID,
+      connectionId: CONNECTION_ID, calendarId: CALENDAR_ID, actor: "owner", content: timed("Uncertain provider original") };
+    h.adapter.failOnceAfterCommit(command.commandId);
+    await expect(h.gateway.executeCommand(command)).rejects.toBeInstanceOf(ProviderTransientError);
+    const input = { ownerId: OWNER_ID, connectionId: CONNECTION_ID, calendarId: CALENDAR_ID,
+      expectedUpdatedAt: (await h.store.getCanonicalCalendar(CALENDAR_ID))!.updatedAt };
+    await expect(h.gateway.removeConnectedCalendar(input)).rejects.toMatchObject({ code: "command_in_progress" });
+    await h.gateway.executeCommand(command);
+    await expect(h.gateway.removeConnectedCalendar(input)).resolves.toEqual({ removed: true });
+    expect(h.adapter.eventCount(PROVIDER_CALENDAR_ID)).toBe(1);
+  });
+
+  it.each(["calendar", "account"] as const)("allows local %s removal after a disconnected write loses its live lease, without undoing the provider effect", async (target) => {
+    const h = await connected();
+    h.adapter.revokeConnection = async () => {};
+    const release = h.adapter.holdNextCreate();
+    const command: CalendarProviderCommand = { kind: "create", commandId: "disconnected-pending-intent", ownerId: OWNER_ID,
+      connectionId: CONNECTION_ID, calendarId: CALENDAR_ID, actor: "owner", content: timed("Already dispatched provider original") };
+    const writing = h.gateway.executeCommand(command);
+    const failedWrite = expect(writing).rejects.toMatchObject({ code: "connection_inactive" });
+    await waitUntil(() => h.adapter.metrics().commandAttempts.create === 1);
+    await h.gateway.disconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, localProjectionDisposition: "purge" });
+    const connection = (await h.store.getConnection(CONNECTION_ID))!;
+    const remove = () => target === "account"
+      ? h.gateway.removeCalendarConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, expectedConnectedAt: connection.connectedAt })
+      : h.store.getCanonicalCalendar(CALENDAR_ID).then((calendar) => h.gateway.removeConnectedCalendar({
+        ownerId: OWNER_ID, connectionId: CONNECTION_ID, calendarId: CALENDAR_ID, expectedUpdatedAt: calendar!.updatedAt }));
+    await expect(remove()).rejects.toMatchObject({ code: "command_in_progress" });
+    release();
+    await failedWrite;
+    expect(await h.store.getOutbox(command.commandId)).toMatchObject({ status: "pending", leaseOwner: null, dispatchEvidence: expect.any(Object) });
+    expect(await h.gateway.listRetryableCommands()).toEqual([]);
+    await expect(remove()).resolves.toEqual({ removed: true });
+    expect(h.adapter.eventCount(PROVIDER_CALENDAR_ID)).toBe(1);
+    expect(h.adapter.metrics().commandApplies.delete).toBe(0);
+    expect(await h.store.listProjections(CONNECTION_ID, CALENDAR_ID)).toEqual([]);
+  });
+
+  it("cannot revive a removed account when an old reconnect resumes after provider discovery", async () => {
+    const h = await connected();
+    h.adapter.revokeConnection = async () => {};
+    await h.gateway.disconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, localProjectionDisposition: "purge" });
+    const disconnected = (await h.store.getConnection(CONNECTION_ID))!;
+    const discover = h.adapter.discover.bind(h.adapter);
+    h.adapter.discover = async () => {
+      const result = await discover();
+      await h.gateway.removeCalendarConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID, expectedConnectedAt: disconnected.connectedAt });
+      return result;
+    };
+    await expect(h.gateway.reconnectConnection({ ownerId: OWNER_ID, connectionId: CONNECTION_ID,
+      expectedProviderAccountId: PROVIDER_ACCOUNT_ID, credentialHandle: calendarProviderCredentialHandle("stale-reconnect-after-removal"), initialWindow: WINDOW }))
+      .rejects.toMatchObject({ code: "connection_inactive" });
+    expect(await h.gateway.listConnections(OWNER_ID)).toEqual([]);
+    expect(await h.store.getConnection(CONNECTION_ID)).toMatchObject({ status: "disconnected", credentialHandle: null });
+    expect(await h.store.listCalendars(CONNECTION_ID, true)).toEqual([]);
+  });
   it("enriches legacy active connections with display email without changing identity, grants or event projections", async () => {
     const h = await connected({ agentGrant: "write" });
     const initial = await h.gateway.getConnection(OWNER_ID, CONNECTION_ID);
@@ -994,6 +1194,16 @@ describe("PostgreSQL provider Calendar provisioning transaction", () => {
     ownerId: OWNER_ID,
     ...LOCAL_CALENDAR_FIELDS,
     createdAt: "2026-09-01T12:00:00.000Z"
+  });
+
+  it("does not schedule unavailable historical Calendar bindings for synchronization", async () => {
+    const query = vi.fn(async (_sql: string, _values?: unknown[]) => ({ rows: [] }));
+    const store = new PostgresCalendarProviderStateStore({ query } as never);
+    await expect(store.listSynchronizationTargets({ providerKey: "google-calendar", limit: 10, after: null })).resolves.toEqual([]);
+    const sql = query.mock.calls[0][0];
+    expect(sql).toContain("c.status='active'");
+    expect(sql).toContain("cal.deleted_at IS NULL");
+    expect(sql).toContain("b.capabilities->>'read' = 'true'");
   });
 
   it.each(["provisioning", "disconnected"])("checks the locked %s connection before saving selected reconnect grants", async (status) => {

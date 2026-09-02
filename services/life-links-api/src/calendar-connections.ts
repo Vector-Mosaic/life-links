@@ -138,6 +138,7 @@ export function createCalendarConnectionRouter(deps: {
       ? authorization().initialWindow() : { startUtc: request.body.windowStart, endUtc: request.body.windowEnd };
     await deps.gateway.discoverConnectionCalendars({ ownerId, connectionId });
     for (const entry of await deps.gateway.listManagedCalendars(ownerId, connectionId)) {
+      if (!entry.capabilities.read) continue;
       await deps.gateway.synchronizeCalendar({ ownerId, connectionId, calendarId: entry.calendar.id, window });
     }
     response.json({ refreshed: true });
@@ -184,6 +185,36 @@ export function createCalendarConnectionRouter(deps: {
         request_id: response.getHeader("X-Request-Id") ?? "unknown"
       });
       response.json({ calendar });
+    }));
+
+  router.delete("/api/calendar-connections/:connectionId/calendars/:calendarId", deps.requireAuthenticated,
+    route(async (request, response, ownerId) => {
+      const body = request.body;
+      if (!plainObject(body) || Object.keys(body).length !== 1 || typeof body.expectedUpdatedAt !== "string") {
+        throw new CalendarProviderGatewayError("invalid_input", "The exact Calendar revision is required.");
+      }
+      await deps.gateway.removeConnectedCalendar({ ownerId, connectionId: routeId(request.params.connectionId),
+        calendarId: routeId(request.params.calendarId), expectedUpdatedAt: body.expectedUpdatedAt });
+      deps.logger.info("life_links.calendar_connection.calendar_removed", {
+        msg: "External Calendar removed from Life Links; provider originals preserved",
+        request_id: response.getHeader("X-Request-Id") ?? "unknown"
+      });
+      response.status(204).end();
+    }));
+
+  router.delete("/api/calendar-connections/:connectionId", deps.requireAuthenticated,
+    route(async (request, response, ownerId) => {
+      const body = request.body;
+      if (!plainObject(body) || Object.keys(body).length !== 1 || typeof body.expectedConnectedAt !== "string") {
+        throw new CalendarProviderGatewayError("invalid_input", "The exact account connection version is required.");
+      }
+      await deps.gateway.removeCalendarConnection({ ownerId, connectionId: routeId(request.params.connectionId),
+        expectedConnectedAt: body.expectedConnectedAt });
+      deps.logger.info("life_links.calendar_connection.removed", {
+        msg: "Provider account removed from Life Links; provider originals preserved",
+        request_id: response.getHeader("X-Request-Id") ?? "unknown"
+      });
+      response.status(204).end();
     }));
 
   router.post("/api/calendar-connections/:connectionId/disconnect", deps.requireAuthenticated,

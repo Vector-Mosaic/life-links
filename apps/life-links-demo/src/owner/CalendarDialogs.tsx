@@ -396,6 +396,11 @@ function CalendarConnectionSelectionDialog({ controller, snapshot, onClose }: Pr
   </Dialog>;
 }
 
+type LocalCalendarRemoval = {
+  ownerId: string; connectionId: string; providerName: string; accountEmail?: string; providerAccountId: string;
+} & ({ kind: "calendar"; calendarId: string; calendarName: string; expectedUpdatedAt: string }
+  | { kind: "account"; expectedConnectedAt: string; calendarNames: string[] });
+
 function CalendarConnectionsSection({ controller, management, flow, onSavingChange }: {
   controller: LifeLinksWorkspaceController;
   management: LifeLinksWorkspaceSnapshot["calendarWorkspace"]["connectionManagement"];
@@ -405,6 +410,8 @@ function CalendarConnectionsSection({ controller, management, flow, onSavingChan
   const lifetime = useRef<AbortController | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [disconnectId, setDisconnectId] = useState<string | null>(null);
+  const [removal, setRemoval] = useState<LocalCalendarRemoval | null>(null);
+  const removing = useRef(false);
   const [error, setError] = useState("");
   useEffect(() => {
     const abort = new AbortController();
@@ -443,6 +450,24 @@ function CalendarConnectionsSection({ controller, management, flow, onSavingChan
     finally { setPending(null); }
   }
 
+  async function removeFromLifeLinks() {
+    const abort = lifetime.current;
+    const target = removal;
+    if (!target || removing.current || pending || !abort || abort.signal.aborted) return;
+    removing.current = true; setPending(`${target.connectionId}:remove`); setError("");
+    try {
+      if (controller.getSnapshot().currentUser?.id !== target.ownerId) throw new Error("The signed-in account changed. Close and reopen Manage calendars.");
+      if (target.kind === "calendar") await controller.removeConnectedCalendar(target.connectionId, target.calendarId, target.expectedUpdatedAt, abort.signal);
+      else await controller.removeCalendarConnection(target.connectionId, target.expectedConnectedAt, abort.signal);
+      if (!abort.signal.aborted) setRemoval(null);
+    } catch (issue) {
+      if (!abort.signal.aborted) setError(messageFromIssue(issue, "Removal from Life Links could not be confirmed. Your original provider calendars and events have not been deleted by this action."));
+    } finally {
+      removing.current = false;
+      if (!abort.signal.aborted) setPending(null);
+    }
+  }
+
   return <section className="ll-calendar-connections">
     <h3>External calendars</h3>
     <p>Connect an account, then choose its exact calendars. Provider sign-in does not grant the agent access to those calendars.</p>
@@ -450,7 +475,7 @@ function CalendarConnectionsSection({ controller, management, flow, onSavingChan
     {management.providers.map((provider) => {
       const authorizationProvider = calendarAuthorizationProvider(provider.providerKey);
       const available = authorizationProvider !== null && provider.authorizationAvailable;
-      return <button className="ll-button" key={provider.providerKey} disabled={Boolean(pending) || !available} title={available ? `Continue to ${authorizationProvider === "microsoft" ? "Microsoft" : "Google"} sign-in` : "Account authorization is not available yet"} onClick={() => { if (authorizationProvider) void connect(authorizationProvider); }}><Cloud size={16} />Connect {provider.displayName}</button>;
+      return <button className="ll-button" key={provider.providerKey} disabled={Boolean(pending) || Boolean(removal) || !available} title={available ? `Continue to ${authorizationProvider === "microsoft" ? "Microsoft" : "Google"} sign-in` : "Account authorization is not available yet"} onClick={() => { if (authorizationProvider) void connect(authorizationProvider); }}><Cloud size={16} />Connect {provider.displayName}</button>;
     })}
     {flow?.feedback && <p role="status">{flow.feedback}</p>}
     {management.loading && <p role="status">Loading Calendar connections…</p>}
@@ -464,18 +489,36 @@ function CalendarConnectionsSection({ controller, management, flow, onSavingChan
       const active = connection.status === "active";
       const canAuthorize = authorizationProvider !== null && provider?.authorizationAvailable === true;
       const reconnectLabel = authorizationProvider === "google" ? "Reconnect Google Calendar" : "Reconnect Outlook";
+      const removingHere = removal?.connectionId === connection.connectionId ? removal : null;
+      const removalIdentity = { ownerId: connection.ownerId, connectionId: connection.connectionId, providerName, accountEmail: connection.accountEmail, providerAccountId: connection.providerAccountId };
+      const actionsDisabled = Boolean(pending) || Boolean(removal);
       return <article className="ll-calendar-connection" key={`${connection.ownerId}:${connection.connectionId}:${connection.connectedAt}`}>
         <header><div><h4>{providerName}</h4><CalendarAccountIdentity accountEmail={connection.accountEmail} providerAccountId={connection.providerAccountId} /></div><span className="ll-chip">{connection.status === "active" ? "Connected" : connection.status === "provisioning" ? "Connecting" : "Disconnected"}</span></header>
-        {connection.status === "disconnected" ? <><p>{revocationStatusText(connection)}</p>{canAuthorize && <button className="ll-button" disabled={Boolean(pending)} onClick={() => { if (authorizationProvider) void connect(authorizationProvider, connection.connectionId); }}>{reconnectLabel}</button>}</> : <>
+        <ConnectedCalendarSettings controller={controller} connection={connection} calendars={calendars} disabled={!active || actionsDisabled} removalDisabled={actionsDisabled}
+          onRemove={(view) => { setDisconnectId(null); setError(""); setRemoval({ ...removalIdentity, kind: "calendar", calendarId: view.calendar.id, calendarName: view.providerDisplayName || view.calendar.title, expectedUpdatedAt: view.calendar.updatedAt }); }}
+          onSavingChange={(value) => setPending(value ? `${connection.connectionId}:settings` : null)} />
+        {connection.status === "disconnected" ? <><p>{revocationStatusText(connection)}</p>{canAuthorize && <button className="ll-button" disabled={actionsDisabled} onClick={() => { if (authorizationProvider) void connect(authorizationProvider, connection.connectionId); }}>{reconnectLabel}</button>}</> : <>
           {connection.credentialStatus === "reconnect_required" && <p className="ll-inline-warning" role="status">This account needs to reconnect before Life Links can read or change its provider events.</p>}
-          <ConnectedCalendarSettings controller={controller} connection={connection} calendars={calendars} disabled={!active || Boolean(pending)}
-            onSavingChange={(value) => setPending(value ? `${connection.connectionId}:settings` : null)} />
-          {authorizationProvider && active ? <div><button className="ll-button" disabled={Boolean(pending) || flow?.loading} onClick={() => void controller.loadCalendarConnectionDiscovery(connection.connectionId).catch(() => undefined)}>Add calendars from this account</button><button className="ll-button" disabled={Boolean(pending)} onClick={() => void refresh(connection.connectionId)}>Refresh now</button>{canAuthorize && <button className="ll-button" disabled={Boolean(pending)} onClick={() => void connect(authorizationProvider, connection.connectionId)}>{reconnectLabel}</button>}</div> : <p>Finding additional calendars for this account is not available yet.</p>}
+          {authorizationProvider && active ? <div><button className="ll-button" disabled={actionsDisabled || flow?.loading} onClick={() => void controller.loadCalendarConnectionDiscovery(connection.connectionId).catch(() => undefined)}>Add calendars from this account</button><button className="ll-button" disabled={actionsDisabled} onClick={() => void refresh(connection.connectionId)}>Refresh now</button>{canAuthorize && <button className="ll-button" disabled={actionsDisabled} onClick={() => void connect(authorizationProvider, connection.connectionId)}>{reconnectLabel}</button>}</div> : <p>Finding additional calendars for this account is not available yet.</p>}
           {disconnectId === connection.connectionId ? <div className="ll-calendar-disconnect-confirmation" role="group" aria-label={`Confirm disconnect ${providerName}`}>
             <strong>Disconnect {providerName}?</strong><p>Life Links will stop using this account and remove its cached events from this view. Your original calendars and events at {providerName} will not be deleted. Provider access revocation may remain pending or fail; its status will be shown separately.</p>
             <button className="ll-button" disabled={Boolean(pending)} onClick={() => setDisconnectId(null)}>Cancel</button><button className="ll-button ll-danger" disabled={Boolean(pending)} onClick={() => void disconnect(connection)}>{pending === connection.connectionId ? "Disconnecting…" : "Yes, disconnect"}</button>
-          </div> : <button className="ll-button" disabled={Boolean(pending)} onClick={() => setDisconnectId(connection.connectionId)}>Disconnect account</button>}
+          </div> : <button className="ll-button" disabled={actionsDisabled} onClick={() => setDisconnectId(connection.connectionId)}>Disconnect account</button>}
         </>}
+        {(active || connection.status === "disconnected") && !removingHere && <button className="ll-button ll-danger-text" disabled={actionsDisabled} onClick={() => {
+          setDisconnectId(null); setError(""); setRemoval({ ...removalIdentity, kind: "account", expectedConnectedAt: connection.connectedAt, calendarNames: calendars.map((view) => view.providerDisplayName || view.calendar.title) });
+        }}>Remove account from LifeLinks</button>}
+        {removingHere && <div className="ll-calendar-disconnect-confirmation" role="group" aria-label={`Confirm removal from LifeLinks: ${removingHere.kind === "calendar" ? removingHere.calendarName : removingHere.providerName}`}>
+          <strong>{removingHere.kind === "calendar" ? `Remove “${removingHere.calendarName}” from LifeLinks?` : `Remove ${removingHere.providerName} account from LifeLinks?`}</strong>
+          <p>{removingHere.providerName}</p><CalendarAccountIdentity accountEmail={removingHere.accountEmail} providerAccountId={removingHere.providerAccountId} />
+          {removingHere.kind === "account" && removingHere.calendarNames.length > 0 && <ul>{removingHere.calendarNames.map((name, index) => <li key={index}>{name}</li>)}</ul>}
+          <p>{removingHere.kind === "calendar"
+            ? "This removes only this calendar’s saved link, cached events and agent access from LifeLinks. The account and its other linked calendars remain. You can add this calendar again later."
+            : "This removes the account’s saved connection, linked calendars, cached events and saved agent access from LifeLinks. You can connect the account again from scratch."}</p>
+          <p><strong>Your original calendars and events at {removingHere.providerName} will not be deleted or changed.</strong></p>
+          <button className="ll-button" disabled={Boolean(pending)} onClick={() => { setRemoval(null); setError(""); }}>Cancel</button>
+          <button className="ll-button ll-danger" disabled={Boolean(pending)} onClick={() => void removeFromLifeLinks()}>{pending === `${connection.connectionId}:remove` ? "Removing…" : "Yes, remove from LifeLinks"}</button>
+        </div>}
       </article>;
     })}</div>
   </section>;
@@ -492,11 +535,13 @@ type ConnectedCalendarSettingsDraft = ConnectedCalendarSettingsValue & {
   original: ConnectedCalendarSettingsValue;
 };
 
-function ConnectedCalendarSettings({ controller, connection, calendars, disabled, onSavingChange }: {
+function ConnectedCalendarSettings({ controller, connection, calendars, disabled, removalDisabled, onRemove, onSavingChange }: {
   controller: LifeLinksWorkspaceController;
   connection: CalendarConnectionView;
   calendars: CalendarConnectedCalendarView[];
   disabled: boolean;
+  removalDisabled: boolean;
+  onRemove(view: CalendarConnectedCalendarView): void;
   onSavingChange(saving: boolean): void;
 }) {
   const [drafts, setDrafts] = useState<Record<string, ConnectedCalendarSettingsDraft>>({});
@@ -515,6 +560,13 @@ function ConnectedCalendarSettings({ controller, connection, calendars, disabled
       if (pending.current) { pending.current = false; savingChanged.current(false); }
     };
   }, [controller]);
+  useEffect(() => {
+    const retainedIds = new Set(calendars.map((view) => view.calendar.id));
+    setDrafts((current) => {
+      if (Object.keys(current).every((id) => retainedIds.has(id))) return current;
+      return Object.fromEntries(Object.entries(current).filter(([id]) => retainedIds.has(id)));
+    });
+  }, [calendars]);
 
   function edit(view: CalendarConnectedCalendarView, patch: Partial<ConnectedCalendarSettingsValue>) {
     setError(""); setFeedback("");
@@ -590,9 +642,10 @@ function ConnectedCalendarSettings({ controller, connection, calendars, disabled
       const value = drafts[view.calendar.id] ?? { visible: view.visible, agentAccess: view.calendar.agentAccess };
       const name = view.providerDisplayName || view.calendar.title;
       return <div className="ll-connected-calendar" key={view.calendar.id}>
-        <div><label className="ll-checkbox-label"><input type="checkbox" checked={value.visible} disabled={disabled || saving || (!value.visible && !view.capabilities.read)} onChange={(event) => edit(view, { visible: event.target.checked })} />{name}</label><small>{view.calendar.timeZone} · {providerCapabilityText(view)}</small></div>
-        <CalendarAgentAccessSelect value={value.agentAccess} canRead={view.capabilities.read} canWrite={canProviderCalendarWrite(view.capabilities)} disabled={disabled || saving}
+        <div><label className="ll-checkbox-label"><input type="checkbox" checked={value.visible} disabled={disabled || saving || !view.capabilities.read} onChange={(event) => edit(view, { visible: event.target.checked })} />{name}</label><small>{view.calendar.timeZone} · {providerCapabilityText(view)}</small></div>
+        <CalendarAgentAccessSelect value={value.agentAccess} canRead={view.capabilities.read} canWrite={canProviderCalendarWrite(view.capabilities)} disabled={disabled || saving || !view.capabilities.read}
           ariaLabel={`Agent access for ${name}`} writeLabel={view.capabilities.update ? "Read and edit" : "Read and allowed changes"} onChange={(agentAccess) => edit(view, { agentAccess })} />
+        <button className="ll-text-button ll-danger-text" aria-label={`Remove ${name} from LifeLinks`} disabled={removalDisabled || saving} onClick={() => onRemove(view)}>Remove from LifeLinks</button>
       </div>;
     })}</div>
     <p>An agent also needs the connected Calendar-v2 grant, and can never exceed the provider's permissions.</p>

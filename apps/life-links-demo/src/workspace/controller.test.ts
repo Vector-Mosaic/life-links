@@ -3112,6 +3112,8 @@ function fakeApi() {
     listConnectedCalendars: vi.fn<LifeLinksWorkspaceApi["listConnectedCalendars"]>(async () => ({ calendars: [] })),
     updateConnectedCalendar: vi.fn<LifeLinksWorkspaceApi["updateConnectedCalendar"]>(),
     disconnectCalendarConnection: vi.fn<LifeLinksWorkspaceApi["disconnectCalendarConnection"]>(),
+    removeConnectedCalendar: vi.fn<LifeLinksWorkspaceApi["removeConnectedCalendar"]>(async () => undefined),
+    removeCalendarConnection: vi.fn<LifeLinksWorkspaceApi["removeCalendarConnection"]>(async () => undefined),
     getLifeLinkAttachmentContent: vi.fn<LifeLinksWorkspaceApi["getLifeLinkAttachmentContent"]>(),
     getLifeLinkAttachmentImage: vi.fn<LifeLinksWorkspaceApi["getLifeLinkAttachmentImage"]>(),
     getChangeHistory: vi.fn<LifeLinksWorkspaceApi["getChangeHistory"]>(async () => ({ limit: 5, entries: [] })),
@@ -3324,6 +3326,70 @@ describe("Outlook provider workspace", () => {
     expect(controller.getSnapshot().calendarWorkspace.connectionManagement.calendars).toEqual([saved]);
     expect(controller.getSnapshot().calendarWorkspace.calendars.find((entry) => entry.id === externalCalendar.id)?.agentAccess).toBe("read");
     expect(controller.getSnapshot().calendarWorkspace.providerBindings[0].visible).toBe(false);
+    controller.dispose();
+  });
+  it("removes only the selected external Calendar after acknowledgement and rejects a stale management read", async () => {
+    const { api, controller, view } = await setupManagedCalendar();
+    const connection = controller.getSnapshot().calendarWorkspace.connectionManagement.connections[0];
+    let finishRead!: (value: { connections: typeof connection[] }) => void;
+    api.listCalendarConnections.mockReturnValueOnce(new Promise((resolve) => { finishRead = resolve; }));
+    const staleRead = controller.loadCalendarConnections();
+    await controller.removeConnectedCalendar(binding.connectionId, externalCalendar.id, view.calendar.updatedAt);
+    expect(api.removeConnectedCalendar).toHaveBeenCalledWith(binding.connectionId, externalCalendar.id, view.calendar.updatedAt, undefined);
+    finishRead({ connections: [connection] });
+    await staleRead;
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement).toMatchObject({ loading: false, connections: [connection], calendars: [] });
+    expect(controller.getSnapshot().calendarWorkspace.providerBindings).toEqual([]);
+    expect(controller.getSnapshot().calendarWorkspace.calendars).not.toContainEqual(externalCalendar);
+    expect(api.removeCalendarConnection).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+  it("keeps local Calendar state when removal fails and forgets the account only after acknowledgement", async () => {
+    const { api, controller, view } = await setupManagedCalendar();
+    const connection = controller.getSnapshot().calendarWorkspace.connectionManagement.connections[0];
+    api.removeCalendarConnection.mockRejectedValueOnce(new Error("Connection version changed"));
+    await expect(controller.removeCalendarConnection(binding.connectionId, connection.connectedAt)).rejects.toThrow("Connection version changed");
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement.calendars).toEqual([view]);
+    await controller.removeCalendarConnection(binding.connectionId, connection.connectedAt);
+    expect(api.removeCalendarConnection).toHaveBeenLastCalledWith(binding.connectionId, connection.connectedAt, undefined);
+    expect(controller.getSnapshot().calendarWorkspace.connectionManagement).toMatchObject({ connections: [], calendars: [] });
+    controller.dispose();
+  });
+  it("does not publish external account removal into a logged-out workspace", async () => {
+    const { api, controller } = await setupManagedCalendar();
+    let finish!: () => void;
+    api.removeCalendarConnection.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve; }));
+    const pending = controller.removeCalendarConnection(binding.connectionId, nativeCalendar.updatedAt);
+    await controller.logout();
+    const loggedOut = controller.getSnapshot();
+    finish(); await pending;
+    expect(controller.getSnapshot()).toBe(loggedOut);
+    controller.dispose();
+  });
+  it.each(["calendar", "account", "sibling"] as const)("does not revive removed Calendar data from delayed writes (%s)", async (target) => {
+    const { api, controller, view, route } = await setupManagedCalendar();
+    const { providerSeriesId: _series, providerRecurrence: _recurrence, outboundEffects: _effects, ...content } = providerEvent.content;
+    const input = { authority: "provider" as const, commandId: "late-provider-create", connectionId: binding.connectionId, calendarId: binding.calendarId, content };
+    let finishWrite!: (value: { providerEvent: CalendarProviderEventProjection }) => void;
+    let finishSettings!: (value: { calendar: typeof view }) => void;
+    api.createProviderCalendarEvent.mockReturnValueOnce(new Promise((resolve) => { finishWrite = resolve; }));
+    api.updateConnectedCalendar.mockReturnValueOnce(new Promise((resolve) => { finishSettings = resolve; }));
+    const write = controller.createExternalCalendarEvent(input);
+    const settings = controller.updateConnectedCalendar(binding.connectionId, binding.calendarId, view.calendar.updatedAt, { visible: false });
+    if (target === "account") await controller.removeCalendarConnection(binding.connectionId, nativeCalendar.updatedAt);
+    else await controller.removeConnectedCalendar(binding.connectionId, target === "sibling" ? "sibling-calendar" : binding.calendarId, view.calendar.updatedAt);
+    finishWrite({ providerEvent }); finishSettings({ calendar: { ...view, visible: false } });
+    await Promise.all([write, settings]);
+    const workspace = controller.getSnapshot().calendarWorkspace;
+    if (target === "sibling") {
+      expect(workspace.selectedProviderEvent).toEqual(providerEvent);
+      expect(workspace.calendars).toContainEqual(externalCalendar);
+    } else {
+      expect(workspace.providerEvents).toEqual([]);
+      expect(workspace.selectedProviderEvent).toBeNull();
+      expect(workspace.calendars).not.toContainEqual(externalCalendar);
+      expect(route.pathname()).toBe("/calendar");
+    }
     controller.dispose();
   });
   it("keeps a committed connected-settings save successful when event refresh fails", async () => {

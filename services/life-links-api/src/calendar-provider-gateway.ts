@@ -272,7 +272,12 @@ export type CalendarProviderSynchronizationTarget = {
   providerKey: string;
 };
 
-export type CalendarProviderConnectionExpectation = Pick<CalendarProviderConnectionRecord, "status" | "credentialHandle">;
+export type CalendarProviderConnectionExpectation = Pick<CalendarProviderConnectionRecord, "status" | "credentialHandle"> & {
+  connectedAt?: string;
+  requireIdleOutbox?: boolean;
+  removalAt?: string;
+  requireRetainedCalendars?: boolean;
+};
 
 export type CalendarProviderBindingUpdateOptions = {
   expectedUpdatedAt: string;
@@ -293,6 +298,7 @@ export type CalendarProviderWebhookHint = {
 export type CalendarProviderSyncMutation = {
   connectionId: string;
   calendarId: string;
+  expectedCalendarUpdatedAt?: string;
   expectedState: CalendarProviderSyncState | null;
   upserts: CalendarProviderEventProjection[];
   tombstones: CalendarProviderEventTombstone[];
@@ -317,19 +323,21 @@ export interface CalendarProviderStateStore {
   listSynchronizationTargets(input: { providerKey?: string; limit: number; after: { connectionId: string; calendarId: string } | null }): Promise<CalendarProviderSynchronizationTarget[]>;
   listRetryableCommands(input: { providerKey?: string; limit: number; now: string }): Promise<Pick<CalendarProviderCommand, "commandId" | "ownerId" | "connectionId" | "calendarId">[]>;
   listRevocationTargets(input: { providerKey?: string; limit: number; now: string }): Promise<Array<{ ownerId: string; connectionId: string }>>;
-  listCalendars(connectionId: string): Promise<CalendarProviderBindingRecord[]>;
+  listCalendars(connectionId: string, includeRemoved?: boolean): Promise<CalendarProviderBindingRecord[]>;
   getCalendar(connectionId: string, calendarId: string): Promise<CalendarProviderBindingRecord | null>;
   getCanonicalCalendar(calendarId: string): Promise<CalendarRecord | null>;
   getManagedCalendar(connectionId: string, calendarId: string): Promise<CalendarConnectedCalendarView | null>;
-  provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord, options?: { providerTimeZone: string }): Promise<void>;
+  provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord, options?: { providerTimeZone?: string; expectedRemovedUpdatedAt?: string }): Promise<void>;
   updateCalendarBinding(calendar: CalendarProviderBindingRecord, options?: CalendarProviderBindingUpdateOptions): Promise<void>;
-  rollbackProvisioning(connectionId: string): Promise<void>;
+  rollbackProvisioning(connectionId: string, removal?: { expectedConnectedAt: string; now?: string }): Promise<void>;
+  assertRemovalSafe(connectionId: string, calendarId?: string, now?: string): Promise<void>;
+  removeConnectedCalendar(input: { ownerId: string; connectionId: string; calendarId: string; expectedUpdatedAt: string; deletedAt: string }): Promise<void>;
   getSyncState(connectionId: string, calendarId: string): Promise<CalendarProviderSyncState | null>;
   listProjections(connectionId: string, calendarId: string): Promise<CalendarProviderEventProjection[]>;
   getProjection(connectionId: string, calendarId: string, providerEventId: string): Promise<CalendarProviderEventProjection | null>;
   getTombstone(connectionId: string, calendarId: string, providerEventId: string): Promise<CalendarProviderEventTombstone | null>;
   applySyncMutation(mutation: CalendarProviderSyncMutation): Promise<void>;
-  reserveOutbox(record: CalendarProviderOutboxRecord): Promise<{ record: CalendarProviderOutboxRecord; created: boolean }>;
+  reserveOutbox(record: CalendarProviderOutboxRecord, expectedCalendarUpdatedAt?: string): Promise<{ record: CalendarProviderOutboxRecord; created: boolean }>;
   claimOutbox(input: {
     commandId: string;
     fingerprint: string;
@@ -574,6 +582,8 @@ export class CalendarProviderGateway {
     ownerId: string; connectionId: string; calendars: CalendarProviderSelection[]; initialWindow: CalendarProviderWindow;
   }): Promise<CalendarConnectedCalendarView[]> {
     const connection = await this.#ownedConnection(input.ownerId, input.connectionId, false);
+    const admittedCalendars = new Map(await Promise.all(input.calendars.map(async (calendar) =>
+      [calendar.calendarId, await this.store.getCanonicalCalendar(calendar.calendarId)] as const)));
     const window = normalizeWindow(input.initialWindow, this.#maxInitialWindowDays);
     const discovery = await this.discoverConnectionCalendars(input);
     if (!input.calendars.length) throw new CalendarProviderGatewayError("invalid_input", "Select at least one Calendar.");
@@ -602,7 +612,8 @@ export class CalendarProviderGateway {
         providerAccountId: connection.providerAccountId, calendarId: selection.calendar.id,
         providerCalendarId: remote.providerCalendarId, providerDisplayName: remote.displayName,
         capabilities: remote.capabilities, agentGrant: selection.agentGrant, visible: selection.visible
-      }, remote.timeZone === undefined ? undefined : { providerTimeZone: remote.timeZone });
+      }, { providerTimeZone: remote.timeZone, expectedRemovedUpdatedAt:
+        admittedCalendars.get(selection.calendar.id)?.deletedAt ? admittedCalendars.get(selection.calendar.id)!.updatedAt : undefined });
       await this.synchronizeCalendar({ ownerId: input.ownerId, connectionId: input.connectionId,
         calendarId: selection.calendar.id, window });
     }
@@ -637,9 +648,6 @@ export class CalendarProviderGateway {
       selectedLocalIds.add(selection.calendar.id);
     }
     const bindings = await this.store.listCalendars(previous.connectionId);
-    if (bindings.some((binding) => !discovery.calendars.some((remote) => remote.providerCalendarId === binding.providerCalendarId))) {
-      throw new CalendarProviderGatewayError("provider_identity_mismatch", "A previously selected Calendar is not available in this account.");
-    }
     if (previous.status === "provisioning" && previous.credentialHandle !== input.credentialHandle) {
       throw new CalendarProviderGatewayError("idempotency_conflict", "Reconnect is already bound to another authorization attempt.");
     }
@@ -657,11 +665,19 @@ export class CalendarProviderGateway {
       accountEmail: discovery.accountEmail ?? previous.accountEmail,
       connectedAt: previous.status === "provisioning" ? previous.connectedAt : this.#now().toISOString(),
       disconnectedAt: null, remoteRevocationStatus: "not_required", remoteRevocationAttemptedAt: null, remoteRevocationErrorCode: null };
-    if (!await this.store.transitionConnection(reconnecting, previous)) {
+    if (!await this.store.transitionConnection(reconnecting, { ...previous, requireRetainedCalendars: true })) {
       throw new CalendarProviderGatewayError("connection_inactive", "The account connection changed during reconnect.");
     }
     for (const binding of bindings) {
-      const remote = discovery.calendars.find((entry) => entry.providerCalendarId === binding.providerCalendarId)!;
+      const remote = discovery.calendars.find((entry) => entry.providerCalendarId === binding.providerCalendarId);
+      if (!remote) {
+        // Provider calendar deletion or loss of access does not change the
+        // authenticated account. Retain its local identity without reviving
+        // stale access, projections or synchronization under the new grant.
+        await this.store.updateCalendarBinding({ ...binding, visible: false, agentGrant: "none",
+          capabilities: { read: false, create: false, update: false, delete: false } }, { provisioningConnection: reconnecting });
+        continue;
+      }
       if (remote.timeZone !== undefined) {
         const canonical = await this.store.getCanonicalCalendar(binding.calendarId);
         if (!canonical) throw new CalendarProviderGatewayError("calendar_not_found", "The canonical external Calendar was not found.");
@@ -721,13 +737,42 @@ export class CalendarProviderGateway {
 
   async listConnections(ownerId: string): Promise<CalendarProviderConnectionView[]> {
     assertIdentifier(ownerId, "ownerId");
-    return (await this.store.listConnections(ownerId)).map(safeConnection);
+    const connections = await this.store.listConnections(ownerId);
+    const visible = await Promise.all(connections.map(async (connection) =>
+      await this.#removedConnection(connection) ? null : safeConnection(connection)));
+    return visible.filter((connection): connection is CalendarProviderConnectionView => connection !== null);
   }
 
   async listManagedCalendars(ownerId: string, connectionId: string): Promise<CalendarConnectedCalendarView[]> {
     await this.#ownedConnection(ownerId, connectionId, true);
     const bindings = await this.store.listCalendars(connectionId);
     return Promise.all(bindings.map((binding) => this.#managedCalendar(binding)));
+  }
+
+  async removeConnectedCalendar(input: { ownerId: string; connectionId: string; calendarId: string; expectedUpdatedAt: string }): Promise<{ removed: true }> {
+    await this.#ownedConnection(input.ownerId, input.connectionId, true);
+    await this.store.removeConnectedCalendar({ ...input, deletedAt: this.#now().toISOString() });
+    return { removed: true };
+  }
+
+  async removeCalendarConnection(input: { ownerId: string; connectionId: string; expectedConnectedAt: string }): Promise<{ removed: true }> {
+    const connection = await this.store.getConnection(input.connectionId);
+    if (!connection || connection.ownerId !== input.ownerId) throw new CalendarProviderGatewayError("connection_not_found", "The calendar connection was not found.");
+    if (connection.connectedAt !== input.expectedConnectedAt) throw new CalendarProviderGatewayError("calendar_settings_conflict", "The account was reconnected after this removal was prepared.");
+    if (await this.#removedConnection(connection)) return { removed: true };
+    await this.store.assertRemovalSafe(connection.connectionId, undefined, this.#now().toISOString());
+    await this.disconnectConnection({ ...input, localProjectionDisposition: "purge" });
+    const closed = await this.store.getConnection(connection.connectionId);
+    if (!closed || closed.connectedAt !== input.expectedConnectedAt || closed.status !== "disconnected" || closed.credentialHandle !== null) {
+      throw new CalendarProviderGatewayError("connection_inactive", "The account is disabled, but credential cleanup must finish before it can be removed.");
+    }
+    await this.store.rollbackProvisioning(connection.connectionId, { expectedConnectedAt: input.expectedConnectedAt, now: this.#now().toISOString() });
+    return { removed: true };
+  }
+
+  async #removedConnection(connection: CalendarProviderConnectionRecord): Promise<boolean> {
+    return connection.status === "disconnected" && connection.credentialHandle === null &&
+      (await this.store.listCalendars(connection.connectionId, true)).length === 0;
   }
 
   async updateCalendarSettings(input: {
@@ -757,6 +802,9 @@ export class CalendarProviderGateway {
       ? current.calendar.agentAccess
       : normalizeAgentGrant(input.patch.agentAccess);
     assertAgentGrant(agentGrant, binding.capabilities);
+    if (input.patch.visible === true && !binding.capabilities.read) {
+      throw new CalendarProviderGatewayError("calendar_read_only", "The provider Calendar is unavailable and cannot be displayed.");
+    }
     const changed = { ...binding, agentGrant, visible: input.patch.visible ?? binding.visible };
     await this.store.updateCalendarBinding(changed, {
       expectedUpdatedAt,
@@ -861,12 +909,13 @@ export class CalendarProviderGateway {
     actor?: "owner" | "agent";
     authorizeAgent?: () => Promise<void>;
   }): Promise<{ recoveredExpiredCursor: boolean; upserted: number; deleted: number; cursor: string }> {
+    let expectedCalendarUpdatedAt: string | undefined;
     const admit = async () => {
       if (input.actor === "agent") {
         if (!input.authorizeAgent) throw new CalendarProviderGatewayError("agent_calendar_access_denied", "Live page-agent admission is required to synchronize.");
         await input.authorizeAgent();
       }
-      return this.#ownedCalendar(
+      const owned = await this.#ownedCalendar(
       input.ownerId,
       input.connectionId,
       input.calendarId,
@@ -874,6 +923,11 @@ export class CalendarProviderGateway {
       input.actor ?? "owner",
       input.allowProvisioning ?? false
       );
+      if (expectedCalendarUpdatedAt !== undefined && owned.canonical.updatedAt !== expectedCalendarUpdatedAt) {
+        throw new CalendarProviderGatewayError("calendar_settings_conflict", "The Calendar changed while synchronization was in progress.");
+      }
+      expectedCalendarUpdatedAt ??= owned.canonical.updatedAt;
+      return owned;
     };
     let { connection, calendar } = await admit();
     const adapter = this.#adapter(connection.providerKey);
@@ -962,6 +1016,7 @@ export class CalendarProviderGateway {
     await this.store.applySyncMutation({
       connectionId: connection.connectionId,
       calendarId: calendar.calendarId,
+      expectedCalendarUpdatedAt,
       expectedState: storedState,
       upserts,
       tombstones,
@@ -1033,12 +1088,18 @@ export class CalendarProviderGateway {
   async executeCommand(inputCommand: CalendarProviderCommand, options: { authorizeAgent?: () => Promise<void> } = {}): Promise<CalendarProviderCommandResult> {
     const command = normalizeCommand(inputCommand);
     const access = command.kind === "create" ? "create" : command.kind === "update" ? "update" : "delete";
+    let expectedCalendarUpdatedAt: string | undefined;
     const admit = async () => {
       if (command.actor === "agent") {
         if (!options.authorizeAgent) throw new CalendarProviderGatewayError("agent_calendar_access_denied", "A live page-agent admission is required.");
         await options.authorizeAgent();
       }
-      return this.#ownedCalendar(command.ownerId, command.connectionId, command.calendarId, access, command.actor, false);
+      const owned = await this.#ownedCalendar(command.ownerId, command.connectionId, command.calendarId, access, command.actor, false);
+      if (expectedCalendarUpdatedAt !== undefined && owned.canonical.updatedAt !== expectedCalendarUpdatedAt) {
+        throw new CalendarProviderGatewayError("calendar_settings_conflict", "The Calendar changed while the provider command was in progress.");
+      }
+      expectedCalendarUpdatedAt ??= owned.canonical.updatedAt;
+      return owned;
     };
     let { connection, calendar } = await admit();
     const now = this.#now().toISOString();
@@ -1059,7 +1120,7 @@ export class CalendarProviderGateway {
       result: null,
       conflictRevision: null,
       dispatchEvidence: null
-    });
+    }, expectedCalendarUpdatedAt);
     if (!reserved.created && reserved.record.fingerprint !== fingerprint) {
       throw new CalendarProviderGatewayError("idempotency_conflict", "The command identity is bound to different arguments.");
     }
@@ -1183,7 +1244,7 @@ export class CalendarProviderGateway {
         assertIdentifier(created.providerEventId, "providerEventId");
         if (!acknowledgedCreateId) await acknowledge(created.providerEventId);
         await admit();
-        const event = await this.#readback(adapter, connection, calendar, created.providerEventId);
+        const event = await this.#readback(adapter, connection, calendar, created.providerEventId, expectedCalendarUpdatedAt!);
         result = { kind: "create", event };
       } else if (command.kind === "update") {
         if (!recoveredUpdate) {
@@ -1200,7 +1261,7 @@ export class CalendarProviderGateway {
           await acknowledge(command.providerEventId);
         }
         await admit();
-        const event = await this.#readback(adapter, connection, calendar, command.providerEventId, recoveredUpdate ?? undefined);
+        const event = await this.#readback(adapter, connection, calendar, command.providerEventId, expectedCalendarUpdatedAt!, recoveredUpdate ?? undefined);
         result = { kind: "update", event };
       } else {
         if (!deleteAlreadyMissing) {
@@ -1245,6 +1306,7 @@ export class CalendarProviderGateway {
         await this.store.applySyncMutation({
           connectionId: connection.connectionId,
           calendarId: calendar.calendarId,
+          expectedCalendarUpdatedAt,
           expectedState: storedState,
           upserts: [],
           tombstones: [tombstone],
@@ -1320,18 +1382,22 @@ export class CalendarProviderGateway {
   async disconnectConnection(input: {
     ownerId: string;
     connectionId: string;
+    expectedConnectedAt?: string;
     localProjectionDisposition: "retain_private_stale" | "purge";
   }): Promise<CalendarProviderConnectionView> {
     if (input.localProjectionDisposition !== "purge" && input.localProjectionDisposition !== "retain_private_stale") {
       throw new CalendarProviderGatewayError("invalid_input", "An explicit local projection disposition is required.");
     }
     const connection = await this.#ownedConnection(input.ownerId, input.connectionId, true);
+    if (input.expectedConnectedAt !== undefined && connection.connectedAt !== input.expectedConnectedAt) {
+      throw new CalendarProviderGatewayError("calendar_settings_conflict", "The account changed after removal was prepared.");
+    }
     if (connection.status === "disconnected" && input.localProjectionDisposition === "purge") {
       await this.store.purgeConnectionProjections(connection.connectionId);
     }
     const locallyClosed = connection.status === "disconnected"
       ? connection
-      : await this.#closeConnectionLocally(connection, input.localProjectionDisposition);
+      : await this.#closeConnectionLocally(connection, input.localProjectionDisposition, input.expectedConnectedAt !== undefined);
     const finalConnection = locallyClosed.remoteRevocationStatus === "succeeded"
       ? locallyClosed
       : await this.#attemptRemoteRevocation(locallyClosed);
@@ -1340,7 +1406,8 @@ export class CalendarProviderGateway {
 
   async #closeConnectionLocally(
     connection: CalendarProviderConnectionRecord,
-    localProjectionDisposition: "retain_private_stale" | "purge"
+    localProjectionDisposition: "retain_private_stale" | "purge",
+    requireIdleOutbox = false
   ): Promise<CalendarProviderConnectionRecord> {
     const disconnected: CalendarProviderConnectionRecord = {
       ...connection,
@@ -1352,9 +1419,9 @@ export class CalendarProviderGateway {
     };
     // Persist the inactive connection first. Even if a later cleanup write or
     // provider call fails, every gateway operation now fails closed.
-    if (!await this.store.transitionConnection(disconnected, connection)) {
+    if (!await this.store.transitionConnection(disconnected, { ...connection, requireIdleOutbox, removalAt: this.#now().toISOString() })) {
       const current = await this.store.getConnection(connection.connectionId);
-      if (current?.status === "disconnected" && current.credentialHandle === connection.credentialHandle) return current;
+      if (current?.status === "disconnected" && current.credentialHandle === connection.credentialHandle && current.connectedAt === connection.connectedAt) return current;
       throw new CalendarProviderGatewayError("connection_inactive", "The connection changed before local closure.");
     }
     for (const calendar of await this.store.listCalendars(connection.connectionId)) {
@@ -1410,6 +1477,7 @@ export class CalendarProviderGateway {
     connection: CalendarProviderConnectionRecord,
     calendar: CalendarProviderBindingRecord,
     providerEventId: string,
+    expectedCalendarUpdatedAt: string,
     observed?: ProviderEventSnapshot
   ): Promise<CalendarProviderEventProjection> {
     const snapshot = observed ?? await adapter.readEvent({
@@ -1434,6 +1502,7 @@ export class CalendarProviderGateway {
     await this.store.applySyncMutation({
       connectionId: connection.connectionId,
       calendarId: calendar.calendarId,
+      expectedCalendarUpdatedAt,
       expectedState: storedState,
       upserts: [projection],
       tombstones: [],
@@ -1453,7 +1522,7 @@ export class CalendarProviderGateway {
 
   async #ownedConnection(ownerId: string, connectionId: string, allowDisconnected: boolean): Promise<CalendarProviderConnectionRecord> {
     const connection = await this.store.getConnection(connectionId);
-    if (!connection || connection.ownerId !== ownerId) {
+    if (!connection || connection.ownerId !== ownerId || await this.#removedConnection(connection)) {
       throw new CalendarProviderGatewayError("connection_not_found", "The calendar connection was not found.");
     }
     if (!allowDisconnected && connection.status !== "active") {
@@ -1469,7 +1538,7 @@ export class CalendarProviderGateway {
     access: "read" | "create" | "update" | "delete",
     actor: "owner" | "agent",
     allowProvisioning: boolean
-  ): Promise<{ connection: CalendarProviderConnectionRecord; calendar: CalendarProviderBindingRecord }> {
+  ): Promise<{ connection: CalendarProviderConnectionRecord; calendar: CalendarProviderBindingRecord; canonical: CalendarRecord }> {
     const connection = await this.store.getConnection(connectionId);
     if (!connection || connection.ownerId !== ownerId) {
       throw new CalendarProviderGatewayError("connection_not_found", "The calendar connection was not found.");
@@ -1478,7 +1547,8 @@ export class CalendarProviderGateway {
       throw new CalendarProviderGatewayError("connection_inactive", "The calendar connection is not active.");
     }
     const calendar = await this.store.getCalendar(connectionId, calendarId);
-    if (!calendar || calendar.ownerId !== ownerId) {
+    const canonical = await this.store.getCanonicalCalendar(calendarId);
+    if (!calendar || calendar.ownerId !== ownerId || !canonical || canonical.ownerId !== ownerId || canonical.deletedAt !== null) {
       throw new CalendarProviderGatewayError("calendar_not_found", "The exact provider calendar was not found.");
     }
     if (!calendar.capabilities[access]) {
@@ -1490,7 +1560,7 @@ export class CalendarProviderGateway {
         throw new CalendarProviderGatewayError("agent_calendar_access_denied", "The connected agent does not have this calendar permission.");
       }
     }
-    return { connection, calendar };
+    return { connection, calendar, canonical };
   }
 }
 
@@ -1522,14 +1592,18 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
     const current = this.#connections.get(connection.connectionId);
     if (!current || current.ownerId !== connection.ownerId || current.providerKey !== connection.providerKey
       || current.providerAccountId !== connection.providerAccountId || current.status !== expected.status
-      || current.credentialHandle !== expected.credentialHandle) return false;
+      || current.credentialHandle !== expected.credentialHandle
+      || (expected.connectedAt !== undefined && current.connectedAt !== expected.connectedAt)) return false;
+    if (expected.requireRetainedCalendars && ![...this.#calendars.values()].some((binding) => binding.connectionId === connection.connectionId)) return false;
+    if (expected.requireIdleOutbox) this.#assertRemovalSafe(connection.connectionId, undefined, expected.removalAt);
     this.#connections.set(connection.connectionId, cloneConnection(connection)!);
     return true;
   }
   async listSynchronizationTargets(input: { providerKey?: string; limit: number; after: { connectionId: string; calendarId: string } | null }) {
     return [...this.#calendars.values()].filter((binding) => {
       const connection = this.#connections.get(binding.connectionId);
-      return connection?.status === "active" && (!input.providerKey || binding.providerKey === input.providerKey)
+      return connection?.status === "active" && this.#canonicalCalendars.get(binding.calendarId)?.deletedAt === null
+        && binding.capabilities.read && (!input.providerKey || binding.providerKey === input.providerKey)
         && (!input.after || binding.connectionId > input.after.connectionId
           || (binding.connectionId === input.after.connectionId && binding.calendarId > input.after.calendarId));
     }).sort((a, b) => a.connectionId.localeCompare(b.connectionId) || a.calendarId.localeCompare(b.calendarId))
@@ -1540,6 +1614,7 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
     return [...this.#outbox.values()].filter((record) => {
       const connection = this.#connections.get(record.command.connectionId);
       return record.command.actor === "owner" && connection?.status === "active"
+        && this.#canonicalCalendars.get(record.command.calendarId)?.deletedAt === null
         && record.createdAt >= connection.connectedAt && (!input.providerKey || connection.providerKey === input.providerKey)
         && (record.status === "pending" || record.status === "processing")
         && (!record.nextAttemptAt || Date.parse(record.nextAttemptAt) <= now)
@@ -1554,8 +1629,9 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
       .sort((a,b) => (a.remoteRevocationAttemptedAt ?? "").localeCompare(b.remoteRevocationAttemptedAt ?? ""))
       .slice(0,input.limit).map(({ownerId,connectionId}) => ({ownerId,connectionId}));
   }
-  async listCalendars(connectionId: string) {
-    return [...this.#calendars.values()].filter((calendar) => calendar.connectionId === connectionId)
+  async listCalendars(connectionId: string, includeRemoved = false) {
+    return [...this.#calendars.values()].filter((calendar) => calendar.connectionId === connectionId &&
+      (includeRemoved || this.#canonicalCalendars.get(calendar.calendarId)?.deletedAt === null))
       .map((calendar) => this.#bindingView(calendar));
   }
   async getCalendar(connectionId: string, calendarId: string) {
@@ -1580,9 +1656,9 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
       capabilities: { ...binding.capabilities }, visible: binding.visible
     } : null;
   }
-  async provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord, options?: { providerTimeZone: string }) {
+  async provisionCalendar(calendar: CalendarRecord, binding: CalendarProviderBindingRecord, options?: { providerTimeZone?: string; expectedRemovedUpdatedAt?: string }) {
     assertCalendarProvisioningPair(calendar, binding);
-    const providerTimeZone = options === undefined ? undefined : normalizeCalendarIanaTimeZone(options.providerTimeZone);
+    const providerTimeZone = options?.providerTimeZone === undefined ? undefined : normalizeCalendarIanaTimeZone(options.providerTimeZone);
     const connection = this.#connections.get(binding.connectionId);
     if (!connection || (connection.status !== "provisioning" && connection.status !== "active") || connection.ownerId !== calendar.ownerId
       || connection.providerKey !== binding.providerKey || connection.providerAccountId !== binding.providerAccountId) {
@@ -1596,6 +1672,14 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
     if (existing && existing.ownerId === binding.ownerId && existing.providerKey === binding.providerKey
       && existing.providerAccountId === binding.providerAccountId && existing.providerCalendarId === binding.providerCalendarId) {
       const canonical = this.#canonicalCalendars.get(calendar.id);
+      if (canonical?.deletedAt !== null && canonical?.deletedAt !== undefined) {
+        if (options?.expectedRemovedUpdatedAt !== canonical.updatedAt) throw new CalendarProviderGatewayError("calendar_settings_conflict", "The removed Calendar requires a fresh explicit selection.");
+        const updatedAt = new Date(Math.max(Date.parse(calendar.updatedAt), Date.parse(canonical.updatedAt) + 1, Date.parse(canonical.deletedAt) + 1)).toISOString();
+        this.#canonicalCalendars.set(calendar.id, { ...calendar, timeZone: providerTimeZone ?? calendar.timeZone,
+          createdAt: canonical.createdAt, updatedAt, deletedAt: null });
+        this.#calendars.set(key, cloneCalendar(binding));
+        return;
+      }
       if (!canonical || canonical.ownerId !== calendar.ownerId || canonical.source !== "external" || canonical.deletedAt !== null) {
         throw new CalendarProviderGatewayError("provider_identity_mismatch", "The canonical external Calendar is unavailable.");
       }
@@ -1650,9 +1734,11 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
     const { agentGrant: _grant, ...metadata } = cloneCalendar(calendar);
     this.#calendars.set(key, metadata);
   }
-  async rollbackProvisioning(connectionId: string) {
+  async rollbackProvisioning(connectionId: string, removal?: { expectedConnectedAt: string; now?: string }) {
+    this.#assertRemovalSafe(connectionId, undefined, removal?.now);
     const connection = this.#connections.get(connectionId);
-    if (!connection || connection.status !== "disconnected") {
+    if (!connection || connection.status !== "disconnected" || (removal &&
+      (connection.connectedAt !== removal.expectedConnectedAt || connection.credentialHandle !== null))) {
       throw new CalendarProviderGatewayError(
         "connection_inactive",
         "Calendar provisioning can only be rolled back after the connection is closed."
@@ -1668,7 +1754,8 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
         );
       }
     }
-    await this.purgeConnectionProjections(connectionId);
+    for (const [key, value] of this.#projections) if (value.connectionId === connectionId) this.#projections.delete(key);
+    for (const [key, value] of this.#tombstones) if (value.connectionId === connectionId) this.#tombstones.delete(key);
     for (const binding of bindings) {
       this.#calendars.delete(calendarKey(binding.connectionId, binding.calendarId));
       this.#canonicalCalendars.delete(binding.calendarId);
@@ -1676,6 +1763,50 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
     }
     for (const [key, record] of this.#outbox) {
       if (record.command.connectionId === connectionId) this.#outbox.delete(key);
+    }
+    for (const [key, hint] of this.#hints) if (hint.connectionId === connectionId) this.#hints.delete(key);
+  }
+  async assertRemovalSafe(connectionId: string, calendarId?: string, now?: string) {
+    this.#assertRemovalSafe(connectionId, calendarId, now);
+  }
+  #assertRemovalSafe(connectionId: string, calendarId?: string, now?: string) {
+    const connection = this.#connections.get(connectionId);
+    const at = now === undefined ? Date.now() : Date.parse(now);
+    if ([...this.#outbox.values()].some((record) => record.command.connectionId === connectionId &&
+      (calendarId === undefined || record.command.calendarId === calendarId) &&
+      ((record.leaseOwner !== null && (record.leaseExpiresAt === null || Date.parse(record.leaseExpiresAt) > at)) ||
+        (connection?.status !== "disconnected" && record.createdAt >= (connection?.connectedAt ?? "") &&
+          (record.status === "processing" || (record.status === "pending" && record.dispatchEvidence)))))) {
+      throw new CalendarProviderGatewayError("command_in_progress", "A provider write is still in progress or awaiting reconciliation; remove this Calendar after it settles.");
+    }
+  }
+  async removeConnectedCalendar(input: { ownerId: string; connectionId: string; calendarId: string; expectedUpdatedAt: string; deletedAt: string }) {
+    const connection = this.#connections.get(input.connectionId);
+    const key = calendarKey(input.connectionId, input.calendarId);
+    const binding = this.#calendars.get(key);
+    const canonical = this.#canonicalCalendars.get(input.calendarId);
+    if (!connection || connection.ownerId !== input.ownerId || !binding || binding.ownerId !== input.ownerId ||
+      !canonical || canonical.ownerId !== input.ownerId || canonical.source !== "external") {
+      throw new CalendarProviderGatewayError("calendar_not_found", "The exact external Calendar was not found.");
+    }
+    if (canonical.updatedAt !== input.expectedUpdatedAt) throw new CalendarProviderGatewayError("calendar_settings_conflict", "The Calendar changed after removal was prepared.");
+    if (canonical.deletedAt !== null) return;
+    this.#assertRemovalSafe(input.connectionId, input.calendarId, input.deletedAt);
+    // Retain the pre-removal revision for exact retry; restoration advances it.
+    this.#canonicalCalendars.set(input.calendarId, { ...canonical, title: "Removed calendar", color: "#2f6f5f", timeZone: "UTC",
+      deletedAt: input.deletedAt, agentAccess: "none", isDefault: false });
+    this.#calendars.set(key, { ...binding, providerDisplayName: "Removed calendar", visible: false });
+    this.#syncStates.delete(key);
+    for (const [event, record] of this.#projections) if (record.connectionId === input.connectionId && record.calendarId === input.calendarId) this.#projections.delete(event);
+    for (const [event, record] of this.#tombstones) if (record.connectionId === input.connectionId && record.calendarId === input.calendarId) this.#tombstones.delete(event);
+    for (const [command, record] of this.#outbox) if (record.command.connectionId === input.connectionId && record.command.calendarId === input.calendarId) {
+      // Only an inert identity/fingerprint marker survives, never event content.
+      const original = record.command;
+      this.#outbox.set(command, { ...record, command: { kind: "delete", commandId: original.commandId,
+        ownerId: original.ownerId, connectionId: original.connectionId, calendarId: original.calendarId, actor: original.actor,
+        providerEventId: original.kind === "create" ? "removed" : original.providerEventId,
+        expectedProviderRevision: original.kind === "create" ? "removed" : original.expectedProviderRevision },
+        status: "rejected", result: null, dispatchEvidence: null, leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: null, updatedAt: input.deletedAt });
     }
   }
   async getSyncState(connectionId: string, calendarId: string) {
@@ -1701,6 +1832,10 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
       throw new CalendarProviderGatewayError("connection_inactive", "A disconnected account cannot publish synchronized events.");
     }
     const key = calendarKey(mutation.connectionId, mutation.calendarId);
+    const calendar = this.#canonicalCalendars.get(mutation.calendarId);
+    if (!calendar || calendar.deletedAt !== null || (mutation.expectedCalendarUpdatedAt !== undefined && calendar.updatedAt !== mutation.expectedCalendarUpdatedAt)) {
+      throw new CalendarProviderGatewayError("calendar_settings_conflict", "The Calendar was removed or changed before synchronization committed.");
+    }
     const currentState = this.#syncStates.get(key) ?? null;
     if (!syncStateEquals(currentState, mutation.expectedState)) {
       throw new CalendarProviderGatewayError("sync_state_conflict", "Calendar synchronization state changed before commit.", {
@@ -1721,7 +1856,14 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
     }
     this.#syncStates.set(key, { ...mutation.state });
   }
-  async reserveOutbox(record: CalendarProviderOutboxRecord) {
+  async reserveOutbox(record: CalendarProviderOutboxRecord, expectedCalendarUpdatedAt?: string) {
+    if (expectedCalendarUpdatedAt !== undefined) {
+      const canonical = this.#canonicalCalendars.get(record.command.calendarId);
+      const connection = this.#connections.get(record.command.connectionId);
+      if (!canonical || canonical.deletedAt !== null || canonical.updatedAt !== expectedCalendarUpdatedAt || connection?.status !== "active") {
+        throw new CalendarProviderGatewayError("calendar_settings_conflict", "The Calendar changed before the command was queued.");
+      }
+    }
     const existing = this.#outbox.get(record.commandId);
     if (existing) return { record: cloneOutbox(existing), created: false };
     this.#outbox.set(record.commandId, cloneOutbox(record));

@@ -35,6 +35,8 @@ const EXPECTED_WEB_CLIENT_OPERATIONS = [
   "GET /api/calendar-connections/{connectionId}/calendars",
   "PATCH /api/calendar-connections/{connectionId}/calendars/{calendarId}",
   "POST /api/calendar-connections/{connectionId}/disconnect",
+  "DELETE /api/calendar-connections/{connectionId}",
+  "DELETE /api/calendar-connections/{connectionId}/calendars/{calendarId}",
   "GET /api/calendar-clock",
   "GET /api/calendars",
   "POST /api/calendars",
@@ -515,7 +517,7 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(110);
+    expect(published).toHaveLength(112);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
@@ -940,7 +942,7 @@ describe("Life Links OpenAPI v1", () => {
       key.includes("/calendar")
     );
 
-    expect(calendarOperations).toHaveLength(26);
+    expect(calendarOperations).toHaveLength(28);
     for (const key of calendarOperations) {
       const operation = operations.get(key);
       expect(operation, key).toBeTruthy();

@@ -67,6 +67,51 @@ async function fixture(options: { readOnly?: boolean; adapterAvailable?: boolean
 const basePath = `/api/calendar-connections/${connectionId}`;
 
 describe("owner Calendar connection management", () => {
+  it("removes one local external Calendar, permits exact retry and preserves the provider original", async () => {
+    const { app, gateway, store, adapter } = await fixture();
+    const view = (await gateway.listManagedCalendars(ownerId, connectionId))[0];
+    const headers = { "X-Test-Owner": ownerId };
+    const endpoint = `${basePath}/calendars/${calendarId}`;
+    expect((await request(app).delete(endpoint).set(headers).send({ expectedUpdatedAt: "2020-01-01T00:00:00.000Z" })).status).toBe(409);
+    for (let retry = 0; retry < 2; retry += 1) {
+      expect((await request(app).delete(endpoint).set(headers).send({ expectedUpdatedAt: view.calendar.updatedAt })).status).toBe(204);
+    }
+    expect((await request(app).get(`${basePath}/calendars`).set(headers)).body.calendars).toEqual([]);
+    expect((await request(app).get("/api/calendar-connections").set(headers)).body.connections).toHaveLength(1);
+    expect(await store.listProjections(connectionId, calendarId)).toEqual([]);
+    expect(adapter.metrics().commandApplies).toEqual({ create: 0, update: 0, delete: 0 });
+    expect((await adapter.readEvent({ credentialHandle: calendarProviderCredentialHandle(vaultHandle),
+      providerAccountId: "synthetic-provider-account", providerCalendarId, providerEventId: "synthetic-event" })).content.title).toBe("Synthetic event");
+  });
+
+  it.each([false, true])("removes an account locally after exact cleanup (already disconnected: %s)", async (disconnected) => {
+    const { app, gateway, adapter } = await fixture();
+    const connection = await gateway.getConnection(ownerId, connectionId);
+    if (disconnected) await gateway.disconnectConnection({ ownerId, connectionId, localProjectionDisposition: "purge" });
+    const headers = { "X-Test-Owner": ownerId };
+    const body = { expectedConnectedAt: connection.connectedAt };
+    expect((await request(app).delete(basePath).set(headers).send({ expectedConnectedAt: "2020-01-01T00:00:00.000Z" })).status).toBe(409);
+    expect((await request(app).delete(basePath).set(headers).send(body)).status).toBe(204);
+    expect((await request(app).delete(basePath).set(headers).send(body)).status).toBe(204);
+    expect((await request(app).get("/api/calendar-connections").set(headers)).body.connections).toEqual([]);
+    expect(adapter.metrics().commandApplies).toEqual({ create: 0, update: 0, delete: 0 });
+    expect(adapter.metrics().revokeCalls).toBe(1);
+  });
+
+  it.each(["account", "calendar"])("keeps %s removal owner-only with a closed exact-revision grammar", async (kind) => {
+    const { app, gateway, adapter } = await fixture();
+    const connection = await gateway.getConnection(ownerId, connectionId);
+    const view = (await gateway.listManagedCalendars(ownerId, connectionId))[0];
+    const endpoint = kind === "account" ? basePath : `${basePath}/calendars/${calendarId}`;
+    const body = kind === "account" ? { expectedConnectedAt: connection.connectedAt } : { expectedUpdatedAt: view.calendar.updatedAt };
+    expect((await request(app).delete(endpoint).send(body)).status).toBe(401);
+    expect((await request(app).delete(endpoint).set("X-Test-Owner", "other-owner").send(body)).status).toBe(404);
+    expect((await request(app).delete(endpoint).set("X-Test-Owner", ownerId).set("X-Life-Links-Actor", "agent").send(body)).status).toBe(403);
+    expect((await request(app).delete(endpoint).set("X-Test-Owner", ownerId).send({ ...body, deleteAtProvider: true })).status).toBe(400);
+    expect((await gateway.listManagedCalendars(ownerId, connectionId))).toHaveLength(1);
+    expect(adapter.metrics().revokeCalls).toBe(0);
+  });
+
   it("enriches active account email through normal refresh and exposes it only to the owner manager", async () => {
     const { app, gateway, adapter, logs } = await fixture({ googleAuthorization: true });
     const discover = adapter.discover.bind(adapter);

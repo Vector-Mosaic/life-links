@@ -49,7 +49,7 @@ describe("Calendar manager and event form", () => {
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { callback(0); return 1; });
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
-    actions = Object.fromEntries(["loadCalendarConnections", "refreshConnectedCalendarAccount", "createNativeCalendar", "updateNativeCalendar", "createNativeCalendarEvent", "updateNativeCalendarEvent", "createExternalCalendarEvent", "updateExternalCalendarEvent", "updateConnectedCalendar"].map((name) => [name, vi.fn().mockResolvedValue(undefined)]));
+    actions = Object.fromEntries(["loadCalendarConnections", "refreshConnectedCalendarAccount", "removeConnectedCalendar", "removeCalendarConnection", "createNativeCalendar", "updateNativeCalendar", "createNativeCalendarEvent", "updateNativeCalendarEvent", "createExternalCalendarEvent", "updateExternalCalendarEvent", "updateConnectedCalendar"].map((name) => [name, vi.fn().mockResolvedValue(undefined)]));
     actions.getSnapshot = vi.fn(() => snapshot);
     actions.updateConnectedCalendar.mockImplementation(commitConnectedSettings);
     controller = actions as unknown as LifeLinksWorkspaceController; onClose = vi.fn();
@@ -116,6 +116,120 @@ describe("Calendar manager and event form", () => {
     const field = document.querySelector<HTMLSelectElement>(`select[aria-label="Agent access for ${name}"]`)!;
     await act(async () => { field.value = value; field.dispatchEvent(new Event("change", { bubbles: true })); });
   }
+
+  function removeCalendarButton(name: string) {
+    const found = document.querySelector<HTMLButtonElement>(`button[aria-label="Remove ${name} from LifeLinks"]`);
+    if (!found) throw new Error(`Missing local removal for ${name}`);
+    return found;
+  }
+  function removalConfirmation() {
+    const found = document.querySelector<HTMLElement>('[aria-label^="Confirm removal from LifeLinks:"]');
+    if (!found) throw new Error("Missing local-removal confirmation");
+    return found;
+  }
+  function removalConfirmationButton(text: string) {
+    const found = [...removalConfirmation().querySelectorAll<HTMLButtonElement>("button")].find((entry) => entry.textContent?.trim() === text);
+    if (!found) throw new Error(`Missing confirmation action: ${text}`);
+    return found;
+  }
+
+  it.each(["active", "disconnected"] as const)("removes an unavailable calendar locally from a %s account only after exact confirmation", async (status) => {
+    const unavailable = { ...connectedCalendar(), visible: false, capabilities: { read: false, create: false, update: false, delete: false }, calendar: { ...connectedCalendar().calendar, agentAccess: "none" as const } };
+    await renderConnected([unavailable], { connections: [{ ...connection, status, disconnectedAt: status === "disconnected" ? "2026-09-02T12:00:00Z" : null }] });
+    expect(input("Work").disabled).toBe(true);
+    expect(document.querySelector<HTMLSelectElement>('[aria-label="Agent access for Work"]')!.disabled).toBe(true);
+    expect(document.body.textContent).toContain("Provider access unavailable");
+    expect(removeCalendarButton("Work").disabled).toBe(false);
+    await click(removeCalendarButton("Work"));
+    expect(removalConfirmation().textContent).toContain("Work");
+    expect(removalConfirmation().textContent).toContain("Google Calendar");
+    expect(removalConfirmation().textContent).toContain("calendar-owner@example.test");
+    expect(removalConfirmation().textContent).toContain("saved link, cached events and agent access");
+    expect(removalConfirmation().textContent).toContain("will not be deleted or changed");
+    expect(actions.removeConnectedCalendar).not.toHaveBeenCalled();
+    await click(removalConfirmationButton("Cancel"));
+    expect(actions.removeConnectedCalendar).not.toHaveBeenCalled();
+    expect(document.querySelector('[aria-label^="Confirm removal from LifeLinks:"]')).toBeNull();
+    await click(removeCalendarButton("Work")); await click(removalConfirmationButton("Yes, remove from LifeLinks"));
+    expect(actions.removeConnectedCalendar).toHaveBeenCalledExactlyOnceWith(connection.connectionId, unavailable.calendar.id, unavailable.calendar.updatedAt, expect.any(AbortSignal));
+    expect(actions.removeCalendarConnection).not.toHaveBeenCalled();
+    expect(actions.updateConnectedCalendar).not.toHaveBeenCalled();
+  });
+
+  it.each(["active", "disconnected"] as const)("offers distinct local account removal for %s accounts and pins the clicked connection epoch", async (status) => {
+    await renderConnected([connectedCalendar()], { connections: [{ ...connection, status }] });
+    if (status === "active") expect(button("Disconnect account")).toBeDefined();
+    await click(button("Remove account from LifeLinks"));
+    expect(removalConfirmation().textContent).toContain("calendar-owner@example.test");
+    expect(removalConfirmation().textContent).toContain("Work");
+    expect(removalConfirmation().textContent).toContain("connect the account again from scratch");
+    expect(removalConfirmation().textContent).toContain("will not be deleted or changed");
+    await click(removalConfirmationButton("Cancel")); expect(actions.removeCalendarConnection).not.toHaveBeenCalled();
+    await click(button("Remove account from LifeLinks"));
+    await act(async () => publishManagement({ ...snapshot.calendarWorkspace.connectionManagement, connections: [{ ...connection, status, connectedAt: "2026-09-02T15:00:00Z" }] }));
+    await click(removalConfirmationButton("Yes, remove from LifeLinks"));
+    expect(actions.removeCalendarConnection).toHaveBeenCalledExactlyOnceWith(connection.connectionId, connection.connectedAt, expect.any(AbortSignal));
+    expect(actions.removeConnectedCalendar).not.toHaveBeenCalled();
+  });
+
+  it("pins calendar revision and labels, retains failures, and never upgrades an old confirmation silently", async () => {
+    await renderConnected(); await click(removeCalendarButton("Work"));
+    const updated = { ...connectedCalendar(), providerDisplayName: "New provider name", calendar: { ...connectedCalendar().calendar, updatedAt: "2026-09-02T16:00:00Z" } };
+    await act(async () => publishManagement({ ...snapshot.calendarWorkspace.connectionManagement, calendars: [updated] }));
+    actions.removeConnectedCalendar.mockRejectedValueOnce(new Error("stale_calendar_revision"));
+    await click(removalConfirmationButton("Yes, remove from LifeLinks"));
+    expect(actions.removeConnectedCalendar).toHaveBeenCalledExactlyOnceWith(connection.connectionId, calendar.id, calendar.updatedAt, expect.any(AbortSignal));
+    expect(removalConfirmation().textContent).toContain("Remove “Work”");
+    expect(document.body.textContent).toContain("stale_calendar_revision");
+    expect(removalConfirmationButton("Cancel").disabled).toBe(false);
+    await click(removalConfirmationButton("Cancel"));
+    expect(removeCalendarButton("New provider name").disabled).toBe(false);
+  });
+
+  it("keeps unrelated row drafts when a calendar is removed and discards only the removed row draft", async () => {
+    const second = connectedCalendar("calendar-99999999-9999-4999-8999-999999999999", "Personal");
+    await renderConnected([connectedCalendar(), second]);
+    await click(input("Work")); await click(input("Personal"));
+    await click(removeCalendarButton("Work"));
+    actions.removeConnectedCalendar.mockImplementationOnce(async () => {
+      publishManagement({ ...snapshot.calendarWorkspace.connectionManagement, calendars: [second] });
+    });
+    await click(removalConfirmationButton("Yes, remove from LifeLinks"));
+    expect(document.querySelector('button[aria-label="Remove Work from LifeLinks"]')).toBeNull();
+    expect(input("Personal").checked).toBe(false);
+    expect(button("Update").disabled).toBe(false);
+    await click(button("Update"));
+    expect(actions.updateConnectedCalendar).toHaveBeenCalledExactlyOnceWith(connection.connectionId, second.calendar.id, second.calendar.updatedAt, { visible: false }, expect.any(AbortSignal));
+  });
+
+  it("blocks duplicate removals and conflicting settings writes until the exact request settles", async () => {
+    await renderConnected(); await click(input("Work")); await click(removeCalendarButton("Work"));
+    let finish!: () => void;
+    actions.removeConnectedCalendar.mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const confirm = removalConfirmationButton("Yes, remove from LifeLinks");
+    await act(async () => { confirm.click(); confirm.click(); });
+    expect(actions.removeConnectedCalendar).toHaveBeenCalledTimes(1);
+    expect(removalConfirmationButton("Removing…").disabled).toBe(true);
+    expect(button("Update").disabled).toBe(true);
+    expect(removeCalendarButton("Work").disabled).toBe(true);
+    await act(async () => finish());
+    expect(button("Update").disabled).toBe(false);
+    expect(actions.updateConnectedCalendar).not.toHaveBeenCalled();
+  });
+
+  it("aborts local removal on owner replacement and does not publish its late error into the new owner", async () => {
+    await renderConnected(); await click(button("Remove account from LifeLinks"));
+    let reject!: (issue: Error) => void;
+    actions.removeCalendarConnection.mockImplementationOnce(() => new Promise<void>((_resolve, rejectPromise) => { reject = rejectPromise; }));
+    await click(removalConfirmationButton("Yes, remove from LifeLinks"));
+    const signal = actions.removeCalendarConnection.mock.calls[0][2] as AbortSignal;
+    await render({ kind: "manage-calendars" }, {}, "another-owner");
+    expect(signal.aborted).toBe(true);
+    await act(async () => reject(new Error("old-owner-error")));
+    expect(document.body.textContent).not.toContain("old-owner-error");
+    expect(document.querySelector('[aria-label^="Confirm removal from LifeLinks:"]')).toBeNull();
+    expect(actions.removeCalendarConnection).toHaveBeenCalledTimes(1);
+  });
 
   it("drafts connected settings without early writes, cancels, and saves both choices only on Update", async () => {
     await renderConnected();

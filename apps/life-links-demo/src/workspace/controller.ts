@@ -95,6 +95,8 @@ import {
   listConnectedCalendars,
   updateConnectedCalendar,
   disconnectCalendarConnection,
+  removeConnectedCalendar,
+  removeCalendarConnection,
   clearLifeLinkQrBinding,
   createCollection,
   createRoutine,
@@ -264,6 +266,8 @@ export type LifeLinksWorkspaceApi = {
   listConnectedCalendars: typeof listConnectedCalendars;
   updateConnectedCalendar: typeof updateConnectedCalendar;
   disconnectCalendarConnection: typeof disconnectCalendarConnection;
+  removeConnectedCalendar: typeof removeConnectedCalendar;
+  removeCalendarConnection: typeof removeCalendarConnection;
   previewLifeLinkChange: typeof previewLifeLinkChange;
   previewCollectionChange: typeof previewCollectionChange;
   applyCollectionChange: typeof applyCollectionChange;
@@ -367,6 +371,8 @@ const defaultApi: LifeLinksWorkspaceApi = {
   listConnectedCalendars,
   updateConnectedCalendar,
   disconnectCalendarConnection,
+  removeConnectedCalendar,
+  removeCalendarConnection,
   previewLifeLinkChange,
   previewCollectionChange,
   applyCollectionChange,
@@ -620,6 +626,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private calendarConnectionsLoadRevision = 0;
   private calendarConnectionFlowRevision = 0;
   private calendarSelectionRevision = 0;
+  private readonly removedCalendarAccounts = new Map<string, number>();
+  private readonly removedConnectedCalendars = new Map<string, number>();
   private searchRevision = 0;
   private selectionRevision = 0;
   private readonly pendingCreateIds = new Map<string, string>();
@@ -1497,29 +1505,29 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async createExternalCalendarEvent(input: ProviderCalendarEventCreateInput, signal?: AbortSignal, actor: CalendarActor = "human"): Promise<CalendarProviderEventProjection> {
-    const sameOwner = this.captureCalendarOwner();
+    const sameTarget = this.captureConnectedCalendarTarget(input.connectionId, input.calendarId);
     const { providerEvent } = await this.api.createProviderCalendarEvent(input, signal, actor);
     signal?.throwIfAborted();
     if (providerEvent.connectionId !== input.connectionId || providerEvent.calendarId !== input.calendarId) throw new Error("The provider returned a different Calendar.");
-    if (sameOwner()) this.showProviderCalendarEvent(providerEvent);
+    if (sameTarget()) this.showProviderCalendarEvent(providerEvent);
     return providerEvent;
   }
 
   async updateExternalCalendarEvent(providerEventId: string, input: ProviderCalendarEventUpdateInput, signal?: AbortSignal, actor: CalendarActor = "human"): Promise<CalendarProviderEventProjection> {
-    const sameOwner = this.captureCalendarOwner();
+    const sameTarget = this.captureConnectedCalendarTarget(input.connectionId, input.calendarId);
     const { providerEvent } = await this.api.updateProviderCalendarEvent(providerEventId, input, signal, actor);
     signal?.throwIfAborted();
     if (!sameProviderReference({ ...input, providerEventId }, providerEvent)) throw new Error("The provider returned a different event.");
-    if (sameOwner()) this.showProviderCalendarEvent(providerEvent);
+    if (sameTarget()) this.showProviderCalendarEvent(providerEvent);
     return providerEvent;
   }
 
   async deleteExternalCalendarEvent(providerEventId: string, input: ProviderCalendarEventDeleteInput, signal?: AbortSignal, actor: CalendarActor = "human") {
-    const sameOwner = this.captureCalendarOwner();
+    const sameTarget = this.captureConnectedCalendarTarget(input.connectionId, input.calendarId);
     const result = await this.api.deleteProviderCalendarEvent(providerEventId, input, signal, actor);
     signal?.throwIfAborted();
     if (result.authority !== "provider" || result.kind !== "delete" || result.connectionId !== input.connectionId || result.calendarId !== input.calendarId || result.providerEventId !== providerEventId || result.deletedProviderRevision !== input.expectedProviderRevision) throw new Error("The provider deletion did not match the confirmed event.");
-    if (sameOwner()) {
+    if (sameTarget()) {
       const reference = { ...input, providerEventId };
       this.updateCalendarWorkspace((current) => ({
         providerEvents: current.providerEvents.filter((entry) => !sameProviderReference(reference, entry)),
@@ -1592,7 +1600,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async updateConnectedCalendar(connectionId: string, calendarId: string, expectedUpdatedAt: string, patch: CalendarConnectedCalendarPatch, signal?: AbortSignal) {
-    const sameOwner = this.captureCalendarOwner();
+    const sameOwner = this.captureConnectedCalendarTarget(connectionId, calendarId);
     const { calendar } = await this.api.updateConnectedCalendar(connectionId, calendarId, expectedUpdatedAt, patch, signal);
     signal?.throwIfAborted();
     if (calendar.connectionId !== connectionId || calendar.calendar.id !== calendarId) throw new Error("The provider returned a different Calendar.");
@@ -1746,6 +1754,65 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       await this.loadCalendarConnections(signal);
     }
     return connection;
+  }
+
+  async removeConnectedCalendar(connectionId: string, calendarId: string, expectedUpdatedAt: string, signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureCalendarOwner();
+    await this.api.removeConnectedCalendar(connectionId, calendarId, expectedUpdatedAt, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner()) return;
+    this.forgetConnectedCalendars(connectionId, new Set([calendarId]), false);
+  }
+
+  async removeCalendarConnection(connectionId: string, expectedConnectedAt: string, signal?: AbortSignal): Promise<void> {
+    const sameOwner = this.captureCalendarOwner();
+    await this.api.removeCalendarConnection(connectionId, expectedConnectedAt, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner()) return;
+    const current = this.snapshot.calendarWorkspace;
+    const ids = new Set([
+      ...current.connectionManagement.calendars.filter((entry) => entry.connectionId === connectionId).map((entry) => entry.calendar.id),
+      ...current.providerBindings.filter((entry) => entry.connectionId === connectionId).map((entry) => entry.calendarId)
+    ]);
+    this.forgetConnectedCalendars(connectionId, ids, true);
+  }
+
+  private forgetConnectedCalendars(connectionId: string, calendarIds: Set<string>, removeAccount: boolean): void {
+    // Acknowledged local removal must win over reads already in flight. Keep
+    // unrelated calendars, provider accounts, native events and Routine state.
+    this.calendarConnectionsLoadRevision += 1;
+    this.calendarWindowLoadRevision += 1;
+    this.calendarWorkspaceLoadRevision += 1;
+    this.calendarSelectionRevision += 1;
+    if (removeAccount) this.removedCalendarAccounts.set(connectionId, (this.removedCalendarAccounts.get(connectionId) ?? 0) + 1);
+    for (const id of calendarIds) {
+      const key = JSON.stringify([connectionId, id]);
+      this.removedConnectedCalendars.set(key, (this.removedConnectedCalendars.get(key) ?? 0) + 1);
+    }
+    for (const id of calendarIds) this.invalidateCalendarAgentPreviews(id);
+    const removed = (entry: { connectionId: string; calendarId: string }) =>
+      entry.connectionId === connectionId && (removeAccount || calendarIds.has(entry.calendarId));
+    this.updateCalendarWorkspace((current) => ({
+      loading: false,
+      calendars: current.calendars.filter((calendar) => !calendarIds.has(calendar.id)),
+      providerBindings: current.providerBindings.filter((entry) => !removed(entry)),
+      providerEvents: current.providerEvents.filter((entry) => !removed(entry)),
+      ...(current.selectedProviderEvent && removed(current.selectedProviderEvent) ? { selectedProviderEvent: null } : {}),
+      connectionManagement: {
+        ...current.connectionManagement, loading: false, error: "",
+        connections: current.connectionManagement.connections.filter((entry) => !removeAccount || entry.connectionId !== connectionId),
+        calendars: current.connectionManagement.calendars.filter((entry) => !removed({ connectionId: entry.connectionId, calendarId: entry.calendar.id }))
+      }
+    }));
+  }
+
+  private captureConnectedCalendarTarget(connectionId: string, calendarId: string): () => boolean {
+    const sameOwner = this.captureCalendarOwner();
+    const key = JSON.stringify([connectionId, calendarId]);
+    const accountGeneration = this.removedCalendarAccounts.get(connectionId) ?? 0;
+    const calendarGeneration = this.removedConnectedCalendars.get(key) ?? 0;
+    return () => sameOwner() && accountGeneration === (this.removedCalendarAccounts.get(connectionId) ?? 0)
+      && calendarGeneration === (this.removedConnectedCalendars.get(key) ?? 0);
   }
 
   private invalidateCalendarAgentPreviews(calendarId: string) {
@@ -3970,6 +4037,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     ++this.ownerRevision;
     ++this.navigationRevision;
     ++this.searchRevision;
+    this.removedCalendarAccounts.clear();
+    this.removedConnectedCalendars.clear();
     this.pendingCreateIds.clear();
     this.pendingQrBindings.clear();
     this.pendingGeneratedQrs.clear();
