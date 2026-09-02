@@ -75,6 +75,7 @@ function snapshot(overrides: Partial<AgentToolWorkspaceSnapshot> = {}): AgentToo
     routeQrId: null,
     guestView: false,
     canonicalEditingId: null,
+    agentConnection: { connected: true, toolCatalogId: "life-links-workspace-v3" },
     selectedLifeLinkId: selected.lifeLink.id,
     selectedLifeLinkDetail: selected,
     lifeLinkSearchResults: [],
@@ -89,6 +90,12 @@ function snapshot(overrides: Partial<AgentToolWorkspaceSnapshot> = {}): AgentToo
 }
 
 class FakeController implements LifeLinksAgentToolController {
+  readonly agentCheckWorkspaceAccess = vi.fn<LifeLinksAgentToolController["agentCheckWorkspaceAccess"]>(async () => ({ ok: true }));
+  readonly agentListRoutines = vi.fn<LifeLinksAgentToolController["agentListRoutines"]>(async () => ({ ok: true, routines: [], nextCursor: null }));
+  readonly agentPreviewCollectionChange = vi.fn<LifeLinksAgentToolController["agentPreviewCollectionChange"]>(async () => ({ ok: false, code: "preview_unavailable" }));
+  readonly agentApplyCollectionChange = vi.fn<LifeLinksAgentToolController["agentApplyCollectionChange"]>(async () => ({ ok: false, code: "preview_unavailable" }));
+  readonly agentPreviewRoutineDeletion = vi.fn<LifeLinksAgentToolController["agentPreviewRoutineDeletion"]>(async () => ({ ok: false, code: "preview_unavailable" }));
+  readonly agentApplyRoutineDeletion = vi.fn<LifeLinksAgentToolController["agentApplyRoutineDeletion"]>(async () => ({ ok: false, code: "preview_unavailable" }));
   readonly agentInspectProviderCalendarEvent = vi.fn<LifeLinksAgentToolController["agentInspectProviderCalendarEvent"]>(async () => ({ ok: false, code: "calendar_event_unavailable" }));
   readonly agentCreateProviderCalendarEvent = vi.fn<LifeLinksAgentToolController["agentCreateProviderCalendarEvent"]>(async () => ({ ok: false, code: "calendar_unavailable" }));
   readonly agentUpdateProviderCalendarEvent = vi.fn<LifeLinksAgentToolController["agentUpdateProviderCalendarEvent"]>(async () => ({ ok: false, code: "calendar_event_unavailable" }));
@@ -276,7 +283,7 @@ describe("Life Links connected tool catalog", () => {
     expect(reader.description).toContain("never base64");
     expect(reader.description).toContain("not model_seen");
     expect(reader.description).toContain("If your host cannot emit images");
-    expect(tools.size).toBe(21);
+    expect(tools.size).toBe(26);
     result.source!.width = 100; result.source!.height = 100;
     result.rendition!.region = { x: 10, y: 15, width: 80, height: 80 };
     const crop = { ...input, mode: "crop", region: result.rendition!.region };
@@ -435,7 +442,7 @@ describe("Life Links connected tool catalog", () => {
   it("exports exactly the fixed names with the accepted annotations", () => {
     const definitions = createLifeLinksAgentToolCatalog(controller);
     expect(definitions.map((tool) => tool.name)).toEqual(LIFE_LINKS_AGENT_TOOL_NAMES);
-    expect(definitions).toHaveLength(21);
+    expect(definitions).toHaveLength(26);
     expect(definitions.map((tool) => tool.annotations)).toEqual([
       { readOnlyHint: true, untrustedContentHint: true },
       { readOnlyHint: true, untrustedContentHint: true },
@@ -455,6 +462,11 @@ describe("Life Links connected tool catalog", () => {
       { readOnlyHint: true, untrustedContentHint: true },
       { readOnlyHint: true, untrustedContentHint: true },
       { readOnlyHint: false, untrustedContentHint: true },
+      { readOnlyHint: false, untrustedContentHint: true },
+      { readOnlyHint: true, untrustedContentHint: true },
+      { readOnlyHint: false, untrustedContentHint: true },
+      { readOnlyHint: true, untrustedContentHint: true },
+      { readOnlyHint: true, untrustedContentHint: true },
       { readOnlyHint: false, untrustedContentHint: true },
       { readOnlyHint: true, untrustedContentHint: true },
       { readOnlyHint: false, untrustedContentHint: true }

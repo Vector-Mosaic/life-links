@@ -8,8 +8,9 @@ import {
   LIFE_LINKS_CALENDAR_TOOL_NAMES,
   LIFE_LINKS_LEGACY_TOOL_CATALOG_ID
 } from "./calendarToolHandlers";
+import { LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID, LIFE_LINKS_WORKSPACE_TOOL_NAMES } from "./workspaceToolHandlers";
 
-export { LIFE_LINKS_LEGACY_TOOL_CATALOG_ID };
+export { LIFE_LINKS_LEGACY_TOOL_CATALOG_ID, LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID };
 
 export const LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES = [
   "inspect_current_life_link",
@@ -28,15 +29,17 @@ export const LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES = [
   "read_life_link_attachment"
 ] as const;
 
-export const LIFE_LINKS_PAGE_TOOL_CATALOG_ID = LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID;
-export const LIFE_LINKS_PAGE_TOOL_NAMES = [
+export const LIFE_LINKS_PAGE_TOOL_CATALOG_ID = LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID;
+export const LIFE_LINKS_CALENDAR_PAGE_TOOL_NAMES = [
   ...LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES,
   ...LIFE_LINKS_CALENDAR_TOOL_NAMES
 ] as const;
+export const LIFE_LINKS_PAGE_TOOL_NAMES = [...LIFE_LINKS_CALENDAR_PAGE_TOOL_NAMES, ...LIFE_LINKS_WORKSPACE_TOOL_NAMES] as const;
 
 export type LifeLinksPageToolName = (typeof LIFE_LINKS_PAGE_TOOL_NAMES)[number];
 export type LifeLinksPageToolCatalogId =
   | typeof LIFE_LINKS_LEGACY_TOOL_CATALOG_ID
+  | typeof LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID
   | typeof LIFE_LINKS_PAGE_TOOL_CATALOG_ID;
 
 export interface BrowserWebMcpHost {
@@ -77,7 +80,7 @@ export function validateLifeLinksPageToolCatalog(
 ): LifeLinksPageToolCatalogValidation {
   const grantedNames = catalogId === LIFE_LINKS_LEGACY_TOOL_CATALOG_ID
     ? LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES
-    : LIFE_LINKS_PAGE_TOOL_NAMES;
+    : catalogId === LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID ? LIFE_LINKS_CALENDAR_PAGE_TOOL_NAMES : LIFE_LINKS_PAGE_TOOL_NAMES;
   if (
     definitions.length < grantedNames.length ||
     (catalogId === LIFE_LINKS_PAGE_TOOL_CATALOG_ID &&

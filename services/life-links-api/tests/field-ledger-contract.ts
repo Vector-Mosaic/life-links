@@ -9,6 +9,41 @@ const id = (prefix: string) => `${prefix}-${randomUUID()}`;
 // One observable contract is exercised against both real store implementations.
 export function fieldLedgerStoreContract(getStore: () => LifeLinksStore): void {
   describe("Field Ledger additive store contract", () => {
+    it("requires current Workspace v3 for agent Collection changes including replay after revocation", async () => {
+      const store = getStore();
+      const collection = await store.createCollection({ id: id("collection"), ownerId: DEMO_OWNER_ID, title: "Agent selection", createdAt });
+      const input = { operation: "delete" as const, scope: "collections" as const,
+        collections: [{ collectionId: collection.id, expectedUpdatedAt: collection.updatedAt }] };
+      const denied = { code: "agent_access_denied" };
+      try {
+        for (const catalog of ["life-links-page-webmcp-v1", "life-links-calendar-v2"] as const) {
+          await store.connectAgent(DEMO_OWNER_ID, catalog);
+          await expect(store.previewCollectionChange(DEMO_OWNER_ID, input, "agent")).rejects.toMatchObject(denied);
+        }
+        const granted = await store.connectAgent(DEMO_OWNER_ID, "life-links-workspace-v3");
+        expect(granted?.agentToolCatalogId).toBe("life-links-workspace-v3");
+        const preview = await store.previewCollectionChange(DEMO_OWNER_ID, input, "agent");
+        expect(await store.getCollectionChangePreview(DEMO_OWNER_ID, preview.id, "agent")).toEqual(preview);
+        await store.connectAgent(DEMO_GUEST_ID, "life-links-workspace-v3");
+        expect(await store.getCollectionChangePreview(DEMO_GUEST_ID, preview.id, "agent")).toBeNull();
+        const command = { previewId: preview.id, commandId: id("collection-command") };
+        await store.disconnectAgent(DEMO_OWNER_ID);
+        await expect(store.getCollectionChangePreview(DEMO_OWNER_ID, preview.id, "agent")).rejects.toMatchObject(denied);
+        await expect(store.applyCollectionChange(DEMO_OWNER_ID, command, "agent")).rejects.toMatchObject(denied);
+        expect(await store.getCollection(DEMO_OWNER_ID, collection.id)).not.toBeNull();
+        await store.connectAgent(DEMO_OWNER_ID, "life-links-workspace-v3");
+        const applied = await store.applyCollectionChange(DEMO_OWNER_ID, command, "agent");
+        expect(await store.applyCollectionChange(DEMO_OWNER_ID, command, "agent")).toEqual(applied);
+        await store.connectAgent(DEMO_OWNER_ID, "life-links-calendar-v2");
+        await expect(store.applyCollectionChange(DEMO_OWNER_ID, command, "agent")).rejects.toMatchObject(denied);
+        // The human owner retains the same stable receipt independently of page-agent consent.
+        expect(await store.applyCollectionChange(DEMO_OWNER_ID, command)).toEqual(applied);
+      } finally {
+        await store.disconnectAgent(DEMO_OWNER_ID);
+        await store.disconnectAgent(DEMO_GUEST_ID);
+      }
+    });
+
     const createItem = (title = "Sleeping pad", ownerId = DEMO_OWNER_ID) =>
       getStore().createLifeLink({ id: id("life-link"), ownerId, title, createdAt });
     const createCollection = (title = "Camping Gear", ownerId = DEMO_OWNER_ID) =>

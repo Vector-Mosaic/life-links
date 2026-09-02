@@ -84,6 +84,57 @@ describe("Life Links Postgres integration", () => {
   routineStoreContract(() => store);
   calendarStoreContract(() => store);
 
+  it("rechecks Workspace agent permission after concurrent grant revocation before Collection or Routine mutation", async () => {
+    const ownerId = DEMO_GUEST_ID;
+    const suffix = randomUUID();
+    const createdAt = "2026-09-02T12:00:00.000Z";
+    const collection = await store.createCollection({ id: `collection-${suffix}`, ownerId, title: "Revocation guard", createdAt });
+    const preview = await store.previewCollectionChange(ownerId, { operation: "delete", scope: "collections",
+      collections: [{ collectionId: collection.id, expectedUpdatedAt: collection.updatedAt }] });
+    const activity = await store.createActivity({ id: `activity-${suffix}`, ownerId, title: "Guard", createdAt });
+    const routine = await store.createRoutine({ id: `routine-${suffix}`, revisionId: `routine-revision-${suffix}`, ownerId,
+      title: "Revocation guard", createdAt, steps: [{ id: `routine-step-${suffix}`, activityId: activity.id, activityTitle: activity.title, position: 0 }] });
+    for (const mutate of [
+      () => store.applyCollectionChange(ownerId, { previewId: preview.id, commandId: `revoke-${suffix}` }, "agent"),
+      () => store.updateRoutine(ownerId, { routineId: routine.routine.id, expectedUpdatedAt: routine.routine.updatedAt,
+        patch: { archivedAt: createdAt } }, "agent")
+    ]) {
+      await store.connectAgent(ownerId, "life-links-workspace-v3");
+      const revoker = await postgresPool.connect();
+      const operationClient = await postgresPool.connect();
+      const realQuery = operationClient.query;
+      let grantReadReached = false;
+      const querySpy = vi.spyOn(operationClient, "query").mockImplementation((...args: unknown[]) => {
+        if (typeof args[0] === "string" && args[0].includes("agent_tool_catalog_id FROM users") && args[0].includes("FOR SHARE")) grantReadReached = true;
+        return Reflect.apply(realQuery, operationClient, args);
+      });
+      let operationConnectionClaimed = false;
+      const connectSpy = vi.spyOn(postgresPool, "connect").mockImplementationOnce(() => {
+        operationConnectionClaimed = true;
+        return Promise.resolve(operationClient) as never;
+      });
+      let pending: Promise<unknown> | undefined;
+      try {
+        await revoker.query("BEGIN");
+        await revoker.query("UPDATE users SET agent_connected_at=NULL,agent_tool_catalog_id=NULL WHERE id=$1", [ownerId]);
+        pending = mutate().then((value) => ({ value }), (error: unknown) => ({ error }));
+        await vi.waitFor(() => expect(grantReadReached).toBe(true), { timeout: 3_000, interval: 10 });
+        await revoker.query("COMMIT");
+        expect(await pending).toMatchObject({ error: { code: "agent_access_denied" } });
+      } finally {
+        await revoker.query("ROLLBACK");
+        if (pending) await pending;
+        if (!operationConnectionClaimed) operationClient.release();
+        querySpy.mockRestore();
+        connectSpy.mockRestore();
+        revoker.release();
+        await store.disconnectAgent(ownerId);
+      }
+    }
+    expect(await store.getCollection(ownerId, collection.id)).not.toBeNull();
+    expect((await store.getRoutine(ownerId, routine.routine.id))?.routine.archivedAt).toBeNull();
+  });
+
   it("persists only encrypted Calendar credentials and serializes refresh updates across store instances", async () => {
     const cipher = new CalendarSecretCipher(Buffer.alloc(32, 7).toString("base64"));
     const first = new PostgresCalendarSecretStore(postgresPool);
@@ -311,7 +362,7 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(15);
+    expect(migrations.rows[0].count).toBe(16);
     const agentConnectionColumn = await adminPool.query(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -1227,7 +1278,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(15);
+      expect(receiptCount.rows[0].count).toBe(16);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1259,7 +1310,8 @@ describe("Life Links Postgres integration", () => {
         "012_calendar_permissions.sql",
         "013_calendar_authorization.sql",
         "014_calendar_account_email.sql",
-        "015_collection_changes.sql"
+        "015_collection_changes.sql",
+        "016_workspace_agent_catalog.sql"
       ]);
     } finally {
       await concurrent.store.close();

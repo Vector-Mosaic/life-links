@@ -2,11 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import {
   getBrowserWebMcpHost,
   LIFE_LINKS_LEGACY_TOOL_CATALOG_ID,
+  LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
   LIFE_LINKS_PAGE_TOOL_CATALOG_ID,
   LIFE_LINKS_PAGE_TOOL_NAMES,
   validateLifeLinksPageToolCatalog,
   type BrowserWebMcpHost,
-  type LifeLinksPageToolName
+  type LifeLinksPageToolName,
+  type LifeLinksPageToolCatalogId
 } from "./browserWebMcpHost";
 import type {
   WebMcpExecutionContext,
@@ -121,6 +123,7 @@ function safeRegistrationError(error: unknown): PageToolRegistrationStatus {
 export function eligiblePageToolScopeKey(eligibility: PageToolEligibility): string | null {
   const ownerId = eligibility.authenticatedOwnerId?.trim();
   const grantedCatalog = eligibility.catalogId === LIFE_LINKS_LEGACY_TOOL_CATALOG_ID ||
+    eligibility.catalogId === LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID ||
     eligibility.catalogId === LIFE_LINKS_PAGE_TOOL_CATALOG_ID
     ? eligibility.catalogId
     : null;
@@ -171,7 +174,7 @@ export class PageToolRegistrationLifecycle {
 
     const catalog = validateLifeLinksPageToolCatalog(
       request.definitions,
-      request.eligibility.catalogId as typeof LIFE_LINKS_LEGACY_TOOL_CATALOG_ID | typeof LIFE_LINKS_PAGE_TOOL_CATALOG_ID
+      request.eligibility.catalogId as LifeLinksPageToolCatalogId
     );
     if (!catalog.ok) {
       this.stopRegistrations();

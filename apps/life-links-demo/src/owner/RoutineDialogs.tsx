@@ -18,6 +18,7 @@ import type {
 } from "@life-links/core";
 import type { LifeLinksWorkspaceController } from "../workspace/controller";
 import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
+import type { RoutineDeletionPreview } from "../agent/workspaceToolHandlers";
 import { Dialog } from "./FieldLedgerPrimitives";
 import {
   ROUTINE_VALUE_KINDS,
@@ -60,52 +61,58 @@ export function RoutineDialogHost({ dialog, controller, snapshot, onClose, onSes
   return <RoutineCorrectionDialog sessionId={dialog.sessionId} stepResultId={dialog.stepResultId ?? null} controller={controller} snapshot={snapshot} onClose={onClose} />;
 }
 
+/** Shared wording for the human and page-agent removal confirmation. */
+export function RoutineDeletionEffects({ preview, removedIds = [], error = "" }: {
+  preview: RoutineDeletionPreview; removedIds?: string[]; error?: string;
+}) {
+  return <>
+    <p>These Routines will be removed from your active list. Their schedules will stop and future, unstarted plans will be canceled.</p>
+    <ul>{preview.routines.map((routine) => <li key={routine.id}>{routine.title}{removedIds.includes(routine.id) ? " — removed" : ""}</li>)}</ul>
+    <p>Completed history and Runs already in progress are kept. Use <strong>Show removed routines</strong> to restore a Routine or resume its Run. This is not permanent erasure.</p>
+    <p className="ll-muted">Restoring does not restart schedules or restore canceled plans.</p>
+    {error && <p role="alert" className="ll-error">{removedIds.length ? `${removedIds.length} removed; the remaining changes are not confirmed. ` : ""}{error}</p>}
+  </>;
+}
+
 function RoutineDeleteDialog({ routines, controller, snapshot, onClose }: {
   routines: Extract<NonNullable<RoutineDialogState>, { kind: "delete-routines" }>["routines"];
   controller: LifeLinksWorkspaceController;
   snapshot: LifeLinksWorkspaceSnapshot;
   onClose(): void;
 }) {
-  // A retry reuses exactly the confirmed archive patch and original revisions.
-  const [archivedAt] = useState(() => new Date().toISOString());
+  // The shared coordinator owns exact archive time/revisions and retry progress.
+  const [preparation] = useState(() => {
+    try { return { preview: controller.prepareRoutineDeletion(routines), error: "" }; }
+    catch (issue) { return { preview: null, error: messageFromIssue(issue, "The removal could not be prepared.") }; }
+  });
+  const preview = preparation.preview;
   const [confirmedIds, setConfirmedIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(preparation.error);
   const request = useRef<AbortController | null>(null);
   const ownerId = snapshot.currentUser?.id;
   useEffect(() => () => request.current?.abort(), [ownerId]);
   async function remove() {
-    if (saving || !ownerId) return;
+    if (saving || !ownerId || !preview) return;
     const operation = new AbortController(); request.current = operation;
     setSaving(true); setError("");
-    const completed = new Set(confirmedIds);
     try {
-      for (const routine of routines) {
-        if (completed.has(routine.id)) continue;
-        operation.signal.throwIfAborted();
-        if (controller.getSnapshot().currentUser?.id !== ownerId) throw new Error("Your account changed. Close this dialog and try again.");
-        await controller.updateRoutine(routine.id, routine.expectedUpdatedAt, { archivedAt }, operation.signal);
-        operation.signal.throwIfAborted();
-        const current = controller.getSnapshot();
-        if (current.currentUser?.id !== ownerId || !current.routineWorkspace.routines.some((item) => item.id === routine.id && item.archivedAt === archivedAt)) {
-          throw new Error("Removal could not be confirmed. Retry to check the same change.");
-        }
-        completed.add(routine.id); setConfirmedIds([...completed]);
-      }
-      onClose();
+      const result = await controller.applyRoutineDeletion(preview, confirmedIds, operation.signal);
+      operation.signal.throwIfAborted();
+      if (controller.getSnapshot().currentUser?.id !== ownerId) return;
+      setConfirmedIds(result.removedIds);
+      if (!result.remainingIds.length && !result.error) onClose();
+      else setError(result.error ?? "Removal could not be confirmed. Retry the remaining Routines.");
     } catch (issue) {
       if (!operation.signal.aborted) setError(messageFromIssue(issue, "Removal could not be confirmed. Retry the remaining Routines."));
     } finally { if (!operation.signal.aborted) setSaving(false); }
   }
   return <Dialog title="Delete selected Routines?" onClose={onClose} closeDisabled={saving}>
     <div className="ll-form">
-      <p>These Routines will be removed from your active list. Their schedules will stop and future, unstarted plans will be canceled.</p>
-      <ul>{routines.map((routine) => <li key={routine.id}>{routine.title}{confirmedIds.includes(routine.id) ? " — removed" : ""}</li>)}</ul>
-      <p>Completed history and Runs already in progress are kept. Use <strong>Show removed routines</strong> to restore a Routine or resume its Run. This is not permanent erasure.</p>
-      <p className="ll-muted">Restoring does not restart schedules or restore canceled plans.</p>
-      {error && <p role="alert" className="ll-error">{confirmedIds.length ? `${confirmedIds.length} removed; the remaining changes are not confirmed. ` : ""}{error}</p>}
+      {preview ? <RoutineDeletionEffects preview={preview} removedIds={confirmedIds} error={error} />
+        : <p role="alert" className="ll-error">{error}</p>}
       <footer><button type="button" className="ll-button" disabled={saving} onClick={onClose}>{confirmedIds.length ? "Close" : "Cancel"}</button>
-        <button type="button" className="ll-button ll-primary" disabled={saving || !routines.length} onClick={() => void remove()}>{saving ? "Deleting…" : error ? "Retry remaining" : "Yes, delete"}</button></footer>
+        <button type="button" className="ll-button ll-primary" disabled={saving || !preview?.routines.length} onClick={() => void remove()}>{saving ? "Deleting…" : error && preview ? "Retry remaining" : "Yes, delete"}</button></footer>
     </div>
   </Dialog>;
 }

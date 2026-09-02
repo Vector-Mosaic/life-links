@@ -48,6 +48,7 @@ import {
   createCalendarAgentToolCatalog,
   type CalendarAgentToolController
 } from "./calendarToolHandlers";
+import { createWorkspaceAgentToolCatalog, type WorkspaceAgentToolController, type WorkspaceAgentAccessSnapshot } from "./workspaceToolHandlers";
 import { validateAttachmentImageEnvelope } from "../attachmentImage";
 import { validateAttachmentTranscript } from "../attachmentTranscript";
 
@@ -81,7 +82,7 @@ export type AgentSearchLifeLinksControllerResult =
   | { readonly ok: true; readonly search: AgentLifeLinkSearchPayload }
   | Exclude<AgentToolControllerActionResult, { readonly ok: true }>;
 
-export type AgentToolWorkspaceSnapshot = {
+export type AgentToolWorkspaceSnapshot = WorkspaceAgentAccessSnapshot & {
   readonly currentUser: { readonly id: string } | null;
   readonly routeQrId: string | null;
   readonly guestView: boolean;
@@ -128,7 +129,7 @@ export type AgentStartFindModeInput = {
   readonly lifeLinkId: string;
 };
 
-export interface LifeLinksAgentToolController extends CalendarAgentToolController {
+export interface LifeLinksAgentToolController extends CalendarAgentToolController, WorkspaceAgentToolController {
   agentReadAttachment(input: AgentReadAttachmentInput, signal?: AbortSignal): Promise<AgentReadAttachmentResult>;
   agentPreviewLifeLinkChange(input: PreviewLifeLinkChangeInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult | { ok: true; preview: LifeLinkChangePreview }>;
   agentApplyLifeLinkChange(previewId: string, signal?: AbortSignal): Promise<Exclude<AgentToolControllerActionResult, { ok: true }> | { ok: true; change: LifeLinkChangeResult }>;
@@ -669,7 +670,7 @@ export function createLifeLinksAgentToolCatalog(
       execute: (input, context = {}) => readAttachment(controller, input, context)
     }
   ];
-  return [...fieldLedgerCatalog, ...createCalendarAgentToolCatalog(controller)];
+  return [...fieldLedgerCatalog, ...createCalendarAgentToolCatalog(controller), ...createWorkspaceAgentToolCatalog(controller)];
 }
 
 async function readAttachment(controller: LifeLinksAgentToolController, input: unknown, context: WebMcpExecutionContext): Promise<WebMcpJsonValue> {

@@ -74,6 +74,11 @@ export function calendarStoreContract(getStore: () => LifeLinksStore): void {
         tombstoneId: id("calendar-event-tombstone"), deletedAt: "2026-09-01T12:02:00.000Z"
       }, "agent")).rejects.toMatchObject({ reason: "agent_calendar_write_denied" });
       expect((await store.getCalendarEvent(DEMO_OWNER_ID, writableEvent.event.id))?.event.deletedAt).toBeNull();
+      await store.connectAgent(DEMO_OWNER_ID, "life-links-workspace-v3");
+      expect((await store.getCalendarEvent(DEMO_OWNER_ID, readEvent.event.id, "agent"))?.event.id).toBe(readEvent.event.id);
+      expect(await store.getCalendarEvent(DEMO_OWNER_ID, hiddenEvent.event.id, "agent")).toBeNull();
+      await expect(store.reviseCalendarEvent(DEMO_OWNER_ID, write, "agent"))
+        .rejects.toMatchObject({ reason: "agent_calendar_write_denied" });
       await store.disconnectAgent(DEMO_OWNER_ID);
       await expect(store.getCalendarEvent(DEMO_OWNER_ID, readEvent.event.id, "agent"))
         .rejects.toMatchObject({ reason: "calendar_agent_connection_required" });

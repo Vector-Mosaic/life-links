@@ -12,21 +12,25 @@ import {
 } from "../src/agent/calendarToolHandlers";
 import {
   LIFE_LINKS_LEGACY_PAGE_TOOL_NAMES,
+  LIFE_LINKS_CALENDAR_PAGE_TOOL_NAMES,
   LIFE_LINKS_PAGE_TOOL_NAMES,
   validateLifeLinksPageToolCatalog
 } from "../src/agent/browserWebMcpHost";
+import { LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID } from "../src/agent/workspaceToolHandlers";
 import type { WebMcpToolDefinition } from "../src/webmcpCompatibility";
 
 const SNAPSHOT_FILENAME =
-  "life-links-calendar-v2.authenticated-owner-page.full.json";
-const SNAPSHOT_SCHEMA_VERSION = "life-links-page-webmcp-contract-snapshot.v2";
-const NORMALIZATION_PROFILE = "life-links-page-webmcp-catalog-v2";
+  "life-links-workspace-v3.authenticated-owner-page.full.json";
+const SNAPSHOT_SCHEMA_VERSION = "life-links-page-webmcp-contract-snapshot.v3";
+const NORMALIZATION_PROFILE = "life-links-page-webmcp-catalog-v3";
 const GENERATOR_SOURCE =
   "systems/life_links/apps/life-links-demo/tools/webmcp-contract-snapshot.ts";
 const CATALOG_SOURCE =
   "systems/life_links/apps/life-links-demo/src/agent/toolHandlers.ts";
 const CALENDAR_CATALOG_SOURCE =
   "systems/life_links/apps/life-links-demo/src/agent/calendarToolHandlers.ts";
+const WORKSPACE_CATALOG_SOURCE =
+  "systems/life_links/apps/life-links-demo/src/agent/workspaceToolHandlers.ts";
 const REGISTRATION_SOURCE =
   "systems/life_links/apps/life-links-demo/src/agent/browserWebMcpHost.ts";
 const ACTIVATION_SOURCE =
@@ -46,6 +50,7 @@ const contractDirectory = path.resolve(appRoot, "..", "..", "contracts", "mcp");
 const DIGEST_SOURCE_PATHS = [
   CATALOG_SOURCE,
   CALENDAR_CATALOG_SOURCE,
+  WORKSPACE_CATALOG_SOURCE,
   REGISTRATION_SOURCE,
   ACTIVATION_SOURCE,
   COMPATIBILITY_SOURCE,
@@ -136,13 +141,13 @@ export async function buildWebMcpContractSnapshot(): Promise<
   return {
     schema_version: SNAPSHOT_SCHEMA_VERSION,
     artifact_id:
-      "artifact.life_links.page_webmcp.snapshot.authenticated_owner_calendar_v2",
+      "artifact.life_links.page_webmcp.snapshot.authenticated_owner_workspace_v3",
     artifact_role: "derived_evidence",
     contract_authority_artifact_id:
-      "artifact.life_links.page_webmcp.registration_authority.calendar_v2",
+      "artifact.life_links.page_webmcp.registration_authority.workspace_v3",
     interface_id: "if.life_links.page_webmcp",
-    contract_line_id: LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
-    contract_version: "2",
+    contract_line_id: LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID,
+    contract_version: "3",
     stability_state: "experimental",
     protocol: {
       family: "WebMCP",
@@ -152,10 +157,11 @@ export async function buildWebMcpContractSnapshot(): Promise<
     configuration: {
       partition_id: "partition.life_links.authenticated_owner_page_webmcp",
       catalog_profile_id:
-        "catalog.life_links.authenticated_owner_page_webmcp.calendar_v2",
-      required_persisted_grant_id: LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
+        "catalog.life_links.authenticated_owner_page_webmcp.workspace_v3",
+      required_persisted_grant_id: LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID,
       legacy_grant_id: LIFE_LINKS_LEGACY_TOOL_CATALOG_ID,
       legacy_grant_inherits_calendar_access: false,
+      calendar_grant_inherits_workspace_actions: false,
       grant_profiles: [
         {
           id: LIFE_LINKS_LEGACY_TOOL_CATALOG_ID,
@@ -164,8 +170,15 @@ export async function buildWebMcpContractSnapshot(): Promise<
         },
         {
           id: LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
+          tool_count: LIFE_LINKS_CALENDAR_PAGE_TOOL_NAMES.length,
+          calendar_access: true,
+          workspace_actions: false
+        },
+        {
+          id: LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID,
           tool_count: LIFE_LINKS_PAGE_TOOL_NAMES.length,
-          calendar_access: true
+          calendar_access: true,
+          workspace_actions: true
         }
       ],
       exposure: "page_bound",
@@ -180,6 +193,7 @@ export async function buildWebMcpContractSnapshot(): Promise<
       generator: GENERATOR_SOURCE,
       catalog_source: CATALOG_SOURCE,
       calendar_catalog_source: CALENDAR_CATALOG_SOURCE,
+      workspace_catalog_source: WORKSPACE_CATALOG_SOURCE,
       registration_source: REGISTRATION_SOURCE,
       activation_source: ACTIVATION_SOURCE,
       compatibility_source: COMPATIBILITY_SOURCE,

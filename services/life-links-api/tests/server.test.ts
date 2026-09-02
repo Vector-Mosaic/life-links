@@ -125,6 +125,47 @@ describe("Life Links API", () => {
     expect((await ctx.agent.post(`${path}/preview`).send({ ...selection, ownerId: "another-owner" })).status).toBe(400);
   });
 
+  it("enforces explicit Workspace v3 for Collection and Routine agent HTTP without self-upgrade or broader Routine CRUD", async () => {
+    await login();
+    const header = { "X-Life-Links-Actor": "agent" };
+    const connected = await ctx.agent.put("/api/agent-connection").send({ toolCatalogId: "life-links-calendar-v2" });
+    expect(connected.status).toBe(200);
+    expect((await ctx.agent.put("/api/agent-connection").set(header).send({ toolCatalogId: "life-links-workspace-v3" })).status).toBe(403);
+    expect((await ctx.agent.delete("/api/agent-connection").set(header)).status).toBe(403);
+    const collection = (await ctx.agent.post("/api/collections").send({ title: "Agent selected Collection" })).body.collection;
+    const selection = { operation: "delete", scope: "collections", collections: [{ collectionId: collection.id, expectedUpdatedAt: collection.updatedAt }] };
+    expect((await ctx.agent.post("/api/collections/changes/preview").set(header).send(selection)).status).toBe(403);
+    expect((await ctx.agent.get("/api/routines").set(header)).status).toBe(403);
+    const upgraded = await ctx.agent.put("/api/agent-connection").send({ toolCatalogId: "life-links-workspace-v3" });
+    expect(upgraded.status).toBe(200);
+    expect(upgraded.body.agentConnection.toolCatalogId).toBe("life-links-workspace-v3");
+    expect((await ctx.agent.get("/api/calendars").set(header)).status).toBe(200);
+    expect((await ctx.agent.get("/api/routines").set("X-Life-Links-Actor", "owner")).status).toBe(403);
+    const preview = await ctx.agent.post("/api/collections/changes/preview").set(header).send(selection);
+    expect(preview.status).toBe(200);
+    expect((await ctx.agent.get(`/api/collections/changes/${preview.body.preview.id}`).set(header)).status).toBe(200);
+    const apply = { previewId: preview.body.preview.id, commandId: "workspace-agent-delete" };
+    expect((await ctx.agent.post("/api/collections/changes/apply").set(header).send(apply)).status).toBe(200);
+    const activity = (await ctx.agent.post("/api/routine-activities").send({ title: "Review" })).body.activity;
+    const created = await ctx.agent.post("/api/routines").send({ title: "Private archive target", steps: [{ activityId: activity.id, activityTitle: activity.title, position: 0 }] });
+    expect(created.status).toBe(201);
+    const routine = created.body.routine.routine;
+    expect((await ctx.agent.get("/api/routines").set(header)).status).toBe(200);
+    expect((await ctx.agent.get(`/api/routines/${routine.id}`).set(header)).status).toBe(200);
+    expect((await ctx.agent.post("/api/routines").set(header).send({})).status).toBe(403);
+    expect((await ctx.agent.post(`/api/routines/${routine.id}/revisions`).set(header).send({})).status).toBe(403);
+    expect((await ctx.agent.patch(`/api/routines/${routine.id}`).set(header).send({ expectedUpdatedAt: routine.updatedAt, groupId: null })).status).toBe(403);
+    const archive = { expectedUpdatedAt: routine.updatedAt, archivedAt: "2026-09-02T12:00:00.000Z" };
+    expect((await ctx.agent.patch(`/api/routines/${routine.id}`).set(header).send(archive)).status).toBe(200);
+    expect((await ctx.agent.patch(`/api/routines/${routine.id}`).set(header).send(archive)).status).toBe(200);
+    expect((await ctx.agent.patch(`/api/routines/${routine.id}`).set(header).send({ ...archive, archivedAt: null })).status).toBe(403);
+    await ctx.agent.delete("/api/agent-connection");
+    expect((await ctx.agent.post("/api/collections/changes/apply").set(header).send(apply)).status).toBe(403);
+    expect((await ctx.agent.patch(`/api/routines/${routine.id}`).set(header).send(archive)).status).toBe(403);
+    expect((await ctx.agent.get(`/api/routines/${routine.id}`).set(header)).status).toBe(403);
+    expect((await ctx.agent.get(`/api/routines/${routine.id}`)).status).toBe(200);
+  });
+
   it("uploads real documents through canonical media, privately downloads bytes and reads text without changing saved content", async () => {
     await login();
     const record = await ctx.store.createLifeLink({ id: "attachment-documents", ownerId: "demo-owner", title: "Manuals", createdAt: "2026-08-30T00:00:00.000Z" });

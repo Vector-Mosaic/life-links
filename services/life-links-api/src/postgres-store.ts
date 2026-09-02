@@ -191,6 +191,8 @@ import {
   sameCalendarPayload,
   assertHumanCalendarActor,
   assertCalendarAgentConnection,
+  assertWorkspaceAgentConnection,
+  assertAgentRoutineArchive,
   calendarActorCanRead,
   sameCalendarCreatePayload,
   calendarConflict,
@@ -474,8 +476,9 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       lifeLinks: rows.life_links.map((row) => ({ id: String(row.id), ownerId: String(row.owner_id), title: String(row.title) })) };
   }
 
-  async previewCollectionChange(userId: string, input: CollectionChangeInput): Promise<CollectionChangePreview> {
+  async previewCollectionChange(userId: string, input: CollectionChangeInput, actor: CalendarActor = "human"): Promise<CollectionChangePreview> {
     return this.withTransaction([`owner:${userId}`], async (client) => {
+      await assertPostgresWorkspaceAgentConnection(client, userId, actor);
       const plan = planCollectionChange(await this.collectionChangeState(client, userId), userId, input, new Date().toISOString());
       await this.assertNoCurrentRoutineCollectionBindings(client, userId, plan.deletedCollectionIds);
       const preview: CollectionChangePreview = { ...plan.preview, id: `preview-${randomUUID()}`, createdAt: new Date().toISOString() };
@@ -487,15 +490,18 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     }, null);
   }
 
-  async getCollectionChangePreview(userId: string, previewId: string): Promise<CollectionChangePreview | null> {
-    const result = await this.pool.query(`SELECT preview FROM life_link_change_previews WHERE id=$1 AND owner_id=$2
-      AND created_at >= now() - interval '15 minutes' AND preview->>'domain'='collections'`, [previewId,userId]);
-    return result.rows[0]?.preview ?? null;
+  async getCollectionChangePreview(userId: string, previewId: string, actor: CalendarActor = "human"): Promise<CollectionChangePreview | null> {
+    return this.withWorkspaceRead(userId, actor, async (queryable) => {
+      const result = await queryable.query(`SELECT preview FROM life_link_change_previews WHERE id=$1 AND owner_id=$2
+        AND created_at >= now() - interval '15 minutes' AND preview->>'domain'='collections'`, [previewId,userId]);
+      return result.rows[0]?.preview ?? null;
+    });
   }
 
-  async applyCollectionChange(userId: string, input: ApplyLifeLinkChangeInput): Promise<CollectionChangeResult> {
+  async applyCollectionChange(userId: string, input: ApplyLifeLinkChangeInput, actor: CalendarActor = "human"): Promise<CollectionChangeResult> {
     assertChangeCommandId(input.commandId);
     return this.withTransaction([`owner:${userId}`, `claim-command:${input.commandId}`], async (client) => {
+      await assertPostgresWorkspaceAgentConnection(client, userId, actor);
       const replay = (await client.query("SELECT * FROM life_link_change_receipts WHERE command_id=$1", [input.commandId])).rows[0];
       if (replay) {
         if (replay.owner_id !== userId || replay.request_id !== input.previewId || replay.collection_ids == null || replay.operation === "undo") throw new ClaimIdempotencyConflictError();
@@ -1478,19 +1484,23 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     }, null);
   }
 
-  async listRoutines(userId: string, page: RoutinePageRequest = {}): Promise<LifeLinkPage<RoutineSummaryRecord>> {
-    const result = await this.pool.query(`SELECT routine.*,revision.revision_number,revision.title,revision.purpose
-      FROM routines routine JOIN routine_revisions revision
-        ON revision.id=routine.current_revision_id AND revision.routine_id=routine.id AND revision.owner_id=routine.owner_id
-      WHERE routine.owner_id = $1 ${page.includeArchived ? "" : "AND routine.archived_at IS NULL"}`, [userId]);
-    return pageCollectionRecords(result.rows.map(mapRoutineSummary).sort(compareRoutineTitledRows), page);
+  async listRoutines(userId: string, page: RoutinePageRequest = {}, actor: CalendarActor = "human"): Promise<LifeLinkPage<RoutineSummaryRecord>> {
+    return this.withWorkspaceRead(userId, actor, async (queryable) => {
+      const result = await queryable.query(`SELECT routine.*,revision.revision_number,revision.title,revision.purpose
+        FROM routines routine JOIN routine_revisions revision
+          ON revision.id=routine.current_revision_id AND revision.routine_id=routine.id AND revision.owner_id=routine.owner_id
+        WHERE routine.owner_id = $1 ${page.includeArchived ? "" : "AND routine.archived_at IS NULL"}`, [userId]);
+      return pageCollectionRecords(result.rows.map(mapRoutineSummary).sort(compareRoutineTitledRows), page);
+    });
   }
 
-  async getRoutine(userId: string, routineId: string): Promise<RoutineDetail | null> {
-    const routineResult = await this.pool.query("SELECT * FROM routines WHERE id=$1 AND owner_id=$2", [routineId, userId]);
-    if (!routineResult.rows[0]) return null;
-    const routine = mapRoutine(routineResult.rows[0]);
-    return { routine, currentRevision: (await loadPostgresRoutineRevision(this.pool, userId, routine.id, routine.currentRevisionId))! };
+  async getRoutine(userId: string, routineId: string, actor: CalendarActor = "human"): Promise<RoutineDetail | null> {
+    return this.withWorkspaceRead(userId, actor, async (queryable) => {
+      const routineResult = await queryable.query("SELECT * FROM routines WHERE id=$1 AND owner_id=$2", [routineId, userId]);
+      if (!routineResult.rows[0]) return null;
+      const routine = mapRoutine(routineResult.rows[0]);
+      return { routine, currentRevision: (await loadPostgresRoutineRevision(queryable, userId, routine.id, routine.currentRevisionId))! };
+    });
   }
 
   async createRoutine(command: CreateRoutineCommand): Promise<CanonicalRoutineCreation> {
@@ -1510,8 +1520,10 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     }, null);
   }
 
-  async updateRoutine(userId: string, command: UpdateRoutineCommand): Promise<RoutineRecord | null> {
+  async updateRoutine(userId: string, command: UpdateRoutineCommand, actor: CalendarActor = "human"): Promise<RoutineRecord | null> {
     return this.withTransaction([`owner:${userId}`], async (client) => {
+      await assertPostgresWorkspaceAgentConnection(client, userId, actor);
+      assertAgentRoutineArchive(command.patch, actor);
       const result = await client.query("SELECT * FROM routines WHERE id=$1 AND owner_id=$2 FOR UPDATE", [command.routineId, userId]);
       if (!result.rows[0]) return null;
       const current = mapRoutine(result.rows[0]);
@@ -2090,6 +2102,14 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     }, null);
   }
 
+  private async withWorkspaceRead<T>(userId: string, actor: CalendarActor, work: (queryable: Queryable) => Promise<T>): Promise<T> {
+    if (actor === "human") return work(this.pool);
+    return this.withTransaction([`owner:${userId}`], async (client) => {
+      await assertPostgresWorkspaceAgentConnection(client, userId, actor);
+      return work(client);
+    }, null);
+  }
+
   private async withTransaction<T>(keys: string[], work: (client: PoolClient) => Promise<T>, label: string | null): Promise<T> {
     const client = await this.pool.connect();
     try {
@@ -2235,16 +2255,25 @@ export function createPostgresStore(databaseUrl: string, schemaName?: string): {
 
 async function assertPostgresCalendarAgentConnection(queryable: Queryable, userId: string, actor: CalendarActor): Promise<void> {
   if (actor === "human") return;
+  assertCalendarAgentConnection(await readPostgresAgentConnection(queryable, userId), actor);
+}
+
+async function assertPostgresWorkspaceAgentConnection(queryable: Queryable, userId: string, actor: CalendarActor): Promise<void> {
+  if (actor === "human") return;
+  assertWorkspaceAgentConnection(await readPostgresAgentConnection(queryable, userId), actor);
+}
+
+async function readPostgresAgentConnection(queryable: Queryable, userId: string): Promise<Pick<StoredUser, "agentConnectedAt" | "agentToolCatalogId"> | null> {
   // Hold the user row through the transaction so disconnect/catalog revocation
   // cannot race a previously authorized write or partially hydrated read.
   const result = await queryable.query(
     "SELECT agent_connected_at,agent_tool_catalog_id FROM users WHERE id=$1 FOR SHARE", [userId]
   );
   const row = result.rows[0];
-  assertCalendarAgentConnection(row ? {
+  return row ? {
     agentConnectedAt: nullableIso(row.agent_connected_at),
     agentToolCatalogId: row.agent_tool_catalog_id as AgentToolCatalogId | null
-  } : null, actor);
+  } : null;
 }
 
 async function assertPostgresAgentCalendarWrite(

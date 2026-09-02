@@ -171,9 +171,33 @@ export type StoredUser = UserRecord & {
 
 export const LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID = "life-links-page-webmcp-v1" as const;
 export const LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID = "life-links-calendar-v2" as const;
+export const LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID = "life-links-workspace-v3" as const;
 export type AgentToolCatalogId =
   | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID
-  | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID;
+  | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID
+  | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID;
+
+export class WorkspaceAgentAccessError extends Error {
+  readonly code = "agent_access_denied";
+  constructor(readonly reason: string) {
+    super("This operation requires the owner's active Workspace agent grant.");
+  }
+}
+
+export function assertWorkspaceAgentConnection(
+  user: Pick<StoredUser, "agentConnectedAt" | "agentToolCatalogId"> | null | undefined,
+  actor: CalendarActor
+): void {
+  if (actor === "agent" && (!user?.agentConnectedAt || user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID)) {
+    throw new WorkspaceAgentAccessError("workspace_agent_connection_required");
+  }
+}
+
+export function assertAgentRoutineArchive(patch: UpdateRoutineCommand["patch"], actor: CalendarActor): void {
+  if (actor === "agent" && (Object.keys(patch).length !== 1 || typeof patch.archivedAt !== "string" || !patch.archivedAt)) {
+    throw new WorkspaceAgentAccessError("routine_agent_archive_only");
+  }
+}
 
 export function assertHumanCalendarActor(actor: CalendarActor): void {
   if (actor !== "human") {
@@ -185,7 +209,8 @@ export function assertCalendarAgentConnection(
   user: Pick<StoredUser, "agentConnectedAt" | "agentToolCatalogId"> | null | undefined,
   actor: CalendarActor
 ): void {
-  if (actor === "agent" && (!user?.agentConnectedAt || user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID)) {
+  if (actor === "agent" && (!user?.agentConnectedAt ||
+      (user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID && user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID))) {
     throw new CalendarDomainError("calendar_access_denied", "An active Calendar agent connection is required.", { reason: "calendar_agent_connection_required" });
   }
 }
@@ -341,9 +366,9 @@ export class CompetitionFixtureShapeMismatchError extends Error {}
 export type LifeLinksStore = {
   previewLifeLinkChange(userId: string, input: PreviewLifeLinkChangeInput): Promise<LifeLinkChangePreview>;
   getLifeLinkChangePreview(userId: string, previewId: string): Promise<LifeLinkChangePreview | null>;
-  previewCollectionChange(userId: string, input: CollectionChangeInput): Promise<CollectionChangePreview>;
-  getCollectionChangePreview(userId: string, previewId: string): Promise<CollectionChangePreview | null>;
-  applyCollectionChange(userId: string, input: ApplyLifeLinkChangeInput): Promise<CollectionChangeResult>;
+  previewCollectionChange(userId: string, input: CollectionChangeInput, actor?: CalendarActor): Promise<CollectionChangePreview>;
+  getCollectionChangePreview(userId: string, previewId: string, actor?: CalendarActor): Promise<CollectionChangePreview | null>;
+  applyCollectionChange(userId: string, input: ApplyLifeLinkChangeInput, actor?: CalendarActor): Promise<CollectionChangeResult>;
   applyLifeLinkChange(userId: string, input: ApplyLifeLinkChangeInput): Promise<LifeLinkChangeResult>;
   getChangeHistory(userId: string): Promise<ChangeHistory>;
   undoChange(userId: string, input: UndoChangeInput): Promise<LifeLinkChangeResult>;
@@ -393,10 +418,10 @@ export type LifeLinksStore = {
   getActivity(userId: string, activityId: string): Promise<ActivityRecord | null>;
   createActivity(command: CreateActivityCommand): Promise<ActivityRecord>;
   updateActivity(userId: string, command: UpdateActivityCommand): Promise<ActivityRecord | null>;
-  listRoutines(userId: string, page?: RoutinePageRequest): Promise<LifeLinkPage<RoutineSummaryRecord>>;
-  getRoutine(userId: string, routineId: string): Promise<RoutineDetail | null>;
+  listRoutines(userId: string, page?: RoutinePageRequest, actor?: CalendarActor): Promise<LifeLinkPage<RoutineSummaryRecord>>;
+  getRoutine(userId: string, routineId: string, actor?: CalendarActor): Promise<RoutineDetail | null>;
   createRoutine(command: CreateRoutineCommand): Promise<CanonicalRoutineCreation>;
-  updateRoutine(userId: string, command: UpdateRoutineCommand): Promise<RoutineRecord | null>;
+  updateRoutine(userId: string, command: UpdateRoutineCommand, actor?: CalendarActor): Promise<RoutineRecord | null>;
   reviseRoutine(userId: string, command: ReviseRoutineCommand): Promise<RoutineRevisionSnapshot | null>;
   getRoutineRevision(userId: string, routineId: string, revisionId: string): Promise<RoutineRevisionSnapshot | null>;
   listRoutineSchedules(userId: string, routineId: string, page?: LifeLinkPageRequest): Promise<LifeLinkPage<RoutineScheduleRecord> | null>;
@@ -539,8 +564,9 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   private changeReceipts = new Map<string, { ownerId: string; request: string; operation: LifeLinkChangeResult["operation"]; affectedIds: string[]; collectionIds?: string[] }>();
   private usedChangeIds = new Set<string>();
 
-  async previewCollectionChange(userId: string, input: CollectionChangeInput): Promise<CollectionChangePreview> {
+  async previewCollectionChange(userId: string, input: CollectionChangeInput, actor: CalendarActor = "human"): Promise<CollectionChangePreview> {
     return this.withOwnerLock(userId, async () => {
+      assertWorkspaceAgentConnection(this.users.get(userId), actor);
       const now = Date.now();
       const plan = planCollectionChange(this.collectionChangeState(), userId, input, new Date(now).toISOString());
       this.assertCollectionsNotCurrentRoutineContext(userId, new Set(plan.deletedCollectionIds));
@@ -554,14 +580,16 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async getCollectionChangePreview(userId: string, previewId: string): Promise<CollectionChangePreview | null> {
+  async getCollectionChangePreview(userId: string, previewId: string, actor: CalendarActor = "human"): Promise<CollectionChangePreview | null> {
+    assertWorkspaceAgentConnection(this.users.get(userId), actor);
     const entry = this.changePreviews.get(userId)?.get(previewId);
     if (!entry || entry.domain !== "collections" || entry.expiresAt <= Date.now()) return null;
     return structuredClone(entry.preview);
   }
 
-  async applyCollectionChange(userId: string, input: ApplyLifeLinkChangeInput): Promise<CollectionChangeResult> {
+  async applyCollectionChange(userId: string, input: ApplyLifeLinkChangeInput, actor: CalendarActor = "human"): Promise<CollectionChangeResult> {
     return this.withLocks([CHANGE_MUTATION_LOCK, userId], async () => {
+      assertWorkspaceAgentConnection(this.users.get(userId), actor);
       if (typeof input.commandId !== "string" || !input.commandId.trim() || input.commandId.length > 128) throw new LifeLinkDomainError("invalid_collection", "A stable command ID is required.");
       const request = stableChangeFingerprint({ collectionApply: input.previewId });
       const receipt = this.changeReceipts.get(input.commandId);
@@ -1284,7 +1312,8 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async listRoutines(userId: string, page: RoutinePageRequest = {}): Promise<LifeLinkPage<RoutineSummaryRecord>> {
+  async listRoutines(userId: string, page: RoutinePageRequest = {}, actor: CalendarActor = "human"): Promise<LifeLinkPage<RoutineSummaryRecord>> {
+    assertWorkspaceAgentConnection(this.users.get(userId), actor);
     const rows = this.ownerRoutineRows(this.routines, userId, page.includeArchived).map((routine): RoutineSummaryRecord => {
       const revision = this.routineRevisions.get(routine.currentRevisionId)!;
       return { ...routine, revisionNumber: revision.revisionNumber, title: revision.title, purpose: revision.purpose };
@@ -1292,7 +1321,8 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     return pageCollectionRecords(rows, page);
   }
 
-  async getRoutine(userId: string, routineId: string): Promise<RoutineDetail | null> {
+  async getRoutine(userId: string, routineId: string, actor: CalendarActor = "human"): Promise<RoutineDetail | null> {
+    assertWorkspaceAgentConnection(this.users.get(userId), actor);
     const routine = this.routines.get(routineId);
     if (!routine || routine.ownerId !== userId) return null;
     return { routine: structuredClone(routine), currentRevision: this.memoryRoutineRevisionSnapshot(userId, routine.id, routine.currentRevisionId)! };
@@ -1314,8 +1344,10 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async updateRoutine(userId: string, command: UpdateRoutineCommand): Promise<RoutineRecord | null> {
+  async updateRoutine(userId: string, command: UpdateRoutineCommand, actor: CalendarActor = "human"): Promise<RoutineRecord | null> {
     return this.withOwnerLock(userId, async () => {
+      assertWorkspaceAgentConnection(this.users.get(userId), actor);
+      assertAgentRoutineArchive(command.patch, actor);
       const current = this.routines.get(command.routineId);
       if (!current || current.ownerId !== userId) return null;
       const candidate = applyRoutinePatch(current, command.patch, nextTimestamp(current.updatedAt));

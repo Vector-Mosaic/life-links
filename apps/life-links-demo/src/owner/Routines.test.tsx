@@ -3,7 +3,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applyRoutinePatch, createCanonicalRoutine, type RoutinePatch, type RoutineSummaryRecord } from "@life-links/core";
-import { RoutineDialogHost } from "./RoutineDialogs";
+import { RoutineDeletionEffects, RoutineDialogHost } from "./RoutineDialogs";
+import { AgentWorkspaceChangeDialog } from "./AgentWorkspaceChangeDialog";
+import type { RoutineDeletionPreview, RoutineDeletionTarget } from "../agent/workspaceToolHandlers";
 import { RoutineDetailPanel, RoutineWorkspacePanel } from "./RoutinePanels";
 import type { RoutineDialogState } from "./RoutineShared";
 import type { LifeLinksWorkspaceController } from "../workspace/controller";
@@ -44,9 +46,17 @@ describe("Routine selection, retained-history deletion, and scoped History", () 
       sessions: [], sessionsNextCursor: null, selectedSession: null, includeArchived: false, loading: false, error: ""
     };
     snapshot = { currentUser: { id: ownerId }, routineWorkspace } as unknown as LifeLinksWorkspaceSnapshot;
-    actions = Object.fromEntries(["updateRoutine", "openRoutine", "selectRoutineSession", "loadRoutineWorkspace", "loadRoutineHistory", "setRoutinePresentation", "setRoutineDetailPresentation"].map((name) => [name, vi.fn().mockResolvedValue(undefined)]));
+    actions = Object.fromEntries(["updateRoutine", "prepareRoutineDeletion", "applyRoutineDeletion", "confirmAgentWorkspaceChange", "openRoutine", "selectRoutineSession", "loadRoutineWorkspace", "loadRoutineHistory", "setRoutinePresentation", "setRoutineDetailPresentation"].map((name) => [name, vi.fn().mockResolvedValue(undefined)]));
     actions.getSnapshot = vi.fn(() => snapshot);
     actions.setRoutinePresentation.mockImplementation((patch) => publish({ presentation: { ...snapshot.routineWorkspace.presentation, ...patch } }));
+    actions.prepareRoutineDeletion.mockImplementation((routines: RoutineDeletionTarget[]): RoutineDeletionPreview => ({
+      id: "routine-deletion-preview-ui", routines: structuredClone(routines), archivedAt: "2026-09-02T12:00:00.000Z"
+    }));
+    actions.applyRoutineDeletion.mockImplementation(async (preview: RoutineDeletionPreview) => {
+      const ids = preview.routines.map((routine) => routine.id);
+      publish({ routines: snapshot.routineWorkspace.routines.map((routine) => ids.includes(routine.id) ? { ...routine, archivedAt: preview.archivedAt } : routine) });
+      return { removedIds: ids, remainingIds: [], error: null };
+    });
     actions.updateRoutine.mockImplementation(async (id: string, expected: string, patch: RoutinePatch) => {
       const current = snapshot.routineWorkspace.routines.find((routine) => routine.id === id)!;
       const result = applyRoutinePatch(current, patch, "2026-09-02T12:00:00.000Z");
@@ -89,38 +99,66 @@ describe("Routine selection, retained-history deletion, and scoped History", () 
     expect(modal.textContent).toContain("future, unstarted plans will be canceled");
     expect(modal.textContent).toContain("Completed history and Runs already in progress are kept");
     expect(modal.textContent).toContain("not permanent erasure");
-    expect(actions.updateRoutine).not.toHaveBeenCalled();
+    expect(actions.prepareRoutineDeletion).toHaveBeenCalledOnce();
+    expect(actions.applyRoutineDeletion).not.toHaveBeenCalled();
     await click(button("Yes, delete"));
-    expect(actions.updateRoutine).toHaveBeenCalledTimes(2);
-    const archive = actions.updateRoutine.mock.calls[0][2];
-    expect(archive).toEqual({ archivedAt: expect.any(String) });
-    expect(actions.updateRoutine.mock.calls[1][2]).toEqual(archive);
+    expect(actions.applyRoutineDeletion).toHaveBeenCalledExactlyOnceWith({ id: "routine-deletion-preview-ui", archivedAt: "2026-09-02T12:00:00.000Z",
+      routines: [first.summary, second.summary].map(({ id, title, updatedAt }) => ({ id, title, expectedUpdatedAt: updatedAt })) }, [], expect.any(AbortSignal));
+    expect(actions.prepareRoutineDeletion).toHaveBeenCalledOnce();
+    expect(actions.updateRoutine).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledOnce();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(document.querySelector(`[data-routine-id="${first.summary.id}"]`)).toBeNull();
   });
 
   it("Cancel does not save, and retry only repeats the exact unconfirmed archive command", async () => {
-    await openDelete(); await click(button("Cancel")); expect(actions.updateRoutine).not.toHaveBeenCalled();
+    await openDelete(); await click(button("Cancel")); expect(actions.applyRoutineDeletion).not.toHaveBeenCalled();
     await click(button("Delete"));
-    const commit = actions.updateRoutine.getMockImplementation()!;
-    actions.updateRoutine.mockImplementationOnce(commit).mockRejectedValueOnce(new Error("Connection lost"));
+    actions.applyRoutineDeletion.mockResolvedValueOnce({ removedIds: [first.summary.id], remainingIds: [second.summary.id], error: "Connection lost" });
     await click(button("Yes, delete"));
     expect(document.querySelector('[role="alert"]')?.textContent).toContain("1 removed; the remaining changes are not confirmed");
-    const failed = actions.updateRoutine.mock.calls[1];
+    expect(document.querySelector('[role="dialog"] li')?.textContent).toContain("— removed");
+    const pinned = actions.applyRoutineDeletion.mock.calls[0][0];
     await click(button("Retry remaining"));
-    expect(actions.updateRoutine).toHaveBeenCalledTimes(3);
-    expect(actions.updateRoutine.mock.calls[2].slice(0, 3)).toEqual(failed.slice(0, 3));
+    expect(actions.applyRoutineDeletion).toHaveBeenCalledTimes(2);
+    expect(actions.applyRoutineDeletion.mock.calls[1][0]).toBe(pinned);
+    expect(actions.applyRoutineDeletion.mock.calls[1][1]).toEqual([first.summary.id]);
+    expect(actions.prepareRoutineDeletion).toHaveBeenCalledTimes(2); // One canceled dialog, one confirmed dialog.
+    expect(actions.updateRoutine).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
   it("a stale selected revision cannot silently delete the changed Routine", async () => {
     await startEdit(); await select(first.summary.title); await click(button("Delete"));
     await act(async () => publish({ routines: snapshot.routineWorkspace.routines.map((routine) => routine.id === first.summary.id ? { ...routine, updatedAt: "2026-09-02T11:00:00.000Z" } : routine) }));
+    actions.applyRoutineDeletion.mockResolvedValueOnce({ removedIds: [], remainingIds: [first.summary.id], error: "stale_revision" });
     await click(button("Yes, delete"));
     expect(document.querySelector('[role="alert"]')?.textContent).toContain("stale_revision");
     expect(snapshot.routineWorkspace.routines.find((routine) => routine.id === first.summary.id)?.archivedAt).toBeNull();
+    expect(actions.applyRoutineDeletion.mock.calls[0][0].routines[0].expectedUpdatedAt).toBe(first.summary.updatedAt);
+    expect(actions.prepareRoutineDeletion).toHaveBeenCalledOnce();
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("uses the exact same Routine effects for an agent's pending partial confirmation", async () => {
+    const preview = actions.prepareRoutineDeletion([first.summary, second.summary].map(({ id, title, updatedAt }) => ({ id, title, expectedUpdatedAt: updatedAt }))) as RoutineDeletionPreview;
+    const removedIds = [first.summary.id]; const error = "Connection lost";
+    await act(async () => root.render(<div className="ll-form"><RoutineDeletionEffects preview={preview} removedIds={removedIds} error={error} /></div>));
+    const effects = container.querySelector(".ll-form")!.textContent;
+    await act(async () => root.render(<AgentWorkspaceChangeDialog controller={controller} confirmation={{ kind: "routines", preview, removedIds, error, saving: false }} />));
+    expect(document.querySelector(".ll-dialog-body .ll-form")!.textContent).toBe(effects);
+    expect(actions.confirmAgentWorkspaceChange).not.toHaveBeenCalled();
+    await click(button("Retry remaining"));
+    expect(actions.confirmAgentWorkspaceChange).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("does not confirm a pending agent Routine removal when canceled", async () => {
+    const preview = actions.prepareRoutineDeletion([{ id: first.summary.id, title: first.summary.title, expectedUpdatedAt: first.summary.updatedAt }]) as RoutineDeletionPreview;
+    await act(async () => root.render(<AgentWorkspaceChangeDialog controller={controller} confirmation={{ kind: "routines", preview, removedIds: [], error: "", saving: false }} />));
+    expect(actions.applyRoutineDeletion).not.toHaveBeenCalled();
+    await click(button("Cancel"));
+    expect(actions.confirmAgentWorkspaceChange).toHaveBeenCalledExactlyOnceWith(false);
+    expect(actions.applyRoutineDeletion).not.toHaveBeenCalled();
   });
 
   it("shows removed Routines only on request and restores through the archive-null command", async () => {

@@ -6,6 +6,7 @@ import type { CollectionChangePreview, CollectionRecord } from "@life-links/core
 import type { LifeLinksWorkspaceController } from "../workspace/controller";
 import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
 import { CollectionChangeDialog, type CollectionChangeDraft } from "./CollectionChangeDialog";
+import { AgentWorkspaceChangeDialog } from "./AgentWorkspaceChangeDialog";
 
 const date = "2026-09-02T12:00:00.000Z";
 const source: CollectionRecord = { id: "collection-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", ownerId: "owner-ui", title: "Camping", purpose: "", notes: "", createdAt: date, updatedAt: date };
@@ -16,13 +17,13 @@ const preview: CollectionChangePreview = { domain: "collections", id: "preview-c
 
 describe("Collection bulk change dialog", () => {
   let root: Root; let host: HTMLDivElement; let controller: LifeLinksWorkspaceController;
-  let prepare: ReturnType<typeof vi.fn>; let apply: ReturnType<typeof vi.fn>; let close: ReturnType<typeof vi.fn>; let applied: ReturnType<typeof vi.fn>;
+  let prepare: ReturnType<typeof vi.fn>; let apply: ReturnType<typeof vi.fn>; let close: ReturnType<typeof vi.fn>; let applied: ReturnType<typeof vi.fn>; let confirm: ReturnType<typeof vi.fn>;
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(0), 0)); vi.stubGlobal("cancelAnimationFrame", clearTimeout);
     host = document.createElement("div"); document.body.append(host); root = createRoot(host);
-    prepare = vi.fn().mockResolvedValue(preview); apply = vi.fn().mockResolvedValue({}); close = vi.fn(); applied = vi.fn();
-    controller = { previewCollectionChange: prepare, applyCollectionChange: apply, loadCollections: vi.fn(), loadCollectionMoveTarget: vi.fn().mockResolvedValue({ collection: target, sections: [] }) } as unknown as LifeLinksWorkspaceController;
+    prepare = vi.fn().mockImplementation(async (input) => ({ ...preview, input })); apply = vi.fn().mockResolvedValue({}); close = vi.fn(); applied = vi.fn(); confirm = vi.fn().mockResolvedValue(undefined);
+    controller = { previewCollectionChange: prepare, applyCollectionChange: apply, confirmAgentWorkspaceChange: confirm, loadCollections: vi.fn(), loadCollectionMoveTarget: vi.fn().mockResolvedValue({ collection: target, sections: [] }) } as unknown as LifeLinksWorkspaceController;
   });
   afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
   async function render(input: CollectionChangeDraft) { await act(async () => root.render(<CollectionChangeDialog input={input} controller={controller}
@@ -52,5 +53,32 @@ describe("Collection bulk change dialog", () => {
     expect(apply).not.toHaveBeenCalled();
     await click("Review again");
     expect(document.querySelector<HTMLSelectElement>('[aria-label="Destination Collection"]')?.value).toBe(target.id);
+  });
+
+  it("uses the owner's exact preview text for an agent request and applies only on the owner's click", async () => {
+    await render(deleting);
+    const text = document.querySelector(".ll-dialog-body .ll-form")!.textContent;
+    await act(async () => root.render(<AgentWorkspaceChangeDialog controller={controller} confirmation={{ kind: "collection", preview, saving: false, error: "", removedIds: [] }} />));
+    expect(document.querySelector(".ll-dialog-body .ll-form")!.textContent).toBe(text);
+    expect(confirm).not.toHaveBeenCalled(); expect(apply).not.toHaveBeenCalled();
+    await click("Yes, delete");
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(true);
+    expect(apply).not.toHaveBeenCalled(); // The shared controller owns the acknowledged operation.
+  });
+
+  it("cancels an agent Collection request without applying it", async () => {
+    await act(async () => root.render(<AgentWorkspaceChangeDialog controller={controller} confirmation={{ kind: "collection", preview, saving: false, error: "", removedIds: [] }} />));
+    await click("Cancel");
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(false);
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it("disables confirmation and cancellation while the shared coordinator is saving", async () => {
+    await act(async () => root.render(<AgentWorkspaceChangeDialog controller={controller} confirmation={{ kind: "collection", preview, saving: true, error: "", removedIds: [] }} />));
+    const buttons = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')];
+    expect(buttons).toHaveLength(3);
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+    await click("Saving…"); await click("Cancel");
+    expect(confirm).not.toHaveBeenCalled(); expect(apply).not.toHaveBeenCalled();
   });
 });

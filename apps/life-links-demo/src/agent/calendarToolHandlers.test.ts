@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import Ajv from "ajv";
 import { type CalendarProviderEventProjection, MAX_LIFE_LINK_TOOL_OUTPUT_BYTES } from "@life-links/core";
 import { createLifeLinksAgentToolCatalog, type LifeLinksAgentToolController } from "./toolHandlers";
-import { LIFE_LINKS_PAGE_TOOL_NAMES } from "./browserWebMcpHost";
+import { LIFE_LINKS_CALENDAR_PAGE_TOOL_NAMES, validateLifeLinksPageToolCatalog } from "./browserWebMcpHost";
 
 import {
   LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
@@ -181,8 +181,10 @@ describe("Calendar page-bound agent tools", () => {
     const inertController = new Proxy({} as LifeLinksAgentToolController, {
       get: () => () => { throw new Error("Descriptor inspection must not invoke controller actions."); }
     });
-    const catalog = createLifeLinksAgentToolCatalog(inertController);
-    expect(catalog.map((tool) => tool.name)).toEqual(LIFE_LINKS_PAGE_TOOL_NAMES);
+    const validation = validateLifeLinksPageToolCatalog(createLifeLinksAgentToolCatalog(inertController), LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID);
+    if (!validation.ok) throw new Error("Calendar catalog missing");
+    const catalog = validation.definitions;
+    expect(catalog.map((tool) => tool.name)).toEqual(LIFE_LINKS_CALENDAR_PAGE_TOOL_NAMES);
     for (const origin of ["https://lifelinks.vmosaic.com", "https://life-links-api-production-1398.up.railway.app"]) {
       const descriptors = catalog.map(({ name, title, description, inputSchema, annotations }) => ({
         name, title, description, inputSchema, annotations, origin, pageUrl: `${origin}/calendar`
@@ -367,6 +369,9 @@ describe("Calendar page-bound agent tools", () => {
       await expect(list.execute({})).resolves.toMatchObject({ ok: false, error: { code: "calendar_catalog_not_granted" } });
     }
     expect(controller.agentListAuthorizedCalendars).not.toHaveBeenCalled();
+    controller.catalogId = "life-links-workspace-v3";
+    await expect(list.execute({})).resolves.toMatchObject({ ok: true });
+    expect(controller.agentListAuthorizedCalendars).toHaveBeenCalledOnce();
   });
 
   it("lists only explicitly authorized calendars and queries a validated bounded canonical occurrence window", async () => {

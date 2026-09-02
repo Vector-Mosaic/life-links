@@ -113,9 +113,34 @@ total; an existing v1 connection is never silently upgraded:
 - `prepare_calendar_event_deletion`
 - `apply_calendar_event_deletion`
 
+The source now also supports an explicit **Workspace v3** upgrade, adding five
+tools for twenty-six total. Existing v1 and v2 grants retain their exact catalogs
+until the owner approves the upgrade:
+
+- `list_my_routines`
+- `prepare_collection_change`
+- `apply_collection_change`
+- `prepare_routine_deletion`
+- `apply_routine_deletion`
+
+Workspace-v3 Collection changes
+reuse the ordinary organization preview/apply and five-change Undo path; they do
+not delete or relocate physical Life Links. Routine deletion archives the exact
+selected Routines, stops future plans and preserves completed history and active
+Runs. Routine removal is sequential, can partially succeed, and is not covered
+by Collection Undo; retry preserves confirmed results and the original scope.
+The agent reads every preview page before applying. Removal opens the same
+owner-visible Yes/Cancel confirmation and immediately returns a pending status;
+polling the same preview is not confirmation. Exact Collection moves apply
+without that deletion prompt. General Routine authoring, scheduling and execution
+are not exposed by these five tools.
+Earlier fourteen- and twenty-one-tool evidence does not qualify a newer deployed
+release; deployment identity and proof are recorded separately from this source
+capability description.
+
 The Calendar tools share native/provider-discriminated routes, exact calendar
 and event identities, revision checks and the same visible controller. External
-calendars start at **No access** for agents; the owner may select read or write
+calendars default to **No access** unless the owner explicitly selects read or write
 within provider capabilities. Visibility does not grant access. Deleting a
 provider event changes its original and requires one app-observed confirmation;
 it does not use native-event restore. Routine projections remain read-only.
@@ -186,8 +211,8 @@ The challenge journey starts at public Green Family Sleep Systems Tub QR
 `LL-WEBMCP-00004`, proves public hierarchy redaction, and enters the owner
 workspace. Packing searches cover representative gear in all six tubs and show
 the same exact tub locator in agent and human output. The retained QR-bound pad
-still resolves to the nearer Green tub ancestor. The successor journey exercises
-all fourteen tools: physical folder/item creation and movement, explicit QR and
+still resolves to the nearer Green tub ancestor. The retained v1 successor journey exercises
+all fourteen legacy tools: physical folder/item creation and movement, explicit QR and
 public-field changes, Collection and overlapping Section membership, complete
 bulk-change preview/apply with the shared Undo path, private attachment reading,
 and an exact-revision structured Plan update on the sleeping pad. It retrieves the
@@ -267,12 +292,16 @@ host can time out waiting for a deletion dialog; confirming in the app and
 retrying the same preview reconciles the operation. Uninterrupted confirmation
 transport and universal provider/account compatibility are not claimed.
 
-Google source support uses the same authorization owner, provider gateway,
-manager and twenty-one-tool catalog. Connect and reconnect select the exact
-provider; Google redirects to its own sign-in host. Its dedicated Web OAuth
-client and runtime configuration are not yet created/configured, and its live
-product roundtrip is not yet qualified. Source support is not a live deployment
-claim. Both optional providers are disabled in `.env.example` by default.
+Google uses the same authorization owner, provider gateway and manager, with the
+same Calendar tools retained in Calendar-v2 and Workspace-v3. Connect and
+reconnect select the exact provider; Google redirects to its own sign-in host.
+The production product's dedicated Web OAuth client is configured, and its
+bounded live human/agent, permission, retry, disconnect/reconnect and cleanup
+journey has passed. Both provider sign-ins also returned successfully on the
+canonical product hostname. Those earlier provider results do not qualify the
+new Workspace-v3 tools or every provider/account configuration. Optional provider
+credentials are not distributed; both providers remain disabled in
+`.env.example` by default.
 
 To configure an external provider, use PostgreSQL and the same HTTPS origin as
 `QR_BASE_URL`. Register the provider-specific callback shown in `.env.example`,
@@ -321,12 +350,11 @@ competition registration, terms acceptance, judge credentials, and final
 submission remain separately verifiable; this source tree does not infer those
 events merely because the implementation or documentation exists.
 
-The Field Ledger, Routines and native Calendar/Outlook baseline has been publicly
+The Field Ledger, Routines and native Calendar/Outlook/Google baseline has been publicly
 released and deployed. Earlier family-journey/native-Chrome results and later
-Calendar/Outlook checks remain tied to their exact source and release scope;
-they do not automatically qualify every host or a new provider. Google is the
-current additive source candidate, with own-client setup, cloud/deployment and
-live product qualification still pending. The admitted native source/license
+Calendar/provider checks remain tied to their exact source and release scope;
+they do not automatically qualify every host or the Workspace-v3 extension.
+The admitted native source/license
 evidence is retained; the former duplicate Rust/Skia reconstruction is not a
 release prerequisite. Screenshots, video, final supported-host presentation and
 submission acceptance remain separately verifiable work.

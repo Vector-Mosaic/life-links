@@ -56,8 +56,8 @@ binding and maps to `e674dabc7f058ef0be00b66057c8a8509d4428ad`.
 The draft tool, camera fixture, six-record camping, and five-tool
 family-adventure rows above preserve earlier locally and hosted-qualified
 challenge checkpoints as history, including BC-180. They do not describe the
-current Field Ledger successor or qualify its deployment. The current
-implemented WebMCP catalog is exactly:
+current Field Ledger successor or qualify its deployment. The retained legacy
+v1 WebMCP catalog is exactly:
 `inspect_current_life_link`, `search_my_life_links`, `open_life_link`,
 `update_life_link_content`, `start_find_mode`, `create_life_link`,
 `move_life_link`, `manage_life_link_qr`, `list_my_collections`,
@@ -80,9 +80,27 @@ a complete preview plus the shared apply/Undo path, with complete readback and
 one app-observed confirmation before deletion. Attachment reading is private,
 revision-bound, and read-only; upload/change and arbitrary binary transport,
 ownership transfer, and purchase operations remain outside this catalog.
-Together the fourteen tools are the curated logical page-bound WebMCP interface,
+Together these fourteen tools are the curated legacy page-bound WebMCP interface,
 not a remote/server MCP endpoint, background or delegated identity, or named-host
 support guarantee.
+
+Explicit Calendar-v2 consent adds seven Calendar tools for twenty-one total.
+The implemented Workspace-v3 source adds `list_my_routines`,
+`prepare_collection_change`, `apply_collection_change`,
+`prepare_routine_deletion` and `apply_routine_deletion`, for twenty-six total.
+Existing v1/v2 grants never expand silently. The new tools reuse the human
+controller/API/store and exact preview text. Collection organization changes
+retain atomic apply and the five-change Undo history without changing physical
+Life Links. Routine removal archives exact targets sequentially, preserves
+completed history and active Runs, and reports confirmed and remaining targets
+for partial retry; it is neither atomic nor part of Collection Undo. After full
+paged readback, deletion returns a nonblocking pending state and requires the
+owner's actual in-app Yes. Polling the same preview cannot supply consent.
+Exact Collection moves do not need that deletion prompt. Routine discovery and
+removal do not imply general Routine authoring, scheduling or execution tools.
+Earlier fourteen- and twenty-one-tool evidence retains its exact release scope
+and does not qualify a newer deployed release; deployment identity and proof are
+recorded separately from this source capability description.
 
 The successor `webmcp-field-ledger-family-v3` fixture contains exactly one
 synthetic owner, 60 physical Life Links, eight QR inventory rows/bindings, one
@@ -103,7 +121,7 @@ The web Field Ledger presents direct physical layers, Collections, shared
 Details with exhaustive memberships, contextual creation, structured context,
 and explicit public-field selection. The next-year pad decision is the sleeping
 pad's Plan context with truth state `planned`, not a separate physically placed
-plan record. The complete local journey exercises all fourteen tool jobs,
+plan record. The retained complete local v1 journey exercises all fourteen tool jobs,
 including complete reversible-change preview/apply and private attachment
 reading, reload and login persistence, overlapping Sections, explicit public
 redaction, and deterministic Find Mode target checks, not physical-camera
@@ -129,19 +147,17 @@ experience and preferences to update a planned-only next-year decision, and
 then reconnect that decision to the physical tub through unchanged human-
 scanned Find Mode.
 
-The successor passes local controlled-host, native-Chrome, and complete v3
-family-journey verification with all fourteen tools and the 2 KB output bound.
-BC-270 qualification is in progress: the clean projected clone's frozen install,
-selected unit/contract/build checks, production dependency audit, browser,
-Postgres, and interface execution pass at their recorded scopes. Exact
-`@napi-rs/canvas` native Rust/Skia source/license closure remains a release
-blocker. Exact Debian corresponding-source retention is complete at its recorded
-image-bound/offline-verified scope. This is local source
-verification, not deployment proof or redistribution clearance. Publication,
-hosted controlled/native qualification, and submission acceptance remain
-separate; BC-280 has not started. Existing BC-180 public and hosted evidence
-retains its exact predecessor meaning and cannot be reused as proof of this
-fourteen-tool, v3-fixture successor.
+The retained fourteen-tool successor passed local controlled-host, native-Chrome
+and complete v3-fixture family-journey verification with the 2 KB output bound.
+Subsequent Field Ledger, Routines, Calendar and provider releases were published
+and deployed with their recorded frozen-install, focused API/UI/provider and
+PostgreSQL checks, production builds and bounded hosted checks. The two-build
+Rust/Skia reconstruction formerly tracked as BC-270 is not a current release
+gate. Retained native/source/license material remains scoped evidence, not a
+claim of universal redistribution clearance. Neither the earlier fourteen-tool
+journey nor the twenty-one-tool provider checks substitute for exact-release
+Workspace-v3 qualification evidence.
+Final competition submission remains separate from implementation and release.
 
 ## Projection and deployed-source mapping
 

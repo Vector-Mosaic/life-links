@@ -11,6 +11,7 @@ import {
   reviseCanonicalCalendarEvent,
   summarizeLifeLink,
   type CollectionRecord,
+  type CollectionChangePreview,
   type CollectionSectionRecord,
   type CalendarRecord,
   type CalendarProviderBindingView,
@@ -941,7 +942,7 @@ describe("LifeLinksWorkspaceController", () => {
 
     await controller.connectAgent();
     expect(api.connectAgent).toHaveBeenCalledOnce();
-    expect(api.connectAgent).toHaveBeenCalledWith("life-links-calendar-v2");
+    expect(api.connectAgent).toHaveBeenCalledWith("life-links-workspace-v3");
     expect(controller.getSnapshot().agentConnection).toEqual(connectedAgentConnection);
     controller.dispose();
   });
@@ -2718,6 +2719,142 @@ describe("Routine workspace controller contract", () => {
     });
     expect(api.listRoutineOccurrences).toHaveBeenCalledTimes(3);
     controller.dispose();
+  });
+
+  it("shares exact Routine removal and partial retry across the owner and nonblocking agent flow", async () => {
+    const first = fixture(81, "Upper body"); const second = fixture(82, "Lower body");
+    const api = fakeApi();
+    api.getMe.mockResolvedValue({ user: owner, qrBaseUrl: "https://example.test", agentConnection: { ...connectedAgentConnection, toolCatalogId: "life-links-workspace-v3" } });
+    api.getRoutine.mockImplementation(async (id) => ({ routine: id === first.routine.routine.id ? first.routine : second.routine }));
+    let failSecond = true;
+    api.updateRoutine.mockImplementation(async (id, _revision, patch) => {
+      if (id === second.routine.routine.id && failSecond) { failSecond = false; throw new Error("response lost"); }
+      const source = id === first.routine.routine.id ? first.routine : second.routine;
+      return { routine: { ...source, routine: { ...source.routine, archivedAt: patch.archivedAt!, updatedAt: patch.archivedAt! } } };
+    });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") }); await controller.start();
+    const prepared = await controller.agentPreviewRoutineDeletion({ routines: [first, second].map((item) => ({ id: item.routine.routine.id, expectedUpdatedAt: item.routine.routine.updatedAt })) });
+    expect(prepared.ok).toBe(true); if (!prepared.ok) throw new Error("preview missing");
+    expect(prepared.preview.routines.map((item) => item.title)).toEqual(["Upper body", "Lower body"]);
+    expect(await controller.agentApplyRoutineDeletion(prepared.preview.id)).toMatchObject({ ok: true, status: { state: "awaiting_confirmation" } });
+    expect(api.updateRoutine).not.toHaveBeenCalled();
+    await controller.confirmAgentWorkspaceChange(true);
+    expect(await controller.agentApplyRoutineDeletion(prepared.preview.id)).toMatchObject({ ok: true, status: { state: "partial", removal: { removedIds: [first.routine.routine.id], remainingIds: [second.routine.routine.id] } } });
+    await controller.confirmAgentWorkspaceChange(true);
+    expect(await controller.agentApplyRoutineDeletion(prepared.preview.id)).toMatchObject({ ok: true, status: { state: "applied", removal: { removedIds: [first.routine.routine.id, second.routine.routine.id], remainingIds: [] } } });
+    expect(api.updateRoutine).toHaveBeenCalledTimes(3);
+    expect(api.updateRoutine.mock.calls.map((call) => call[0])).toEqual([first.routine.routine.id, second.routine.routine.id, second.routine.routine.id]);
+    for (const call of api.updateRoutine.mock.calls) expect(call.slice(1)).toEqual([createdAt, { archivedAt: prepared.preview.archivedAt }, expect.any(AbortSignal), "agent"]);
+    expect(api.finalizeRoutineRun).not.toHaveBeenCalled();
+    expect(api.updateRoutineSchedule).not.toHaveBeenCalled(); controller.dispose();
+  });
+
+  it("never prepares a stale Routine revision or publishes a delayed preview after disconnect", async () => {
+    const current = fixture(83);
+    const api = fakeApi();
+    api.getMe.mockResolvedValue({ user: owner, qrBaseUrl: "https://example.test", agentConnection: { ...connectedAgentConnection, toolCatalogId: "life-links-workspace-v3" } });
+    api.getRoutine.mockResolvedValue({ routine: current.routine });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") }); await controller.start();
+    expect(await controller.agentPreviewRoutineDeletion({ routines: [{ id: current.routine.routine.id, expectedUpdatedAt: "2025-01-01T00:00:00Z" }] })).toEqual({ ok: false, code: "stale_routine" });
+    const response = deferred<{ routine: typeof current.routine }>();
+    api.getRoutine.mockReturnValueOnce(response.promise);
+    const request = controller.agentPreviewRoutineDeletion({ routines: [{ id: current.routine.routine.id, expectedUpdatedAt: createdAt }] });
+    await controller.disconnectAgent(); response.resolve({ routine: current.routine });
+    expect(await request).toMatchObject({ ok: false });
+    expect(controller.getSnapshot().agentWorkspaceChangeConfirmation).toBeNull();
+    expect(api.updateRoutine).not.toHaveBeenCalled(); controller.dispose();
+  });
+
+  it("preserves acknowledged owner removals if a later request is canceled", async () => {
+    const first = fixture(84); const second = fixture(85); const api = fakeApi();
+    const abort = new AbortController();
+    api.updateRoutine.mockImplementation(async (id, _revision, patch) => {
+      const source = id === first.routine.routine.id ? first.routine : second.routine;
+      if (id === second.routine.routine.id) abort.abort();
+      return { routine: { ...source, routine: { ...source.routine, archivedAt: patch.archivedAt!, updatedAt: patch.archivedAt! } } };
+    });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") }); await controller.start();
+    const preview = controller.prepareRoutineDeletion([first, second].map((item) => ({ id: item.routine.routine.id, title: item.summary.title, expectedUpdatedAt: createdAt })));
+    expect(await controller.applyRoutineDeletion(preview, [], abort.signal)).toMatchObject({ removedIds: [first.routine.routine.id], remainingIds: [second.routine.routine.id], error: expect.stringContaining("may have committed") });
+    controller.dispose();
+  });
+});
+
+describe("workspace-v3 Collection change admission", () => {
+  beforeEach(() => { vi.stubGlobal("window", { localStorage: new MemoryStorage() }); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+  const grant: ApiAgentConnection = { ...connectedAgentConnection, toolCatalogId: "life-links-workspace-v3" };
+  const preview: CollectionChangePreview = {
+    domain: "collections", id: "collection-preview-exact", createdAt: collection.createdAt,
+    input: { operation: "delete", scope: "collections", collections: [{ collectionId: collection.id, expectedUpdatedAt: collection.updatedAt }] },
+    collections: [collection], sections: [], members: [], targetCollection: null, targetSection: null,
+    sideEffects: { collectionsRemoved: 1, sectionsRemoved: 0, sectionsMoved: 0, membershipsRemoved: 0, membershipsAdded: 0, assignmentsRemoved: 0, assignmentsAdded: 0, lifeLinksDeleted: 0 }
+  };
+  async function setup() {
+    const api = fakeApi();
+    api.getMe.mockResolvedValue({ user: owner, qrBaseUrl: "https://example.test", agentConnection: grant });
+    api.previewCollectionChange.mockResolvedValue(structuredClone(preview));
+    api.applyCollectionChange.mockResolvedValue({ operation: "delete", collectionIds: [collection.id], lifeLinkIds: [], history: { limit: 5, entries: [] } });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    return { api, controller };
+  }
+
+  it("returns pending immediately, writes only after the app click and replays the same completion", async () => {
+    const { api, controller } = await setup();
+    expect(await controller.agentPreviewCollectionChange(preview.input)).toMatchObject({ ok: true, preview });
+    expect(api.previewCollectionChange).toHaveBeenCalledWith(preview.input, undefined, "agent");
+    expect(await controller.agentApplyCollectionChange(preview.id)).toMatchObject({ ok: true, status: { state: "awaiting_confirmation" } });
+    expect(api.applyCollectionChange).not.toHaveBeenCalled();
+    await controller.confirmAgentWorkspaceChange(true);
+    expect(api.applyCollectionChange).toHaveBeenCalledOnce();
+    expect(api.applyCollectionChange.mock.calls[0]).toEqual([preview.id, expect.any(String), expect.any(AbortSignal), "agent"]);
+    expect(await controller.agentApplyCollectionChange(preview.id)).toMatchObject({ ok: true, status: { state: "applied", change: { collectionIds: [collection.id] } } });
+    expect(api.applyCollectionChange).toHaveBeenCalledOnce();
+    expect(controller.getSnapshot().agentWorkspaceChangeConfirmation).toBeNull();
+    controller.dispose();
+  });
+
+  it("cancels without mutation and cannot resurrect a canceled preview", async () => {
+    const { api, controller } = await setup();
+    await controller.agentPreviewCollectionChange(preview.input); await controller.agentApplyCollectionChange(preview.id);
+    await controller.confirmAgentWorkspaceChange(false);
+    expect(await controller.agentApplyCollectionChange(preview.id)).toMatchObject({ ok: true, status: { state: "cancelled" } });
+    expect(api.applyCollectionChange).not.toHaveBeenCalled(); controller.dispose();
+  });
+
+  it("checks a remote downgrade before confirmation dispatch or cached result disclosure", async () => {
+    const { api, controller } = await setup();
+    await controller.agentPreviewCollectionChange(preview.input); await controller.agentApplyCollectionChange(preview.id);
+    api.getMe.mockResolvedValue({ user: owner, qrBaseUrl: "https://example.test", agentConnection: connectedAgentConnection });
+    await controller.confirmAgentWorkspaceChange(true);
+    expect(api.applyCollectionChange).not.toHaveBeenCalled();
+    expect(await controller.agentApplyCollectionChange(preview.id)).toMatchObject({ ok: false });
+    expect(controller.getSnapshot().agentWorkspaceChangeConfirmation).toBeNull(); controller.dispose();
+  });
+
+  it("discards outstanding authority on disconnect and rejects v2 discovery", async () => {
+    const { api, controller } = await setup();
+    await controller.agentPreviewCollectionChange(preview.input); await controller.agentApplyCollectionChange(preview.id);
+    await controller.disconnectAgent(); await controller.confirmAgentWorkspaceChange(true);
+    expect(api.applyCollectionChange).not.toHaveBeenCalled();
+    expect(await controller.agentListRoutines({})).toMatchObject({ ok: false });
+    expect(api.listRoutines).not.toHaveBeenCalled(); controller.dispose();
+  });
+
+  it("executes a move without deletion confirmation and retains the original command after an uncertain response", async () => {
+    const { api, controller } = await setup();
+    const move: CollectionChangePreview = { ...preview, input: { operation: "move", scope: "contents", source: { collectionId: collection.id, expectedUpdatedAt: collection.updatedAt }, sectionIds: [], members: [{ lifeLinkId: canonicalLink.id, sourceSectionId: section.id }], target: { collectionId: collection.id, expectedUpdatedAt: collection.updatedAt, sectionId: null } } };
+    api.previewCollectionChange.mockResolvedValue(move);
+    api.applyCollectionChange.mockRejectedValueOnce(new Error("response lost"));
+    await controller.agentPreviewCollectionChange(move.input);
+    expect(await controller.agentApplyCollectionChange(move.id)).toMatchObject({ ok: true, status: { state: "applying" } });
+    await vi.waitFor(() => expect(api.applyCollectionChange).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await controller.agentApplyCollectionChange(move.id);
+    await vi.waitFor(() => expect(api.applyCollectionChange).toHaveBeenCalledTimes(2));
+    expect(api.applyCollectionChange.mock.calls[0][1]).toBe(api.applyCollectionChange.mock.calls[1][1]);
+    expect(controller.getSnapshot().agentWorkspaceChangeConfirmation).toBeNull(); controller.dispose();
   });
 });
 

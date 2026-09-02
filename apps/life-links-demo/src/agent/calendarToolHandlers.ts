@@ -1,3 +1,4 @@
+import { LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID } from "./workspaceToolHandlers";
 import {
   MAX_LIFE_LINK_TOOL_OUTPUT_BYTES,
   type CalendarEventEditTargetInput,
@@ -845,7 +846,7 @@ async function runWithAccess(
 function calendarAccessFailure(snapshot: AgentCalendarToolAccessSnapshot, context: WebMcpExecutionContext, expectedOwnerId?: string): WebMcpJsonValue | null {
   if (context.signal?.aborted) return failure("cancelled");
   if (!snapshot.currentUser || snapshot.routeQrId !== null || snapshot.guestView || (expectedOwnerId !== undefined && snapshot.currentUser.id !== expectedOwnerId)) return failure("owner_workspace_unavailable");
-  if (snapshot.agentToolCatalogId !== LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID) return failure("calendar_catalog_not_granted");
+  if (snapshot.agentToolCatalogId !== LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID && snapshot.agentToolCatalogId !== LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID) return failure("calendar_catalog_not_granted");
   return null;
 }
 

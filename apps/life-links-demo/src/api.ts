@@ -78,18 +78,18 @@ import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, MAX_LIFE_LINK_TOOL_OUTPUT_BYTES } fr
 import { validateAttachmentImageResult } from "./attachmentImage";
 import { validateAttachmentTranscript } from "./attachmentTranscript";
 
-export async function previewCollectionChange(input: CollectionChangeInput, signal?: AbortSignal): Promise<CollectionChangePreview> {
-  const { preview } = await apiFetch<{ preview: CollectionChangePreview }>("/api/collections/changes/preview", { method: "POST", body: JSON.stringify(input), signal });
+export async function previewCollectionChange(input: CollectionChangeInput, signal?: AbortSignal, actor?: CalendarActor): Promise<CollectionChangePreview> {
+  const { preview } = await apiFetch<{ preview: CollectionChangePreview }>("/api/collections/changes/preview", { method: "POST", body: JSON.stringify(input), signal, headers: calendarActorHeaders(actor) });
   return preview;
 }
 
-export async function getCollectionChangePreview(previewId: string, signal?: AbortSignal): Promise<CollectionChangePreview> {
-  const { preview } = await apiFetch<{ preview: CollectionChangePreview }>(`/api/collections/changes/${encodeURIComponent(previewId)}`, { signal });
+export async function getCollectionChangePreview(previewId: string, signal?: AbortSignal, actor?: CalendarActor): Promise<CollectionChangePreview> {
+  const { preview } = await apiFetch<{ preview: CollectionChangePreview }>(`/api/collections/changes/${encodeURIComponent(previewId)}`, { signal, headers: calendarActorHeaders(actor) });
   return preview;
 }
 
-export function applyCollectionChange(previewId: string, commandId: string, signal?: AbortSignal): Promise<CollectionChangeResult> {
-  return apiFetch("/api/collections/changes/apply", { method: "POST", body: JSON.stringify({ previewId, commandId }), signal });
+export function applyCollectionChange(previewId: string, commandId: string, signal?: AbortSignal, actor?: CalendarActor): Promise<CollectionChangeResult> {
+  return apiFetch("/api/collections/changes/apply", { method: "POST", body: JSON.stringify({ previewId, commandId }), signal, headers: calendarActorHeaders(actor) });
 }
 
 export async function previewLifeLinkChange(input: PreviewLifeLinkChangeInput, signal?: AbortSignal): Promise<LifeLinkChangePreview> {
@@ -133,7 +133,7 @@ export type ApiAgentConnection = {
   toolCatalogId: ApiAgentToolCatalogId | null;
 };
 
-export type ApiAgentToolCatalogId = "life-links-page-webmcp-v1" | "life-links-calendar-v2";
+export type ApiAgentToolCatalogId = "life-links-page-webmcp-v1" | "life-links-calendar-v2" | "life-links-workspace-v3";
 
 export type ApiSession = {
   user: ApiUser | null;
@@ -460,12 +460,12 @@ export function updateRoutineActivity(activityId: string, expectedUpdatedAt: str
   });
 }
 
-export function listRoutines(options: RoutinePageOptions = {}) {
-  return apiFetch<RoutinePageResponse>(`/api/routines${pageSuffix(options)}`, { signal: options.signal });
+export function listRoutines(options: RoutinePageOptions & { actor?: CalendarActor } = {}) {
+  return apiFetch<RoutinePageResponse>(`/api/routines${pageSuffix(options)}`, { signal: options.signal, headers: calendarActorHeaders(options.actor) });
 }
 
-export function getRoutine(routineId: string, signal?: AbortSignal) {
-  return apiFetch<{ routine: CanonicalRoutineCreation }>(`/api/routines/${encodeURIComponent(routineId)}`, { signal });
+export function getRoutine(routineId: string, signal?: AbortSignal, actor?: CalendarActor) {
+  return apiFetch<{ routine: CanonicalRoutineCreation }>(`/api/routines/${encodeURIComponent(routineId)}`, { signal, headers: calendarActorHeaders(actor) });
 }
 
 export function createRoutine(input: RoutineCreateInput, signal?: AbortSignal) {
@@ -474,9 +474,9 @@ export function createRoutine(input: RoutineCreateInput, signal?: AbortSignal) {
   });
 }
 
-export function updateRoutine(routineId: string, expectedUpdatedAt: string, patch: RoutinePatch, signal?: AbortSignal) {
+export function updateRoutine(routineId: string, expectedUpdatedAt: string, patch: RoutinePatch, signal?: AbortSignal, actor?: CalendarActor) {
   return apiFetch<{ routine: CanonicalRoutineCreation }>(`/api/routines/${encodeURIComponent(routineId)}`, {
-    method: "PATCH", body: JSON.stringify({ ...patch, expectedUpdatedAt }), signal
+    method: "PATCH", body: JSON.stringify({ ...patch, expectedUpdatedAt }), signal, headers: calendarActorHeaders(actor)
   });
 }
 

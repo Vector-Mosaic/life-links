@@ -771,7 +771,7 @@ describe("Life Links OpenAPI v1", () => {
       },
       toolCatalogId: {
         oneOf: [
-          { type: "string", enum: ["life-links-page-webmcp-v1", "life-links-calendar-v2"] },
+          { type: "string", enum: ["life-links-page-webmcp-v1", "life-links-calendar-v2", "life-links-workspace-v3"] },
           { type: "null" }
         ]
       }
@@ -782,7 +782,7 @@ describe("Life Links OpenAPI v1", () => {
     expect(objectValue(connectionRequest.properties, "AgentConnectionRequest properties")).toMatchObject({
       toolCatalogId: {
         type: "string",
-        enum: ["life-links-page-webmcp-v1", "life-links-calendar-v2"]
+        enum: ["life-links-page-webmcp-v1", "life-links-calendar-v2", "life-links-workspace-v3"]
       }
     });
 
@@ -810,6 +810,21 @@ describe("Life Links OpenAPI v1", () => {
     expect(String(operationById(operations, "logoutLifeLinksOwner").description)).toContain("idempotent");
     const responses = objectValue(objectValue(document.components, "components").responses, "responses");
     expect(String(objectValue(responses.LogoutNoContent, "LogoutNoContent").description)).toContain("agent connection");
+  });
+
+  it("documents Workspace-v3 narrowing on existing Collection and Routine routes without granting other Routine operations", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    for (const key of ["POST /api/collections/changes/preview", "GET /api/collections/changes/{previewId}",
+      "POST /api/collections/changes/apply", "GET /api/routines", "GET /api/routines/{routineId}", "PATCH /api/routines/{routineId}"]) {
+      const operation = operations.get(key)!;
+      expect(operation.parameters).toContainEqual(expect.objectContaining({ name: "X-Life-Links-Actor", in: "header",
+        description: expect.stringContaining("life-links-workspace-v3") }));
+      expect(objectValue(operation.responses, `${key} responses`)["403"]).toBeDefined();
+    }
+    expect(operations.get("PATCH /api/routines/{routineId}")?.description).toContain("archive-only");
+    expect(operations.get("POST /api/routines")!.parameters)
+      .toContainEqual(expect.objectContaining({ name: "X-Life-Links-Actor", description: expect.stringContaining("Human-owner operation only") }));
   });
 
   it("publishes owner-only general Routines with closed typed values, immutable history, and bounded errors", () => {

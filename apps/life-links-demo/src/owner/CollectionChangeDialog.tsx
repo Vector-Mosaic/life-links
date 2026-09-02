@@ -13,6 +13,25 @@ export type CollectionSelection = {
 export type CollectionChangeDraft = Exclude<CollectionChangeInput, { operation: "move" }>
   | Omit<Extract<CollectionChangeInput, { operation: "move" }>, "target">;
 
+/** Both owner and agent confirmation display this same canonical, revision-pinned preview. */
+export function CollectionChangePreviewContent({ preview }: { preview: CollectionChangePreview }) {
+  const input = preview.input;
+  const moving = input.operation === "move";
+  const movingSections = moving && input.scope === "contents" && input.sectionIds.length > 0;
+  return <div className="ll-form">
+    <p>Review this change. Your physical Life Links and their QR codes will not be deleted or moved.</p>
+    {input.scope === "collections" && <ul>{preview.collections.map((collection) => <li key={collection.id}>{collection.title}</li>)}</ul>}
+    {preview.sections.length > 0 && <><strong>Sections</strong><ul>{preview.sections.map((section) => <li key={section.id}>{section.title}</li>)}</ul></>}
+    {preview.members.length > 0 && <><strong>Items</strong><ul>{preview.members.map((member, index) => <li key={`${member.lifeLinkId}:${member.sourceSectionId}:${index}`}>{member.title}</li>)}</ul></>}
+    {preview.targetCollection && <p>Destination: <strong>{preview.targetCollection.title}{preview.targetSection ? ` / ${preview.targetSection.title}` : ""}</strong></p>}
+    {movingSections ? <p>Sections keep their identities and bring their assignments. Items remain members of the original Collection too.</p>
+      : moving ? <p>Within a Collection, only selected section appearances move. Between Collections, selected source memberships move; other Collections are unchanged.</p>
+        : input.scope === "collections" ? <p>Only these Collections and their organization will be deleted. Routine history remains intact.</p>
+          : <p>Deleting a Section leaves its items in the Collection. Deleting an item from a Section removes only that appearance; from All items or Locations it removes the Collection membership.</p>}
+    <p className="ll-history-warning">{CHANGE_HISTORY_WARNING}</p>
+  </div>;
+}
+
 /** Uses the shared owner preview/apply boundary, never a loop of item writes. */
 export function CollectionChangeDialog({ input, controller, snapshot, onClose, onApplied }: {
   input: CollectionChangeDraft; controller: LifeLinksWorkspaceController; snapshot: LifeLinksWorkspaceSnapshot;
@@ -64,18 +83,7 @@ export function CollectionChangeDialog({ input, controller, snapshot, onClose, o
   }
   const title = moving ? "Move selected Collection content" : "Delete selected organization";
   return <Dialog title={title} closeDisabled={busy} onClose={() => { if (!busy) onClose(); }}>
-    {preview ? <div className="ll-form">
-      <p>Review this change. Your physical Life Links and their QR codes will not be deleted or moved.</p>
-      {input.scope === "collections" && <ul>{preview.collections.map((collection) => <li key={collection.id}>{collection.title}</li>)}</ul>}
-      {preview.sections.length > 0 && <><strong>Sections</strong><ul>{preview.sections.map((section) => <li key={section.id}>{section.title}</li>)}</ul></>}
-      {preview.members.length > 0 && <><strong>Items</strong><ul>{preview.members.map((member, index) => <li key={`${member.lifeLinkId}:${member.sourceSectionId}:${index}`}>{member.title}</li>)}</ul></>}
-      {preview.targetCollection && <p>Destination: <strong>{preview.targetCollection.title}{preview.targetSection ? ` / ${preview.targetSection.title}` : ""}</strong></p>}
-      {movingSections ? <p>Sections keep their identities and bring their assignments. Items remain members of the original Collection too.</p>
-        : moving ? <p>Within a Collection, only selected section appearances move. Between Collections, selected source memberships move; other Collections are unchanged.</p>
-          : input.scope === "collections" ? <p>Only these Collections and their organization will be deleted. Routine history remains intact.</p>
-            : <p>Deleting a Section leaves its items in the Collection. Deleting an item from a Section removes only that appearance; from All items or Locations it removes the Collection membership.</p>}
-      <p className="ll-history-warning">{CHANGE_HISTORY_WARNING}</p>
-    </div> : moving ? <div className="ll-form">
+    {preview ? <CollectionChangePreviewContent preview={preview} /> : moving ? <div className="ll-form">
       <label>Destination Collection<select aria-label="Destination Collection" value={target?.collection.id ?? ""} disabled={busy} onChange={(event) => void chooseCollection(event.target.value)}>
         <option value="">Choose a Collection</option>
         {snapshot.collections.filter((collection) => !movingSections || input.scope !== "contents" || collection.id !== input.source.collectionId)

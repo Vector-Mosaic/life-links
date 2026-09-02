@@ -113,6 +113,9 @@ import {
   ClaimIdempotencyConflictError,
   LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID,
   LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID,
+  LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID,
+  WorkspaceAgentAccessError,
+  assertWorkspaceAgentConnection,
   assertCalendarAgentConnection,
   assertHumanCalendarActor,
   type LifeLinksStore,
@@ -378,6 +381,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   });
 
   app.put("/api/agent-connection", requireAuthenticated, async (request: AppRequest, response) => {
+    assertOwnerAgentConnectionManagement(request);
     const input = request.body === undefined || request.body === null
       ? {}
       : readObjectBody(request, response, logger);
@@ -390,7 +394,8 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
       return;
     }
     if (requestedCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID &&
-        requestedCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID) {
+        requestedCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID &&
+        requestedCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID) {
       response.status(400).json({ error: "invalid_agent_tool_catalog" });
       return;
     }
@@ -409,6 +414,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   });
 
   app.delete("/api/agent-connection", requireAuthenticated, async (request: AppRequest, response) => {
+    assertOwnerAgentConnectionManagement(request);
     const user = await store.disconnectAgent(request.user!.id);
     if (!user) {
       response.status(401).json({ error: "authentication_required" });
@@ -423,27 +429,30 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   });
 
   app.post("/api/collections/changes/preview", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readWorkspaceRequestActor(request);
     const body = readObjectBody(request, response, logger);
     if (!body) return;
-    const preview = await store.previewCollectionChange(request.user!.id, normalizeCollectionChangeInput(body));
+    const preview = await store.previewCollectionChange(request.user!.id, normalizeCollectionChangeInput(body), actor);
     response.setHeader("Cache-Control", "private, no-store");
     response.json({ preview });
   });
 
   app.get("/api/collections/changes/:previewId", requireAuthenticated, async (request: AppRequest, response) => {
-    const preview = await store.getCollectionChangePreview(request.user!.id, paramValue(request.params.previewId));
+    const actor = readWorkspaceRequestActor(request);
+    const preview = await store.getCollectionChangePreview(request.user!.id, paramValue(request.params.previewId), actor);
     if (!preview) { sendCanonicalLifeLinkError(response, 404, "collection_not_found"); return; }
     response.setHeader("Cache-Control", "private, no-store");
     response.json({ preview });
   });
 
   app.post("/api/collections/changes/apply", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readWorkspaceRequestActor(request);
     const input = readObjectBody(request, response, logger);
     if (!input || !validateObjectFields(request, response, logger, input, ["previewId", "commandId"])) return;
     if (!validChangeCommandField(input.previewId, 200) || !validChangeCommandField(input.commandId, 128)) {
       sendCanonicalLifeLinkError(response, 400, "invalid_collection", { reason: "invalid_change_command" }); return;
     }
-    const result = await store.applyCollectionChange(request.user!.id, { previewId: input.previewId, commandId: input.commandId });
+    const result = await store.applyCollectionChange(request.user!.id, { previewId: input.previewId, commandId: input.commandId }, actor);
     logger.info("life_links.collection.change_applied", { msg: "Owner Collection selection changed", ...requestLogFields(request), operation: result.operation, collection_count: result.collectionIds.length, member_count: result.lifeLinkIds.length });
     response.json(result);
   });
@@ -1146,6 +1155,15 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     response.json({ collection });
   });
 
+  app.use((request, _response, next) => {
+    if (request.get("X-Life-Links-Actor") !== undefined && isRoutineRoute(request.path)) {
+      const allowed = (request.method === "GET" && request.path === "/api/routines") ||
+        ((request.method === "GET" || request.method === "PATCH") && /^\/api\/routines\/[^/]+$/.test(request.path));
+      if (!allowed) { next(new WorkspaceAgentAccessError("routine_agent_operation_not_granted")); return; }
+    }
+    next();
+  });
+
   app.get("/api/routine-groups", requireAuthenticated, async (request: AppRequest, response) => {
     const page = readRoutinePageQuery(request, response, logger);
     if (!page) return;
@@ -1231,9 +1249,10 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   });
 
   app.get("/api/routines", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readWorkspaceRequestActor(request);
     const page = readRoutinePageQuery(request, response, logger);
     if (!page) return;
-    const result = await store.listRoutines(request.user!.id, page);
+    const result = await store.listRoutines(request.user!.id, page, actor);
     response.json({ routines: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
   });
 
@@ -1260,7 +1279,8 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   });
 
   app.get("/api/routines/:routineId", requireAuthenticated, async (request: AppRequest, response) => {
-    const routine = await store.getRoutine(request.user!.id, normalizeRoutineId(paramValue(request.params.routineId)));
+    const actor = readWorkspaceRequestActor(request);
+    const routine = await store.getRoutine(request.user!.id, normalizeRoutineId(paramValue(request.params.routineId)), actor);
     if (!routine) { sendRoutineError(response, 404, "routine_not_found"); return; }
     response.json({ routine });
   });
@@ -1274,15 +1294,16 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   });
 
   app.patch("/api/routines/:routineId", requireAuthenticated, async (request: AppRequest, response) => {
+    const actor = readWorkspaceRequestActor(request);
     const routineId = normalizeRoutineId(paramValue(request.params.routineId));
     const input = readRoutineRevisionMutation(request, response, logger, ["groupId", "archivedAt"]);
     if (!input) return;
     const { expectedUpdatedAt, ...patch } = input;
     const updated = await store.updateRoutine(request.user!.id, {
       routineId, expectedUpdatedAt, patch: normalizeRoutinePatch(patch)
-    } as UpdateRoutineCommand);
+    } as UpdateRoutineCommand, actor);
     if (!updated) { sendRoutineError(response, 404, "routine_not_found"); return; }
-    const routine = await store.getRoutine(request.user!.id, routineId);
+    const routine = await store.getRoutine(request.user!.id, routineId, actor);
     if (!routine) { sendRoutineError(response, 404, "routine_not_found"); return; }
     response.json({ routine });
   });
@@ -2160,6 +2181,12 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   });
 
   app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
+    if (error instanceof WorkspaceAgentAccessError) {
+      logger.warn("life_links.agent_access.denied", { msg: "Workspace agent operation denied",
+        ...requestLogFields(request as AppRequest), reason: error.reason, status: 403 });
+      response.status(403).json({ error: error.code });
+      return;
+    }
     if (error instanceof ClaimIdempotencyConflictError) {
       logger.warn("life_links.qr.idempotency_conflict", { msg: "QR command identity reused with different arguments",
         ...requestLogFields(request as AppRequest), status: 409 });
@@ -3069,6 +3096,20 @@ type RoutinePublicErrorCode =
   | "stale_routine"
   | "routine_conflict"
   | "routine_reference_conflict";
+
+function assertOwnerAgentConnectionManagement(request: AppRequest): void {
+  if (request.get("X-Life-Links-Actor") !== undefined) {
+    throw new WorkspaceAgentAccessError("agent_connection_human_only");
+  }
+}
+
+function readWorkspaceRequestActor(request: AppRequest): CalendarActor {
+  const header = request.get("X-Life-Links-Actor");
+  if (header !== undefined && header !== "agent") throw new WorkspaceAgentAccessError("invalid_workspace_actor");
+  const actor: CalendarActor = header === "agent" ? "agent" : "human";
+  assertWorkspaceAgentConnection(request.user, actor);
+  return actor;
+}
 
 function readCalendarRequestActor(request: AppRequest, settings = false): CalendarActor {
   const header = request.get("X-Life-Links-Actor");

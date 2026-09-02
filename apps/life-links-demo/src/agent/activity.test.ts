@@ -7,6 +7,16 @@ import {
 } from "./activity";
 
 describe("redacted agent activity", () => {
+  it("does not label a pending or partial workspace confirmation as an applied deletion", async () => {
+    const entries: ReturnType<typeof createAgentActivityEntry>[] = [];
+    for (const state of ["awaiting_confirmation", "applying", "partial", "applied", "cancelled", "failed"]) {
+      const [tool] = instrumentAgentToolCatalog([{ name: "apply_routine_deletion", description: "test", inputSchema: {}, execute: async () => ({ ok: true, state, items: [{ id: "routine-1", title: "PRIVATE" }] }) }], (entry) => entries.push(entry));
+      await tool.execute({ previewId: "preview" });
+    }
+    expect(entries.map((entry) => entry.visibleEffect)).toEqual(["workspace_change_pending", "workspace_change_pending", "workspace_change_partial", "routine_deletion_applied", null, null]);
+    expect(entries.map((entry) => entry.outcome)).toEqual(["succeeded", "succeeded", "succeeded", "succeeded", "cancelled", "failed"]);
+    expect(JSON.stringify(entries)).not.toContain("PRIVATE");
+  });
   it("records image metadata/bytes readiness without asserting model vision or retaining pixels", async () => {
     const activities: ReturnType<typeof createAgentActivityEntry>[] = [];
     for (const status of ["described", "bytes_ready"]) {

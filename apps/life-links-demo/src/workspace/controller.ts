@@ -1,4 +1,9 @@
 import QRCode from "qrcode";
+import {
+  LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID,
+  type RoutineDeletionTarget, type RoutineDeletionPreview, type RoutineDeletionResult,
+  type WorkspaceChangeStatus, type WorkspaceAgentFailure
+} from "../agent/workspaceToolHandlers";
 import { validateAttachmentTranscript } from "../attachmentTranscript";
 import { providerEventCanMutate } from "../owner/calendar";
 import {
@@ -6,6 +11,8 @@ import {
   DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
   DEFAULT_LIFE_LINK_SEARCH_LIMIT,
   MAX_LIFE_LINK_SOURCE_REFERENCE_COUNT,
+  MAX_CHANGE_SELECTION,
+  normalizeCollectionChangeInput,
   linksToCsv,
   materializeCalendarEventWindow,
   buildQrUrl,
@@ -53,6 +60,7 @@ import {
   type RoutineSchedulePatch,
   type RoutineSessionProjection,
   type RoutineValue,
+  type RoutineSummaryRecord,
   type UpdateLifeLinkPatch
 } from "@life-links/core";
 
@@ -575,6 +583,14 @@ export interface LifeLinksWorkspaceActions {
   ): Promise<void>;
 }
 
+type WorkspaceAgentChangeEntry = (
+  | { kind: "collection"; preview: CollectionChangePreview }
+  | { kind: "routines"; preview: RoutineDeletionPreview }
+) & {
+  ownerId: string; ownerRevision: number; epoch: number;
+  offered: boolean; status: WorkspaceChangeStatus; abort: AbortController | null;
+};
+
 export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private readonly api: LifeLinksWorkspaceApi;
   private readonly route: WorkspaceBrowserRoute;
@@ -609,6 +625,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private readonly pendingGeneratedQrs = new Map<string, string>();
   private readonly pendingChangeCommands = new Map<string, string>();
   private readonly agentChangePreviews = new Map<string, { preview: LifeLinkChangePreview; authorized: boolean }>();
+  private readonly workspaceAgentChanges = new Map<string, WorkspaceAgentChangeEntry>();
+  private workspaceAgentEpoch = 0;
   private agentChangeApplication: object | null = null;
   private settleAgentChange: ((confirmed: boolean) => void) | null = null;
   private readonly agentCalendarDeletionPreviews = new Map<string, {
@@ -889,11 +907,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async updateRoutine(
-    routineId: string, expectedUpdatedAt: string, patch: RoutinePatch, signal?: AbortSignal
+    routineId: string, expectedUpdatedAt: string, patch: RoutinePatch, signal?: AbortSignal, actor: CalendarActor = "human"
   ): Promise<void> {
     const sameOwner = this.captureRoutineOwner();
     const selectionRevision = ++this.routineSelectionRevision;
-    const { routine } = await this.api.updateRoutine(routineId, expectedUpdatedAt, patch, signal);
+    const { routine } = await this.api.updateRoutine(routineId, expectedUpdatedAt, patch, signal, actor);
     signal?.throwIfAborted();
     if (!sameOwner()) return;
     this.updateRoutineWorkspace((current) => ({
@@ -907,6 +925,48 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       await this.refreshSelectedRoutineOperationalState(routineId, selectionRevision, signal, true)
         .catch(() => undefined);
     }
+  }
+
+  /** One prepared selection and archive timestamp, shared by human and agent UI. */
+  prepareRoutineDeletion(routines: RoutineDeletionTarget[]): RoutineDeletionPreview {
+    if (!this.snapshot.currentUser || this.snapshot.guestView || this.snapshot.routeQrId) throw new Error("Open your private workspace to edit Routines.");
+    if (!routines.length || routines.length > MAX_CHANGE_SELECTION || new Set(routines.map((item) => item.id)).size !== routines.length ||
+        routines.some((item) => !item.id || !item.title || !Number.isFinite(Date.parse(item.expectedUpdatedAt)))) {
+      throw new Error("Choose a bounded, exact selection of Routines and their current revisions.");
+    }
+    return { id: `routine-delete-${this.commandId()}`, routines: routines.map((item) => ({ ...item })), archivedAt: new Date().toISOString() };
+  }
+
+  async applyRoutineDeletion(
+    preview: RoutineDeletionPreview, confirmedIds: string[] = [], signal?: AbortSignal,
+    actor: CalendarActor = "human", assertActive?: () => void
+  ): Promise<RoutineDeletionResult> {
+    const ownerId = this.snapshot.currentUser?.id;
+    const ownerRevision = this.ownerRevision;
+    const completed = new Set(confirmedIds.filter((id) => preview.routines.some((routine) => routine.id === id)));
+    let error: string | null = null;
+    try {
+      for (const routine of preview.routines) {
+        if (completed.has(routine.id)) continue;
+        signal?.throwIfAborted();
+        if (!ownerId || ownerRevision !== this.ownerRevision || this.snapshot.currentUser?.id !== ownerId || this.snapshot.routeQrId || this.snapshot.guestView) {
+          throw new Error("Your account changed. Close this dialog and try again.");
+        }
+        assertActive?.();
+        await this.updateRoutine(routine.id, routine.expectedUpdatedAt, { archivedAt: preview.archivedAt }, signal, actor);
+        signal?.throwIfAborted();
+        assertActive?.();
+        if (ownerRevision !== this.ownerRevision || this.snapshot.currentUser?.id !== ownerId ||
+            !this.snapshot.routineWorkspace.routines.some((item) => item.id === routine.id && item.archivedAt === preview.archivedAt)) {
+          throw new Error("Removal could not be confirmed. Retry to check the same change.");
+        }
+        completed.add(routine.id);
+      }
+    } catch (issue) {
+      // A canceled/failed request can have committed. Never assert that nothing changed.
+      error = signal?.aborted ? "Stopped. Unconfirmed changes may have committed; retry the same selection to check." : messageFromError(issue);
+    }
+    return { removedIds: [...completed], remainingIds: preview.routines.filter((item) => !completed.has(item.id)).map((item) => item.id), error };
   }
 
   async reviseRoutine(routineId: string, input: RoutineRevisionCreateInput, signal?: AbortSignal): Promise<void> {
@@ -2234,17 +2294,204 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     return this.commitOwnerChange(`preview:${previewId}`, (commandId) => this.api.applyLifeLinkChange(previewId, commandId, signal));
   }
 
-  async previewCollectionChange(input: CollectionChangeInput, signal?: AbortSignal): Promise<CollectionChangePreview> {
+  async previewCollectionChange(input: CollectionChangeInput, signal?: AbortSignal, actor: CalendarActor = "human"): Promise<CollectionChangePreview> {
     if (!this.snapshot.currentUser || this.snapshot.guestView || this.snapshot.routeQrId) throw new Error("Open your private workspace to edit Collections.");
-    return this.api.previewCollectionChange(input, signal);
+    return this.api.previewCollectionChange(input, signal, actor);
   }
 
-  async applyCollectionChange(previewId: string, signal?: AbortSignal): Promise<CollectionChangeResult> {
-    return this.commitOwnerChange(`collection-preview:${previewId}`, (commandId) => this.api.applyCollectionChange(previewId, commandId, signal));
+  async applyCollectionChange(previewId: string, signal?: AbortSignal, actor: CalendarActor = "human"): Promise<CollectionChangeResult> {
+    return this.commitOwnerChange(`collection-preview:${previewId}`, (commandId) => this.api.applyCollectionChange(previewId, commandId, signal, actor));
   }
 
   async loadCollectionMoveTarget(collectionId: string, signal?: AbortSignal) {
     return this.readCollectionSections(collectionId, signal);
+  }
+
+  private assertWorkspaceAgentActive(ownerId = this.currentAgentOwnerId(), epoch = this.workspaceAgentEpoch) {
+    if (!ownerId || this.currentAgentOwnerId() !== ownerId || epoch !== this.workspaceAgentEpoch ||
+        !this.snapshot.agentConnection.connected || this.snapshot.agentConnection.toolCatalogId !== LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID) {
+      throw new AgentCommandError("life_link_unavailable");
+    }
+    if (this.snapshot.canonicalEditingId !== null) throw new AgentCommandError("editor_open");
+  }
+
+  private workspaceAgentFailure(issue: unknown, signal?: AbortSignal): WorkspaceAgentFailure {
+    if (signal?.aborted || isAbortError(issue)) return { ok: false, code: "cancelled" };
+    if (issue instanceof AgentCommandError) return { ok: false, code: issue.code };
+    if (issue instanceof ApiError) return { ok: false, code: issue.code || "effect_not_confirmed" };
+    return { ok: false, code: "effect_not_confirmed" };
+  }
+
+  private async verifyWorkspaceAgentGrant(ownerId: string, epoch: number, signal?: AbortSignal) {
+    const current = await this.api.getMe();
+    signal?.throwIfAborted(); this.assertWorkspaceAgentActive(ownerId, epoch);
+    if (current.user?.id !== ownerId) {
+      this.invalidateWorkspaceAgentChanges(); this.update({ agentWorkspaceChangeConfirmation: null });
+      throw new AgentCommandError("life_link_unavailable");
+    }
+    this.update({ agentConnection: current.agentConnection });
+    this.assertWorkspaceAgentActive(ownerId, epoch);
+  }
+
+  async agentCheckWorkspaceAccess(signal?: AbortSignal): Promise<{ ok: true } | WorkspaceAgentFailure> {
+    const ownerId = this.currentAgentOwnerId(); const epoch = this.workspaceAgentEpoch;
+    try {
+      signal?.throwIfAborted(); this.assertWorkspaceAgentActive(ownerId, epoch);
+      await this.verifyWorkspaceAgentGrant(ownerId!, epoch, signal);
+      return { ok: true };
+    } catch (issue) { return this.workspaceAgentFailure(issue, signal); }
+  }
+
+  async agentListRoutines(input: { cursor?: string; limit?: number; includeArchived?: boolean }, signal?: AbortSignal): Promise<{
+    ok: true; routines: RoutineSummaryRecord[]; nextCursor: string | null;
+  } | WorkspaceAgentFailure> {
+    const ownerId = this.currentAgentOwnerId(); const epoch = this.workspaceAgentEpoch;
+    try {
+      signal?.throwIfAborted(); this.assertWorkspaceAgentActive(ownerId, epoch);
+      const result = await this.api.listRoutines({ ...input, limit: input.limit ?? 25, signal, actor: "agent" });
+      signal?.throwIfAborted(); this.assertWorkspaceAgentActive(ownerId, epoch);
+      return { ok: true, routines: result.routines, nextCursor: result.nextCursor };
+    } catch (issue) { return this.workspaceAgentFailure(issue, signal); }
+  }
+
+  private rememberWorkspaceAgentChange(value: { kind: "collection"; preview: CollectionChangePreview } | { kind: "routines"; preview: RoutineDeletionPreview }) {
+    // Keep controller previews and tool delivery receipts aligned while one
+    // visible confirmation/application is outstanding; do not evict its handle.
+    if (this.snapshot.agentWorkspaceChangeConfirmation || [...this.workspaceAgentChanges.values()].some((entry) => entry.abort)) {
+      throw new AgentCommandError("invalid_operation");
+    }
+    if (this.workspaceAgentChanges.size >= 5) {
+      const disposable = [...this.workspaceAgentChanges].find(([, entry]) => !entry.abort &&
+        this.snapshot.agentWorkspaceChangeConfirmation?.preview.id !== entry.preview.id);
+      if (!disposable) throw new AgentCommandError("invalid_operation");
+      this.workspaceAgentChanges.delete(disposable[0]);
+    }
+    this.workspaceAgentChanges.set(value.preview.id, {
+      ...value, ownerId: this.currentAgentOwnerId()!, ownerRevision: this.ownerRevision, epoch: this.workspaceAgentEpoch,
+      offered: false, status: { previewId: value.preview.id, state: "awaiting_confirmation" }, abort: null
+    });
+  }
+
+  async agentPreviewCollectionChange(input: CollectionChangeInput, signal?: AbortSignal): Promise<{ ok: true; preview: CollectionChangePreview } | WorkspaceAgentFailure> {
+    const ownerId = this.currentAgentOwnerId(); const epoch = this.workspaceAgentEpoch;
+    try {
+      signal?.throwIfAborted(); this.assertWorkspaceAgentActive(ownerId, epoch);
+      const preview = await this.previewCollectionChange(normalizeCollectionChangeInput(input), signal, "agent");
+      signal?.throwIfAborted(); this.assertWorkspaceAgentActive(ownerId, epoch);
+      this.rememberWorkspaceAgentChange({ kind: "collection", preview });
+      return { ok: true, preview };
+    } catch (issue) { return this.workspaceAgentFailure(issue, signal); }
+  }
+
+  async agentPreviewRoutineDeletion(input: { routines: Array<{ id: string; expectedUpdatedAt: string }> }, signal?: AbortSignal): Promise<{ ok: true; preview: RoutineDeletionPreview } | WorkspaceAgentFailure> {
+    const ownerId = this.currentAgentOwnerId(); const epoch = this.workspaceAgentEpoch;
+    try {
+      signal?.throwIfAborted(); this.assertWorkspaceAgentActive(ownerId, epoch);
+      if (!input.routines.length || input.routines.length > MAX_CHANGE_SELECTION ||
+          new Set(input.routines.map((item) => item.id)).size !== input.routines.length) throw new AgentCommandError("invalid_operation");
+      const targets: RoutineDeletionTarget[] = [];
+      for (const reference of input.routines) {
+        const { routine } = await this.api.getRoutine(reference.id, signal, "agent");
+        signal?.throwIfAborted(); this.assertWorkspaceAgentActive(ownerId, epoch);
+        if (routine.routine.ownerId !== ownerId || routine.routine.archivedAt) return { ok: false, code: "routine_unavailable" };
+        if (routine.routine.updatedAt !== reference.expectedUpdatedAt) return { ok: false, code: "stale_routine" };
+        targets.push({ ...reference, title: routine.currentRevision.revision.title });
+      }
+      const preview = this.prepareRoutineDeletion(targets);
+      this.rememberWorkspaceAgentChange({ kind: "routines", preview });
+      return { ok: true, preview };
+    } catch (issue) { return this.workspaceAgentFailure(issue, signal); }
+  }
+
+  async agentApplyCollectionChange(previewId: string, signal?: AbortSignal) {
+    return this.offerWorkspaceAgentChange(previewId, "collection", signal);
+  }
+
+  async agentApplyRoutineDeletion(previewId: string, signal?: AbortSignal) {
+    return this.offerWorkspaceAgentChange(previewId, "routines", signal);
+  }
+
+  private async offerWorkspaceAgentChange(previewId: string, kind: WorkspaceAgentChangeEntry["kind"], signal?: AbortSignal): Promise<{ ok: true; status: WorkspaceChangeStatus } | WorkspaceAgentFailure> {
+    try {
+      signal?.throwIfAborted(); this.assertWorkspaceAgentActive();
+      const entry = this.workspaceAgentChanges.get(previewId);
+      if (!entry || entry.kind !== kind) return { ok: false, code: "preview_unavailable" };
+      this.assertWorkspaceAgentEntry(entry);
+      // Even cached completion readback must honor a grant revoked in another page.
+      await this.verifyWorkspaceAgentGrant(entry.ownerId, entry.epoch, signal);
+      this.assertWorkspaceAgentEntry(entry);
+      if (!entry.offered) {
+        if (this.snapshot.agentChangeConfirmation || this.snapshot.agentCalendarDeletionConfirmation || this.snapshot.agentWorkspaceChangeConfirmation ||
+            [...this.workspaceAgentChanges.values()].some((item) => item.abort)) return { ok: false, code: "confirmation_required" };
+        entry.offered = true;
+        if (entry.kind === "collection" && entry.preview.input.operation === "move") {
+          void this.executeWorkspaceAgentChange(entry);
+        } else {
+          this.update({ agentWorkspaceChangeConfirmation: { kind: entry.kind, preview: entry.preview, saving: false, error: "", removedIds: [] } as LifeLinksWorkspaceSnapshot["agentWorkspaceChangeConfirmation"] });
+        }
+      } else if (entry.kind === "collection" && entry.preview.input.operation === "move" && entry.status.state === "failed" && entry.status.code === "effect_not_confirmed") {
+        void this.executeWorkspaceAgentChange(entry);
+      }
+      return { ok: true, status: structuredClone(entry.status) };
+    } catch (issue) { return this.workspaceAgentFailure(issue, signal); }
+  }
+
+  private assertWorkspaceAgentEntry(entry: WorkspaceAgentChangeEntry) {
+    this.assertWorkspaceAgentActive(entry.ownerId, entry.epoch);
+    if (entry.ownerRevision !== this.ownerRevision || this.workspaceAgentChanges.get(entry.preview.id) !== entry) throw new AgentCommandError("life_link_unavailable");
+  }
+
+  /** App-observed confirmation, never an argument accepted from an agent tool. */
+  async confirmAgentWorkspaceChange(confirmed: boolean): Promise<void> {
+    const current = this.snapshot.agentWorkspaceChangeConfirmation;
+    if (!current) return;
+    const entry = this.workspaceAgentChanges.get(current.preview.id);
+    if (!entry) { this.update({ agentWorkspaceChangeConfirmation: null }); return; }
+    if (!confirmed) {
+      entry.abort?.abort();
+      entry.status = { ...entry.status, state: "cancelled", code: entry.abort ? "effect_not_confirmed" : "cancelled" };
+      this.update({ agentWorkspaceChangeConfirmation: null });
+      return;
+    }
+    if (entry.abort) return;
+    await this.executeWorkspaceAgentChange(entry);
+  }
+
+  private async executeWorkspaceAgentChange(entry: WorkspaceAgentChangeEntry): Promise<void> {
+    if (entry.abort) return;
+    const request = new AbortController(); entry.abort = request;
+    entry.status = { ...entry.status, state: "applying", code: undefined };
+    const updateDialog = (saving: boolean, error = "", removedIds = entry.status.removal?.removedIds ?? []) => {
+      const dialog = this.snapshot.agentWorkspaceChangeConfirmation;
+      if (dialog?.preview.id === entry.preview.id) this.update({ agentWorkspaceChangeConfirmation: { ...dialog, saving, error, removedIds } });
+    };
+    updateDialog(true);
+    try {
+      this.assertWorkspaceAgentEntry(entry);
+      await this.verifyWorkspaceAgentGrant(entry.ownerId, entry.epoch, request.signal);
+      this.assertWorkspaceAgentEntry(entry);
+      if (entry.kind === "collection") {
+        const change = await this.applyCollectionChange(entry.preview.id, request.signal, "agent");
+        this.assertWorkspaceAgentEntry(entry);
+        entry.status = { previewId: entry.preview.id, state: "applied", change };
+      } else {
+        const removal = await this.applyRoutineDeletion(entry.preview, entry.status.removal?.removedIds ?? [], request.signal, "agent", () => this.assertWorkspaceAgentEntry(entry));
+        this.assertWorkspaceAgentEntry(entry);
+        entry.status = { previewId: entry.preview.id, state: removal.remainingIds.length ? "partial" : "applied", removal };
+        if (removal.remainingIds.length) { updateDialog(false, removal.error ?? "Some removals could not be confirmed.", removal.removedIds); return; }
+      }
+      if (this.snapshot.agentWorkspaceChangeConfirmation?.preview.id === entry.preview.id) this.update({ agentWorkspaceChangeConfirmation: null });
+    } catch (issue) {
+      const failure = this.workspaceAgentFailure(issue, request.signal);
+      entry.status = { ...entry.status, state: request.signal.aborted ? "cancelled" : "failed", code: failure.code };
+      updateDialog(false, "The change could not be confirmed. Retry checks the same change; it does not create a new request.");
+    } finally { entry.abort = null; }
+  }
+
+  private invalidateWorkspaceAgentChanges() {
+    ++this.workspaceAgentEpoch;
+    for (const entry of this.workspaceAgentChanges.values()) entry.abort?.abort();
+    this.workspaceAgentChanges.clear();
   }
 
   async undoLastChange(): Promise<LifeLinkChangeResult> {
@@ -2422,6 +2669,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   dispose() {
+    this.invalidateWorkspaceAgentChanges();
+    this.update({ agentWorkspaceChangeConfirmation: null });
     this.confirmAgentChange(false);
     this.confirmAgentCalendarDeletion(false);
     this.agentChangeApplication = null;
@@ -3683,6 +3932,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async logout() {
+    this.invalidateWorkspaceAgentChanges();
     this.confirmAgentChange(false);
     this.confirmAgentCalendarDeletion(false);
     this.agentChangeApplication = null;
@@ -3727,7 +3977,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
     this.update({ busy: true, error: "" });
     try {
-      const result = await this.api.connectAgent(LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID);
+      const result = await this.api.connectAgent(LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID);
       this.update({ agentConnection: result.agentConnection });
     } catch (connectionError) {
       this.update({ error: messageFromError(connectionError) });
@@ -3737,6 +3987,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async disconnectAgent() {
+    this.invalidateWorkspaceAgentChanges();
+    this.update({ agentWorkspaceChangeConfirmation: null });
     this.confirmAgentChange(false);
     this.confirmAgentCalendarDeletion(false);
     this.agentChangeApplication = null;
@@ -4044,7 +4296,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   private agentCalendarOwnerId() {
-    return this.snapshot.agentConnection.connected && this.snapshot.agentConnection.toolCatalogId === LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID
+    return this.snapshot.agentConnection.connected && (this.snapshot.agentConnection.toolCatalogId === LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID || this.snapshot.agentConnection.toolCatalogId === LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID)
       ? this.currentAgentOwnerId() : null;
   }
 
@@ -4641,6 +4893,13 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const ownerChanged = next.currentUser !== undefined && next.currentUser?.id !== this.snapshot.currentUser?.id;
     const previous = this.snapshot;
     let updated = { ...previous, ...next };
+    if (ownerChanged || updated.routeQrId !== previous.routeQrId || updated.guestView !== previous.guestView ||
+        updated.agentConnection.connected !== previous.agentConnection.connected || updated.agentConnection.toolCatalogId !== previous.agentConnection.toolCatalogId ||
+        updated.agentConnection.connectedAt !== previous.agentConnection.connectedAt ||
+        (updated.canonicalEditingId !== null && updated.canonicalEditingId !== previous.canonicalEditingId)) {
+      this.invalidateWorkspaceAgentChanges();
+      updated.agentWorkspaceChangeConfirmation = null;
+    }
     if (ownerChanged) {
       this.pendingWorkspaceResume = null;
       updated = { ...updated, presentation: emptyWorkspacePresentation(), middleCollapsed: false,
@@ -4680,7 +4939,7 @@ function emptyLifeLinkBranch(): LifeLinkBranchState {
 function emptyFieldLedgerState() {
   return {
     presentation: emptyWorkspacePresentation(), middleCollapsed: false,
-    changeHistory: { limit: 5 as const, entries: [] }, agentChangeConfirmation: null,
+    changeHistory: { limit: 5 as const, entries: [] }, agentChangeConfirmation: null, agentWorkspaceChangeConfirmation: null,
     agentCalendarDeletionConfirmation: null,
     workspaceMode: "hierarchies" as const, hierarchyParentId: null, hierarchyParentDetail: null,
     detailsOpen: false, collections: [], collectionsLoading: false, collectionsComplete: false,

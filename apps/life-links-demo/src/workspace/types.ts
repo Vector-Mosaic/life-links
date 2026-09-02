@@ -15,6 +15,7 @@ import type {
   LifeLinkMediaRecord,
   ChangeHistory,
   LifeLinkChangePreview,
+  CollectionChangePreview,
   CollectionRecord,
   CollectionSectionRecord,
   LifeLinkCollectionMembership,
@@ -37,6 +38,12 @@ import type {
 
 import type { ApiAgentConnection, ApiUser, CalendarClock, CalendarEventDetail } from "../api";
 import type { AgentCalendarDeletionPreview, AgentProviderCalendarDeletionPreview } from "../agent/calendarToolHandlers";
+import type { RoutineDeletionPreview } from "../agent/workspaceToolHandlers";
+
+export type AgentWorkspaceChangeConfirmation = (
+  | { kind: "collection"; preview: CollectionChangePreview }
+  | { kind: "routines"; preview: RoutineDeletionPreview }
+) & { saving: boolean; error: string; removedIds: string[] };
 
 export type WorkspaceView = "home" | "factory" | "scan" | "workspace" | "search";
 export type InventoryFilter = "all" | "claimed" | "unclaimed";
@@ -254,6 +261,7 @@ export type LifeLinksWorkspaceSnapshot = {
   middleCollapsed: boolean;
   changeHistory: ChangeHistory;
   agentChangeConfirmation: LifeLinkChangePreview | null;
+  agentWorkspaceChangeConfirmation: AgentWorkspaceChangeConfirmation | null;
   agentCalendarDeletionConfirmation: AgentCalendarDeletionPreview | AgentProviderCalendarDeletionPreview | null;
   routineWorkspace: RoutineWorkspaceState;
   calendarWorkspace: CalendarWorkspaceState;

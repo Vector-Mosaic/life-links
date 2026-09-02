@@ -23,7 +23,9 @@ export type AgentActivityVisibleEffect =
   | "collections_opened" | "collection_opened" | "collection_updated"
   | "calendars_opened" | "calendar_events_shown" | "calendar_event_opened"
   | "calendar_event_created" | "calendar_event_updated"
-  | "calendar_deletion_previewed" | "calendar_event_deleted";
+  | "calendar_deletion_previewed" | "calendar_event_deleted"
+  | "routines_opened" | "collection_change_previewed" | "routine_deletion_previewed"
+  | "workspace_change_pending" | "collection_change_applied" | "routine_deletion_applied" | "workspace_change_partial";
 
 export type AgentActivityOutcome = "succeeded" | "failed" | "cancelled";
 
@@ -100,7 +102,11 @@ export function agentActivityLabel(entry: AgentActivityEntry) {
     calendars_opened: "Opened authorized Calendars", calendar_events_shown: "Showed a bounded Calendar event window",
     calendar_event_opened: "Opened a Calendar event", calendar_event_created: "Created a Calendar event",
     calendar_event_updated: "Updated a Calendar event", calendar_deletion_previewed: "Prepared an exact Calendar deletion preview",
-    calendar_event_deleted: "Applied an app-confirmed Calendar event deletion"
+    calendar_event_deleted: "Applied an app-confirmed Calendar event deletion",
+    routines_opened: "Read a page of Routines", collection_change_previewed: "Prepared an exact Collection change preview",
+    routine_deletion_previewed: "Prepared an exact Routine removal preview", workspace_change_pending: "Awaiting confirmation or applying a workspace change",
+    collection_change_applied: "Applied a Collection change", routine_deletion_applied: "Removed Routines while retaining history",
+    workspace_change_partial: "A Routine removal partially completed"
   };
   if (entry.visibleEffect && labels[entry.visibleEffect]) return labels[entry.visibleEffect]!;
   return "Started Find Mode for a Life Link";
@@ -137,6 +143,15 @@ export function instrumentAgentToolCatalog(
 
 function activityFromResult(tool: LifeLinksAgentToolName, result: WebMcpJsonValue) {
   const record = objectRecord(result);
+  if (record?.ok === true && (tool === "apply_collection_change" || tool === "apply_routine_deletion")) {
+    const state = record.state;
+    return createAgentActivityEntry({ tool,
+      outcome: state === "cancelled" ? "cancelled" : state === "failed" ? "failed" : "succeeded",
+      visibleEffect: state === "applied" ? tool === "apply_collection_change" ? "collection_change_applied" : "routine_deletion_applied"
+        : state === "partial" ? "workspace_change_partial" : state === "failed" || state === "cancelled" ? null : "workspace_change_pending",
+      errorCode: state === "failed" ? typeof record.code === "string" ? record.code : "effect_not_applied" : state === "cancelled" ? "cancelled" : null
+    });
+  }
   if (record?.ok !== true) {
     const error = objectRecord(record?.error);
     const errorCode = typeof error?.code === "string" ? error.code : "effect_not_applied";
@@ -204,6 +219,10 @@ function visibleEffectForTool(tool: LifeLinksAgentToolName): AgentActivityVisibl
     case "update_calendar_event": return "calendar_event_updated";
     case "prepare_calendar_event_deletion": return "calendar_deletion_previewed";
     case "apply_calendar_event_deletion": return "calendar_event_deleted";
+    case "list_my_routines": return "routines_opened";
+    case "prepare_collection_change": return "collection_change_previewed";
+    case "prepare_routine_deletion": return "routine_deletion_previewed";
+    case "apply_collection_change": case "apply_routine_deletion": return "workspace_change_pending";
   }
 }
 
@@ -247,6 +266,11 @@ function toolLabel(tool: LifeLinksAgentToolName) {
     case "update_calendar_event": return "Update Calendar event";
     case "prepare_calendar_event_deletion": return "Preview Calendar deletion";
     case "apply_calendar_event_deletion": return "Delete Calendar event";
+    case "list_my_routines": return "List Routines";
+    case "prepare_collection_change": return "Preview Collection change";
+    case "apply_collection_change": return "Apply Collection change";
+    case "prepare_routine_deletion": return "Preview Routine removal";
+    case "apply_routine_deletion": return "Remove Routines";
   }
 }
 

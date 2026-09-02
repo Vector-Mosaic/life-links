@@ -25,7 +25,7 @@ import {
 } from "./agent/activity";
 import { getBrowserWebMcpHost } from "./agent/browserWebMcpHost";
 import { createLifeLinksAgentToolCatalog } from "./agent/toolHandlers";
-import { LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID } from "./agent/calendarToolHandlers";
+import { LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID } from "./agent/workspaceToolHandlers";
 import {
   agentConnectionIsActive,
   usePageToolRegistration
@@ -200,7 +200,7 @@ function LifeLinksApp() {
         findScannerPanel={<ScannerPanel mode="find" baseUrl={qrBaseUrl} sampleLinks={[]} targetId={findTargetId} onDecoded={(value) => void handleFindScan(value)} />}
         agentPanel={<>
           <AgentAccessPanel supported={webMcpSupported} connected={agentConnection.connected} busy={busy}
-            catalogCurrent={agentConnection.toolCatalogId === LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID}
+            catalogCurrent={agentConnection.toolCatalogId === LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID}
             registrationStatus={agentRegistrationStatus} registrationError={agentRegistrationError}
             onConnect={() => void connectAgent()} onDisconnect={() => void disconnectAgent()} />
           <AgentActivityPanel activities={agentActivities} />

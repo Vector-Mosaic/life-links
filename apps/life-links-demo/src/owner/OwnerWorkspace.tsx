@@ -13,6 +13,7 @@ import type { RoutineDialogState } from "./RoutineShared";
 import { CalendarDetailPanel, CalendarWorkspacePanel } from "./CalendarPanels";
 import { CollectionChangeDialog, type CollectionSelection, type CollectionChangeDraft } from "./CollectionChangeDialog";
 import { AgentCalendarDeletionDialog, CalendarDialogHost, type CalendarDialogState } from "./CalendarDialogs";
+import { AgentWorkspaceChangeDialog } from "./AgentWorkspaceChangeDialog";
 
 // Keep this aligned with the phone-layout media query in styles.css.
 const PHONE_LAYOUT_QUERY = "(max-width: 700px) and (hover: none), (max-width: 700px) and (pointer: coarse)";
@@ -92,6 +93,13 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
       controller.confirmAgentCalendarDeletion(false);
     }
   }, [controller, dialog, routineDialog, calendarDialog, collectionChange, snapshot.agentChangeConfirmation, snapshot.agentCalendarDeletionConfirmation]);
+  useEffect(() => {
+    if (snapshot.agentWorkspaceChangeConfirmation && (dialog || routineDialog || calendarDialog || collectionChange ||
+        snapshot.canonicalEditingId || snapshot.agentChangeConfirmation || snapshot.agentCalendarDeletionConfirmation)) {
+      void controller.confirmAgentWorkspaceChange(false).catch(() => undefined);
+    }
+  }, [controller, dialog, routineDialog, calendarDialog, collectionChange, snapshot.canonicalEditingId,
+    snapshot.agentWorkspaceChangeConfirmation, snapshot.agentChangeConfirmation, snapshot.agentCalendarDeletionConfirmation]);
   useEffect(() => {
     const phoneLayout = window.matchMedia(PHONE_LAYOUT_QUERY);
     const restoreMiddleOnPhone = () => { if (phoneLayout.matches) controller.setMiddleCollapsed(false); };
@@ -349,6 +357,9 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
     {collectionChange && <CollectionChangeDialog input={collectionChange} controller={controller} snapshot={snapshot} onClose={() => setCollectionChange(null)} onApplied={() => { setCollectionChange(null); finishCollectionEditing(); }} />}
     {!dialog && !routineDialog && !calendarDialog && !collectionChange && snapshot.agentChangeConfirmation && <ChangePreviewDialog preview={snapshot.agentChangeConfirmation} busy={false} onConfirm={() => controller.confirmAgentChange(true)} onCancel={() => controller.confirmAgentChange(false)} />}
     {!dialog && !routineDialog && !calendarDialog && !collectionChange && !snapshot.agentChangeConfirmation && snapshot.agentCalendarDeletionConfirmation && <AgentCalendarDeletionDialog preview={snapshot.agentCalendarDeletionConfirmation} onConfirm={() => controller.confirmAgentCalendarDeletion(true)} onCancel={() => controller.confirmAgentCalendarDeletion(false)} />}
+    {!dialog && !routineDialog && !calendarDialog && !collectionChange && !snapshot.canonicalEditingId &&
+      !snapshot.agentChangeConfirmation && !snapshot.agentCalendarDeletionConfirmation && snapshot.agentWorkspaceChangeConfirmation &&
+      <AgentWorkspaceChangeDialog key={snapshot.agentWorkspaceChangeConfirmation.preview.id} confirmation={snapshot.agentWorkspaceChangeConfirmation} controller={controller} />}
     {dialog?.kind === "assign" && <SectionAssignmentDialog controller={controller} snapshot={snapshot} lifeLinkId={dialog.lifeLinkId} onClose={close} />}
     {dialog?.kind === "qr" && <QrDialog controller={controller} snapshot={snapshot} lifeLinkId={dialog.lifeLinkId} onClose={close} />}
     {dialog?.kind === "agent" && <Dialog title="Agent connection" onClose={close}>{agentPanel}</Dialog>}

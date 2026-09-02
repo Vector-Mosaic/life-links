@@ -9,6 +9,41 @@ const id = (prefix: string) => `${prefix}-${randomUUID()}`;
 
 export function routineStoreContract(getStore: () => LifeLinksStore): void {
   describe("general Routines store contract", () => {
+    it("limits Workspace v3 Routine access to owner reads and archive-only writes with live revocation", async () => {
+      const store = getStore();
+      const ownerId = DEMO_GUEST_ID;
+      const createdAt = "2026-09-01T12:00:00.000Z";
+      const activity = await store.createActivity({ id: id("activity"), ownerId, title: "Archive check", createdAt });
+      const created = await store.createRoutine({ id: id("routine"), revisionId: id("routine-revision"), ownerId,
+        title: "Agent archive check", createdAt,
+        steps: [{ id: id("routine-step"), activityId: activity.id, activityTitle: activity.title, position: 0 }] });
+      const command = { routineId: created.routine.id, expectedUpdatedAt: created.routine.updatedAt,
+        patch: { archivedAt: "2026-09-02T12:00:00.000Z" } };
+      try {
+        for (const catalog of ["life-links-page-webmcp-v1", "life-links-calendar-v2"] as const) {
+          await store.connectAgent(ownerId, catalog);
+          await expect(store.listRoutines(ownerId, {}, "agent")).rejects.toMatchObject({ code: "agent_access_denied" });
+          await expect(store.getRoutine(ownerId, created.routine.id, "agent")).rejects.toMatchObject({ code: "agent_access_denied" });
+          await expect(store.updateRoutine(ownerId, command, "agent")).rejects.toMatchObject({ code: "agent_access_denied" });
+        }
+        await store.connectAgent(ownerId, "life-links-workspace-v3");
+        expect((await store.listRoutines(ownerId, {}, "agent")).items.some((row) => row.id === created.routine.id)).toBe(true);
+        expect(await store.getRoutine(ownerId, created.routine.id, "agent")).toEqual(created);
+        expect(await store.getRoutine(ownerId, id("routine"), "agent")).toBeNull();
+        for (const patch of [{ archivedAt: null }, { groupId: null }, { ...command.patch, groupId: null }]) {
+          await expect(store.updateRoutine(ownerId, { ...command, patch }, "agent"))
+            .rejects.toMatchObject({ reason: "routine_agent_archive_only" });
+        }
+        const archived = await store.updateRoutine(ownerId, command, "agent");
+        expect(archived?.archivedAt).toBe(command.patch.archivedAt);
+        expect(await store.updateRoutine(ownerId, command, "agent")).toEqual(archived);
+        expect((await store.getRoutine(ownerId, created.routine.id, "agent"))?.currentRevision).toEqual(created.currentRevision);
+        await store.disconnectAgent(ownerId);
+        await expect(store.updateRoutine(ownerId, command, "agent")).rejects.toMatchObject({ code: "agent_access_denied" });
+        expect(await store.updateRoutine(ownerId, command)).toEqual(archived);
+      } finally { await store.disconnectAgent(ownerId); }
+    });
+
     it("protects current Collection context during delete and Undo while retaining historical Session snapshots", async () => {
       const store = getStore();
       // PostgreSQL shares a seeded schema; keep this case outside the pagination owner's population.
