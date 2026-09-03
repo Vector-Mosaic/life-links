@@ -139,6 +139,26 @@ describe("bounded whole-app record search", () => {
     }
   });
 
+  it("warns only for genuinely truncated returned paths, not for paginated search results", async () => {
+    const store = await canonical();
+    const service = new RecordSearchService(store);
+    for (let n = 0; n < 2; n++) await store.createLifeLink({ id: id("life-link", 90 + n), ownerId: OWNER,
+      title: `Paginated path result ${n}`, privacy: "private", createdAt: WHEN });
+    const first = await service.search(OWNER, { q: "Paginated path result", category: "life_links", limit: 1 });
+    expect(first.nextCursor).not.toBeNull();
+    expect(first.warnings).not.toContain("life_link_paths_may_be_incomplete");
+    let parentId: string | null = null;
+    for (let n = 0; n < 13; n++) {
+      const record = await store.createLifeLink({ id: id("life-link", 100 + n), ownerId: OWNER, parentId,
+        title: n === 12 ? "Truncated path target" : `Depth ${n}`, browsingRole: "container", privacy: "private", createdAt: WHEN });
+      parentId = record.id;
+    }
+    const deep = await service.search(OWNER, { q: "Truncated path target", category: "life_links", limit: 1 });
+    expect(deep.nextCursor).toBeNull();
+    expect(deep.warnings).toContain("life_link_paths_may_be_incomplete");
+    expect(deep.results[0]!.subtitle).toContain("Recorded path incomplete");
+  });
+
   it("searches complete attachment text in two-file pages and keeps filename discovery when extraction is unavailable", async () => {
     const store = await canonical();
     const lifeLink = await store.createLifeLink({ id: id("life-link", 80), ownerId: OWNER, title: "Documents", privacy: "private", createdAt: WHEN });

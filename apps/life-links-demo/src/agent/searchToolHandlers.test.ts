@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
+import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import Ajv from "ajv";
 import { MAX_LIFE_LINK_TOOL_OUTPUT_BYTES, RECORD_SEARCH_CATEGORIES, type RecordSearchHit } from "@life-links/core";
 import { createSearchAgentToolCatalog, LIFE_LINKS_SEARCH_TOOL_CATALOG_ID, type SearchAgentToolController } from "./searchToolHandlers";
 import { createLifeLinksAgentToolCatalog, type LifeLinksAgentToolController } from "./toolHandlers";
 import type { WorkspaceAgentAccessSnapshot } from "./workspaceToolHandlers";
+import { AgentAccessPanel } from "./AgentAccessPanel";
 
 class Controller implements SearchAgentToolController {
   snapshot: WorkspaceAgentAccessSnapshot = { currentUser: { id: "owner" }, routeQrId: null, guestView: false,
@@ -21,6 +23,32 @@ const hit = (index: number, snippet = "Recorded contents"): RecordSearchHit => (
 });
 
 describe("search-v4 page tool", () => {
+  it("offers the explicit Search-v4 upgrade to a v3 connection without silently changing either grant", () => {
+    const app = readFileSync(new URL("../App.tsx", import.meta.url), "utf8");
+    expect(app).toContain('import { LIFE_LINKS_SEARCH_TOOL_CATALOG_ID } from "./agent/searchToolHandlers"');
+    expect(app).toContain("catalogCurrent={agentConnection.toolCatalogId === LIFE_LINKS_SEARCH_TOOL_CATALOG_ID}");
+    for (const catalog of ["life-links-workspace-v3", LIFE_LINKS_SEARCH_TOOL_CATALOG_ID]) {
+      const onConnect = vi.fn();
+      const onDisconnect = vi.fn();
+      const buttons: ReactElement<{ children?: ReactNode; onClick?: () => void }>[] = [];
+      const visit = (node: ReactNode) => Children.forEach(node, (child) => {
+        if (!isValidElement<{ children?: ReactNode; onClick?: () => void }>(child)) return;
+        if (child.type === "button") buttons.push(child);
+        visit(child.props.children);
+      });
+      // Inspect the component's actual element result, without a DOM renderer
+      // or hooks; App's caller expression above binds this to the live defect.
+      visit(AgentAccessPanel({ supported: true, connected: true, busy: false,
+        catalogCurrent: catalog === LIFE_LINKS_SEARCH_TOOL_CATALOG_ID, registrationStatus: "ready",
+        registrationError: "", onConnect, onDisconnect }));
+      const upgrade = buttons.find((button) => button.props.children === "Update Agent Access");
+      expect(Boolean(upgrade)).toBe(catalog === "life-links-workspace-v3");
+      expect(onConnect).not.toHaveBeenCalled();
+      expect(onDisconnect).not.toHaveBeenCalled();
+      if (upgrade) { upgrade.props.onClick!(); expect(onConnect).toHaveBeenCalledOnce(); }
+    }
+  });
+
   it("adds only one descriptor while preserving every frozen v3 descriptor and bounded host registration", () => {
     const definitions = createLifeLinksAgentToolCatalog(new Proxy({} as LifeLinksAgentToolController,
       { get: () => () => { throw new Error("discovery must not invoke a controller"); } }));

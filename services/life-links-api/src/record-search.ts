@@ -83,9 +83,9 @@ export class RecordSearchService {
         results.push({ id: `life_link:${item.lifeLink.id}`, category, title: item.lifeLink.title,
           snippet: snippet(content, q), matchedField: item.matchClass, reference: { kind: "life_link", lifeLinkId: item.lifeLink.id },
           subtitle: `${path}${locator ? ` · QR locator: ${locator.title} · ${locator.qrId}` : ""}${item.path.truncated ? " · Recorded path incomplete" : ""}` });
+        if (item.path.truncated) warnings.add("life_link_paths_may_be_incomplete");
       }
       state.outer = page.nextCursor; done = page.nextCursor === null; scanned = page.items.length;
-      if (page.truncated) warnings.add("life_link_paths_may_be_incomplete");
     } else while (!done && scanned < SCAN_BUDGET && results.length < limit && files < FILE_BUDGET) {
       await admit();
       if (category === "routines") {
