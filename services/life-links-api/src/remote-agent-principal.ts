@@ -41,11 +41,17 @@ export type RemoteApproval = {
   operation: string; payload: Record<string, unknown>; effects: unknown;
   status: "pending" | "approved" | "declined" | "applied";
   createdAt: string; expiresAt: string; result?: unknown;
+  /** Private component proof; never include in public preview fields or model-visible results. */
+  uiChallenge?: string;
 };
 export interface RemoteApprovalService {
   prepare(principal: RemoteAgentPrincipal, input: { operation: string; payload: Record<string, unknown>; effects: unknown; id?: string }): Promise<RemoteApproval>;
   get(principal: RemoteAgentPrincipal, id: string): Promise<RemoteApproval>;
   locked<T>(principal: RemoteAgentPrincipal, id: string, action: () => Promise<T>): Promise<T>;
+  /** Call inside locked(); issue/reuse proof without changing the pending preview expiry. */
+  issueUiChallenge(principal: RemoteAgentPrincipal, id: string): Promise<string>;
+  /** Call inside the pending confirmation callback under locked(); validation does not consume proof. */
+  validateUiChallenge(principal: RemoteAgentPrincipal, id: string, challenge: unknown): Promise<void>;
   approve(principal: RemoteAgentPrincipal, id: string, accepted: boolean): Promise<RemoteApproval>;
   complete(principal: RemoteAgentPrincipal, id: string, result: unknown): Promise<RemoteApproval>;
 }

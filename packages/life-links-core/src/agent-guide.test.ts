@@ -23,5 +23,8 @@ describe("curated agent guide", () => {
     expect(AGENT_GUIDE_SECTIONS.find((section) => section.id === "filament-example")?.content).toContain("sensor-measured");
     expect(AGENT_GUIDE_SECTIONS.find((section) => section.id === "makeup-example")?.content).toContain("Possession alone does not prove liking");
     expect(AGENT_GUIDE_SECTIONS.find((section) => section.id === "routines-and-history")?.content).toContain("Corrections append");
+    const changes = AGENT_GUIDE_SECTIONS.find((section) => section.id === "changes-and-permissions")!.content;
+    expect(changes).toContain("awaiting_confirmation means pending");
+    expect(changes).toContain("Never call the app-only confirmation tool yourself");
   });
 });

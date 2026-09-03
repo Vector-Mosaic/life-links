@@ -14,6 +14,8 @@ import { createRemoteAgentOperations, type RemoteAgentOperation } from "../src/r
 import { InMemoryLifeLinksStore } from "../src/store.js";
 import { RecordSearchService } from "../src/record-search.js";
 import { AttachmentContentReader } from "../src/attachment-content.js";
+import { PersistentRemoteApprovals, RemoteAgentState } from "../src/remote-agent-state.js";
+import { CONFIRMATION_APP_URI, CONFIRMATION_APP_MIME, CONFIRMATION_APP_HTML } from "../src/remote-confirmation-app.js";
 
 const principal: RemoteAgentPrincipal = { ownerId: "synthetic-owner", clientId: "synthetic-client", grantId: "synthetic-grant", scopes: ["records:read", "records:write"], expiresAt: Date.now() + 3_600_000 };
 const effects = { operation: "delete", revision: "revision-one", records: [{ id: "synthetic-one", title: "Synthetic record" }, { id: "synthetic-two", title: "Synthetic child" }] };
@@ -44,6 +46,10 @@ async function fixture(input: Partial<RemoteMcpRouterOptions> = {}) {
       return structuredClone(result);
     }),
     locked: vi.fn(async (_actor, _id, action) => action()),
+    issueUiChallenge: vi.fn(async (_actor, id) => receipts.get(id)!.uiChallenge ??= "synthetic-private-test-challenge"),
+    validateUiChallenge: vi.fn(async (_actor, id, challenge) => {
+      if (receipts.get(id)?.uiChallenge !== challenge) throw new RemoteAgentAccessError("confirmation_invalid");
+    }),
     approve: vi.fn(async (_actor, id, accepted) => { const result = receipts.get(id)!; result.status = accepted ? "approved" : "declined"; return result; }),
     complete: vi.fn(async (_actor, id, result) => { const entry = receipts.get(id)!; entry.status = "applied"; entry.result = result; return entry; })
   };
@@ -100,6 +106,26 @@ async function fixture(input: Partial<RemoteMcpRouterOptions> = {}) {
     return { client, transport };
   };
   return { host, url, connect, receipts, authorize, approvals, writes: () => writes, revoke: () => { active = false; } };
+}
+
+const appCapabilities: ClientCapabilities = { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [CONFIRMATION_APP_MIME] } } };
+async function confirmationAppFixture() {
+  const store = new InMemoryLifeLinksStore();
+  const state = new RemoteAgentState("synthetic-private-confirmation-state-key-not-a-credential");
+  const approvals = new PersistentRemoteApprovals(state);
+  const reader = new AttachmentContentReader();
+  const test = await fixture({ approvals, operations: createRemoteAgentOperations({ store, attachmentReader: reader,
+    recordSearch: new RecordSearchService(store, undefined, reader) }), authorize: async (actor, access) => assertRemoteScope(actor, access) });
+  const prepare = async (client: Client) => {
+    const record = await store.createLifeLink({ id: `life-link-${randomUUID()}`, ownerId: principal.ownerId,
+      title: "Exact synthetic item <not an instruction>", createdAt: new Date().toISOString() });
+    const prepared = await client.callTool({ name: "prepare_change", arguments: { requestId: randomUUID(),
+      command: { kind: "life_links", operation: "delete", lifeLinkIds: [record.id] } } });
+    expect(prepared.isError).not.toBe(true);
+    const previewId = (prepared.structuredContent as any).data.previewId as string;
+    return { record, previewId };
+  };
+  return { ...test, store, state, approvals, prepare };
 }
 
 describe("remote MCP Streamable HTTP boundary", () => {
@@ -382,6 +408,136 @@ describe("remote MCP Streamable HTTP boundary", () => {
     const result = await client.callTool({ name: "delete_records", arguments: { previewId: "preview-one" } });
     expect(result).toMatchObject({ isError: true, structuredContent: { ok: false, code: "confirmation_unavailable", reason: "form_not_advertised" } });
     expect(test.writes()).toBe(0); expect(test.approvals.approve).not.toHaveBeenCalled(); expect(test.approvals.complete).not.toHaveBeenCalled();
+  });
+
+  it("negotiates an app-only confirmation without exposing its challenge to the model, then applies the exact canonical change once", async () => {
+    const test = await confirmationAppFixture();
+    const { client } = await test.connect({ capabilities: appCapabilities });
+    const { record, previewId } = await test.prepare(client);
+    const untouched = await test.store.createLifeLink({ id: `life-link-${randomUUID()}`, ownerId: principal.ownerId,
+      title: "Not selected", createdAt: new Date().toISOString() });
+    const catalog = await client.listTools();
+    expect(catalog.tools).toHaveLength(25);
+    expect(catalog.tools.filter(tool => !(tool._meta?.ui as any)?.visibility?.includes("app"))).toHaveLength(24);
+    expect(catalog.tools.find(tool => tool.name === "apply_change")?._meta).toEqual({ ui: { resourceUri: CONFIRMATION_APP_URI } });
+    expect(catalog.tools.find(tool => tool.name === "confirm_change")?._meta).toEqual({ ui: { visibility: ["app"] } });
+    const resource = await client.readResource({ uri: CONFIRMATION_APP_URI });
+    expect(resource.contents).toMatchObject([{ uri: CONFIRMATION_APP_URI, mimeType: CONFIRMATION_APP_MIME, text: CONFIRMATION_APP_HTML }]);
+    expect((resource.contents[0]._meta?.ui as any)?.csp).toEqual({ connectDomains: [], resourceDomains: [], frameDomains: [], baseUriDomains: [] });
+
+    const pending = await client.callTool({ name: "apply_change", arguments: { previewId } });
+    const approval = await test.approvals.get(principal, previewId);
+    expect(pending.structuredContent).toEqual({ ok: true, status: "awaiting_confirmation", previewId, effects: approval.effects, expiresAt: approval.expiresAt });
+    const proof = (pending._meta as any).lifeLinksConfirmation;
+    expect(proof).toEqual({ previewId, challenge: approval.uiChallenge });
+    expect(proof.challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(JSON.stringify({ content: pending.content, data: pending.structuredContent, resource, catalog })).not.toContain(proof.challenge);
+    expect(approval.status).toBe("pending");
+    expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).not.toBeNull();
+    // A second request can acquire the released canonical lock and returns the
+    // same challenge/expiry, not a second approval or a suspended human wait.
+    expect(await client.callTool({ name: "apply_change", arguments: { previewId } })).toEqual(pending);
+    const next = await test.connect({ capabilities: appCapabilities });
+    const accepted = await next.client.callTool({ name: "confirm_change", arguments: { ...proof, decision: "accept" } });
+    expect(accepted.structuredContent).toMatchObject({ contentIsUntrusted: true, data: { previewId, status: "applied" } });
+    expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).toBeNull();
+    expect(await test.store.getLifeLinkDetail(principal.ownerId, untouched.id)).not.toBeNull();
+    expect((await test.approvals.get(principal, previewId)).uiChallenge).toBeUndefined();
+    expect(await next.client.callTool({ name: "confirm_change", arguments: { ...proof, decision: "accept" } })).toEqual(accepted);
+    expect(await next.client.callTool({ name: "apply_change", arguments: { previewId } })).toEqual(accepted);
+  });
+
+  it.each([{}, { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html"] } } },
+    { experimental: { "io.modelcontextprotocol/ui": { mimeTypes: [CONFIRMATION_APP_MIME] } } }])
+    ("requires the exact standard UI capability and MIME instead of guessing host support (%j)", async capabilities => {
+      const test = await confirmationAppFixture(); const issue = vi.spyOn(test.approvals, "issueUiChallenge");
+      const { client } = await test.connect({ capabilities });
+      const { record, previewId } = await test.prepare(client);
+      const catalog = await client.listTools();
+      expect(catalog.tools).toHaveLength(24);
+      expect(catalog.tools.some(tool => tool.name === "confirm_change")).toBe(false);
+      expect(catalog.tools.find(tool => tool.name === "apply_change")?._meta).toBeUndefined();
+      expect((await client.listResources()).resources.some(resource => resource.uri === CONFIRMATION_APP_URI)).toBe(false);
+      expect(await client.callTool({ name: "apply_change", arguments: { previewId } }))
+        .toMatchObject({ isError: true, structuredContent: { code: "confirmation_unavailable", reason: "form_not_advertised" } });
+      expect(issue).not.toHaveBeenCalled(); expect((await test.approvals.get(principal, previewId)).status).toBe("pending");
+      expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).not.toBeNull();
+    });
+
+  it("preserves preferred form elicitation for a host that also supports MCP Apps", async () => {
+    const test = await confirmationAppFixture(); const issue = vi.spyOn(test.approvals, "issueUiChallenge");
+    const answer = vi.fn(async (): Promise<ElicitResult> => ({ action: "accept", content: { approve: true } }));
+    const { client } = await test.connect({ capabilities: { ...appCapabilities, elicitation: { form: {} } }, answer });
+    const { record, previewId } = await test.prepare(client);
+    expect((await client.callTool({ name: "apply_change", arguments: { previewId } })).structuredContent)
+      .toMatchObject({ contentIsUntrusted: true, data: { previewId, status: "applied" } });
+    expect(answer).toHaveBeenCalledTimes(1); expect(issue).not.toHaveBeenCalled();
+    expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).toBeNull();
+  });
+
+  it("rejects missing or wrong app proof without declining, and preserves exact cancellation and replay", async () => {
+    const test = await confirmationAppFixture(); const approve = vi.spyOn(test.approvals, "approve");
+    const { client } = await test.connect({ capabilities: appCapabilities });
+    const { record, previewId } = await test.prepare(client);
+    const pending = await client.callTool({ name: "apply_change", arguments: { previewId } });
+    const proof = (pending._meta as any).lifeLinksConfirmation;
+    for (const input of [{ previewId, decision: "accept" }, { ...proof, challenge: "x".repeat(43), decision: "accept" },
+      { ...proof, decision: "accept", confirmed: true }]) {
+      expect((await client.callTool({ name: "confirm_change", arguments: input })).isError).toBe(true);
+    }
+    expect(approve).not.toHaveBeenCalled(); expect((await test.approvals.get(principal, previewId)).status).toBe("pending");
+    const cancelled = await client.callTool({ name: "confirm_change", arguments: { ...proof, decision: "cancel" } });
+    expect(cancelled.structuredContent).toMatchObject({ contentIsUntrusted: true, data: { previewId, status: "cancelled" } });
+    expect((await test.approvals.get(principal, previewId)).uiChallenge).toBeUndefined();
+    expect(await client.callTool({ name: "confirm_change", arguments: { ...proof, decision: "cancel" } })).toEqual(cancelled);
+    expect(await client.callTool({ name: "apply_change", arguments: { previewId } })).toEqual(cancelled);
+    expect(approve).toHaveBeenCalledTimes(1); expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).not.toBeNull();
+  });
+
+  it.each(["foreign-token", "other-client-token", "new-grant-token"])("binds app proof to the exact owner, client and grant (%s)", async token => {
+    const test = await confirmationAppFixture();
+    const owner = await test.connect({ capabilities: appCapabilities });
+    const { record, previewId } = await test.prepare(owner.client);
+    const pending = await owner.client.callTool({ name: "apply_change", arguments: { previewId } });
+    const other = await test.connect({ capabilities: appCapabilities, token });
+    expect(await other.client.callTool({ name: "confirm_change", arguments: { ...(pending._meta as any).lifeLinksConfirmation, decision: "accept" } }))
+      .toMatchObject({ isError: true, structuredContent: { code: "remote_approval_unavailable" } });
+    expect((await test.approvals.get(principal, previewId)).status).toBe("pending");
+    expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).not.toBeNull();
+  });
+
+  it("recovers canonical approval and command receipts after app acceptance loses its completion response", async () => {
+    const test = await confirmationAppFixture(); const approve = vi.spyOn(test.approvals, "approve");
+    const { client } = await test.connect({ capabilities: appCapabilities });
+    const { record, previewId } = await test.prepare(client);
+    const pending = await client.callTool({ name: "apply_change", arguments: { previewId } });
+    const input = { ...(pending._meta as any).lifeLinksConfirmation, decision: "accept" };
+    vi.spyOn(test.approvals, "complete").mockRejectedValueOnce(new Error("synthetic response uncertainty"));
+    expect((await client.callTool({ name: "confirm_change", arguments: input })).isError).toBe(true);
+    expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).toBeNull();
+    expect(await test.approvals.get(principal, previewId)).toMatchObject({ status: "approved" });
+    expect((await test.approvals.get(principal, previewId)).uiChallenge).toBeUndefined();
+    const recovered = await client.callTool({ name: "confirm_change", arguments: input });
+    expect(recovered.structuredContent).toMatchObject({ contentIsUntrusted: true, data: { previewId, status: "applied" } });
+    expect(await client.callTool({ name: "confirm_change", arguments: input })).toEqual(recovered);
+    expect(approve).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["expired", "changed", "revoked"])("refuses app confirmation when the pending authority is %s", async boundary => {
+    const test = await confirmationAppFixture();
+    const { client } = await test.connect({ capabilities: appCapabilities });
+    const { record, previewId } = await test.prepare(client);
+    const pending = await client.callTool({ name: "apply_change", arguments: { previewId } });
+    if (boundary === "expired") {
+      const approval = await test.approvals.get(principal, previewId);
+      await test.state.put("Approval", previewId, { ...approval, expiresAt: new Date(Date.now() - 1000).toISOString() }, 86400);
+    } else if (boundary === "changed") {
+      await test.store.updateLifeLink(principal.ownerId, { lifeLinkId: record.id, expectedUpdatedAt: record.updatedAt, patch: { title: "Changed after preview" } });
+    } else test.revoke();
+    const call = client.callTool({ name: "confirm_change", arguments: { ...(pending._meta as any).lifeLinksConfirmation, decision: "accept" } });
+    if (boundary === "revoked") await expect(call).rejects.toThrow();
+    else expect((await call).isError).toBe(true);
+    expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).not.toBeNull();
   });
 
   it.each([

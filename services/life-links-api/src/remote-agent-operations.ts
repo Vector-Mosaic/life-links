@@ -584,7 +584,7 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
       return publicApproval(await c.approvals.prepare(c, { id: approvalId, operation: command.kind, payload, effects }));
     });
     const applySchema = { previewId: id };
-    tools.push({ name: "apply_change", description: "Apply the exact prepared move/removal. Trusted host elicitation provides the sole deletion confirmation. Unsupported confirmation fails closed; retry the same previewId after uncertainty. Never invent another command.",
+    tools.push({ name: "apply_change", description: "Apply the exact prepared move/removal. Deletion uses the host's exact confirmation form or inline Life Links confirmation card. An awaiting_confirmation result is pending, not a deletion; leave the card for user interaction. Unsupported confirmation fails closed; retry the same previewId after uncertainty. Never invent approval or another command.",
       inputSchema: applySchema, readOnly: false, destructive: true, idempotent: true,
       async execute(raw, c) {
         const { previewId } = z.object(applySchema).strict().parse(raw);

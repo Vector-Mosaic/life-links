@@ -459,6 +459,49 @@ describe("Life Links Postgres integration", () => {
     }
   });
 
+  it("retains a remote UI challenge after pending-flow rollback and consumes it with approval across restart", async () => {
+    const secret = "synthetic-remote-postgres-key";
+    const state = new RemoteAgentState(secret, postgresPool);
+    const approvals = new PersistentRemoteApprovals(state);
+    const principal: RemoteAgentPrincipal = { ownerId: DEMO_OWNER_ID, clientId: `synthetic-ui-client-${randomUUID()}`,
+      grantId: `synthetic-ui-grant-${randomUUID()}`, scopes: ["records:read", "records:write"], expiresAt: Date.now() + 3_600_000 };
+    const input = { operation: "remove", payload: { commandId: randomUUID(), recordId: "synthetic-ui-item" },
+      effects: { removed: ["synthetic-ui-item"], historyPreserved: true } };
+    const preview = await approvals.prepare(principal, input);
+    const pendingApp = new Error("synthetic_pending_app_confirmation");
+    let challenge = "";
+    try {
+      // The adapter throws its pending-card sentinel after put() commits on
+      // the pool connection; only the enclosing advisory-lock transaction rolls back.
+      await expect(approvals.locked(principal, preview.id, async () => {
+        challenge = await approvals.issueUiChallenge(principal, preview.id);
+        throw pendingApp;
+      })).rejects.toBe(pendingApp);
+      expect(challenge).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+      const fresh = new PersistentRemoteApprovals(new RemoteAgentState(secret, postgresPool));
+      await fresh.locked(principal, preview.id, async () => {
+        expect(await fresh.get(principal, preview.id)).toMatchObject({ status: "pending", uiChallenge: challenge,
+          payload: input.payload, effects: input.effects, expiresAt: preview.expiresAt });
+        expect(await fresh.issueUiChallenge(principal, preview.id)).toBe(challenge);
+        await fresh.validateUiChallenge(principal, preview.id, challenge);
+        const approved = await fresh.approve(principal, preview.id, true);
+        expect(approved.status).toBe("approved");
+        expect(approved).not.toHaveProperty("uiChallenge");
+      });
+
+      const restarted = new PersistentRemoteApprovals(new RemoteAgentState(secret, postgresPool));
+      const retained = await restarted.get(principal, preview.id);
+      expect(retained).toMatchObject({ status: "approved", payload: input.payload,
+        effects: input.effects, expiresAt: preview.expiresAt });
+      expect(retained).not.toHaveProperty("uiChallenge");
+      await expect(restarted.locked(principal, preview.id,
+        () => restarted.validateUiChallenge(principal, preview.id, challenge))).rejects.toThrow("confirmation_invalid");
+    } finally {
+      await state.revokeGrant(principal.grantId);
+    }
+  });
+
   it("persists provider management with one canonical grant, stale-write protection and local-only disconnect", async () => {
     const connectionId = "postgres-provider-management";
     const calendarId = "calendar-77777777-7777-4777-8777-777777777777";

@@ -81,6 +81,131 @@ describe("private remote protocol state", () => {
     await expect(approvals.get(owner, preview.id)).rejects.toThrow("remote_approval_expired");
   });
 
+  it("issues one private challenge per pending preview without changing canonical replay or expiry", async () => {
+    vi.useFakeTimers();
+    const state = new RemoteAgentState("synthetic-test-key"); const approvals = new PersistentRemoteApprovals(state);
+    const owner = principal();
+    const input = { id: "preview-ui", operation: "remove", payload: { targetId: "synthetic-item" }, effects: { removed: ["synthetic-item"] } };
+    const preview = await approvals.prepare(owner, input);
+    const writes = vi.spyOn(state, "put");
+    const issue = () => approvals.locked(owner, preview.id, () => approvals.issueUiChallenge(owner, preview.id));
+    const [first, concurrent] = await Promise.all([issue(), issue()]);
+    expect(first).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(Buffer.from(first, "base64url")).toHaveLength(32);
+    expect(concurrent).toBe(first);
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(await issue()).toBe(first);
+    expect(writes).toHaveBeenCalledTimes(1);
+    const replay = await approvals.prepare(owner, input);
+    expect(replay).toMatchObject({ ...preview, uiChallenge: first });
+    expect(replay.expiresAt).toBe(preview.expiresAt);
+    expect(replay.payload).toEqual(input.payload);
+    expect(replay.effects).toEqual(input.effects);
+    await approvals.locked(owner, preview.id, () => approvals.validateUiChallenge(owner, preview.id, first));
+    expect(writes).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["ownerId", "clientId", "grantId"] as const)("binds component challenge issue and validation to the exact %s", async (field) => {
+    const state = new RemoteAgentState("synthetic-test-key"); const approvals = new PersistentRemoteApprovals(state);
+    const owner = principal();
+    const preview = await approvals.prepare(owner, { operation: "remove", payload: {}, effects: { removed: ["test"] } });
+    const challenge = await approvals.locked(owner, preview.id, () => approvals.issueUiChallenge(owner, preview.id));
+    const foreign = { ...owner, [field]: "other-identity" };
+    await expect(approvals.issueUiChallenge(foreign, preview.id)).rejects.toThrow("remote_approval_unavailable");
+    await expect(approvals.validateUiChallenge(foreign, preview.id, challenge)).rejects.toThrow("remote_approval_unavailable");
+    expect(await approvals.get(owner, preview.id)).toMatchObject({ status: "pending", uiChallenge: challenge });
+  });
+
+  it("rejects missing, malformed, wrong and swapped proofs without declining or mutating a preview", async () => {
+    const state = new RemoteAgentState("synthetic-test-key"); const approvals = new PersistentRemoteApprovals(state);
+    const owner = principal();
+    const preview = await approvals.prepare(owner, { operation: "remove", payload: {}, effects: { removed: ["one"] } });
+    const other = await approvals.prepare(owner, { operation: "remove", payload: {}, effects: { removed: ["two"] } });
+    const challenge = await approvals.locked(owner, preview.id, () => approvals.issueUiChallenge(owner, preview.id));
+    const otherChallenge = await approvals.locked(owner, other.id, () => approvals.issueUiChallenge(owner, other.id));
+    const wrong = `${challenge[0] === "A" ? "B" : "A"}${challenge.slice(1)}`;
+    const writes = vi.spyOn(state, "put");
+    for (const proof of [undefined, null, true, { confirmed: true }, "", "!".repeat(43), wrong, otherChallenge]) {
+      await expect(approvals.locked(owner, preview.id, () => approvals.validateUiChallenge(owner, preview.id, proof)))
+        .rejects.toThrow("confirmation_invalid");
+    }
+    expect(writes).not.toHaveBeenCalled();
+    expect(await approvals.get(owner, preview.id)).toMatchObject({ status: "pending", uiChallenge: challenge });
+    await approvals.locked(owner, preview.id, () => approvals.validateUiChallenge(owner, preview.id, challenge));
+  });
+
+  it("refuses expired or revoked challenges without refreshing the pending consent window", async () => {
+    vi.useFakeTimers();
+    const state = new RemoteAgentState("synthetic-test-key"); const approvals = new PersistentRemoteApprovals(state);
+    const owner = principal();
+    const preview = await approvals.prepare(owner, { operation: "remove", payload: {}, effects: { removed: ["test"] } });
+    const challenge = await approvals.locked(owner, preview.id, () => approvals.issueUiChallenge(owner, preview.id));
+    await expect(approvals.validateUiChallenge({ ...owner, expiresAt: Date.now() }, preview.id, challenge))
+      .rejects.toThrow("remote_agent_authorization_expired");
+    vi.advanceTimersByTime(15 * 60_000);
+    await expect(approvals.issueUiChallenge(owner, preview.id)).rejects.toThrow("remote_approval_expired");
+    await expect(approvals.validateUiChallenge(owner, preview.id, challenge)).rejects.toThrow("remote_approval_expired");
+    expect(await state.get("Approval", preview.id)).toMatchObject({ expiresAt: preview.expiresAt, status: "pending", uiChallenge: challenge });
+    await state.revokeGrant(owner.grantId);
+    await expect(approvals.issueUiChallenge(owner, preview.id)).rejects.toThrow("remote_approval_unavailable");
+    await expect(approvals.validateUiChallenge(owner, preview.id, challenge)).rejects.toThrow("remote_approval_unavailable");
+  });
+
+  it.each([true, false])("atomically consumes UI proof with accepted=%s and preserves retry when the write fails", async (accepted) => {
+    const state = new RemoteAgentState("synthetic-test-key"); const approvals = new PersistentRemoteApprovals(state);
+    const owner = principal();
+    const preview = await approvals.prepare(owner, { operation: "remove", payload: {}, effects: { removed: ["test"] } });
+    const challenge = await approvals.locked(owner, preview.id, () => approvals.issueUiChallenge(owner, preview.id));
+    const originalPut = state.put.bind(state);
+    const writes = vi.spyOn(state, "put").mockRejectedValueOnce(new Error("synthetic write unavailable"));
+    const consume = vi.spyOn(state, "consume");
+    const confirm = () => approvals.locked(owner, preview.id, async () => {
+      await approvals.validateUiChallenge(owner, preview.id, challenge);
+      return approvals.approve(owner, preview.id, accepted);
+    });
+    await expect(confirm()).rejects.toThrow("synthetic write unavailable");
+    expect(await approvals.get(owner, preview.id)).toMatchObject({ status: "pending", uiChallenge: challenge });
+    writes.mockImplementation(async (kind, id, row, expiry) => {
+      expect(row.status).toBe(accepted ? "approved" : "declined");
+      expect(row).not.toHaveProperty("uiChallenge");
+      await originalPut(kind, id, row, expiry);
+    });
+    const saved = await confirm();
+    expect(saved.status).toBe(accepted ? "approved" : "declined");
+    expect(saved).not.toHaveProperty("uiChallenge");
+    expect(consume).not.toHaveBeenCalled();
+    expect(writes).toHaveBeenCalledTimes(2);
+    await expect(approvals.validateUiChallenge(owner, preview.id, challenge)).rejects.toThrow("confirmation_invalid");
+    await expect(approvals.issueUiChallenge(owner, preview.id)).rejects.toThrow("confirmation_invalid");
+    expect(await approvals.locked(owner, preview.id, () => approvals.approve(owner, preview.id, !accepted))).toEqual(saved);
+    expect(writes).toHaveBeenCalledTimes(2);
+  });
+
+  it("recovers a committed approval after response loss without requiring or restoring the consumed proof", async () => {
+    const state = new RemoteAgentState("synthetic-test-key"); const approvals = new PersistentRemoteApprovals(state);
+    const owner = principal();
+    const preview = await approvals.prepare(owner, { operation: "remove", payload: {}, effects: { removed: ["test"] } });
+    const challenge = await approvals.locked(owner, preview.id, () => approvals.issueUiChallenge(owner, preview.id));
+    const originalPut = state.put.bind(state);
+    const writes = vi.spyOn(state, "put").mockImplementationOnce(async (...args) => {
+      await originalPut(...args);
+      throw new Error("synthetic response lost");
+    });
+    await expect(approvals.locked(owner, preview.id, async () => {
+      await approvals.validateUiChallenge(owner, preview.id, challenge);
+      return approvals.approve(owner, preview.id, true);
+    })).rejects.toThrow("synthetic response lost");
+    const recovered = await approvals.locked(owner, preview.id, () => approvals.approve(owner, preview.id, true));
+    expect(recovered.status).toBe("approved");
+    expect(recovered).not.toHaveProperty("uiChallenge");
+    expect(writes).toHaveBeenCalledTimes(1);
+    const applied = await approvals.locked(owner, preview.id, () => approvals.complete(owner, preview.id, { saved: true }));
+    expect(applied).toMatchObject({ status: "applied", result: { saved: true } });
+    expect(applied).not.toHaveProperty("uiChallenge");
+    expect(await approvals.locked(owner, preview.id, () => approvals.complete(owner, preview.id, { saved: false }))).toEqual(applied);
+    expect(writes).toHaveBeenCalledTimes(2);
+  });
+
   it("reuses authenticated encryption without changing the existing Calendar namespace", () => {
     const key = Buffer.alloc(32, 7).toString("base64");
     const identity = { id: "synthetic-id", ownerId: "synthetic-owner", purpose: "credential" as const };

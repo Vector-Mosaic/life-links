@@ -13,6 +13,7 @@ import { CalendarDomainError, LifeLinkDomainError } from "@life-links/core";
 import { CalendarProviderGatewayError } from "./calendar-provider-gateway.js";
 import { RemoteAgentAccessError, type RemoteAgentPrincipal, type RemoteAuthorization, type RemoteOperationContext, type RemoteApprovalService } from "./remote-agent-principal.js";
 import type { RemoteAgentOperation } from "./remote-agent-operations.js";
+import { CONFIRMATION_APP_URI, CONFIRMATION_APP_MIME, CONFIRMATION_APP_HTML } from "./remote-confirmation-app.js";
 
 type ConfirmationUnavailableReason = "form_not_advertised" | "method_unsupported" | "invalid_params" | "invalid_reply" |
   "timeout" | "connection_closed" | "request_not_started" | "request_failed";
@@ -24,6 +25,11 @@ export class RemoteMcpError extends Error {
     this.name = "RemoteMcpError";
   }
 }
+
+class PendingAppConfirmation extends Error {
+  constructor(readonly result: CallToolResult) { super("awaiting_confirmation"); }
+}
+type AppConfirmation = { previewId: string; challenge: string; decision: "accept" | "cancel" };
 
 export interface RemoteMcpRouterOptions {
   authenticate(request: Request): Promise<RemoteAgentPrincipal | null>;
@@ -102,7 +108,7 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions): { router
   const origin = new URL(options.publicOrigin).origin;
   const limits = { ...DEFAULT_LIMITS, ...options.limits };
   for (const value of Object.values(limits)) if (!Number.isSafeInteger(value) || value <= 0) throw new Error("invalid_remote_mcp_limit");
-  const names = new Set<string>(["get_life_links_guide"]);
+  const names = new Set<string>(["get_life_links_guide", "confirm_change"]);
   for (const operation of options.operations) {
     if (!NAME.test(operation.name) || names.has(operation.name)) throw new Error("invalid_remote_mcp_catalog");
     names.add(operation.name);
@@ -164,10 +170,17 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions): { router
       } finally { clearTimeout(timer); session.active--; session.lastUsedAt = now(); }
     };
 
-    const requestConfirmation = async (input: Parameters<RemoteOperationContext["requestConfirmation"]>[0], principal: RemoteAgentPrincipal, signal: AbortSignal, extra: Extra) => {
+    const supportsConfirmationApp = () => {
+      const extension = server.server.getClientCapabilities()?.extensions?.["io.modelcontextprotocol/ui"];
+      const mimeTypes = extension && "mimeTypes" in extension ? extension.mimeTypes : undefined;
+      return options.operations.some(operation => operation.name === "apply_change") &&
+        Array.isArray(mimeTypes) && mimeTypes.includes(CONFIRMATION_APP_MIME);
+    };
+    const requestConfirmation = async (input: Parameters<RemoteOperationContext["requestConfirmation"]>[0], principal: RemoteAgentPrincipal, signal: AbortSignal, extra: Extra, appConfirmation?: AppConfirmation) => {
       const advertised = server.server.getClientCapabilities()?.elicitation;
       // The protocol defines legacy elicitation:{} as form support. URL-only is not form support.
-      if (!advertised || !(advertised.form || Object.keys(advertised).length === 0)) throw new RemoteMcpError("confirmation_unavailable", "form_not_advertised");
+      const supportsForm = !!advertised && !!(advertised.form || Object.keys(advertised).length === 0);
+      if (!supportsForm && !supportsConfirmationApp()) throw new RemoteMcpError("confirmation_unavailable", "form_not_advertised");
       if (typeof input.id !== "string" || !input.id || input.id.length > 256) throw new RemoteMcpError("confirmation_invalid");
       const approval = await options.approvals.get(principal, input.id);
       if (approval.status !== "pending" || !(Date.parse(approval.expiresAt) > now()) || !isDeepStrictEqual(approval.effects, input.effects)) {
@@ -180,6 +193,25 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions): { router
       // Refuse oversized confirmations; never truncate the things being deleted.
       if (Buffer.byteLength(effects, "utf8") > 48 * 1024) throw new RemoteMcpError("confirmation_too_large");
       await assertCurrent(principal, signal);
+      if (appConfirmation) {
+        if (!supportsConfirmationApp() || appConfirmation.previewId !== input.id) throw new RemoteMcpError("confirmation_invalid");
+        try { await options.approvals.validateUiChallenge(principal, input.id, appConfirmation.challenge); }
+        catch (error) {
+          if (error instanceof RemoteAgentAccessError && error.code === "confirmation_invalid") throw new RemoteMcpError("confirmation_invalid");
+          throw error;
+        }
+        await assertCurrent(principal, signal);
+        return appConfirmation.decision === "accept";
+      }
+      if (!supportsForm) {
+        // Canonical apply_change already owns the approval lock. Return the
+        // pending card rather than holding its lock/lease across human input.
+        const challenge = await options.approvals.issueUiChallenge(principal, input.id);
+        await assertCurrent(principal, signal);
+        const data = { ok: true, status: "awaiting_confirmation", previewId: approval.id, effects: approval.effects, expiresAt: approval.expiresAt };
+        throw new PendingAppConfirmation({ content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data,
+          _meta: { lifeLinksConfirmation: { previewId: approval.id, challenge } } });
+      }
       let requestStarted = false;
       try {
         const elicit = () => {
@@ -212,30 +244,57 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions): { router
       title: "Life Links usage guide", description: "The owner-approved application usage and agent safety guide.", mimeType: "text/markdown"
     }, async (_uri, extra) => run(extra, async () => ({ contents: [{ uri: GUIDE_URI, mimeType: "text/markdown", text: options.guide }] })));
 
-    for (const operation of options.operations) {
-      server.registerTool(operation.name, {
-        description: operation.description, inputSchema: z.object(operation.inputSchema).strict(),
-        annotations: { readOnlyHint: operation.readOnly, destructiveHint: operation.destructive,
-          idempotentHint: operation.idempotent ?? operation.readOnly, openWorldHint: true }
-      }, async (input, extra) => {
+    const executeOperation = async (operation: RemoteAgentOperation, input: unknown, extra: Extra, appConfirmation?: AppConfirmation) => {
         try {
           return await run(extra, async (current, signal) => {
-            const result = await operation.execute(input, {
-              ...current, signal, approvals: options.approvals,
-              authorize: async (access) => {
-                await assertCurrent(current, signal);
-                try { await options.authorize(current, access); }
-                catch { throw new RemoteMcpError("access_denied"); }
-                await assertCurrent(current, signal);
-              },
-              requestConfirmation: (preview) => requestConfirmation(preview, current, signal, extra)
-            });
+            let result: CallToolResult;
+            try {
+              result = await operation.execute(input, {
+                ...current, signal, approvals: options.approvals,
+                authorize: async (access) => {
+                  await assertCurrent(current, signal);
+                  try { await options.authorize(current, access); }
+                  catch { throw new RemoteMcpError("access_denied"); }
+                  await assertCurrent(current, signal);
+                },
+                requestConfirmation: (preview) => requestConfirmation(preview, current, signal, extra, appConfirmation)
+              });
+            } catch (error) {
+              if (!(error instanceof PendingAppConfirmation)) throw error;
+              result = error.result;
+            }
             if (Buffer.byteLength(JSON.stringify(result), "utf8") > limits.responseBytes) throw new RemoteMcpError("response_too_large");
             return result;
           });
         } catch (error) { return operationFailure(error); }
-      });
+    };
+    let applyTool: ReturnType<McpServer["registerTool"]> | undefined;
+    for (const operation of options.operations) {
+      const registered = server.registerTool(operation.name, {
+        description: operation.description, inputSchema: z.object(operation.inputSchema).strict(),
+        annotations: { readOnlyHint: operation.readOnly, destructiveHint: operation.destructive,
+          idempotentHint: operation.idempotent ?? operation.readOnly, openWorldHint: true }
+      }, (input, extra) => executeOperation(operation, input, extra));
+      if (operation.name === "apply_change") applyTool = registered;
     }
+    let confirmationAppRegistered = false;
+    server.server.oninitialized = () => {
+      const operation = options.operations.find(candidate => candidate.name === "apply_change");
+      if (confirmationAppRegistered || !supportsConfirmationApp() || !operation || !applyTool) return;
+      confirmationAppRegistered = true;
+      applyTool.update({ _meta: { ui: { resourceUri: CONFIRMATION_APP_URI } } });
+      server.registerResource("life-links-confirmation", CONFIRMATION_APP_URI, { title: "Confirm Life Links change", mimeType: CONFIRMATION_APP_MIME },
+        async (_uri, extra) => run(extra, async () => ({ contents: [{ uri: CONFIRMATION_APP_URI, mimeType: CONFIRMATION_APP_MIME, text: CONFIRMATION_APP_HTML,
+          _meta: { ui: { prefersBorder: true, csp: { connectDomains: [], resourceDomains: [], frameDomains: [], baseUriDomains: [] } } } }] })));
+      server.registerTool("confirm_change", {
+        title: "Respond to Life Links confirmation", description: "App-only response to the exact displayed confirmation. Private proof is required; model arguments are not approval.",
+        inputSchema: z.object({ previewId: z.string().min(1).max(256), challenge: z.string().min(1).max(256), decision: z.enum(["accept", "cancel"]) }).strict(),
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }, _meta: { ui: { visibility: ["app"] } }
+      }, async (input, extra) => {
+        if (!supportsConfirmationApp()) return failure("confirmation_invalid");
+        return executeOperation(operation, { previewId: input.previewId }, extra, input);
+      });
+    };
     await server.connect(transport);
     server.server.onclose = () => { session.closed.abort(); initializing.delete(session); if (transport.sessionId) sessions.delete(transport.sessionId); };
     // No raw request, tool arguments, private effects, identity, token or SDK error is logged here.

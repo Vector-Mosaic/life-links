@@ -1,4 +1,4 @@
-import { createHmac, hkdfSync, randomUUID } from "node:crypto";
+import { createHmac, hkdfSync, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import type { Pool, PoolClient } from "pg";
@@ -249,9 +249,31 @@ export class PersistentRemoteApprovals implements RemoteApprovalService {
   locked<T>(principal:RemoteAgentPrincipal,id:string,action:()=>Promise<T>):Promise<T>{
     return this.state.locked("Approval",id,async()=>{await this.get(principal,id);return action();});
   }
+  /** The caller already holds the approval lock; never hold it while the user views the component. */
+  async issueUiChallenge(principal:RemoteAgentPrincipal,id:string):Promise<string>{
+    const row=await this.get(principal,id);
+    if(row.status!=="pending")throw new RemoteAgentAccessError("confirmation_invalid");
+    if(row.uiChallenge!==undefined){
+      if(typeof row.uiChallenge!=="string" || !/^[A-Za-z0-9_-]{43}$/.test(row.uiChallenge))throw new RemoteAgentAccessError("confirmation_invalid");
+      return row.uiChallenge;
+    }
+    row.uiChallenge=randomBytes(32).toString("base64url");
+    await this.state.put("Approval",id,row,24*60*60);
+    return row.uiChallenge;
+  }
+  /** Validate only pending confirmation, without a separate consume/write that could strand a retry. */
+  async validateUiChallenge(principal:RemoteAgentPrincipal,id:string,challenge:unknown):Promise<void>{
+    const row=await this.get(principal,id);
+    if(row.status!=="pending" || typeof row.uiChallenge!=="string" || !/^[A-Za-z0-9_-]{43}$/.test(row.uiChallenge)
+      || typeof challenge!=="string" || !/^[A-Za-z0-9_-]{43}$/.test(challenge)
+      || !timingSafeEqual(Buffer.from(row.uiChallenge,"utf8"),Buffer.from(challenge,"utf8"))){
+      throw new RemoteAgentAccessError("confirmation_invalid");
+    }
+  }
   async approve(principal:RemoteAgentPrincipal,id:string,accepted:boolean):Promise<RemoteApproval>{
     const row=await this.get(principal,id); if(row.status!=="pending")return row;
-    row.status=accepted?"approved":"declined";await this.state.put("Approval",id,row,24*60*60);return row;
+    row.status=accepted?"approved":"declined";delete row.uiChallenge;
+    await this.state.put("Approval",id,row,24*60*60);return row;
   }
   async complete(principal:RemoteAgentPrincipal,id:string,result:unknown):Promise<RemoteApproval>{
     const row=await this.get(principal,id);if(row.status==="applied")return row;
