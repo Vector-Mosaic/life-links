@@ -45,12 +45,15 @@ import { changeHistoryStoreContract } from "./change-history-contract.js";
 import { routineStoreContract } from "./routine-store-contract.js";
 import { calendarStoreContract } from "./calendar-store-contract.js";
 import { attachmentTextStoreContract } from "./attachment-text-store-contract.js";
+import { registrationStoreContract } from "./registration-store-contract.js";
 import { CalendarProviderGateway, calendarProviderCredentialHandle } from "../src/calendar-provider-gateway.js";
 import { PostgresCalendarProviderStateStore } from "../src/calendar-provider-postgres.js";
 import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
 import { CalendarSecretCipher, PostgresCalendarSecretStore } from "../src/calendar-secret-store.js";
 import { PersistentRemoteApprovals, RemoteAgentState } from "../src/remote-agent-state.js";
 import type { RemoteAgentPrincipal } from "../src/remote-agent-principal.js";
+import { invitationFingerprint } from "../src/registration.js";
+import { hashPassword } from "../src/password.js";
 
 const databaseUrl = process.env.LIFE_LINKS_TEST_DATABASE_URL;
 const allowSchemaMutation = process.env.LIFE_LINKS_ALLOW_TEST_DB_SCHEMA === "1";
@@ -90,6 +93,68 @@ describe("Life Links Postgres integration", () => {
   fieldLedgerStoreContract(() => store);
   routineStoreContract(() => store);
   calendarStoreContract(() => store);
+  registrationStoreContract(() => store);
+
+  it("preserves durable invitation capacity across store instances and rolls back failed owner admission", async () => {
+    const second = createPostgresStore(requireTestDatabaseUrl(), schemaName);
+    const invitation = { fingerprint: invitationFingerprint(randomUUID()), maxAccounts: 1,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString() };
+    const base = { displayName: "Isolated judge", passwordHash: await hashPassword("synthetic-judge-password"), timeZone: "UTC", invitation };
+    try {
+      const results = await Promise.allSettled([
+        store.registerOwner({ ...base, email: `${randomUUID()}@example.test` }),
+        second.store.registerOwner({ ...base, email: `${randomUUID()}@example.test` })
+      ]);
+      expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+      expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+      expect(await second.store.registrationAvailable(invitation)).toBe(false);
+      const ledger = await postgresPool.query("SELECT * FROM account_registrations WHERE invitation_fingerprint=$1", [invitation.fingerprint]);
+      expect(ledger.rows).toHaveLength(1);
+      expect(Object.keys(ledger.rows[0]).sort()).toEqual(["created_at", "invitation_fingerprint", "user_id"]);
+      const admitted = results.find(result => result.status === "fulfilled");
+      if (admitted?.status !== "fulfilled") throw new Error("Missing admitted owner");
+      expect(ledger.rows[0].user_id).toBe(admitted.value.id);
+      // A database-side calendar failure must roll back both the user and spent slot.
+      const blockedEmail = `${randomUUID()}@example.test`;
+      const fresh = { ...base, invitation: { ...invitation, fingerprint: invitationFingerprint(randomUUID()) } };
+      await postgresPool.query(`CREATE FUNCTION reject_test_registration_calendar() RETURNS trigger AS $$
+        BEGIN IF NEW.title = 'My Calendar' AND NEW.owner_id NOT IN (SELECT user_id FROM account_registrations)
+          THEN RAISE EXCEPTION 'synthetic registration calendar failure'; END IF; RETURN NEW; END;
+        $$ LANGUAGE plpgsql`);
+      await postgresPool.query("CREATE TRIGGER reject_test_registration_calendar BEFORE INSERT ON calendars FOR EACH ROW EXECUTE FUNCTION reject_test_registration_calendar()");
+      try {
+        await expect(second.store.registerOwner({ ...fresh, email: blockedEmail })).rejects.toThrow("synthetic registration calendar failure");
+      } finally {
+        await postgresPool.query("DROP TRIGGER reject_test_registration_calendar ON calendars");
+        await postgresPool.query("DROP FUNCTION reject_test_registration_calendar()");
+      }
+      expect(await store.getUserByEmail(blockedEmail)).toBeNull();
+      expect(await store.registrationAvailable(fresh.invitation)).toBe(true);
+    } finally { await second.pool.end(); }
+  });
+
+  it("fails the case-insensitive email migration preflight without altering duplicate existing owners", async () => {
+    const duplicateSchema = createSchemaName();
+    await adminPool.query(`CREATE SCHEMA ${quoteIdentifier(duplicateSchema)}`);
+    const isolated = createPostgresStore(requireTestDatabaseUrl(), duplicateSchema);
+    try {
+      await isolated.pool.query("CREATE TABLE users(id text PRIMARY KEY,email text NOT NULL UNIQUE,password_hash text NOT NULL)");
+      await isolated.pool.query("INSERT INTO users VALUES('first','Judge@example.test','unchanged-first'),('second','judge@example.test','unchanged-second')");
+      const before = (await isolated.pool.query("SELECT * FROM users ORDER BY id")).rows;
+      const sql = await fs.readFile(path.join(migrationDir, "020_invitation_registration.sql"), "utf8");
+      const client = await isolated.pool.connect();
+      try {
+        await client.query("BEGIN");
+        await expect(client.query(sql)).rejects.toThrow("case-insensitive email duplicates require owner review");
+        await client.query("ROLLBACK");
+      } finally { client.release(); }
+      expect((await isolated.pool.query("SELECT * FROM users ORDER BY id")).rows).toEqual(before);
+      expect((await isolated.pool.query("SELECT to_regclass('account_registrations') AS value")).rows[0].value).toBeNull();
+    } finally {
+      await isolated.pool.end();
+      await adminPool.query(`DROP SCHEMA ${quoteIdentifier(duplicateSchema)} CASCADE`);
+    }
+  });
 
   it("rechecks Workspace agent permission after concurrent grant revocation before Collection or Routine mutation", async () => {
     const ownerId = DEMO_GUEST_ID;
@@ -835,28 +900,33 @@ describe("Life Links Postgres integration", () => {
   });
 
   it("applies migrations and seed data idempotently from an empty schema", async () => {
-    const migrationCount = await adminPool.query(
-      "SELECT count(*)::int AS count FROM information_schema.tables WHERE table_schema = $1",
-      [schemaName]
-    );
-    expect(migrationCount.rows[0].count).toBeGreaterThanOrEqual(8);
+    // The shared suite creates additional owners. Verify empty-schema seeding in
+    // its own schema so their presence cannot weaken the exact two-owner oracle.
+    const emptySchema = createSchemaName();
+    await adminPool.query(`CREATE SCHEMA ${quoteIdentifier(emptySchema)}`);
+    const isolated = createPostgresStore(requireTestDatabaseUrl(), emptySchema);
+    try {
+      await runMigrations(isolated.pool, migrationDir, logger);
+      expect((await isolated.pool.query("SELECT count(*)::int AS count FROM users")).rows[0].count).toBe(0);
+      await isolated.store.seedDemo(DEMO_PASSWORD, DEFAULT_QR_BASE_URL);
+      await runMigrations(isolated.pool, migrationDir, logger);
+      await isolated.store.seedDemo(DEMO_PASSWORD, DEFAULT_QR_BASE_URL);
 
-    await runMigrations(postgresPool, migrationDir, logger);
-    await store.seedDemo(DEMO_PASSWORD, DEFAULT_QR_BASE_URL);
-
-    const users = await adminPool.query(`SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.users`);
-    const migrations = await adminPool.query(
-      `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
-    );
-    expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(19);
-    const agentConnectionColumn = await adminPool.query(
-      `SELECT is_nullable, data_type
-       FROM information_schema.columns
-       WHERE table_schema = $1 AND table_name = 'users' AND column_name = 'agent_connected_at'`,
-      [schemaName]
-    );
-    expect(agentConnectionColumn.rows).toEqual([{ is_nullable: "YES", data_type: "timestamp with time zone" }]);
+      const users = await isolated.pool.query("SELECT count(*)::int AS count FROM users");
+      const migrations = await isolated.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
+      expect(users.rows[0].count).toBe(2);
+      expect(migrations.rows[0].count).toBe(20);
+      const agentConnectionColumn = await adminPool.query(
+        `SELECT is_nullable, data_type
+         FROM information_schema.columns
+         WHERE table_schema = $1 AND table_name = 'users' AND column_name = 'agent_connected_at'`,
+        [emptySchema]
+      );
+      expect(agentConnectionColumn.rows).toEqual([{ is_nullable: "YES", data_type: "timestamp with time zone" }]);
+    } finally {
+      await isolated.store.close();
+      await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(emptySchema)} CASCADE`);
+    }
   });
 
   it("enforces Field Ledger relational invariants in PostgreSQL itself", async () => {
@@ -1765,7 +1835,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(19);
+      expect(receiptCount.rows[0].count).toBe(20);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1816,7 +1886,7 @@ describe("Life Links Postgres integration", () => {
       const newlyCreated = await fixture.store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
         ownerId, title: "New default", createdAt, steps: [{ id: `routine-step-${randomUUID()}`, activityId, activityTitle: "Prepare", position: 0 }] });
       expect(newlyCreated.currentRevision.revision.ordering).toBe("unordered");
-      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(19);
+      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(20);
     } finally {
       await fixture.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1880,7 +1950,8 @@ describe("Life Links Postgres integration", () => {
         "016_workspace_agent_catalog.sql",
         "017_record_search_attachment_text.sql",
         "018_routine_ordering.sql",
-        "019_remote_agent_protocol_state.sql"
+        "019_remote_agent_protocol_state.sql",
+        "020_invitation_registration.sql"
       ]);
     } finally {
       await concurrent.store.close();

@@ -24,6 +24,8 @@ const webClientPath = path.resolve(testDirectory, "../../../apps/life-links-demo
 const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/workspace/controller.ts");
 
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
+  "GET /api/auth/registration",
+  "POST /api/auth/register",
   "GET /api/records/search",
   "POST /api/calendar-providers/microsoft/authorize",
   "POST /api/calendar-providers/google/authorize",
@@ -555,7 +557,7 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(123);
+    expect(published).toHaveLength(125);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
@@ -747,7 +749,9 @@ describe("Life Links OpenAPI v1", () => {
       "getLifeLinksReadiness",
       "getLifeLinksVersion",
       "getLifeLinksConfig",
-      "loginLifeLinksOwner"
+      "loginLifeLinksOwner",
+      "getLifeLinksRegistrationAvailability",
+      "registerLifeLinksOwner"
     ]) {
       expect(operationById(operations, operationId).security, `${operationId} must remain public`).toEqual([]);
     }

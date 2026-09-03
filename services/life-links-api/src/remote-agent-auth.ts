@@ -2,7 +2,7 @@ import { createHmac, generateKeyPairSync, timingSafeEqual } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import express from "express";
 import cookie from "cookie";
-import Provider, { errors, type Configuration } from "oidc-provider";
+import Provider, { errors, interactionPolicy, type Configuration } from "oidc-provider";
 import type { LifeLinksConfig } from "./config.js";
 import type { LifeLinksStore } from "./store.js";
 import type { Logger } from "./logger.js";
@@ -18,6 +18,11 @@ const CLIENT_FIELDS = new Set(["redirect_uris", "client_name", "client_uri", "lo
 const OAUTH_ERRORS = new Set(["invalid_request", "invalid_client", "invalid_client_metadata", "invalid_redirect_uri", "invalid_grant", "invalid_scope", "invalid_target",
   "unauthorized_client", "unsupported_grant_type", "unsupported_response_type", "access_denied", "login_required", "consent_required", "interaction_required", "server_error"]);
 const INTERACTION_ERRORS = new Set(["invalid_origin", "invalid_csrf", "invalid_redirect_uri", "remote_agent_access_denied"]);
+
+async function browserSessionOwner(cookieHeader:string|undefined,store:LifeLinksStore,config:LifeLinksConfig){
+  const token=cookie.parse(cookieHeader??"")[SESSION_COOKIE];
+  return token?(await store.getSessionByTokenHash(hashSessionToken(token,config.sessionSecret)))?.user:null;
+}
 
 function publicClientRedirect(value: unknown): URL | undefined {
   if(typeof value!=="string" || value.length>2048 || value.includes("\\"))return;
@@ -91,6 +96,17 @@ export class RemoteAgentAuth {
       const value={keys:[{...privateKey.export({format:"jwk"}),use:"sig",alg:"RS256",kid:"life-links-remote-1"}]};
       await state.put("Configuration","signing-keys",value);return value;
     });
+    const policy=interactionPolicy.base();
+    policy.get("login")!.checks.add(new interactionPolicy.Check("life_links_owner_changed",
+      "The current Life Links account must confirm this connection", "login_required", async ctx=>{
+        // The browser app and oidc-provider have independent session cookies.
+        // Reconcile an explicit browser account switch through normal login,
+        // never by changing a grant's owner or silently approving consent.
+        const oauthOwner=ctx.oidc.session?.accountId;
+        if(!oauthOwner)return interactionPolicy.Check.NO_NEED_TO_PROMPT;
+        const browserOwner=await browserSessionOwner(ctx.req.headers.cookie,store,config);
+        return Boolean(browserOwner && browserOwner.id!==oauthOwner);
+      }));
     const configuration:Configuration={
       adapter:state.adapter(),jwks:keys as Configuration["jwks"],
       cookies:{keys:[createHmac("sha256",config.sessionSecret).update("remote-oauth-cookies-v1").digest("base64url")],
@@ -114,7 +130,7 @@ export class RemoteAgentAuth {
       // login session, including OAuth-only clients that do not request OIDC.
       expiresWithSession:()=>false,
       rotateRefreshToken:true,
-      interactions:{url:(_ctx,interaction)=>`${config.qrBaseUrl}/agent-authorize/${interaction.uid}`},
+      interactions:{policy,url:(_ctx,interaction)=>`${config.qrBaseUrl}/agent-authorize/${interaction.uid}`},
       findAccount:async(_ctx,id)=>await store.getUserById(id)?{accountId:id,claims:async()=>({sub:id})}:undefined,
       renderError:(_ctx)=>{_ctx.type="html";_ctx.body=page("Connection unsuccessful","<p>The authorization request could not be completed.</p><p>Return to your agent and connect Life Links again.</p>");},
     };
@@ -136,8 +152,7 @@ export class RemoteAgentAuth {
     return new RemoteAgentAuth(provider,state,store,config,logger);
   }
   private async owner(request:Request){
-    const token=cookie.parse(request.headers.cookie??"")[SESSION_COOKIE];
-    return token?(await this.store.getSessionByTokenHash(hashSessionToken(token,this.config.sessionSecret)))?.user:null;
+    return browserSessionOwner(request.headers.cookie,this.store,this.config);
   }
   private csrf(id:string):string{return createHmac("sha256",this.config.sessionSecret).update(`remote-consent:${id}`).digest("base64url");}
   private checkPost(request:Request,id:string){
@@ -189,9 +204,11 @@ export class RemoteAgentAuth {
       const content=login && !owner?`<label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label>`:
         `<p>${login?"Continue as":"Authorize"} ${html(owner?.email??"your Life Links account")}.</p>`;
       const scopes=String(details.params.scope??"").split(" ").filter(s=>(REMOTE_AGENT_SCOPES as readonly string[]).includes(s));
+      const registrationAvailable=login && this.config.registration && await this.store.registrationAvailable(this.config.registration);
+      const registrationLink=registrationAvailable?`<p>Have a private judge invitation? <a href="${html(`/register?returnTo=${encodeURIComponent(`/agent-authorize/${uid}`)}`)}">Create your private Life Links account</a>.</p>`:"";
       res.type("html").send(page(`Connect ${name} to Life Links`,`${content ? `<form method="post" action="/agent-authorize/${html(uid)}"><input type="hidden" name="csrf" value="${html(this.csrf(uid))}">${content}`:""}
         ${!login?`<p>This connection can work while Life Links is closed. Access stays private to this account.</p><ul>${scopes.map(s=>`<li>${html(s.replace(":",": "))}</li>`).join("")}</ul><p>Calendar access is additionally limited by each calendar's Agent access setting. Your agent cannot grant itself permissions.</p>`:""}
-        <button name="action" value="approve">${login?"Continue":"Connect Life Links"}</button><button class="secondary" name="action" value="cancel">Cancel</button></form>`));
+        <button name="action" value="approve">${login?"Continue":"Connect Life Links"}</button><button class="secondary" name="action" value="cancel">Cancel</button></form>${registrationLink}`));
     }));
     this.router.post("/agent-authorize/:uid",express.urlencoded({extended:false,limit:"12kb"}),handler(async(req,res)=>{
       const details=await this.provider.interactionDetails(req,res);if(details.uid!==req.params.uid)throw new RemoteAgentAccessError();this.checkPost(req,details.uid);

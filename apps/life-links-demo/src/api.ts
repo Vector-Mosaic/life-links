@@ -294,6 +294,25 @@ export async function login(email: string, password: string) {
   });
 }
 
+export interface AccountRegistrationInput {
+  displayName: string;
+  email: string;
+  password: string;
+  invitationCode: string;
+  timeZone?: string;
+}
+
+export async function getRegistration() {
+  return apiFetch<{ enabled: boolean }>("/api/auth/registration");
+}
+
+export async function registerAccount(input: AccountRegistrationInput) {
+  return apiFetch<AuthenticatedApiSession>("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
 export async function logout() {
   return apiFetch<void>("/api/auth/logout", { method: "POST" });
 }

@@ -17,6 +17,9 @@ import { createLifeLinksApp, startLifeLinksServer } from "../src/server.js";
 const BASE = "http://127.0.0.1:43100";
 const CALLBACK = "https://synthetic-agent.example/callback";
 const SCOPES = "openid offline_access records:read records:write routines:read routines:write";
+const JUDGE_INVITATION = "synthetic_private_judge_invitation_123456";
+const JUDGE_REGISTRATION_ENV = { LIFE_LINKS_REGISTRATION_ENABLED: "true", LIFE_LINKS_REGISTRATION_INVITATION_CODE: JUDGE_INVITATION,
+  LIFE_LINKS_REGISTRATION_MAX_ACCOUNTS: "5", LIFE_LINKS_REGISTRATION_EXPIRES_AT: "2099-01-01T00:00:00.000Z" };
 // Codex rust-v0.144.1 perform_oauth_login.rs calls RMCP 1.8.0
 // AuthorizationSession.start_authorization(..., Some("Codex")); that pinned
 // SDK's register_client sends precisely these metadata fields. Only the local
@@ -49,10 +52,25 @@ async function fixture(env: NodeJS.ProcessEnv = {}, integrated = false) {
   const register = async (metadata: Record<string, unknown> = {}) => request(app).post("/oauth/reg").send({ redirect_uris: [CALLBACK],
     client_name: "Synthetic agent", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none", ...metadata });
   const followInternal = async (response: request.Response) => {
-    for (let count = 0; count < 8 && response.status >= 300 && response.status < 400; count++) {
-      const next = new URL(response.headers.location, BASE);
-      if (next.origin !== BASE) return response;
-      response = await browser.get(localPath(next.href)).set("Host", new URL(BASE).host);
+    for (let count = 0; count < 12; count++) {
+      if (response.status >= 300 && response.status < 400) {
+        const next = new URL(response.headers.location, BASE);
+        if (next.origin !== BASE) return response;
+        response = await browser.get(localPath(next.href)).set("Host", new URL(BASE).host);
+        continue;
+      }
+      // Account switching uses oidc-provider's own CSRF-bound session rollover
+      // form. Real browsers auto-submit its exact hash-allowlisted inline script.
+      const rollover = /<form method="post" action="([^"]+\/oauth\/session\/end\/confirm)"/.exec(response.text);
+      if (response.status !== 200 || !rollover) return response;
+      expect(new URL(rollover[1]).origin).toBe(BASE);
+      const script = /<script>([\s\S]*?)<\/script>/.exec(response.text)?.[1];
+      expect(script).toBeDefined();
+      expect(response.headers["content-security-policy"]).toContain(`'sha256-${createHash("sha256").update(script!).digest("base64")}'`);
+      const xsrf = /name="xsrf" value="([^"]+)"/.exec(response.text)?.[1];
+      expect(xsrf).toBeDefined();
+      response = await browser.post(localPath(rollover[1])).set("Host", new URL(BASE).host).set("Origin", "null")
+        .type("form").send({ xsrf, logout: "yes" });
     }
     return response;
   };
@@ -92,6 +110,89 @@ async function fixture(env: NodeJS.ProcessEnv = {}, integrated = false) {
 }
 
 describe("Life Links remote OAuth authorization", () => {
+  it.each([false, true])("requires explicit login and consent for a newly signed-in private browser owner (existing client %s)", async sameClient => {
+    const test = await fixture(JUDGE_REGISTRATION_ENV, true);
+    try {
+      const initialClient = await test.register();
+      const demoFlow = await test.loginConsent(initialClient.body.client_id);
+      const demoTokens = await test.exchange(initialClient.body.client_id, demoFlow.code, demoFlow.verifier);
+      expect(demoTokens.status).toBe(200);
+      expect((await test.authenticate(demoTokens.body.access_token)).ownerId).toBe(test.owner.id);
+      const privateAccount = await test.browser.post("/api/auth/register").set("Origin", BASE).send({
+        displayName: "Private judge", email: "private-judge@example.test", password: "synthetic-private-password", invitationCode: JUDGE_INVITATION });
+      expect(privateAccount.status).toBe(201);
+      const clientId = sameClient ? initialClient.body.client_id : (await test.register({ client_name: "Second synthetic agent" })).body.client_id;
+      const next = await test.begin(clientId);
+      expect(next.response.status).toBe(200);
+      expect(next.response.text).toContain("Continue as private-judge@example.test");
+      expect(next.response.text).not.toContain(test.owner.email);
+      const consent = await test.submit(next.response, {});
+      expect(consent.status).toBe(200);
+      expect(consent.text).toContain("Authorize private-judge@example.test");
+      expect(consent.text).toContain("Connect Life Links");
+      expect(await test.state.listOwned("Grant", privateAccount.body.user.id)).toHaveLength(0);
+      const redirect = await test.submit(consent, {});
+      expect(redirect.status).toBe(303);
+      const privateTokens = await test.exchange(clientId, new URL(redirect.headers.location).searchParams.get("code")!, next.verifier);
+      expect(privateTokens.status).toBe(200);
+      expect((await test.authenticate(privateTokens.body.access_token)).ownerId).toBe(privateAccount.body.user.id);
+      expect((await test.authenticate(demoTokens.body.access_token)).ownerId).toBe(test.owner.id);
+      const refreshedDemo = await request(test.app).post("/oauth/token").type("form").send({ grant_type: "refresh_token",
+        client_id: initialClient.body.client_id, refresh_token: demoTokens.body.refresh_token, resource: test.auth.resource });
+      expect(refreshedDemo.status).toBe(200);
+      expect((await test.authenticate(refreshedDemo.body.access_token)).ownerId).toBe(test.owner.id);
+      expect((await test.store.getUserById(privateAccount.body.user.id))?.agentConnectedAt).toBeNull();
+    } finally { await test.app.locals.closeRemoteAgent(); }
+  });
+
+  it("offers available private signup from OAuth login and resumes the exact interaction with the created owner", async () => {
+    const test = await fixture(JUDGE_REGISTRATION_ENV, true);
+    try {
+      const registration = await test.register();
+      const started = await test.begin(registration.body.client_id);
+      expect(started.response.status).toBe(200);
+      const signupHref = /href="(\/register\?returnTo=[^"]+)"/.exec(started.response.text)?.[1];
+      expect(signupHref).toBeDefined();
+      const returnTo = new URL(signupHref!, BASE).searchParams.get("returnTo")!;
+      expect(returnTo).toMatch(/^\/agent-authorize\/[A-Za-z0-9_-]+$/);
+      expect(started.response.text).toContain(`action="${returnTo}"`);
+      const account = await test.browser.post("/api/auth/register").set("Origin", BASE).send({
+        displayName: "Invited judge", email: "invited-judge@example.test", password: "synthetic-private-password", invitationCode: JUDGE_INVITATION });
+      expect(account.status).toBe(201);
+      const resumed = await test.browser.get(returnTo).set("Host", new URL(BASE).host);
+      expect(resumed.status).toBe(200); expect(resumed.text).toContain("Continue as invited-judge@example.test");
+      const consent = await test.submit(resumed, {});
+      expect(consent.status).toBe(200); expect(consent.text).toContain("Authorize invited-judge@example.test");
+      const redirect = await test.submit(consent, {});
+      const token = await test.exchange(registration.body.client_id, new URL(redirect.headers.location).searchParams.get("code")!, started.verifier);
+      expect(token.status).toBe(200); expect((await test.authenticate(token.body.access_token)).ownerId).toBe(account.body.user.id);
+      expect(await test.state.listOwned("Grant", test.owner.id)).toHaveLength(0);
+    } finally { await test.app.locals.closeRemoteAgent(); }
+  });
+
+  it.each([
+    { LIFE_LINKS_REGISTRATION_ENABLED: "false" }, { LIFE_LINKS_REGISTRATION_EXPIRES_AT: "2020-01-01T00:00:00.000Z" }
+  ])("omits the OAuth signup entry when admission is unavailable %j", async env => {
+    const test = await fixture({ ...JUDGE_REGISTRATION_ENV, ...env }, true);
+    try {
+      const registered = await test.register();
+      const { response } = await test.begin(registered.body.client_id);
+      expect(response.status).toBe(200); expect(response.text).not.toContain("/register?returnTo=");
+    } finally { await test.app.locals.closeRemoteAgent(); }
+  });
+
+  it("omits the OAuth signup entry after the invitation capacity is spent", async () => {
+    const test = await fixture({ ...JUDGE_REGISTRATION_ENV, LIFE_LINKS_REGISTRATION_MAX_ACCOUNTS: "1" }, true);
+    try {
+      expect((await request(test.app).post("/api/auth/register").set("Origin", BASE).send({
+        displayName: "Last invited judge", email: "last-judge@example.test", password: "synthetic-private-password", invitationCode: JUDGE_INVITATION })).status).toBe(201);
+      const registered = await test.register();
+      const { response } = await test.begin(registered.body.client_id);
+      expect(response.status).toBe(200); expect(response.text).toContain('name="password"');
+      expect(response.text).not.toContain("/register?returnTo=");
+    } finally { await test.app.locals.closeRemoteAgent(); }
+  });
+
   it("accepts the exact Codex 0.144.1 native public-client metadata and completes S256 code plus refresh", async () => {
     const test = await fixture({}, true);
     try {

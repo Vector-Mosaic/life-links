@@ -218,6 +218,8 @@ import {
   sameCompetitionFixtureCounts
 } from "./store.js";
 import type { AttachmentTextExtraction } from "./attachment-content.js";
+import { assertRegistrationInvitation, prepareRegisteredOwner, RegistrationAdmissionError,
+  type RegisterOwnerInput, type RegistrationInvitation } from "./registration.js";
 
 type Queryable = Pick<Pool, "query">;
 type StoredLifeLink = Omit<LifeLinkRecord, "qrId" | "media">;
@@ -228,6 +230,40 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
   async getUserByEmail(email: string): Promise<StoredUser | null> {
     const result = await this.pool.query("SELECT * FROM users WHERE lower(email) = lower($1)", [email]);
     return result.rows[0] ? mapUser(result.rows[0]) : null;
+  }
+
+  async registrationAvailable(invitation: RegistrationInvitation): Promise<boolean> {
+    assertRegistrationInvitation(invitation);
+    const result = await this.pool.query(
+      `SELECT count(*)::int < $2 AND clock_timestamp() < $3::timestamptz AS available
+       FROM account_registrations WHERE invitation_fingerprint=$1`,
+      [invitation.fingerprint, invitation.maxAccounts, invitation.expiresAt]
+    );
+    return result.rows[0]?.available === true;
+  }
+
+  async registerOwner(input: RegisterOwnerInput): Promise<StoredUser> {
+    const { user, calendar } = prepareRegisteredOwner(input);
+    try {
+      return await this.withTransaction([`registration-invitation:${input.invitation.fingerprint}`], async client => {
+        const admission = await client.query(
+          `SELECT count(*)::int < $2 AND clock_timestamp() < $3::timestamptz AS available
+           FROM account_registrations WHERE invitation_fingerprint=$1`,
+          [input.invitation.fingerprint, input.invitation.maxAccounts, input.invitation.expiresAt]
+        );
+        if (admission.rows[0]?.available !== true) throw new RegistrationAdmissionError("registration_unavailable");
+        await client.query("INSERT INTO users(id,email,display_name,password_hash,created_at) VALUES($1,$2,$3,$4,$5)",
+          [user.id, user.email, user.displayName, user.passwordHash, user.createdAt]);
+        await insertPostgresCalendar(client, calendar);
+        await client.query("INSERT INTO account_registrations(user_id,invitation_fingerprint,created_at) VALUES($1,$2,$3)",
+          [user.id, input.invitation.fingerprint, user.createdAt]);
+        return user;
+      }, null);
+    } catch (error) {
+      // Do not propagate PostgreSQL's duplicate-value detail (which contains the email).
+      if ((error as { code?: string })?.code === "23505") throw new RegistrationAdmissionError("registration_failed");
+      throw error;
+    }
   }
 
   async getUserById(userId: string): Promise<StoredUser | null> {

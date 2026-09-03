@@ -37,8 +37,10 @@ import { ContextFields } from "./owner/LifeLinkDetail";
 import { AttachmentList } from "./owner/AttachmentList";
 import { RichBodyRenderer } from "./richBody";
 import { Tooltip } from "./ui/Tooltip";
+import { AccountCreationLink, AccountRegistration } from "./AccountRegistration";
+import { LifeLinksIntroduction, PublicInformation } from "./PublicInformation";
 import { LifeLinksWorkspaceProvider, useLifeLinksWorkspace } from "./workspace/LifeLinksWorkspaceProvider";
-import { classifyLifeLinksRoute } from "./workspace/routes";
+import { classifyLifeLinksRoute, isRegistrationPath, publicInformationPageFromPath } from "./workspace/routes";
 
 type Html5QrcodeScanner = InstanceType<typeof import("html5-qrcode").Html5Qrcode>;
 
@@ -165,8 +167,19 @@ function LifeLinksApp() {
           : "inactive";
   const agentRegistrationError = registration.status === "error" ? registration.error.message : "";
 
+  const publicInformationPage = publicInformationPageFromPath(routePathname);
+  if (publicInformationPage) {
+    return <PublicInformation page={publicInformationPage} />;
+  }
+
   if (loading) {
     return <div className="loading-shell">Loading Life Links...</div>;
+  }
+
+  if (isRegistrationPath(routePathname)) {
+    return <AccountRegistration pathname={routePathname} currentUser={currentUser} busy={busy} error={error}
+      onRegister={(input) => controller.registerAccount(input)} onLogout={handleLogout}
+      onComplete={(path) => window.location.assign(path)} />;
   }
 
   if (route.surface === "public-qr") {
@@ -225,6 +238,7 @@ function LoginScreen({ error, busy, onLogin }: { error: string; busy: boolean; o
   return (
     <div className="login-shell">
       <h1 className="ll-brand ll-login-brand">LifeLinks <LifeLinksGlyph /></h1>
+      <LifeLinksIntroduction />
       <LoginForm error={error} busy={busy} onLogin={onLogin} />
     </div>
   );
@@ -410,6 +424,7 @@ function LoginForm({
         <span>{busy ? "Signing in" : "Sign in"}</span>
         <Tooltip text="Sign in with your Life Links email and password." />
       </button>
+      <AccountCreationLink returnTo={window.location.pathname} />
     </form>
   );
 }

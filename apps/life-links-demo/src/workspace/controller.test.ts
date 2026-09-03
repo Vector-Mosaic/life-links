@@ -31,6 +31,10 @@ import { ApiError, type ApiAgentConnection, type CalendarEventDetail, type Colle
 import { writeCanonicalLifeLinkDraft } from "./editorSession";
 import {
   classifyLifeLinksRoute,
+  accountRegistrationPath,
+  accountRegistrationReturnPath,
+  safeAccountReturnPath,
+  publicInformationPageFromPath,
   calendarEventIdFromPath,
   isCalendarPath,
   isRoutinesPath,
@@ -182,6 +186,22 @@ const nativeCalendarEvent: CalendarEventDetail = {
 };
 
 describe("Life Links route classification", () => {
+  it.each(["about", "privacy", "terms"] as const)("keeps public %s outside owner/page-agent routing for either authentication state", (page) => {
+    expect(publicInformationPageFromPath(`/${page}/?source=footer`)).toBe(page);
+    expect(classifyLifeLinksRoute(`/${page}`, true).surface).toBe("login");
+    expect(classifyLifeLinksRoute(`/${page}`, false).surface).toBe("login");
+    expect(publicInformationPageFromPath(`/life-links/${page}`)).toBeNull();
+  });
+  it("keeps signup outside page-agent access and permits only exact local return destinations", () => {
+    expect(classifyLifeLinksRoute("/register", true).surface).toBe("login");
+    for (const path of ["/qr/LL-DEMO-00001", "/agent-authorize/exact_uid-1", "/collections/exact-collection", "/calendar/event-1"]) {
+      expect(accountRegistrationReturnPath(accountRegistrationPath(path))).toBe(path);
+    }
+    expect(safeAccountReturnPath("/calendar?calendarAuthorization=old-value")).toBe("/calendar");
+    for (const path of ["https://evil.test/", "//evil.test/", "/\\evil.test", "/api/auth/logout", "/agent-authorize/../elsewhere", "/register", "/qr/%2f%2fevil.test", "/calendar#other"]) {
+      expect(safeAccountReturnPath(path)).toBe("/life-links");
+    }
+  });
   it("keeps public QR, login, and owner surfaces explicit", () => {
     expect(qrIdFromPath("/qr/LL-DEMO-00001")).toBe("LL-DEMO-00001");
     expect(qrIdFromPath("/qr/Shelf%201/")).toBe("Shelf 1");
@@ -223,6 +243,79 @@ describe("LifeLinksWorkspaceController", () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+  it.each(["/about", "/privacy", "/terms"])("opens public %s without any owner/config bootstrap or private data reads", async (path) => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute(path) });
+    await controller.start();
+    expect(controller.getSnapshot()).toMatchObject({ routePathname: path, loading: false, currentUser: null, links: [] });
+    expect(api.getConfig).not.toHaveBeenCalled();
+    expect(api.getMe).not.toHaveBeenCalled();
+    expect(api.listLinks).not.toHaveBeenCalled();
+    expect(api.listLifeLinks).not.toHaveBeenCalled();
+    expect(api.listCalendars).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+  it("registers an empty private owner with no demo records or implicit agent connection", async () => {
+    const api = fakeApi();
+    api.getMe.mockResolvedValue({ user: null, qrBaseUrl: "https://example.test", agentConnection: disconnectedAgentConnection });
+    api.listLinks.mockResolvedValue({ links: [] });
+    api.listLifeLinks.mockResolvedValue({ lifeLinks: [], nextCursor: null, truncated: false });
+    const privateOwner = { ...owner, id: "owner-private", email: "private@example.test" };
+    api.registerAccount.mockResolvedValue({ user: privateOwner, qrBaseUrl: "https://example.test", agentConnection: disconnectedAgentConnection });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/register") });
+    await controller.start();
+    const input = { displayName: "Judge", email: privateOwner.email, password: "private-password", invitationCode: "x".repeat(32), timeZone: "America/New_York" };
+    expect(await controller.registerAccount(input)).toBe(true);
+    expect(api.registerAccount).toHaveBeenCalledExactlyOnceWith(input);
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: privateOwner, links: [], rootLifeLinks: { items: [], loaded: true }, agentConnection: disconnectedAgentConnection, busy: false });
+    expect(api.connectAgent).not.toHaveBeenCalled();
+    expect(api.createQrBatch).not.toHaveBeenCalled();
+    expect(api.createLifeLink).not.toHaveBeenCalled();
+    expect(JSON.stringify(controller.getSnapshot())).not.toContain(input.password);
+    expect(JSON.stringify(controller.getSnapshot())).not.toContain(input.invitationCode);
+    controller.dispose();
+  });
+
+  it("suppresses duplicate signup and prevents replacing a signed-in owner's identity", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/register") });
+    let finish!: (result: Awaited<ReturnType<LifeLinksWorkspaceApi["registerAccount"]>>) => void;
+    api.registerAccount.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const input = { displayName: "Judge", email: "private@example.test", password: "private-password", invitationCode: "x".repeat(32) };
+    const first = controller.registerAccount(input);
+    expect(await controller.registerAccount(input)).toBe(false);
+    await controller.login(owner.email, "password");
+    expect(api.login).not.toHaveBeenCalled();
+    expect(api.registerAccount).toHaveBeenCalledOnce();
+    finish({ user: owner, qrBaseUrl: "https://example.test", agentConnection: disconnectedAgentConnection });
+    expect(await first).toBe(true);
+    expect(await controller.registerAccount(input)).toBe(false);
+    expect(api.registerAccount).toHaveBeenCalledOnce();
+    expect(controller.getSnapshot().error).toContain("Sign out");
+    controller.dispose();
+  });
+
+  it.each(["registration_unavailable", "registration_failed", "rate_limited"])("keeps %s inline without changing the owner or retrying", async (code) => {
+    const api = fakeApi();
+    api.registerAccount.mockRejectedValue(new ApiError(code === "rate_limited" ? 429 : 403, code, {}));
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/register") });
+    expect(await controller.registerAccount({ displayName: "Judge", email: "private@example.test", password: "private-password", invitationCode: "x".repeat(32) })).toBe(false);
+    expect(api.registerAccount).toHaveBeenCalledOnce();
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, busy: false });
+    expect(controller.getSnapshot().error).not.toBe("");
+    controller.dispose();
+  });
+
+  it("does not repeat successful account creation when the first library load fails", async () => {
+    const api = fakeApi();
+    api.listLinks.mockRejectedValue(new Error("offline"));
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/register") });
+    expect(await controller.registerAccount({ displayName: "Judge", email: "private@example.test", password: "private-password", invitationCode: "x".repeat(32) })).toBe(true);
+    expect(api.registerAccount).toHaveBeenCalledOnce();
+    expect(controller.getSnapshot().currentUser).toEqual(owner);
+    expect(controller.getSnapshot().error).toContain("account was created");
+    controller.dispose();
   });
   it("boots through the shared API boundary and publishes one owner snapshot", async () => {
     const route = new FakeRoute("/");
@@ -3717,6 +3810,11 @@ function fakeApi() {
       agentConnection: disconnectedAgentConnection
     })),
     login: vi.fn(async () => ({
+      user: owner,
+      qrBaseUrl: "https://example.test",
+      agentConnection: disconnectedAgentConnection
+    })),
+    registerAccount: vi.fn<LifeLinksWorkspaceApi["registerAccount"]>(async () => ({
       user: owner,
       qrBaseUrl: "https://example.test",
       agentConnection: disconnectedAgentConnection

@@ -107,7 +107,8 @@ import {
 
 import type { LifeLinksConfig } from "./config.js";
 import type { Logger } from "./logger.js";
-import { createSessionToken, hasSessionTokenShape, hashSessionToken, verifyPassword } from "./password.js";
+import { createSessionToken, hasSessionTokenShape, hashPassword, hashSessionToken, verifyPassword } from "./password.js";
+import { matchesRegistrationInvitation, parseRegistrationRequest, RegistrationAdmissionError } from "./registration.js";
 import {
   ClaimIdempotencyConflictError,
   LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID,
@@ -265,6 +266,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     app.post("/api/calendar-notifications/microsoft", rateLimitGuard(config, logger));
     app.use(createCalendarProviderNotificationRouter(calendarSubscriptionService, wakeCalendarRuntime ?? (() => {})));
   }
+  app.use("/api/auth/register", express.json({ limit: "4kb" }));
   app.use(express.json({ limit: "1mb" }));
   app.use(async (request, _response, next) => {
     const appRequest = request as AppRequest;
@@ -389,6 +391,42 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
       qrBaseUrl: config.qrBaseUrl,
       ...(wantsNativeSession ? { sessionToken: token } : {})
     });
+  });
+
+  app.get("/api/auth/registration", async (_request, response) => {
+    response.setHeader("Cache-Control", "no-store");
+    response.json({ enabled: Boolean(config.registration && await store.registrationAvailable(config.registration)) });
+  });
+
+  app.post("/api/auth/register", async (request: AppRequest, response) => {
+    response.setHeader("Cache-Control", "private, no-store");
+    if (!config.registration || Date.parse(config.registration.expiresAt) <= Date.now()) {
+      response.status(403).json({ error: "registration_unavailable" });
+      return;
+    }
+    const input = parseRegistrationRequest(request.body);
+    if (!input) {
+      response.status(400).json({ error: "invalid_registration" });
+      return;
+    }
+    if (!matchesRegistrationInvitation(input.invitationCode, config.registration)) {
+      response.status(403).json({ error: "registration_unavailable" });
+      return;
+    }
+    try {
+      const passwordHash = await hashPassword(input.password);
+      const user = await store.registerOwner({ displayName: input.displayName, email: input.email,
+        passwordHash, timeZone: input.timeZone, invitation: config.registration });
+      const token = createSessionToken();
+      await store.createSession(user.id, hashSessionToken(token, config.sessionSecret),
+        new Date(Date.now() + config.sessionTtlDays * 24 * 60 * 60 * 1000).toISOString());
+      setSessionCookie(response, token, config);
+      logger.info("life_links.auth.registered", { msg: "Private account created", request_id: request.requestId, user_id: user.id });
+      response.status(201).json({ user: publicUser(user), agentConnection: agentConnectionForUser(user), qrBaseUrl: config.qrBaseUrl });
+    } catch (error) {
+      if (!(error instanceof RegistrationAdmissionError)) throw error;
+      response.status(error.code === "registration_unavailable" ? 403 : 409).json({ error: error.code });
+    }
   });
 
   app.post("/api/auth/logout", async (request: AppRequest, response) => {
@@ -2256,6 +2294,15 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   });
 
   app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
+    if (isRegistrationPath(request.path) || /^\/api\/auth\/registration\/?$/i.test(request.path)) {
+      // Parser/driver messages may contain submitted credentials or unique-key details.
+      const badInput = ["entity.parse.failed", "entity.too.large"].includes(String((error as { type?: string })?.type));
+      logger.error("life_links.auth.registration_error", { msg: "Registration request failed",
+        request_id: (request as AppRequest).requestId, status: badInput ? 400 : 503 });
+      response.setHeader("Cache-Control", "no-store");
+      response.status(badInput ? 400 : 503).json({ error: badInput ? "invalid_registration" : "registration_unavailable" });
+      return;
+    }
     if (error instanceof WorkspaceAgentAccessError) {
       logger.warn("life_links.agent_access.denied", { msg: "Workspace agent operation denied",
         ...requestLogFields(request as AppRequest), reason: error.reason, status: 403 });
@@ -2350,7 +2397,8 @@ function securityHeaders(config: LifeLinksConfig) {
 
 function originGuard(config: LifeLinksConfig, logger: Logger) {
   return (request: Request, response: Response, next: NextFunction) => {
-    if (!config.originCheckEnabled || !isMutatingMethod(request.method)) {
+    const registration = request.method === "POST" && isRegistrationPath(request.path);
+    if ((!config.originCheckEnabled && !registration) || !isMutatingMethod(request.method)) {
       next();
       return;
     }
@@ -2361,11 +2409,11 @@ function originGuard(config: LifeLinksConfig, logger: Logger) {
       next();
       return;
     }
-    if (!origin && !refererOrigin && nativeMutationWithoutBrowserOriginAllowed(appRequest)) {
+    if (!registration && !origin && !refererOrigin && nativeMutationWithoutBrowserOriginAllowed(appRequest)) {
       next();
       return;
     }
-    if (!origin && !refererOrigin && config.originCheckAllowMissing) {
+    if (!registration && !origin && !refererOrigin && config.originCheckAllowMissing) {
       next();
       return;
     }
@@ -2394,10 +2442,12 @@ function nativeMutationWithoutBrowserOriginAllowed(request: AppRequest): boolean
 
 function rateLimitGuard(config: LifeLinksConfig, logger: Logger) {
   const buckets = new Map<string, RateLimitBucket>();
+  const registrationBuckets = new Map<string, RateLimitBucket>();
   let requestsSinceCleanup = 0;
 
   return (request: Request, response: Response, next: NextFunction) => {
-    if (!config.rateLimitEnabled) {
+    const registration = request.method === "POST" && isRegistrationPath(request.path);
+    if (!config.rateLimitEnabled && !registration) {
       next();
       return;
     }
@@ -2407,6 +2457,10 @@ function rateLimitGuard(config: LifeLinksConfig, logger: Logger) {
       return;
     }
     const now = Date.now();
+    const selectedBuckets = registration ? registrationBuckets : buckets;
+    if (registration) {
+      for (const [key, bucket] of registrationBuckets) if (bucket.resetAt <= now) registrationBuckets.delete(key);
+    }
     requestsSinceCleanup += 1;
     if (requestsSinceCleanup > 1000) {
       requestsSinceCleanup = 0;
@@ -2418,9 +2472,10 @@ function rateLimitGuard(config: LifeLinksConfig, logger: Logger) {
     }
 
     const key = `${rule.bucket}:${rateLimitIdentity(request as AppRequest, rule.bucket)}`;
-    const current = buckets.get(key);
-    const bucket = current && current.resetAt > now ? current : { count: 0, resetAt: now + config.rateLimitWindowMs };
-    if (bucket.count >= rule.max) {
+    const current = selectedBuckets.get(key);
+    const bucket = current && current.resetAt > now ? current : { count: 0,
+      resetAt: now + (registration ? 15 * 60_000 : config.rateLimitWindowMs) };
+    if (bucket.count >= rule.max || (registration && !current && registrationBuckets.size >= 5_000)) {
       const retryAfterSeconds = Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
       response.setHeader("Retry-After", String(retryAfterSeconds));
       logger.warn("life_links.security.rate_limited", {
@@ -2437,12 +2492,13 @@ function rateLimitGuard(config: LifeLinksConfig, logger: Logger) {
     }
 
     bucket.count += 1;
-    buckets.set(key, bucket);
+    selectedBuckets.set(key, bucket);
     next();
   };
 }
 
 function rateLimitRuleForRequest(request: Request, config: LifeLinksConfig): { bucket: string; max: number } | null {
+  if (request.method === "POST" && isRegistrationPath(request.path)) return { bucket: "auth_registration", max: 5 };
   if (request.method === "POST" && request.path === "/api/auth/login") {
     return { bucket: "auth_login", max: config.rateLimitLoginMax };
   }
@@ -2465,12 +2521,20 @@ function rateLimitRuleForRequest(request: Request, config: LifeLinksConfig): { b
 }
 
 function rateLimitIdentity(request: AppRequest, bucket: string): string {
+  // Express applies the configured proxy trust to req.ip. Never let an arbitrary
+  // forwarded prefix create a fresh invitation-admission budget.
+  if (bucket === "auth_registration") return `client:${request.ip || request.socket.remoteAddress || "unknown"}`;
   const client = clientAddress(request);
   if (bucket === "auth_login") {
     const email = typeof request.body?.email === "string" ? request.body.email.trim().toLowerCase() : "missing";
     return `${client}:${email}`;
   }
   return request.user?.id ? `user:${request.user.id}` : `client:${client}`;
+}
+
+function isRegistrationPath(pathname: string): boolean {
+  // Express's default route matching is case-insensitive and accepts one trailing slash.
+  return /^\/api\/auth\/register\/?$/i.test(pathname);
 }
 
 function isMutatingMethod(method: string): boolean {

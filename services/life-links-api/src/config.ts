@@ -5,11 +5,13 @@ import { DEFAULT_QR_BASE_URL } from "@life-links/core";
 import { attachmentRuntime, type AttachmentNativeRuntime } from "./attachment-native-runtime.js";
 import type { MicrosoftCalendarAuthConfig } from "./calendar-microsoft-auth.js";
 import type { GoogleCalendarAuthConfig } from "./calendar-google-auth.js";
+import { invitationFingerprint, validInvitationCode, type RegistrationInvitation } from "./registration.js";
 
 export type StoreMode = "postgres" | "memory";
 export type SeedProfile = "legacy-demo" | "competition";
 
 export type LifeLinksConfig = {
+  registration?: RegistrationInvitation;
   attachmentRuntime?: AttachmentNativeRuntime;
   host: string;
   port: number;
@@ -88,6 +90,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
   }
 
   return {
+    registration: readRegistrationConfig(env),
     microsoftCalendar: readMicrosoftCalendarConfig(env, storeMode),
     googleCalendar: readGoogleCalendarConfig(env, storeMode),
     attachmentRuntime: attachmentRuntime(env),
@@ -131,6 +134,20 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
     rateLimitClaimMax: Number(env.RATE_LIMIT_CLAIM_MAX ?? "30"),
     rateLimitBatchMax: Number(env.RATE_LIMIT_BATCH_MAX ?? "12")
   };
+}
+
+function readRegistrationConfig(env: NodeJS.ProcessEnv): RegistrationInvitation | undefined {
+  if (env.LIFE_LINKS_REGISTRATION_ENABLED !== "true") return undefined;
+  const code = env.LIFE_LINKS_REGISTRATION_INVITATION_CODE;
+  const maxAccountsText = env.LIFE_LINKS_REGISTRATION_MAX_ACCOUNTS ?? "";
+  const maxAccounts = Number(maxAccountsText);
+  const expiresAt = env.LIFE_LINKS_REGISTRATION_EXPIRES_AT ?? "";
+  if (!validInvitationCode(code) || !/^[1-9]\d{0,2}$/.test(maxAccountsText) || maxAccounts > 500
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/.test(expiresAt)
+      || !Number.isFinite(Date.parse(expiresAt)) || new Date(expiresAt).toISOString() !== expiresAt) {
+    throw new Error("Invitation registration requires a valid code, account limit (1-500), and ISO UTC expiry.");
+  }
+  return { fingerprint: invitationFingerprint(code), maxAccounts, expiresAt };
 }
 
 function readMicrosoftCalendarConfig(env: NodeJS.ProcessEnv, storeMode: StoreMode): LifeLinksConfig["microsoftCalendar"] {

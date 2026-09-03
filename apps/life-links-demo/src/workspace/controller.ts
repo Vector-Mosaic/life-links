@@ -186,6 +186,7 @@ import {
   listLifeLinks,
   listLinks,
   login,
+  registerAccount,
   logout,
   moveLifeLink,
   searchLifeLinks,
@@ -215,6 +216,7 @@ import {
 } from "../agent/calendarToolHandlers";
 import {
   classifyLifeLinksRoute,
+  publicInformationPageFromPath,
   calendarEventIdFromPath,
   collectionIdFromPath,
   collectionMemberIdFromPath,
@@ -341,6 +343,7 @@ export type LifeLinksWorkspaceApi = {
   getConfig: typeof getConfig;
   getMe: typeof getMe;
   login: typeof login;
+  registerAccount: typeof registerAccount;
   logout: typeof logout;
   connectAgent: typeof connectAgent;
   disconnectAgent: typeof disconnectAgent;
@@ -449,6 +452,7 @@ const defaultApi: LifeLinksWorkspaceApi = {
   getConfig,
   getMe,
   login,
+  registerAccount,
   logout,
   connectAgent,
   disconnectAgent,
@@ -558,6 +562,7 @@ export interface LifeLinksWorkspaceActions {
   scanQr(scanText: string): Promise<void>;
   evaluateFindScan(scanText: string): Promise<void>;
   login(email: string, password: string): Promise<void>;
+  registerAccount(input: Parameters<typeof registerAccount>[0]): Promise<boolean>;
   logout(): Promise<void>;
   connectAgent(): Promise<void>;
   disconnectAgent(): Promise<void>;
@@ -630,6 +635,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private readonly listeners = new Set<() => void>();
   private unsubscribeRoute: (() => void) | null = null;
   private active = false;
+  private authenticationPending = false;
   private lifecycle = 0;
   private navigationRevision = 0;
   private ownerRevision = 0;
@@ -4290,41 +4296,80 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async login(email: string, password: string) {
+    if (this.authenticationPending) return;
+    this.authenticationPending = true;
     this.update({ busy: true, error: "" });
     try {
-      const activeQrId = this.snapshot.activeQrId;
       const result = await this.api.login(email, password);
-      const nextRoute = classifyLifeLinksRoute(this.route.pathname(), true);
-      let initializedRoot: LifeLinkBranchState | undefined;
-      this.update({
-        currentUser: result.user,
-        agentConnection: result.agentConnection,
-        qrBaseUrl: result.qrBaseUrl,
-        routePathname: this.route.pathname(),
-        routeQrId: nextRoute.qrId,
-        routeLifeLinkId: nextRoute.lifeLinkId
-      });
-      if (nextRoute.surface === "public-qr") {
-        await this.refreshActiveQr(nextRoute.qrId);
-      } else {
-        if (!isCollectionsPath(this.route.pathname()) && !isRoutinesPath(this.route.pathname()) &&
-            !isCalendarPath(this.route.pathname())) {
-          await this.refreshOwnerLibrary(result.user);
-          initializedRoot = this.snapshot.rootLifeLinks;
-        }
-      }
-      if (nextRoute.surface === "owner-workspace" &&
-          (nextRoute.lifeLinkId || isCollectionsPath(this.route.pathname()) || isRoutinesPath(this.route.pathname()) ||
-            isCalendarPath(this.route.pathname()) ||
-            this.route.pathname() === "/life-links")) {
-        await this.restoreOwnerRoute(this.route.pathname(), initializedRoot);
-      } else if (nextRoute.surface !== "public-qr" && activeQrId) {
-        await this.refreshActiveQr(activeQrId);
-      }
+      await this.initializeAuthenticatedSession(result);
     } catch (loginError) {
       this.update({ error: messageFromError(loginError) });
     } finally {
+      this.authenticationPending = false;
       this.update({ busy: false });
+    }
+  }
+
+  async registerAccount(input: Parameters<typeof registerAccount>[0]): Promise<boolean> {
+    if (this.authenticationPending) return false;
+    if (this.snapshot.currentUser) {
+      this.update({ error: "Sign out before creating a separate private account." });
+      return false;
+    }
+    this.authenticationPending = true;
+    this.update({ busy: true, error: "" });
+    try {
+      const result = await this.api.registerAccount(input);
+      // The account already exists once this request succeeds. A failed initial
+      // library read must not offer another account-creation submission. The UI
+      // completes navigation and normal startup can retry that read safely.
+      try {
+        await this.initializeAuthenticatedSession(result);
+      } catch {
+        this.update({ error: "Your account was created. Reopen your workspace to finish loading it." });
+      }
+      return true;
+    } catch (issue) {
+      const code = issue instanceof ApiError ? issue.code : "";
+      const messages: Record<string, string> = {
+        invalid_registration: "Check your name, email, password, and invitation code. Passwords must be 12–128 characters.",
+        registration_unavailable: "Account creation is unavailable with this invitation. Check the private invitation instructions or sign in to an existing account.",
+        registration_failed: "We couldn't create an account with those details. If you already have an account, sign in instead.",
+        rate_limited: "Too many attempts. Please wait before trying again; existing account sign-in is still available."
+      };
+      this.update({ error: messages[code] ?? "We couldn't confirm account creation. Try signing in before submitting again." });
+      return false;
+    } finally {
+      this.authenticationPending = false;
+      this.update({ busy: false });
+    }
+  }
+
+  private async initializeAuthenticatedSession(result: Awaited<ReturnType<typeof login>>) {
+    const activeQrId = this.snapshot.activeQrId;
+    const nextRoute = classifyLifeLinksRoute(this.route.pathname(), true);
+    let initializedRoot: LifeLinkBranchState | undefined;
+    this.update({
+      currentUser: result.user,
+      agentConnection: result.agentConnection,
+      qrBaseUrl: result.qrBaseUrl,
+      routePathname: this.route.pathname(),
+      routeQrId: nextRoute.qrId,
+      routeLifeLinkId: nextRoute.lifeLinkId
+    });
+    if (nextRoute.surface === "public-qr") {
+      await this.refreshActiveQr(nextRoute.qrId);
+    } else if (!isCollectionsPath(this.route.pathname()) && !isRoutinesPath(this.route.pathname()) &&
+        !isCalendarPath(this.route.pathname())) {
+      await this.refreshOwnerLibrary(result.user);
+      initializedRoot = this.snapshot.rootLifeLinks;
+    }
+    if (nextRoute.surface === "owner-workspace" &&
+        (nextRoute.lifeLinkId || isCollectionsPath(this.route.pathname()) || isRoutinesPath(this.route.pathname()) ||
+          isCalendarPath(this.route.pathname()) || this.route.pathname() === "/life-links")) {
+      await this.restoreOwnerRoute(this.route.pathname(), initializedRoot);
+    } else if (nextRoute.surface !== "public-qr" && activeQrId) {
+      await this.refreshActiveQr(activeQrId);
     }
   }
 
@@ -5074,6 +5119,10 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   private async boot(lifecycle: number) {
+    if (publicInformationPageFromPath(this.route.pathname())) {
+      this.update({ loading: false });
+      return;
+    }
     try {
       const [config, me] = await Promise.all([this.api.getConfig(), this.api.getMe()]);
       if (!this.isCurrent(lifecycle)) {
@@ -5091,7 +5140,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         routeLifeLinkId: routeState.lifeLinkId
       });
 
-      if (me.user && routeState.surface !== "public-qr" &&
+      if (me.user && routeState.surface === "owner-workspace" &&
           !isCollectionsPath(routePathname) && !isRoutinesPath(routePathname) && !isCalendarPath(routePathname)) {
         await this.refreshOwnerLibrary(me.user);
         if (!this.isCurrent(lifecycle)) {

@@ -84,10 +84,38 @@ export function classifyLifeLinksRoute(pathname: string, authenticated: boolean)
     return { surface: "public-qr", qrId, lifeLinkId: null };
   }
   const lifeLinkId = lifeLinkIdFromPath(pathname);
-  if (authenticated) {
+  if (authenticated && !isRegistrationPath(pathname) && !publicInformationPageFromPath(pathname)) {
     return { surface: "owner-workspace", qrId: null, lifeLinkId };
   }
   return { surface: "login", qrId: null, lifeLinkId };
+}
+
+export function isRegistrationPath(pathname: string): boolean {
+  return pathname.split("?")[0].replace(/\/$/, "") === "/register";
+}
+
+export type PublicInformationPage = "about" | "privacy" | "terms";
+
+export function publicInformationPageFromPath(pathname: string): PublicInformationPage | null {
+  const path = pathname.split("?")[0].replace(/\/$/, "");
+  return path === "/about" ? "about" : path === "/privacy" ? "privacy" : path === "/terms" ? "terms" : null;
+}
+
+// Account entry may resume only an owned app route, never an external URL or an
+// arbitrary endpoint. OAuth interactions need a full navigation after signup.
+export function safeAccountReturnPath(value: string | null | undefined): string {
+  if (!value || /[\\\u0000-\u0020\u007f]/.test(value)) return "/life-links";
+  const allowed = /^\/(?:life-links|collections|routines|calendar)(?:\/[A-Za-z0-9_-]+)?\/?$|^\/(?:qr|agent-authorize)\/[A-Za-z0-9_-]+\/?$/;
+  const path = value.split("?")[0];
+  return allowed.test(path) ? path : "/life-links";
+}
+
+export function accountRegistrationPath(returnTo: string): string {
+  return `/register?returnTo=${encodeURIComponent(safeAccountReturnPath(returnTo))}`;
+}
+
+export function accountRegistrationReturnPath(pathname: string): string {
+  return safeAccountReturnPath(new URLSearchParams(pathname.split("?")[1] ?? "").get("returnTo"));
 }
 
 export interface WorkspaceBrowserRoute {

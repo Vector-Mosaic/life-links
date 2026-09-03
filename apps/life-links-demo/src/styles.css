@@ -600,6 +600,135 @@ label[data-tooltip]:focus-within .tooltip-bubble::before {
   align-self: start;
 }
 
+.registration-shell {
+  align-content: start;
+}
+
+.registration-panel {
+  width: min(600px, 100%);
+}
+
+.registration-panel h2,
+.registration-panel p,
+.account-entry-help p {
+  margin: 0;
+}
+
+.registration-form,
+.account-entry-help {
+  display: grid;
+  gap: 12px;
+}
+
+.account-entry-help {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.account-entry-help a,
+.registration-panel > a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+
+.registration-guide {
+  display: block;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.registration-guide summary {
+  cursor: pointer;
+  color: var(--text);
+}
+
+.registration-guide li + li {
+  margin-top: 10px;
+}
+
+.life-links-introduction {
+  width: min(560px, 100%);
+  text-align: center;
+  line-height: 1.6;
+}
+
+.life-links-introduction h2 {
+  font-size: clamp(1.35rem, 3vw, 1.8rem);
+  margin: 0;
+}
+
+.public-information-shell {
+  min-height: 100vh;
+  padding: clamp(20px, 4vw, 48px);
+  background: var(--page);
+}
+
+.public-information-header,
+.public-information-footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 24px;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.public-information-links,
+.public-information-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.life-links-introduction .public-information-links {
+  justify-content: center;
+}
+
+.public-information-shell a,
+.life-links-introduction a {
+  color: var(--accent);
+  text-underline-offset: 4px;
+}
+
+.public-information-content {
+  max-width: 760px;
+  margin: clamp(32px, 6vw, 72px) auto;
+  font-size: 1.05rem;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+
+.public-information-content h1,
+.public-information-content h2 {
+  line-height: 1.25;
+}
+
+.public-information-content h2 {
+  margin-top: 32px;
+}
+
+.public-information-content li + li {
+  margin-top: 12px;
+}
+
+.public-information-actions {
+  margin-top: 32px;
+}
+
+.public-information-shell a.primary-button {
+  color: var(--on-accent);
+  text-decoration: none;
+}
+
+.public-information-footer {
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+
 .public-shell {
   display: grid;
   grid-template-columns: minmax(300px, 0.72fr) minmax(480px, 1.28fr);

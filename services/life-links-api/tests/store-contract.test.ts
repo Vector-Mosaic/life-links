@@ -28,6 +28,7 @@ import { changeHistoryStoreContract } from "./change-history-contract.js";
 import { routineStoreContract } from "./routine-store-contract.js";
 import { calendarStoreContract } from "./calendar-store-contract.js";
 import { attachmentTextStoreContract } from "./attachment-text-store-contract.js";
+import { registrationStoreContract } from "./registration-store-contract.js";
 
 describe("canonical Life Links store contract", () => {
   let store: InMemoryLifeLinksStore;
@@ -37,6 +38,7 @@ describe("canonical Life Links store contract", () => {
   routineStoreContract(() => store);
   calendarStoreContract(() => store);
   attachmentTextStoreContract(() => store);
+  registrationStoreContract(() => store);
 
   beforeEach(async () => {
     store = new InMemoryLifeLinksStore();

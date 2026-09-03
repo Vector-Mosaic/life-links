@@ -166,6 +166,8 @@ import {
 
 import { hashPassword, verifyPassword } from "./password.js";
 import type { AttachmentTextExtraction } from "./attachment-content.js";
+import { assertRegistrationInvitation, prepareRegisteredOwner, RegistrationAdmissionError,
+  type RegisterOwnerInput, type RegistrationInvitation } from "./registration.js";
 
 export type StoredUser = UserRecord & {
   passwordHash: string;
@@ -390,6 +392,8 @@ export type LifeLinksStore = {
   getChangeHistory(userId: string): Promise<ChangeHistory>;
   undoChange(userId: string, input: UndoChangeInput): Promise<LifeLinkChangeResult>;
   getUserByEmail(email: string): Promise<StoredUser | null>;
+  registrationAvailable(invitation: RegistrationInvitation): Promise<boolean>;
+  registerOwner(input: RegisterOwnerInput): Promise<StoredUser>;
   getUserById(userId: string): Promise<StoredUser | null>;
   connectAgent(userId: string, toolCatalogId?: AgentToolCatalogId): Promise<StoredUser | null>;
   disconnectAgent(userId: string): Promise<StoredUser | null>;
@@ -550,6 +554,7 @@ const CHANGE_MUTATION_LOCK = "\u0000canonical-change";
 export class InMemoryLifeLinksStore implements LifeLinksStore {
   private users = new Map<string, StoredUser>();
   private userIdsByEmail = new Map<string, string>();
+  private registrationCounts = new Map<string, number>();
   private sessions = new Map<string, SessionRecord>();
   private lifeLinks = new Map<string, StoredLifeLink>();
   private collections = new Map<string, CollectionRecord>();
@@ -772,6 +777,25 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   async getUserByEmail(email: string): Promise<StoredUser | null> {
     const userId = this.userIdsByEmail.get(email.toLowerCase());
     return userId ? this.users.get(userId) ?? null : null;
+  }
+
+  async registrationAvailable(invitation: RegistrationInvitation): Promise<boolean> {
+    assertRegistrationInvitation(invitation);
+    return Date.parse(invitation.expiresAt) > Date.now()
+      && (this.registrationCounts.get(invitation.fingerprint) ?? 0) < invitation.maxAccounts;
+  }
+
+  async registerOwner(input: RegisterOwnerInput): Promise<StoredUser> {
+    const { user, calendar } = prepareRegisteredOwner(input);
+    return this.withLocks(["\u0000account-registration"], async () => {
+      if (!(await this.registrationAvailable(input.invitation))) throw new RegistrationAdmissionError("registration_unavailable");
+      if (this.userIdsByEmail.has(user.email.toLowerCase())) throw new RegistrationAdmissionError("registration_failed");
+      this.users.set(user.id, user);
+      this.userIdsByEmail.set(user.email.toLowerCase(), user.id);
+      this.calendars.set(calendar.id, calendar);
+      this.registrationCounts.set(input.invitation.fingerprint, (this.registrationCounts.get(input.invitation.fingerprint) ?? 0) + 1);
+      return user;
+    });
   }
 
   async getUserById(userId: string): Promise<StoredUser | null> {

@@ -6,7 +6,7 @@ import {
   createCalendar, createCalendarEvent, createRoutine, reviseRoutine, getRoutine, updateRoutine, deleteCalendar, deleteCalendarEvent, finalizeRoutineRun,
   createCollectionSection, createLifeLink, disconnectAgent, getCollection, listCollections,
   getActiveRoutineRun, getCalendar, getCalendarClock, getCalendarEvent, listCalendarEvents, listCalendars, listRoutineGroups, listRoutines,
-  listCollectionMembers, listLifeLinkCollectionMemberships, login, moveLifeLink, removeCollectionMember,
+  listCollectionMembers, listLifeLinkCollectionMemberships, login, getRegistration, registerAccount, moveLifeLink, removeCollectionMember,
   removeCollectionSection, replaceCollectionSectionAssignments, setLifeLinkQrBinding,
   updateCollection, updateCollectionSection, updateLifeLink, getLifeLinkAttachmentContent, getLifeLinkAttachmentImage,
   listRoutineOccurrences, materializeRoutineOccurrences, putRoutineRunStepResult,
@@ -20,6 +20,19 @@ import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, ATTACHMENT_IMAGE_MAX_BYTES } from "@
 import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedImageFixture, attachmentTranscriptFixture } from "./attachmentImage.testFixtures";
 
 describe("Life Links API error normalization", () => {
+  it("uses the human cookie session boundary for invitation registration without leaking credentials into the URL", async () => {
+    const session = { user: { id: "private-owner" }, agentConnection: { connected: false }, qrBaseUrl: "https://example.test" };
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ enabled: true })))
+      .mockResolvedValueOnce(new Response(JSON.stringify(session), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const input = { displayName: "Private Judge", email: "private@example.test", password: "a test password", invitationCode: "i".repeat(32), timeZone: "America/New_York" };
+    expect(await getRegistration()).toEqual({ enabled: true });
+    expect(await registerAccount(input)).toEqual(session);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/auth/registration");
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/auth/register");
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST", credentials: "include", body: JSON.stringify(input) });
+    expect(new Headers(fetchMock.mock.calls[1][1].headers).has("X-Life-Links-Actor")).toBe(false);
+  });
   it("narrows Workspace agent Collection and Routine calls without changing human defaults or payload identity", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ preview: { id: "preview-exact" } }), { status: 200, headers: { "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);

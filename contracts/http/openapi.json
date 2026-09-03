@@ -1462,6 +1462,37 @@
         }
       }
     },
+    "/api/auth/registration": {
+      "get": {
+        "operationId": "getLifeLinksRegistrationAvailability",
+        "summary": "Check private invitation registration availability",
+        "description": "Returns only enabled. Disabled configuration, elapsed invitation expiry, or exhausted persistent capacity returns false. Never exposes an invitation, fingerprint, capacity, or account identity.",
+        "tags": ["session"], "security": [],
+        "parameters": [{"$ref":"#/components/parameters/XRequestId"}],
+        "responses": {
+          "200": {"description":"Invitation admission availability.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"},"Cache-Control":{"schema":{"const":"no-store"}}},"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["enabled"],"properties":{"enabled":{"type":"boolean"}}}}}},
+          "503": {"description":"Admission storage unavailable; registration_unavailable, without diagnostic or account details.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "operationId": "registerLifeLinksOwner",
+        "summary": "Create a private owner using a limited invitation",
+        "description": "Browser-only, create-only invitation admission. An allowed Origin or allowed same-origin Referer is mandatory even when general origin checking is disabled; native bearer and missing-origin exceptions do not apply. Bounded to five attempts per client IP per fifteen minutes, including when general rate limits are disabled. Owner, normal native My Calendar (agent access none), and spent invitation capacity commit atomically. A failed or repeated submission never changes an existing password. Email is an unverified sign-in identifier, not verified provider identity or recovery authority. Successful browser session uses an HTTP-only cookie; no token, password, invitation, provider connection, or agent grant is returned. After a lost response, use normal sign-in with the chosen credentials. JSON request limit is 4 KiB.",
+        "tags": ["session"], "security": [],
+        "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"}],
+        "requestBody": {"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RegistrationRequest"}}}},
+        "responses": {
+          "201": {"description":"New private owner and browser cookie session.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"},"Set-Cookie":{"schema":{"type":"string"}},"Cache-Control":{"schema":{"const":"private, no-store"}}},"content":{"application/json":{"schema":{"allOf":[{"$ref":"#/components/schemas/LoginResponse"},{"not":{"required":["sessionToken"]}}]}}}},
+          "400": {"description":"invalid_registration: malformed, excessive, or invalid input.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},
+          "403": {"description":"origin_forbidden or registration_unavailable (disabled, invalid, expired, or exhausted invitation).","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},
+          "409": {"description":"registration_failed: account could not be created. Generic response never returns the existing owner or modifies credentials.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},
+          "429": {"$ref":"#/components/responses/RateLimited"},
+          "503": {"description":"registration_unavailable: temporary failure. If account admission already committed, normal sign-in remains usable.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}}
+        }
+      }
+    },
     "/api/auth/login": {
       "post": {
         "operationId": "loginLifeLinksOwner",
@@ -6505,6 +6536,17 @@
             "private": "#/components/schemas/QrPrivateState",
             "claimed": "#/components/schemas/QrClaimedState"
           }
+        }
+      },
+      "RegistrationRequest": {
+        "type":"object", "additionalProperties":false,
+        "required":["displayName","email","password","invitationCode"],
+        "properties": {
+          "displayName":{"type":"string","minLength":1,"maxLength":100,"description":"Trimmed display name; control characters refused."},
+          "email":{"type":"string","format":"email","minLength":3,"maxLength":254,"description":"Trimmed and normalized to lowercase; not verified ownership of the mailbox."},
+          "password":{"type":"string","format":"password","minLength":12,"maxLength":128,"writeOnly":true,"description":"Used verbatim, never trimmed."},
+          "invitationCode":{"type":"string","minLength":32,"maxLength":128,"pattern":"^[A-Za-z0-9_-]{32,128}$","writeOnly":true,"description":"Private admission-only code supplied in the body, never a URL or an existing-account credential."},
+          "timeZone":{"type":"string","maxLength":100,"default":"UTC","description":"Canonical IANA time zone for the initial native My Calendar. Browser callers send their resolved zone."}
         }
       },
       "LoginRequest": {
