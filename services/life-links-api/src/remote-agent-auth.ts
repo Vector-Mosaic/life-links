@@ -17,6 +17,7 @@ const CLIENT_FIELDS = new Set(["redirect_uris", "client_name", "client_uri", "lo
   "grant_types", "response_types", "token_endpoint_auth_method", "application_type", "scope"]);
 const OAUTH_ERRORS = new Set(["invalid_request", "invalid_client", "invalid_client_metadata", "invalid_redirect_uri", "invalid_grant", "invalid_scope", "invalid_target",
   "unauthorized_client", "unsupported_grant_type", "unsupported_response_type", "access_denied", "login_required", "consent_required", "interaction_required", "server_error"]);
+const INTERACTION_ERRORS = new Set(["invalid_origin", "invalid_csrf", "invalid_redirect_uri", "remote_agent_access_denied"]);
 
 function publicClientRedirect(value: unknown): URL | undefined {
   if(typeof value!=="string" || value.length>2048 || value.includes("\\"))return;
@@ -162,14 +163,19 @@ export class RemoteAgentAuth {
       }
       entry.count++;attempts.set(key,entry);next();
     });
-    const handler=(fn:(req:Request,res:Response)=>Promise<void>)=>(req:Request,res:Response)=>void fn(req,res).catch(()=>{
+    const handler=(fn:(req:Request,res:Response)=>Promise<void>)=>(req:Request,res:Response)=>void fn(req,res).catch((error:unknown)=>{
+      const reason=error instanceof RemoteAgentAccessError && INTERACTION_ERRORS.has(error.code)?error.code:"interaction_request_rejected";
+      this.logger.warn("life_links.remote_oauth.rejected",{reason});
       if(!res.headersSent)res.status(400).type("html").send(page("Connection could not continue","<p>Return to your agent and start the connection again.</p>"));
     });
     const metadata={resource:this.resource,authorization_servers:[this.issuer],scopes_supported:[...REMOTE_AGENT_SCOPES],
       resource_name:"Life Links",resource_documentation:`${this.config.qrBaseUrl}/agent-connections`};
     this.router.get(["/.well-known/oauth-protected-resource","/.well-known/oauth-protected-resource/mcp"],(_req,res)=>res.json(metadata));
     this.router.get("/.well-known/oauth-authorization-server/oauth",(_req,res)=>res.redirect(302,`${this.issuer}/.well-known/openid-configuration`));
-    this.router.use(["/agent-authorize","/agent-connections"],(_req,res,next)=>{res.setHeader("Cache-Control","no-store");res.setHeader("Referrer-Policy","no-referrer");next();});
+    // no-referrer makes a browser's navigate-mode form POST send Origin:null,
+    // including to this same origin. Keep exact-Origin CSRF checks usable while
+    // still withholding the interaction URL from external callback origins.
+    this.router.use(["/agent-authorize","/agent-connections"],(_req,res,next)=>{res.setHeader("Cache-Control","no-store");res.setHeader("Referrer-Policy","same-origin");next();});
     this.router.get("/agent-authorize/:uid",handler(async(req,res)=>{
       const details=await this.provider.interactionDetails(req,res),browserOwner=await this.owner(req);
       const client=await this.provider.Client.find(String(details.params.client_id));

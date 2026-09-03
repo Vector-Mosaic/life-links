@@ -84,7 +84,7 @@ async function fixture(env: NodeJS.ProcessEnv = {}, integrated = false) {
   const exchange = (clientId: string, code: string, verifier: string, callback = CALLBACK) => request(app).post("/oauth/token").type("form").send({
     grant_type: "authorization_code", client_id: clientId, code, code_verifier: verifier, redirect_uri: callback, resource: auth.resource });
   const authenticate = (token: string) => auth.authenticate({ get: (name: string) => name.toLowerCase() === "authorization" ? `Bearer ${token}` : undefined } as Request);
-  return { app, auth, state, store, owner, browser, logs, logger, register, begin, submit, loginConsent, exchange, authenticate, config };
+  return { app, auth, state, store, owner, browser, logs, logger, register, begin, submit, followInternal, loginConsent, exchange, authenticate, config };
 }
 
 describe("Life Links remote OAuth authorization", () => {
@@ -147,6 +147,51 @@ describe("Life Links remote OAuth authorization", () => {
       const redirected = await test.submit(consent, {}, false); expect(redirected.status).toBe(303); verifyPolicy(redirected);
       expect((await request(test.app).get("/api/me")).headers["content-security-policy"]).toBe(unchanged);
       expect((await request(test.app).get("/agent-connections")).headers["content-security-policy"]).toBe(unchanged);
+    } finally { await test.app.locals.closeRemoteAgent(); }
+  });
+
+  it("preserves the browser form Origin without exposing cross-origin referrers, and still refuses invalid Origin or CSRF", async () => {
+    const test = await fixture({}, true);
+    try {
+      const originalPolicy = (await request(test.app).get("/api/me")).headers["referrer-policy"];
+      const registration = await test.register(); expect(registration.status).toBe(201);
+      const humanToken = createSessionToken();
+      await test.store.createSession(test.owner.id, hashSessionToken(humanToken, test.config.sessionSecret), new Date(Date.now() + 60_000).toISOString());
+      test.browser.jar.setCookie(`life_links_session=${humanToken}; Path=/; HttpOnly`, "127.0.0.1", "/");
+      const { response, verifier } = await test.begin(registration.body.client_id);
+      expect(response.status).toBe(200); expect(response.text).toContain(`Continue as ${test.owner.email}`);
+      // Fetch's navigate-mode POST origin serialization treats no-referrer as
+      // null even for a same-origin form; same-origin keeps this form usable
+      // while withholding Referer when navigation leaves Life Links.
+      expect(response.headers["referrer-policy"]).toBe("same-origin");
+      expect(response.headers["cache-control"]).toBe("no-store");
+      const action = /<form method="post" action="([^"]+)"/.exec(response.text)![1];
+      for (const origin of [undefined, "null", "https://private-origin.example", `${BASE}.untrusted.example`]) {
+        let post = test.browser.post(action).set("Host", new URL(BASE).host).type("form");
+        if (origin !== undefined) post = post.set("Origin", origin);
+        const rejected = await post.send({ csrf: csrf(response.text), action: "approve", password: "private-form-sentinel" });
+        expect(rejected.status).toBe(400); expect(rejected.text).not.toContain("private-form-sentinel");
+        expect(test.logs.filter(event => event.event === "life_links.remote_oauth.rejected").at(-1)?.reason).toBe("invalid_origin");
+        expect(await test.state.listOwned("Grant", test.owner.id)).toHaveLength(0);
+      }
+      const badCsrf = await test.browser.post(action).set("Host", new URL(BASE).host).set("Origin", BASE).type("form")
+        .send({ csrf: "private-csrf-sentinel", action: "approve" });
+      expect(badCsrf.status).toBe(400);
+      expect(test.logs.filter(event => event.event === "life_links.remote_oauth.rejected").at(-1)?.reason).toBe("invalid_csrf");
+      const consent = await test.submit(response, {}); expect(consent.status).toBe(200);
+      expect(consent.headers["referrer-policy"]).toBe("same-origin");
+      const redirected = await test.submit(consent, {}, false); expect(redirected.status).toBe(303);
+      expect(redirected.headers["referrer-policy"]).toBe("same-origin");
+      const callback = await test.followInternal(redirected);
+      const code = new URL(callback.headers.location).searchParams.get("code")!;
+      const token = await test.exchange(registration.body.client_id, code, verifier); expect(token.status).toBe(200);
+      const manager = await test.browser.get("/agent-connections").set("Host", new URL(BASE).host);
+      expect(manager.status).toBe(200); expect(manager.headers["referrer-policy"]).toBe("same-origin");
+      expect((await request(test.app).get("/api/me")).headers["referrer-policy"]).toBe(originalPolicy);
+      const serializedLogs = JSON.stringify(test.logs);
+      for (const secret of [humanToken, csrf(response.text), "private-csrf-sentinel", "private-form-sentinel", "private-origin.example", action]) {
+        expect(serializedLogs).not.toContain(secret);
+      }
     } finally { await test.app.locals.closeRemoteAgent(); }
   });
 
