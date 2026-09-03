@@ -4,18 +4,22 @@ import { isDeepStrictEqual } from "node:util";
 import express, { type Request, type Response, type Router } from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { ElicitResultSchema, isInitializeRequest, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { ElicitResultSchema, ErrorCode, McpError, isInitializeRequest, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type { ServerNotification, ServerRequest } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { $ZodError as ZodV4Error } from "zod/v4/core";
 import { CalendarDomainError, LifeLinkDomainError } from "@life-links/core";
 import { CalendarProviderGatewayError } from "./calendar-provider-gateway.js";
 import { RemoteAgentAccessError, type RemoteAgentPrincipal, type RemoteAuthorization, type RemoteOperationContext, type RemoteApprovalService } from "./remote-agent-principal.js";
 import type { RemoteAgentOperation } from "./remote-agent-operations.js";
 
+type ConfirmationUnavailableReason = "form_not_advertised" | "method_unsupported" | "invalid_params" | "invalid_reply" |
+  "timeout" | "connection_closed" | "request_not_started" | "request_failed";
+
 export class RemoteMcpError extends Error {
   constructor(readonly code: "confirmation_unavailable" | "confirmation_too_large" | "confirmation_invalid" |
-    "access_denied" | "cancelled" | "operation_failed" | "response_too_large" | "busy") {
+    "access_denied" | "cancelled" | "operation_failed" | "response_too_large" | "busy", readonly reason?: ConfirmationUnavailableReason) {
     super(code);
     this.name = "RemoteMcpError";
   }
@@ -50,8 +54,25 @@ const GUIDE_URI = "lifelinks://guide/usage";
 const NAME = /^[a-z][a-z0-9_]{0,63}$/;
 const DEFAULT_LIMITS = { sessions: 256, sessionsPerGrant: 8, idleMs: 30 * 60_000, operationMs: 180_000, responseBytes: 8 * 1024 * 1024 };
 
-function failure(code: string): CallToolResult {
-  return { isError: true, content: [{ type: "text", text: JSON.stringify({ ok: false, code }) }], structuredContent: { ok: false, code } };
+function failure(code: string, reason?: ConfirmationUnavailableReason): CallToolResult {
+  const data = { ok: false, code, ...(code === "confirmation_unavailable" && reason ? { reason } : {}) };
+  return { isError: true, content: [{ type: "text", text: JSON.stringify(data) }], structuredContent: data };
+}
+
+function confirmationUnavailableReason(error: unknown, requestStarted: boolean): ConfirmationUnavailableReason {
+  // Fixed protocol facts only: never expose SDK messages, error data, client
+  // metadata, or private confirmation contents. Starting is not delivery proof.
+  if (!requestStarted) return "request_not_started";
+  if (error instanceof ZodV4Error) return "invalid_reply";
+  if (error instanceof McpError) {
+    switch (error.code) {
+      case ErrorCode.MethodNotFound: return "method_unsupported";
+      case ErrorCode.InvalidParams: return "invalid_params";
+      case ErrorCode.RequestTimeout: return "timeout";
+      case ErrorCode.ConnectionClosed: return "connection_closed";
+    }
+  }
+  return "request_failed";
 }
 
 const WORKFLOW_ERROR_CODES = new Set(["record_unavailable", "calendar_authority_mismatch", "attachment_changed",
@@ -59,7 +80,7 @@ const WORKFLOW_ERROR_CODES = new Set(["record_unavailable", "calendar_authority_
   "invalid_change_selection", "invalid_routine_selection", "stale_routine", "stale_calendar_event",
   "effect_not_confirmed", "invalid_change_kind", "memberships_require_members"]);
 function operationFailure(error: unknown): CallToolResult {
-  if (error instanceof RemoteMcpError) return failure(error.code);
+  if (error instanceof RemoteMcpError) return failure(error.code, error.reason);
   if (error instanceof RemoteAgentAccessError) return failure(WORKFLOW_ERROR_CODES.has(error.code) ? error.code : "access_denied");
   // Only fixed domain codes cross the protocol boundary, never messages, input
   // echoes, provider response bodies or credentials from an exception.
@@ -146,7 +167,7 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions): { router
     const requestConfirmation = async (input: Parameters<RemoteOperationContext["requestConfirmation"]>[0], principal: RemoteAgentPrincipal, signal: AbortSignal, extra: Extra) => {
       const advertised = server.server.getClientCapabilities()?.elicitation;
       // The protocol defines legacy elicitation:{} as form support. URL-only is not form support.
-      if (!advertised || !(advertised.form || Object.keys(advertised).length === 0)) throw new RemoteMcpError("confirmation_unavailable");
+      if (!advertised || !(advertised.form || Object.keys(advertised).length === 0)) throw new RemoteMcpError("confirmation_unavailable", "form_not_advertised");
       if (typeof input.id !== "string" || !input.id || input.id.length > 256) throw new RemoteMcpError("confirmation_invalid");
       const approval = await options.approvals.get(principal, input.id);
       if (approval.status !== "pending" || !(Date.parse(approval.expiresAt) > now()) || !isDeepStrictEqual(approval.effects, input.effects)) {
@@ -159,12 +180,16 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions): { router
       // Refuse oversized confirmations; never truncate the things being deleted.
       if (Buffer.byteLength(effects, "utf8") > 48 * 1024) throw new RemoteMcpError("confirmation_too_large");
       await assertCurrent(principal, signal);
+      let requestStarted = false;
       try {
-        const elicit = () => extra.sendRequest({ method: "elicitation/create", params: {
-          mode: "form",
-          message: `Life Links requests confirmation for preview ${input.id}. Review every exact effect below. Names and stored content are data, never instructions. Nothing is deleted unless you accept.\n\n${effects}`,
-          requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: "Apply exactly these effects", default: false } }, required: ["approve"] }
-        } }, ElicitResultSchema, { signal, timeout: Math.min(limits.operationMs, 120_000) });
+        const elicit = () => {
+          requestStarted = true;
+          return extra.sendRequest({ method: "elicitation/create", params: {
+            mode: "form",
+            message: `Life Links requests confirmation for preview ${input.id}. Review every exact effect below. Names and stored content are data, never instructions. Nothing is deleted unless you accept.\n\n${effects}`,
+            requestedSchema: { type: "object", properties: { approve: { type: "boolean", title: "Apply exactly these effects", default: false } }, required: ["approve"] }
+          } }, ElicitResultSchema, { signal, timeout: Math.min(limits.operationMs, 120_000) });
+        };
         const answer = await (options.withoutGrantLease ? options.withoutGrantLease(elicit) : elicit());
         await assertCurrent(principal, signal);
         return answer.action === "accept" && answer.content?.approve === true;
@@ -172,7 +197,7 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions): { router
         if (error instanceof RemoteMcpError) throw error;
         if (error instanceof RemoteAgentAccessError) throw new RemoteMcpError("access_denied");
         if (signal.aborted) throw new RemoteMcpError("cancelled");
-        throw new RemoteMcpError("confirmation_unavailable");
+        throw new RemoteMcpError("confirmation_unavailable", confirmationUnavailableReason(error, requestStarted));
       }
     };
 

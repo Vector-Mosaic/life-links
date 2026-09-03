@@ -4,7 +4,7 @@ import express from "express";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { ElicitRequestSchema, type CallToolResult, type ClientCapabilities, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
+import { ElicitRequestSchema, ErrorCode, McpError, type CallToolResult, type ClientCapabilities, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { DEFAULT_QR_BASE_URL, DEMO_PASSWORD } from "@life-links/core";
@@ -380,8 +380,62 @@ describe("remote MCP Streamable HTTP boundary", () => {
   it.each([{}, { elicitation: { url: {} } }])("refuses destructive work when host form elicitation is unavailable (%j)", async (capabilities) => {
     const test = await fixture(); const { client } = await test.connect({ capabilities });
     const result = await client.callTool({ name: "delete_records", arguments: { previewId: "preview-one" } });
-    expect(result).toMatchObject({ isError: true, structuredContent: { code: "confirmation_unavailable" } });
-    expect(test.writes()).toBe(0); expect(test.approvals.approve).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ isError: true, structuredContent: { ok: false, code: "confirmation_unavailable", reason: "form_not_advertised" } });
+    expect(test.writes()).toBe(0); expect(test.approvals.approve).not.toHaveBeenCalled(); expect(test.approvals.complete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [new McpError(ErrorCode.MethodNotFound, "private synthetic host details"), "method_unsupported"],
+    [new McpError(ErrorCode.InvalidParams, "private synthetic host details"), "invalid_params"],
+    [new McpError(ErrorCode.RequestTimeout, "private synthetic host details"), "timeout"],
+    [new McpError(ErrorCode.ConnectionClosed, "private synthetic host details"), "connection_closed"],
+    [new Error("private synthetic host details"), "request_failed"]
+  ])("reports only a fixed reason for an advertised host's SDK error (%s)", async (error, reason) => {
+    const test = await fixture();
+    const answer = vi.fn(async (): Promise<ElicitResult> => { throw error; });
+    const { client } = await test.connect({ capabilities: { elicitation: { form: {} } }, answer });
+    const result = await client.callTool({ name: "delete_records", arguments: { previewId: "preview-one" } });
+    const expected = { ok: false, code: "confirmation_unavailable", reason };
+    expect(result).toEqual({ isError: true, structuredContent: expected, content: [{ type: "text", text: JSON.stringify(expected) }] });
+    expect(answer).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(result)).not.toContain("private synthetic host details");
+    expect(test.receipts.get("preview-one")!.status).toBe("pending");
+    expect(test.writes()).toBe(0); expect(test.approvals.approve).not.toHaveBeenCalled(); expect(test.approvals.complete).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes a malformed wire reply using the SDK's v4 schema without leaking rejected values or approving effects", async () => {
+    const test = await fixture(); let replaced = 0;
+    const { client } = await test.connect({ capabilities: { elicitation: { form: {} } }, answer: async () => ({ action: "accept", content: { approve: true } }),
+      fetch: async (url, init) => {
+        if (init?.method === "POST" && typeof init.body === "string") {
+          const body = JSON.parse(init.body);
+          // Modify the host's result on the wire, after its own SDK validator,
+          // so the server's real ElicitResultSchema rejects the malformed reply.
+          if (body.result?.action === "accept") {
+            replaced++;
+            return fetch(url, { ...init, body: JSON.stringify({ ...body, result: { action: "private-invalid-action", content: { approve: true } } }) });
+          }
+        }
+        return fetch(url, init);
+      } });
+    const result = await client.callTool({ name: "delete_records", arguments: { previewId: "preview-one" } });
+    const expected = { ok: false, code: "confirmation_unavailable", reason: "invalid_reply" };
+    expect(result).toEqual({ isError: true, structuredContent: expected, content: [{ type: "text", text: JSON.stringify(expected) }] });
+    expect(replaced).toBe(1); expect(JSON.stringify(result)).not.toContain("private-invalid-action");
+    expect(test.receipts.get("preview-one")!.status).toBe("pending");
+    expect(test.writes()).toBe(0); expect(test.approvals.approve).not.toHaveBeenCalled(); expect(test.approvals.complete).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes failure before the SDK request starts from a host rejection", async () => {
+    const test = await fixture({ withoutGrantLease: async () => { throw new McpError(ErrorCode.MethodNotFound, "private lease failure"); } });
+    const answer = vi.fn(async (): Promise<ElicitResult> => ({ action: "accept", content: { approve: true } }));
+    const { client } = await test.connect({ capabilities: { elicitation: { form: {} } }, answer });
+    const result = await client.callTool({ name: "delete_records", arguments: { previewId: "preview-one" } });
+    const expected = { ok: false, code: "confirmation_unavailable", reason: "request_not_started" };
+    expect(result).toEqual({ isError: true, structuredContent: expected, content: [{ type: "text", text: JSON.stringify(expected) }] });
+    expect(answer).not.toHaveBeenCalled(); expect(JSON.stringify(result)).not.toContain("private lease failure");
+    expect(test.receipts.get("preview-one")!.status).toBe("pending");
+    expect(test.writes()).toBe(0); expect(test.approvals.approve).not.toHaveBeenCalled(); expect(test.approvals.complete).not.toHaveBeenCalled();
   });
 
   it("accepts only actual host form approval for the complete durable effects and replays without asking twice", async () => {
