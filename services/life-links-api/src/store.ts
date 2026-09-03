@@ -111,6 +111,8 @@ import {
   createCanonicalRoutineGroup,
   createCanonicalRoutineOccurrence,
   createCanonicalRoutineRevision,
+  normalizeRoutineRevisionId,
+  planRoutineRevisionScheduling,
   createCanonicalRoutineRun,
   createCanonicalRoutineSchedule,
   createCanonicalRoutineSessionAmendment,
@@ -1405,19 +1407,30 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     return this.withOwnerLock(userId, async () => {
       const current = this.routines.get(command.routineId);
       if (!current || current.ownerId !== userId) return null;
+      const previous = this.memoryRoutineRevisionSnapshot(userId, current.id, normalizeRoutineRevisionId(command.expectedCurrentRevisionId));
+      if (!previous) throw new LifeLinkDomainError("stale_routine", "Routine previous revision is unavailable.", { retryable: true });
       const existing = this.routineRevisions.get(command.id);
       if (existing) {
         const snapshot = this.memoryRoutineRevisionSnapshot(userId, current.id, existing.id);
         const { expectedCurrentRevisionId: _expectedCurrentRevisionId, ...revisionCommand } = command;
-        const desired = createCanonicalRoutineRevision(revisionCommand);
-        if (snapshot && current.currentRevisionId === existing.id && sameRoutineCreatePayload(snapshot, desired)) return structuredClone(snapshot);
+        const desired = createCanonicalRoutineRevision(revisionCommand, previous.revision.ordering);
+        if (snapshot && current.currentRevisionId === existing.id && previous.revision.revisionNumber === snapshot.revision.revisionNumber - 1 &&
+            sameRoutineCreatePayload(snapshot, desired)) return structuredClone(snapshot);
         routineIdConflict();
       }
-      const candidate = reviseCanonicalRoutine(current, command);
+      const candidate = reviseCanonicalRoutine(current, command, previous.revision);
       this.assertRoutineDefinitionReferences(userId, current.groupId, candidate.currentRevision, false);
+      if (candidate.currentRevision.steps.some((step) => this.routineSteps.has(step.id)) ||
+          candidate.currentRevision.bindings.some((binding) => this.routineContextBindings.has(binding.id))) routineIdConflict();
       const history = [...this.routineRevisions.values()].filter((item) => item.routineId === current.id);
       if (candidate.currentRevision.revision.revisionNumber !== history.length + 1) throw new LifeLinkDomainError("routine_conflict", "Routine revision number must follow the current history.");
+      const scheduling = planRoutineRevisionScheduling(candidate.currentRevision.revision,
+        [...this.routineSchedules.values()], [...this.routineOccurrences.values()],
+        new Set([...this.routineRuns.values()].filter((run) => run.ownerId === userId && run.routineId === current.id && run.occurrenceId !== null)
+          .map((run) => run.occurrenceId!)));
       this.persistMemoryRoutineCreation(candidate);
+      for (const schedule of scheduling.schedules) this.routineSchedules.set(schedule.id, schedule);
+      for (const occurrence of scheduling.occurrences) this.routineOccurrences.set(occurrence.id, occurrence);
       return structuredClone(candidate.currentRevision);
     });
   }

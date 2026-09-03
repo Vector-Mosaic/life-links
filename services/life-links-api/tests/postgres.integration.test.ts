@@ -423,7 +423,7 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(17);
+    expect(migrations.rows[0].count).toBe(18);
     const agentConnectionColumn = await adminPool.query(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -1339,11 +1339,90 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(17);
+      expect(receiptCount.rows[0].count).toBe(18);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
     }
+  });
+
+  it("backfills legacy Routine ordering without rewriting immutable definitions or execution history", async () => {
+    const fixtureSchema = createSchemaName();
+    await adminPool.query(`CREATE SCHEMA ${quoteIdentifier(fixtureSchema)}`);
+    const fixture = createPostgresStore(requireTestDatabaseUrl(), fixtureSchema);
+    const ownerId = "legacy-routine-owner";
+    const routineId = `routine-${randomUUID()}`;
+    const revisions = [0, 1].map(() => `routine-revision-${randomUUID()}`);
+    const activityId = `activity-${randomUUID()}`;
+    const runId = `routine-run-${randomUUID()}`;
+    const createdAt = "2026-09-01T12:00:00.000Z";
+    try {
+      const preceding = (await fs.readdir(migrationDir)).filter((file) => file.endsWith(".sql") && file < "018_routine_ordering.sql").sort();
+      for (const file of preceding) await applyMigrationFile(fixture.pool, file);
+      const client = await fixture.pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query("INSERT INTO users(id,email,display_name,password_hash,created_at) VALUES($1,$2,'Legacy owner','unused',$3)", [ownerId, "legacy-routine@example.test", createdAt]);
+        await client.query("INSERT INTO routine_activities(id,owner_id,title,created_at,updated_at) VALUES($1,$2,'Prepare',$3,$3)", [activityId, ownerId, createdAt]);
+        await client.query("INSERT INTO routines(id,owner_id,current_revision_id,created_at,updated_at) VALUES($1,$2,$3,$4,$4)", [routineId, ownerId, revisions[1], createdAt]);
+        for (const [index, revisionId] of revisions.entries()) {
+          await client.query("INSERT INTO routine_revisions(id,owner_id,routine_id,revision_number,title,instructions,created_at) VALUES($1,$2,$3,$4,'Legacy steps','Saved instructions',$5)", [revisionId, ownerId, routineId, index + 1, createdAt]);
+          await client.query("INSERT INTO routine_steps(id,owner_id,routine_revision_id,activity_id,activity_title,position) VALUES($1,$2,$3,$4,'Prepare',0)", [`routine-step-${randomUUID()}`, ownerId, revisionId, activityId]);
+        }
+        await client.query("INSERT INTO routine_runs(id,owner_id,routine_id,routine_revision_id,status,started_at,updated_at) VALUES($1,$2,$3,$4,'finalized',$5,$5)", [runId, ownerId, routineId, revisions[0], createdAt]);
+        await client.query("INSERT INTO routine_sessions(id,owner_id,routine_id,routine_revision_id,run_id,context_snapshot,started_at,completed_at) VALUES($1,$2,$3,$4,$5,'[]',$6,$6)", [`routine-session-${randomUUID()}`, ownerId, routineId, revisions[0], runId, createdAt]);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally { client.release(); }
+      const tables = ["routines", "routine_revisions", "routine_steps", "routine_activities", "routine_runs", "routine_sessions"];
+      const before = await Promise.all(tables.map(async (table) =>
+        (await fixture.pool.query(`SELECT to_jsonb(saved_row) - 'ordering' AS saved FROM ${table} saved_row ORDER BY id`)).rows));
+      await runMigrations(fixture.pool, migrationDir, logger);
+      for (const [index, table] of tables.entries()) {
+        expect((await fixture.pool.query(`SELECT to_jsonb(saved_row) - 'ordering' AS saved FROM ${table} saved_row ORDER BY id`)).rows).toEqual(before[index]);
+      }
+      for (const revisionId of revisions) {
+        expect((await fixture.store.getRoutineRevision(ownerId, routineId, revisionId))?.revision.ordering).toBe("ordered");
+      }
+      await expect(fixture.pool.query("UPDATE routine_revisions SET ordering='unordered' WHERE id=$1", [revisions[0]])).rejects.toMatchObject({ code: "23514" });
+      const newlyCreated = await fixture.store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
+        ownerId, title: "New default", createdAt, steps: [{ id: `routine-step-${randomUUID()}`, activityId, activityTitle: "Prepare", position: 0 }] });
+      expect(newlyCreated.currentRevision.revision.ordering).toBe("unordered");
+      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(18);
+    } finally {
+      await fixture.store.close();
+      await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
+    }
+  });
+
+  it("does not re-pin skipped or Run-linked planned Routine occurrences", async () => {
+    const ownerId = DEMO_GUEST_ID;
+    const createdAt = "2026-09-01T12:00:00.000Z";
+    const activity = await store.createActivity({ id: `activity-${randomUUID()}`, ownerId, title: "Prepare", createdAt });
+    const routine = await store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`, ownerId,
+      ordering: "ordered", title: "Protected plans", createdAt,
+      steps: [{ id: `routine-step-${randomUUID()}`, activityId: activity.id, activityTitle: activity.title, position: 0 }] });
+    await store.createRoutineSchedule({ id: `routine-schedule-${randomUUID()}`, ownerId, routineId: routine.routine.id,
+      routineRevisionId: routine.routine.currentRevisionId, createdAt,
+      rule: { kind: "daily", startDate: "2026-09-10", endDate: "2026-09-12", intervalDays: 1, localTime: "12:00", timeZone: "UTC" } });
+    const slots = await store.materializeRoutineOccurrences(ownerId, routine.routine.id, { startDate: "2026-09-10", endDate: "2026-09-12" });
+    const linked = slots.find((slot) => slot.localDate === "2026-09-10")!;
+    const skipped = slots.find((slot) => slot.localDate === "2026-09-11")!;
+    const eligible = slots.find((slot) => slot.localDate === "2026-09-12")!;
+    const run = await store.startRoutineRun(ownerId, { id: `routine-run-${randomUUID()}`, routineId: routine.routine.id, occurrenceId: linked.id, startedAt: createdAt });
+    // Retained legacy data can disagree with the denormalized occurrence status;
+    // the actual Run reference must still prevent a revision re-pin.
+    await postgresPool.query("UPDATE routine_occurrences SET status='planned' WHERE id=$1", [linked.id]);
+    await postgresPool.query("UPDATE routine_occurrences SET status='skipped' WHERE id=$1", [skipped.id]);
+    const before = await Promise.all([linked, skipped].map((slot) => store.getRoutineOccurrence(ownerId, slot.id)));
+    const revised = (await store.reviseRoutine(ownerId, { id: `routine-revision-${randomUUID()}`, ownerId, routineId: routine.routine.id,
+      expectedCurrentRevisionId: routine.routine.currentRevisionId, revisionNumber: 2, title: "New defaults", ordering: "unordered", createdAt: "2026-09-02T12:00:00.000Z",
+      steps: [{ id: `routine-step-${randomUUID()}`, activityId: activity.id, activityTitle: activity.title, position: 0 }] }))!;
+    expect(await Promise.all([linked, skipped].map((slot) => store.getRoutineOccurrence(ownerId, slot.id)))).toEqual(before);
+    expect(await store.getRoutineRun(ownerId, run!.id)).toEqual(run);
+    expect(await store.getRoutineOccurrence(ownerId, eligible.id)).toMatchObject({ routineRevisionId: revised.revision.id, scheduleRevision: 2 });
   });
 
   it("serializes concurrent first-run migrations and rolls back a failed migration body", async () => {
@@ -1373,7 +1452,8 @@ describe("Life Links Postgres integration", () => {
         "014_calendar_account_email.sql",
         "015_collection_changes.sql",
         "016_workspace_agent_catalog.sql",
-        "017_record_search_attachment_text.sql"
+        "017_record_search_attachment_text.sql",
+        "018_routine_ordering.sql"
       ]);
     } finally {
       await concurrent.store.close();

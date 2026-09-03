@@ -32,6 +32,7 @@ import {
   normalizeRoutineScheduleRule,
   normalizeRoutineValues,
   projectRoutineSessionWithAmendments,
+  planRoutineRevisionScheduling,
   resolveRoutineSchedulePlannedFor,
   reviseCanonicalRoutine,
   routineScheduleMatchesLocalDate,
@@ -71,6 +72,7 @@ function createFixture() {
     title: "Weekly shelf review",
     purpose: "Keep a physical area current",
     instructions: "Follow the ordered Steps.",
+    ordering: "ordered",
     steps: [{
       id: id(ROUTINE_STEP_ID_PREFIX, 1),
       activityId: activity.id,
@@ -201,7 +203,7 @@ describe("Routines closed domain model", () => {
         position: 0
       }],
       createdAt: LATER
-    });
+    }, creation.currentRevision.revision);
     expect(revised.routine.currentRevisionId).toBe(id(ROUTINE_REVISION_ID_PREFIX, 2));
     expect(creation.currentRevision.revision.title).toBe("Weekly shelf review");
     expect(creation.currentRevision.steps[0].activityTitle).toBe("Inspect shelf");
@@ -209,7 +211,50 @@ describe("Routines closed domain model", () => {
       id: id(ROUTINE_REVISION_ID_PREFIX, 3), ownerId: OWNER_ID, routineId: creation.routine.id,
       expectedCurrentRevisionId: id(ROUTINE_REVISION_ID_PREFIX, 99), revisionNumber: 3,
       title: "Stale", steps: [], createdAt: LATER
-    })).toThrow(expect.objectContaining({ code: "stale_routine", retryable: true, reason: "stale_current_revision" }));
+    }, creation.currentRevision.revision)).toThrow(expect.objectContaining({ code: "stale_routine", retryable: true, reason: "stale_current_revision" }));
+  });
+
+  it("defaults new Routines to unordered, rejects invalid modes, and inherits an omitted revision mode", () => {
+    const command = { id: id(ROUTINE_ID_PREFIX, 1), revisionId: id(ROUTINE_REVISION_ID_PREFIX, 1), ownerId: OWNER_ID,
+      title: "Flexible routine", steps: [], createdAt: NOW };
+    expect(createCanonicalRoutine(command).currentRevision.revision.ordering).toBe("unordered");
+    for (const ordering of [null, "random", true, "ORDERED"]) {
+      expect(() => createCanonicalRoutine({ ...command, ordering } as never)).toThrow(expect.objectContaining({ reason: "invalid_ordering" }));
+    }
+    for (const ordering of ["ordered", "unordered"] as const) {
+      const original = createCanonicalRoutine({ ...command, ordering });
+      const revision = { id: id(ROUTINE_REVISION_ID_PREFIX, 2), routineId: original.routine.id, ownerId: OWNER_ID,
+        expectedCurrentRevisionId: original.routine.currentRevisionId, revisionNumber: 2, title: "Future routine", steps: [], createdAt: LATER };
+      expect(reviseCanonicalRoutine(original.routine, revision, original.currentRevision.revision).currentRevision.revision.ordering).toBe(ordering);
+      expect(reviseCanonicalRoutine(original.routine, { ...revision, ordering: "unordered" }, original.currentRevision.revision).currentRevision.revision.ordering).toBe("unordered");
+      expect(() => reviseCanonicalRoutine(original.routine, { ...revision, ordering: null } as never, original.currentRevision.revision))
+        .toThrow(expect.objectContaining({ reason: "invalid_ordering" }));
+      expect(original.currentRevision.revision.ordering).toBe(ordering);
+    }
+  });
+
+  it("re-pins only active schedules and strictly future planned occurrences without any Run", () => {
+    const { creation } = createFixture();
+    const schedule = createCanonicalRoutineSchedule({ id: id(ROUTINE_SCHEDULE_ID_PREFIX, 1), ownerId: OWNER_ID,
+      routineId: creation.routine.id, routineRevisionId: creation.routine.currentRevisionId,
+      rule: { kind: "once", localDate: "2026-09-02", localTime: "12:00", timeZone: "UTC" }, createdAt: NOW });
+    const inactive = { ...schedule, id: id(ROUTINE_SCHEDULE_ID_PREFIX, 2), active: false };
+    const foreign = { ...schedule, id: id(ROUTINE_SCHEDULE_ID_PREFIX, 3), ownerId: "another-owner" };
+    const occurrence = createCanonicalRoutineOccurrence(schedule, { id: id(ROUTINE_OCCURRENCE_ID_PREFIX, 1), localDate: "2026-09-02", createdAt: NOW });
+    const occurrences = [occurrence,
+      ...(["canceled", "skipped", "started", "completed"] as const).map((status, index) => ({ ...occurrence, id: id(ROUTINE_OCCURRENCE_ID_PREFIX, index + 2), status })),
+      { ...occurrence, id: id(ROUTINE_OCCURRENCE_ID_PREFIX, 6), plannedFor: NOW },
+      { ...occurrence, id: id(ROUTINE_OCCURRENCE_ID_PREFIX, 7), plannedFor: "2026-08-31T12:00:00.000Z" },
+      { ...occurrence, id: id(ROUTINE_OCCURRENCE_ID_PREFIX, 8) },
+      { ...occurrence, id: id(ROUTINE_OCCURRENCE_ID_PREFIX, 9), scheduleId: inactive.id },
+      { ...occurrence, id: id(ROUTINE_OCCURRENCE_ID_PREFIX, 10), ownerId: foreign.ownerId }];
+    const before = structuredClone({ schedules: [schedule, inactive, foreign], occurrences });
+    const revision = { ...creation.currentRevision.revision, id: id(ROUTINE_REVISION_ID_PREFIX, 2), revisionNumber: 2, ordering: "unordered" as const };
+    const changed = planRoutineRevisionScheduling(revision, before.schedules, occurrences, new Set([occurrences[7].id]));
+    expect(changed.schedules).toEqual([{ ...schedule, routineRevisionId: revision.id, revision: 2, updatedAt: "2026-09-01T12:00:00.001Z" }]);
+    expect(changed.occurrences).toEqual([{ ...occurrence, routineRevisionId: revision.id, scheduleRevision: 2, updatedAt: "2026-09-01T12:00:00.001Z" }]);
+    expect({ schedules: [schedule, inactive, foreign], occurrences }).toEqual(before);
+    expect(planRoutineRevisionScheduling(revision, changed.schedules, changed.occurrences, new Set())).toEqual({ schedules: [], occurrences: [] });
   });
 
   it("supports one-time, daily, and weekly IANA schedule rules with bounded materialization", () => {

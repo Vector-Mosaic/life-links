@@ -11,6 +11,9 @@ import {
 } from "lucide-react";
 import type {
   RoutineScheduleRule,
+  RoutineRevisionRecord,
+  RoutineRevisionSnapshot,
+  RoutineContextBindingRecord,
   RoutineStepRecord,
   RoutineValue,
   RoutineValueKind,
@@ -28,6 +31,8 @@ import {
   localIsoDate,
   resultDraftValue,
   routineEntityId,
+  routineEntryLabel,
+  routineRecordedRevision,
   routineValueRaw,
   routineValueToDraft,
   type RoutineDialogState,
@@ -148,6 +153,7 @@ function SimpleRoutineCreateDialog({ kind, controller, snapshot, onClose }: {
 
 type RoutineStepDraft = {
   localId: string;
+  newActivityId: string;
   sourceStepId: string | null;
   activityId: string;
   activityTitle: string;
@@ -159,12 +165,12 @@ type RoutineStepDraft = {
 type RoutineLifeLinkSelection = { id: string; title: string };
 
 function blankStep(): RoutineStepDraft {
-  return { localId: crypto.randomUUID(), sourceStepId: null, activityId: "", activityTitle: "", instructions: "", optional: false, plannedValues: [] };
+  return { localId: routineEntityId("routine-step-"), newActivityId: routineEntityId("activity-"), sourceStepId: null, activityId: "", activityTitle: "", instructions: "", optional: false, plannedValues: [] };
 }
 
 function stepFromRecord(step: RoutineStepRecord): RoutineStepDraft {
   return {
-    localId: crypto.randomUUID(), sourceStepId: step.id, activityId: step.activityId,
+    localId: routineEntityId("routine-step-"), newActivityId: routineEntityId("activity-"), sourceStepId: step.id, activityId: step.activityId,
     activityTitle: step.activityTitle, instructions: step.instructions, optional: step.optional,
     plannedValues: step.plannedValues.map(routineValueToDraft)
   };
@@ -176,10 +182,14 @@ function RoutineDefinitionDialog({ revise, controller, snapshot, onClose }: {
   snapshot: LifeLinksWorkspaceSnapshot;
   onClose(): void;
 }) {
-  const existing = revise ? snapshot.routineWorkspace.selectedRoutine : null;
+  const [existing] = useState(() => revise ? snapshot.routineWorkspace.selectedRoutine : null);
+  const [saveIdentity] = useState(() => ({ id: routineEntityId("routine-"), revisionId: routineEntityId("routine-revision-") }));
+  const bindingIds = useRef(new Map<string, string>());
   const [title, setTitle] = useState(existing?.currentRevision.revision.title ?? "");
   const [purpose, setPurpose] = useState(existing?.currentRevision.revision.purpose ?? "");
   const [instructions, setInstructions] = useState(existing?.currentRevision.revision.instructions ?? "");
+  const [ordering, setOrdering] = useState<RoutineRevisionRecord["ordering"]>(existing?.currentRevision.revision.ordering ?? "unordered");
+  const entryLabel = routineEntryLabel(ordering);
   const [groupId, setGroupId] = useState(existing?.routine.groupId ?? "");
   const [steps, setSteps] = useState<RoutineStepDraft[]>(existing?.currentRevision.steps.map(stepFromRecord) ?? [blankStep()]);
   const [contextCollectionIds, setContextCollectionIds] = useState<string[]>(() => existing?.currentRevision.bindings
@@ -215,19 +225,19 @@ function RoutineDefinitionDialog({ revise, controller, snapshot, onClose }: {
   async function submit() {
     setSaving(true); setError("");
     try {
-      if (!steps.length) throw new Error("A Routine needs at least one Step.");
+      if (!steps.length) throw new Error(`A Routine needs at least one ${entryLabel}.`);
       const resolved = [...steps];
       for (let index = 0; index < resolved.length; index += 1) {
         const draft = resolved[index];
         if (draft.activityId) continue;
-        if (!draft.activityTitle.trim()) throw new Error(`Step ${index + 1} needs an Activity.`);
-        const activity = await controller.createRoutineActivity({ title: draft.activityTitle.trim() });
+        if (!draft.activityTitle.trim()) throw new Error(`Every ${entryLabel} needs an Activity name.`);
+        const activity = await controller.createRoutineActivity({ id: draft.newActivityId, title: draft.activityTitle.trim() });
         resolved[index] = { ...draft, activityId: activity.id, activityTitle: activity.title };
         // Preserve each successfully created Activity in the form so a later
         // Routine failure can be retried without creating duplicate Activities.
         setSteps([...resolved]);
       }
-      const apiStepIds = new Map(resolved.map((step) => [step.localId, routineEntityId("routine-step-")]));
+      const apiStepIds = new Map(resolved.map((step) => [step.localId, step.localId]));
       const oldToNewStep = new Map(resolved.flatMap((step) => step.sourceStepId ? [[step.sourceStepId, apiStepIds.get(step.localId)!] as const] : []));
       const apiSteps = resolved.map((step, position) => ({
         id: apiStepIds.get(step.localId), activityId: step.activityId, activityTitle: step.activityTitle,
@@ -238,6 +248,14 @@ function RoutineDefinitionDialog({ revise, controller, snapshot, onClose }: {
         ...contextCollectionIds.map((targetId) => ({ targetType: "collection" as const, targetId, routineStepId: null })),
         ...contextLifeLinks.map(({ id: targetId }) => ({ targetType: "life_link" as const, targetId, routineStepId: null }))
       ];
+      function stableBindings(bindings: Array<Pick<RoutineContextBindingRecord, "targetType" | "targetId" | "routineStepId">>) {
+        return bindings.map((binding) => {
+          const key = JSON.stringify([binding.targetType, binding.targetId, binding.routineStepId]);
+          let id = bindingIds.current.get(key);
+          if (!id) { id = routineEntityId("routine-binding-"); bindingIds.current.set(key, id); }
+          return { ...binding, id };
+        });
+      }
       if (existing) {
         const stepBindings = existing.currentRevision.bindings.flatMap((binding) => {
           if (binding.routineStepId === null) return [];
@@ -245,11 +263,12 @@ function RoutineDefinitionDialog({ revise, controller, snapshot, onClose }: {
           return routineStepId ? [{ targetType: binding.targetType, targetId: binding.targetId, routineStepId }] : [];
         });
         await controller.reviseRoutine(existing.routine.id, {
+          revisionId: saveIdentity.revisionId,
           expectedCurrentRevisionId: existing.currentRevision.revision.id,
-          title, purpose, instructions, steps: apiSteps, bindings: [...routineBindings, ...stepBindings]
+          title, purpose, instructions, ordering, steps: apiSteps, bindings: stableBindings([...routineBindings, ...stepBindings])
         });
       } else {
-        await controller.createRoutine({ groupId: groupId || null, title, purpose, instructions, steps: apiSteps, bindings: routineBindings });
+        await controller.createRoutine({ ...saveIdentity, groupId: groupId || null, title, purpose, instructions, ordering, steps: apiSteps, bindings: stableBindings(routineBindings) });
         const createdRoutineId = controller.getSnapshot().routineWorkspace.selectedRoutine?.routine.id;
         if (createdRoutineId && !controller.getSnapshot().routineWorkspace.error) {
           await controller.openRoutine(createdRoutineId);
@@ -260,26 +279,31 @@ function RoutineDefinitionDialog({ revise, controller, snapshot, onClose }: {
     finally { setSaving(false); }
   }
 
-  if (revise && !existing) return <Dialog title="Edit future Routine" onClose={onClose}><p className="ll-inline-warning">Select a Routine first.</p></Dialog>;
-  return <Dialog title={revise ? "Edit future Routine" : "New Routine"} onClose={onClose} wide><form className="ll-form ll-routine-definition-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
-    {revise && <p className="ll-routine-immutability-note"><strong>This creates a new Routine revision.</strong> Completed Sessions and older revisions remain unchanged.</p>}
+  if (revise && !existing) return <Dialog title="Edit Routine" onClose={onClose}><p className="ll-inline-warning">Select a Routine first.</p></Dialog>;
+  return <Dialog title={revise ? "Edit Routine" : "New Routine"} onClose={onClose} wide><form className="ll-form ll-routine-definition-form" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+    {revise && <p className="ll-routine-immutability-note">Future, unstarted plans will use these changes. Past plans, Runs in progress, and completed Sessions keep their original revision.</p>}
     <label>Name<input autoFocus required maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} /></label>
     <label>Purpose<textarea rows={2} maxLength={500} value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="What this Routine helps you accomplish" /></label>
     {!revise && <label>Group<select value={groupId} onChange={(event) => setGroupId(event.target.value)}><option value="">Ungrouped</option>{groups.map((group) => <option value={group.id} key={group.id}>{group.title}</option>)}</select></label>}
     <label>Overall instructions<textarea rows={3} value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="Optional guidance for the entire Routine" /></label>
+    <fieldset className="ll-routine-ordering"><legend>Activity order</legend>
+      <label className="ll-check"><input type="radio" name="routine-ordering" value="unordered" checked={ordering === "unordered"} onChange={() => setOrdering("unordered")} />Any order</label>
+      <label className="ll-check"><input type="radio" name="routine-ordering" value="ordered" checked={ordering === "ordered"} onChange={() => setOrdering("ordered")} />In order</label>
+      <p className="ll-muted">{ordering === "ordered" ? "Arrange Activities as numbered Steps. You can still record results in any order." : "Activities can be done in any order. Switching modes keeps your entries and targets."}</p>
+    </fieldset>
     <RoutineContextPicker controller={controller} snapshot={snapshot} collectionIds={contextCollectionIds} lifeLinks={contextLifeLinks} onCollectionIdsChange={setContextCollectionIds} onLifeLinksChange={setContextLifeLinks} />
-    <section className="ll-routine-step-builder" aria-labelledby="routine-steps-heading"><header><div><h3 id="routine-steps-heading">Steps</h3><p className="ll-muted">Planned targets are future defaults. A Run records actual results and next-time proposals separately.</p></div><button type="button" className="ll-button" onClick={() => setSteps((current) => [...current, blankStep()])}><Plus size={16} />Add Step</button></header>
-      {steps.map((step, index) => <fieldset className="ll-routine-step-editor" key={step.localId}><legend>Step {index + 1}</legend>
-        <div className="ll-routine-step-editor-actions"><button type="button" className="ll-icon-button" aria-label="Move Step up" title="Move up" disabled={index === 0} onClick={() => moveStep(index, -1)}><ChevronUp size={17} /></button><button type="button" className="ll-icon-button" aria-label="Move Step down" title="Move down" disabled={index === steps.length - 1} onClick={() => moveStep(index, 1)}><ChevronDown size={17} /></button><button type="button" className="ll-icon-button ll-danger-text" aria-label="Remove Step" title="Remove Step" disabled={steps.length === 1} onClick={() => setSteps((current) => current.filter((candidate) => candidate.localId !== step.localId))}><Trash2 size={17} /></button></div>
+    <section className="ll-routine-step-builder" aria-labelledby="routine-steps-heading"><header><div><h3 id="routine-steps-heading">{routineEntryLabel(ordering, true)}</h3><p className="ll-muted">Planned targets are future defaults. A Run records actual results and next-time proposals separately.</p></div><button type="button" className="ll-button" onClick={() => setSteps((current) => [...current, blankStep()])}><Plus size={16} />{ordering === "ordered" ? "Add step" : "Add activity"}</button></header>
+      {steps.map((step, index) => <fieldset className="ll-routine-step-editor" key={step.localId}><legend>{ordering === "ordered" ? `Step ${index + 1}` : "Activity"}</legend>
+        <div className="ll-routine-step-editor-actions">{ordering === "ordered" && <><button type="button" className="ll-icon-button" aria-label="Move Step up" title="Move up" disabled={index === 0} onClick={() => moveStep(index, -1)}><ChevronUp size={17} /></button><button type="button" className="ll-icon-button" aria-label="Move Step down" title="Move down" disabled={index === steps.length - 1} onClick={() => moveStep(index, 1)}><ChevronDown size={17} /></button></>}<button type="button" className="ll-icon-button ll-danger-text" aria-label={`Remove ${entryLabel}`} title={`Remove ${entryLabel}`} disabled={steps.length === 1} onClick={() => setSteps((current) => current.filter((candidate) => candidate.localId !== step.localId))}><Trash2 size={17} /></button></div>
         <label>Activity<select value={step.activityId || "__new"} onChange={(event) => {
           if (event.target.value === "__new") updateStep(step.localId, { activityId: "", activityTitle: "" });
           else { const activity = activities.find((candidate) => candidate.id === event.target.value); updateStep(step.localId, { activityId: event.target.value, activityTitle: activity?.title ?? step.activityTitle }); }
         }}><option value="__new">Create a new Activity</option>{step.activityId && !activities.some((activity) => activity.id === step.activityId) && <option value={step.activityId}>{step.activityTitle} (archived)</option>}{activities.map((activity) => <option value={activity.id} key={activity.id}>{activity.title}</option>)}</select></label>
         {!step.activityId && <label>New Activity name<input required value={step.activityTitle} onChange={(event) => updateStep(step.localId, { activityTitle: event.target.value })} placeholder="For example: Review supplies" /></label>}
-        <label>Step instructions<textarea rows={2} value={step.instructions} onChange={(event) => updateStep(step.localId, { instructions: event.target.value })} /></label>
-        <label className="ll-check"><input type="checkbox" checked={step.optional} onChange={(event) => updateStep(step.localId, { optional: event.target.checked })} />This Step is optional</label>
+        <label>{entryLabel} instructions<textarea rows={2} value={step.instructions} onChange={(event) => updateStep(step.localId, { instructions: event.target.value })} /></label>
+        <label className="ll-check"><input type="checkbox" checked={step.optional} onChange={(event) => updateStep(step.localId, { optional: event.target.checked })} />This {entryLabel} is optional</label>
         <div className="ll-routine-targets"><header><strong>Planned targets</strong><button type="button" className="ll-text-button" onClick={() => updateStep(step.localId, { plannedValues: [...step.plannedValues, blankRoutineValueDraft()] })}><Plus size={15} />Add target</button></header>
-          {!step.plannedValues.length && <p className="ll-muted">No planned values. The Step can still record notes during a Run.</p>}
+          {!step.plannedValues.length && <p className="ll-muted">No planned values. The {entryLabel} can still record notes during a Run.</p>}
           {step.plannedValues.map((value) => <div className="ll-routine-target-editor" key={value.id}>
             <label>Label<input required value={value.label} onChange={(event) => updateValue(step.localId, value.id, { label: event.target.value })} placeholder="Weight, duration, count, status…" /></label>
             <label>Type<select value={value.kind} onChange={(event) => { const kind = event.target.value as RoutineValueKind; updateValue(step.localId, value.id, { kind, raw: kind === "boolean" ? "false" : "", unit: "" }); }}>{ROUTINE_VALUE_KINDS.map((kind) => <option value={kind} key={kind}>{routineValueKindLabel(kind)}</option>)}</select></label>
@@ -290,7 +314,7 @@ function RoutineDefinitionDialog({ revise, controller, snapshot, onClose }: {
       </fieldset>)}
     </section>
     {(error || snapshot.routineWorkspace.error) && <p className="ll-inline-warning" role="alert">{error || snapshot.routineWorkspace.error}</p>}
-    <footer><button type="button" className="ll-button" disabled={saving} onClick={onClose}>Cancel</button><button className="ll-button ll-primary" disabled={saving || !title.trim() || !steps.length}>{revise ? "Save new revision" : "Create Routine"}</button></footer>
+    <footer><button type="button" className="ll-button" disabled={saving} onClick={onClose}>Cancel</button><button className="ll-button ll-primary" disabled={saving || !title.trim() || !steps.length}>{revise ? "Save Routine" : "Create Routine"}</button></footer>
   </form></Dialog>;
 }
 
@@ -397,10 +421,20 @@ function RoutineRunDialog({ occurrenceId, controller, snapshot, onClose, onSessi
   onSessionCompleted?(sessionId: string): void;
 }) {
   const selected = snapshot.routineWorkspace.selectedRoutine;
-  const activeRun = snapshot.routineWorkspace.activeRun;
+  const activeRun = snapshot.routineWorkspace.activeRun?.routineId === selected?.routine.id ? snapshot.routineWorkspace.activeRun : null;
   const [starting, setStarting] = useState(false);
   const [completing, setCompleting] = useState(false);
   const [error, setError] = useState("");
+  const [occurrencePlan, setOccurrencePlan] = useState<{ id: string; revision: RoutineRevisionSnapshot } | null>(null);
+  useEffect(() => {
+    if (activeRun || !occurrenceId || !selected) return;
+    const request = new AbortController();
+    setOccurrencePlan(null); setError("");
+    void controller.loadRoutineRunPlan(selected.routine.id, occurrenceId, request.signal).then((revision) => {
+      if (!request.signal.aborted && revision) setOccurrencePlan({ id: occurrenceId, revision });
+    }).catch((issue) => { if (!request.signal.aborted) setError(messageFromIssue(issue, "Could not load this plan's saved revision.")); });
+    return () => request.abort();
+  }, [controller, selected?.routine.id, activeRun?.id, occurrenceId]);
   async function start() {
     if (!selected) return;
     setStarting(true); setError("");
@@ -421,28 +455,37 @@ function RoutineRunDialog({ occurrenceId, controller, snapshot, onClose, onSessi
     finally { setCompleting(false); }
   }
   if (!selected) return <Dialog title="Routine Run" onClose={onClose}><p className="ll-inline-warning">Select a Routine first.</p></Dialog>;
-  const steps = selected.currentRevision.steps;
+  const plan = activeRun ? routineRecordedRevision(snapshot.routineWorkspace, activeRun.routineRevisionId)
+    : occurrenceId ? (occurrencePlan?.id === occurrenceId ? occurrencePlan.revision : null) : selected.currentRevision;
+  if (!plan) return <Dialog title="Routine Run" onClose={onClose}>{activeRun || error
+    ? <p className="ll-inline-warning" role="alert">{error || "The Run's saved revision is unavailable. Close and reopen this Routine to retry; its results are preserved."}</p>
+    : <p role="status">Loading this plan's saved revision…</p>}</Dialog>;
+  const steps = plan.steps;
+  const ordering = plan.revision.ordering;
+  const entriesLabel = routineEntryLabel(ordering, true);
   const recorded = new Set(activeRun?.stepResults.map((result) => result.routineStepId) ?? []);
   const missingRequired = steps.filter((step) => !step.optional && !recorded.has(step.id));
-  return <Dialog title={activeRun ? `Run · ${selected.currentRevision.revision.title}` : `Start ${selected.currentRevision.revision.title}`} onClose={onClose} wide>
-    {!activeRun ? <div className="ll-form ll-routine-run-start"><p>{selected.currentRevision.revision.purpose || "Work through this Routine and record what actually happened."}</p><dl className="ll-routine-run-plan"><dt>Steps</dt><dd>{steps.length}</dd><dt>Revision</dt><dd>{selected.currentRevision.revision.revisionNumber}</dd>{occurrenceId && <><dt>Planned occurrence</dt><dd>Linked</dd></>}</dl><p className="ll-muted">Starting freezes this revision and its connected Life Link or Collection context for the Run.</p>{error && <p className="ll-inline-warning" role="alert">{error}</p>}<footer><button className="ll-button" onClick={onClose}>Cancel</button><button className="ll-button ll-primary" disabled={starting} onClick={() => void start()}><CircleCheck size={16} />Start Run</button></footer></div> : <div className="ll-routine-run">
-      <header className="ll-routine-run-status"><div><strong>Run in progress</strong><span>{recorded.size} of {steps.length} Steps recorded</span></div><span className="ll-chip ll-truth-planned">Mutable Run</span></header>
+  return <Dialog title={activeRun ? `Run · ${plan.revision.title}` : `Start ${plan.revision.title}`} onClose={onClose} wide>
+    {!activeRun ? <div className="ll-form ll-routine-run-start"><p>{plan.revision.purpose || "Work through this Routine and record what actually happened."}</p><dl className="ll-routine-run-plan"><dt>{entriesLabel}</dt><dd>{steps.length}</dd><dt>Order</dt><dd>{ordering === "ordered" ? "In order" : "Any order"}</dd><dt>Revision</dt><dd>{plan.revision.revisionNumber}</dd>{occurrenceId && <><dt>Planned occurrence</dt><dd>Linked</dd></>}</dl><p className="ll-muted">Starting freezes this revision and its connected Life Link or Collection context for the Run.</p>{error && <p className="ll-inline-warning" role="alert">{error}</p>}<footer><button className="ll-button" onClick={onClose}>Cancel</button><button className="ll-button ll-primary" disabled={starting} onClick={() => void start()}><CircleCheck size={16} />Start Run</button></footer></div> : <div className="ll-routine-run">
+      <header className="ll-routine-run-status"><div><strong>Run in progress</strong><span>{recorded.size} of {steps.length} {entriesLabel} recorded · {ordering === "ordered" ? "In order" : "Any order"}</span></div><span className="ll-chip ll-truth-planned">Mutable Run</span></header>
       <p className="ll-muted">Planned targets, actual results, and next-time proposals stay separate. Proposals do not change future defaults automatically.</p>
-      {steps.map((step, index) => <RunStepEditor key={`${activeRun.id}-${step.id}`} index={index} step={step} controller={controller} snapshot={snapshot} />)}
+      {steps.map((step, index) => <RunStepEditor key={`${activeRun.id}-${step.id}`} index={index} step={step} ordering={ordering} controller={controller} snapshot={snapshot} />)}
       {activeRun.contextSnapshot.length > 0 && <details className="ll-routine-run-context"><summary>Context captured when this Run started</summary><ul>{activeRun.contextSnapshot.map((context) => <li key={context.bindingId}><strong>{context.targetTitle}</strong><span>{context.resolvedLifeLinks.length} resolved {context.resolvedLifeLinks.length === 1 ? "Life Link" : "Life Links"}</span></li>)}</ul></details>}
       {(error || snapshot.routineWorkspace.error) && <p className="ll-inline-warning" role="alert">{error || snapshot.routineWorkspace.error}</p>}
-      <footer className="ll-dialog-footer"><button className="ll-button" disabled={completing} onClick={onClose}>Close and resume later</button><button className="ll-button ll-primary" disabled={completing || missingRequired.length > 0} title={missingRequired.length ? `Record ${missingRequired.length} required Steps first` : "Complete this Run"} onClick={() => void complete()}><CircleCheck size={16} />Complete Routine</button></footer>
-      {missingRequired.length > 0 && <p className="ll-muted ll-routine-required-note">Record {missingRequired.length} required {missingRequired.length === 1 ? "Step" : "Steps"} before completing. Optional Steps may remain unrecorded.</p>}
+      <footer className="ll-dialog-footer"><button className="ll-button" disabled={completing} onClick={onClose}>Close and resume later</button><button className="ll-button ll-primary" disabled={completing || missingRequired.length > 0} title={missingRequired.length ? `Record ${missingRequired.length} required ${entriesLabel} first` : "Complete this Run"} onClick={() => void complete()}><CircleCheck size={16} />Complete Routine</button></footer>
+      {missingRequired.length > 0 && <p className="ll-muted ll-routine-required-note">Record {missingRequired.length} required {routineEntryLabel(ordering, missingRequired.length !== 1)} before completing. Optional {entriesLabel} may remain unrecorded.</p>}
     </div>}
   </Dialog>;
 }
 
-function RunStepEditor({ index, step, controller, snapshot }: {
+function RunStepEditor({ index, step, ordering, controller, snapshot }: {
   index: number;
+  ordering: RoutineRevisionRecord["ordering"];
   step: RoutineStepRecord;
   controller: LifeLinksWorkspaceController;
   snapshot: LifeLinksWorkspaceSnapshot;
 }) {
+  const entryLabel = routineEntryLabel(ordering);
   const existing = snapshot.routineWorkspace.activeRun?.stepResults.find((result) => result.routineStepId === step.id);
   const [actual, setActual] = useState<Record<string, string>>(() => Object.fromEntries(existing?.actualValues.map((value) => [value.key, routineValueRaw(value)]) ?? []));
   const [next, setNext] = useState<Record<string, string>>(() => Object.fromEntries(existing?.proposedNextValues.map((value) => [value.key, routineValueRaw(value)]) ?? []));
@@ -461,19 +504,19 @@ function RunStepEditor({ index, step, controller, snapshot }: {
         const value = resultDraftValue(template, next[template.key] ?? ""); return value ? [value] : [];
       });
       await controller.putRoutineRunStepResult(run.id, step.id, { expectedUpdatedAt: run.updatedAt, actualValues, proposedNextValues, notes });
-    } catch (issue) { setError(messageFromIssue(issue, "Could not save this Step.")); }
+    } catch (issue) { setError(messageFromIssue(issue, `Could not save this ${entryLabel}.`)); }
     finally { setSaving(false); }
   }
   return <section className={`ll-routine-run-step${existing ? " recorded" : ""}`}>
-    <header><div><span className="ll-routine-step-number">{index + 1}</span><strong>{step.activityTitle}</strong>{step.optional && <span className="ll-chip ll-neutral">Optional</span>}</div>{existing && <span className="ll-chip ll-blue">Recorded</span>}</header>
+    <header><div>{ordering === "ordered" && <span className="ll-routine-step-number">{index + 1}</span>}<strong>{step.activityTitle}</strong>{step.optional && <span className="ll-chip ll-neutral">Optional</span>}</div>{existing && <span className="ll-chip ll-blue">Recorded</span>}</header>
     {step.instructions && <p className="ll-preserve-lines">{step.instructions}</p>}
     {step.plannedValues.length ? <div className="ll-routine-run-values">
       <div className="ll-routine-value-heading"><strong>Planned</strong><strong>Actual</strong><strong>Next-time proposal</strong></div>
       {step.plannedValues.map((value) => <div className="ll-routine-value-entry" key={value.key}><div><span>{value.label}</span><RoutineValueList values={[value]} /></div><ResultValueInput template={value} value={actual[value.key] ?? ""} emptyLabel="Unknown" onChange={(raw) => setActual((current) => ({ ...current, [value.key]: raw }))} /><ResultValueInput template={value} value={next[value.key] ?? ""} emptyLabel="No proposal" onChange={(raw) => setNext((current) => ({ ...current, [value.key]: raw }))} /></div>)}
-    </div> : <p className="ll-muted">This Step has no planned values. Save notes to record that it was performed.</p>}
-    <label className="ll-routine-notes-label">Notes<textarea rows={2} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="What happened during this Step?" /></label>
+    </div> : <p className="ll-muted">This {entryLabel} has no planned values. Save notes to record that it was performed.</p>}
+    <label className="ll-routine-notes-label">Notes<textarea rows={2} value={notes} onChange={(event) => setNotes(event.target.value)} placeholder={`What happened during this ${entryLabel}?`} /></label>
     {error && <p className="ll-inline-warning" role="alert">{error}</p>}
-    <div className="ll-button-row"><button className="ll-button" disabled={saving} onClick={() => void save()}>{existing ? "Update Step result" : "Save Step result"}</button></div>
+    <div className="ll-button-row"><button className="ll-button" disabled={saving} onClick={() => void save()}>{existing ? `Update ${entryLabel} result` : `Save ${entryLabel} result`}</button></div>
   </section>;
 }
 

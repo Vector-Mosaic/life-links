@@ -3683,6 +3683,11 @@ textarea {
 .ll-routine-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; }
 .ll-routine-empty > p { margin: 0; }
 .ll-routine-groups { min-width: 0; }
+.ll-routine-layer { display: block; color: var(--ll-muted); font-size: 11px; font-weight: 600; }
+.ll-routine-ordering { min-width: 0; border: 1px solid var(--ll-line); border-radius: 10px; padding: 14px; }
+.ll-routine-ordering > legend { padding: 0 7px; font-size: 13px; font-weight: 600; }
+.ll-routine-ordering > .ll-check { display: inline-flex; gap: 7px; margin-right: 20px; }
+.ll-routine-ordering > p { margin-bottom: 0; }
 .ll-routine-group .ll-group-members { padding-left: 10px; }
 .ll-routine-row .ll-row-main { min-width: 0; }
 .ll-routine-row .ll-row-copy { flex: 1; }
@@ -3696,6 +3701,7 @@ textarea {
 .ll-routine-step-list > header > span { white-space: nowrap; }
 .ll-routine-step { display: grid; grid-template-columns: 27px minmax(0,1fr); gap: 10px; padding: 13px 0; border-top: 1px solid var(--ll-line-soft); }
 .ll-routine-step:first-of-type { border-top: 0; }
+.ll-routine-step.ll-routine-step-unordered { grid-template-columns: minmax(0, 1fr); }
 .ll-routine-step > div { min-width: 0; }
 .ll-routine-step > div > strong { display: inline; font-size: 14px; }
 .ll-routine-step > div > .ll-chip { margin-left: 8px; padding: 2px 7px; }

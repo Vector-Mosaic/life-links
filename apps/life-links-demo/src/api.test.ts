@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   previewCollectionChange, getCollectionChangePreview, applyCollectionChange,
   ApiError, addCollectionMember, attachQr, clearLifeLinkQrBinding, connectAgent, createCollection,
-  createCalendar, createCalendarEvent, createRoutine, getRoutine, updateRoutine, deleteCalendar, deleteCalendarEvent, finalizeRoutineRun,
+  createCalendar, createCalendarEvent, createRoutine, reviseRoutine, getRoutine, updateRoutine, deleteCalendar, deleteCalendarEvent, finalizeRoutineRun,
   createCollectionSection, createLifeLink, disconnectAgent, getCollection, listCollections,
   getActiveRoutineRun, getCalendar, getCalendarClock, getCalendarEvent, listCalendarEvents, listCalendars, listRoutineGroups, listRoutines,
   listCollectionMembers, listLifeLinkCollectionMemberships, login, moveLifeLink, removeCollectionMember,
@@ -358,6 +358,21 @@ describe("Life Links API error normalization", () => {
       reason: "expected_updated_at_mismatch",
       body
     });
+  });
+
+  it.each(["unordered", "ordered"] as const)("preserves %s ordering, stable identities and steps on Routine create/revise transport", async (ordering) => {
+    const signal = new AbortController().signal;
+    const input = { id: "routine-stable", revisionId: "revision-stable", title: "Training", ordering,
+      steps: [{ id: "step-stable", activityId: "activity-stable", activityTitle: "Prepare", position: 0, plannedValues: [] }] };
+    stubJsonResponse(201, { routine: {} });
+    await createRoutine(input, signal);
+    expect(JSON.parse(vi.mocked(fetch).mock.calls.at(-1)![1]!.body as string)).toEqual(input);
+    const { id, ...revision } = input;
+    const revised = { ...revision, expectedCurrentRevisionId: "previous-revision" };
+    stubJsonResponse(201, { routine: {} });
+    await reviseRoutine(id, revised, signal);
+    expect(vi.mocked(fetch)).toHaveBeenLastCalledWith("/api/routines/routine-stable/revisions", expect.objectContaining({ method: "POST", signal }));
+    expect(JSON.parse(vi.mocked(fetch).mock.calls.at(-1)![1]!.body as string)).toEqual(revised);
   });
 
   it("carries stable Routine identities, revision guards, typed results and cancellation through the owner client", async () => {

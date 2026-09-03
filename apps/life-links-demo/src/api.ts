@@ -383,6 +383,7 @@ export type RoutineCreateInput = {
   title: string;
   purpose?: string;
   instructions?: string;
+  ordering?: CanonicalRoutineCreation["currentRevision"]["revision"]["ordering"];
   steps: RoutineStepInput[];
   bindings?: RoutineContextBindingInput[];
 };

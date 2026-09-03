@@ -1,9 +1,22 @@
 import type {
   RoutineScheduleRecord,
+  RoutineRevisionRecord,
   RoutineScheduleRule,
   RoutineValue,
   RoutineValueKind
 } from "@life-links/core";
+import type { RoutineWorkspaceState } from "../workspace/types";
+
+export function routineEntryLabel(ordering: RoutineRevisionRecord["ordering"] | undefined, plural = false): string {
+  return ordering === "ordered" ? (plural ? "Steps" : "Step")
+    : ordering === "unordered" ? (plural ? "Activities" : "Activity") : (plural ? "Entries" : "Entry");
+}
+
+export function routineRecordedRevision(state: RoutineWorkspaceState, revisionId: string) {
+  return state.revisionsById[revisionId]
+    ?? (state.selectedRoutine?.currentRevision.revision.id === revisionId ? state.selectedRoutine.currentRevision : null)
+    ?? (state.selectedSessionRevision?.revision.id === revisionId ? state.selectedSessionRevision : null);
+}
 
 export type RoutineWorkspaceTab = "routines" | "history";
 

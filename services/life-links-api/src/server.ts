@@ -1299,7 +1299,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
 
   app.post("/api/routines", requireAuthenticated, async (request: AppRequest, response) => {
     const input = readRoutineBody(request, response, logger, [
-      "id", "revisionId", "groupId", "title", "purpose", "instructions", "steps", "bindings"
+      "id", "revisionId", "groupId", "title", "purpose", "instructions", "ordering", "steps", "bindings"
     ]);
     if (!input) return;
     const routineId = normalizeRoutineId(input.id ?? `routine-${randomUUID()}`);
@@ -1352,7 +1352,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   app.post("/api/routines/:routineId/revisions", requireAuthenticated, async (request: AppRequest, response) => {
     const routineId = normalizeRoutineId(paramValue(request.params.routineId));
     const input = readRoutineBody(request, response, logger, [
-      "revisionId", "expectedCurrentRevisionId", "title", "purpose", "instructions", "steps", "bindings"
+      "revisionId", "expectedCurrentRevisionId", "title", "purpose", "instructions", "ordering", "steps", "bindings"
     ]);
     if (!input) return;
     const current = await store.getRoutine(request.user!.id, routineId);
@@ -1364,7 +1364,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
       id: revisionId,
       ownerId: request.user!.id,
       routineId,
-      revisionNumber: current.currentRevision.revision.revisionNumber + 1,
+      revisionNumber: current.currentRevision.revision.revisionNumber + (current.currentRevision.revision.id === revisionId ? 0 : 1),
       expectedCurrentRevisionId: normalizeRoutineRevisionId(input.expectedCurrentRevisionId),
       createdAt: new Date().toISOString()
     } as unknown as ReviseRoutineCommand);

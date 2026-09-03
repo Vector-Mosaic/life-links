@@ -114,6 +114,9 @@ import {
   createCanonicalActivity,
   createCanonicalRoutine,
   createCanonicalRoutineRevision,
+  normalizeRoutineOrdering,
+  normalizeRoutineRevisionId,
+  planRoutineRevisionScheduling,
   createCanonicalRoutineGroup,
   createCanonicalRoutineOccurrence,
   createCanonicalRoutineRun,
@@ -1592,20 +1595,37 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       const result = await client.query("SELECT * FROM routines WHERE id=$1 AND owner_id=$2 FOR UPDATE", [command.routineId,userId]);
       if (!result.rows[0]) return null;
       const current = mapRoutine(result.rows[0]);
+      const previous = await loadPostgresRoutineRevision(client,userId,current.id,normalizeRoutineRevisionId(command.expectedCurrentRevisionId));
+      if (!previous) throw new LifeLinkDomainError("stale_routine", "Routine previous revision is unavailable.", { retryable: true });
       const existing = await client.query("SELECT 1 FROM routine_revisions WHERE id=$1", [command.id]);
       if (existing.rowCount) {
         const snapshot = await loadPostgresRoutineRevision(client,userId,current.id,command.id);
         const {expectedCurrentRevisionId:_expectedCurrentRevisionId,...revisionCommand}=command;
-        const desired = createCanonicalRoutineRevision(revisionCommand);
-        if (snapshot && current.currentRevisionId === command.id && sameRoutineCreatePayload(snapshot,desired)) return snapshot;
+        const desired = createCanonicalRoutineRevision(revisionCommand,previous.revision.ordering);
+        if (snapshot && current.currentRevisionId === command.id && previous.revision.revisionNumber === snapshot.revision.revisionNumber - 1 &&
+            sameRoutineCreatePayload(snapshot,desired)) return snapshot;
         return routineIdConflict();
       }
-      const candidate = reviseCanonicalRoutine(current, command);
+      const candidate = reviseCanonicalRoutine(current, command,previous.revision);
       const latest = await client.query("SELECT COALESCE(max(revision_number),0)::int AS revision_number FROM routine_revisions WHERE routine_id=$1", [current.id]);
       if (candidate.currentRevision.revision.revisionNumber !== Number(latest.rows[0].revision_number)+1) throw new LifeLinkDomainError("routine_conflict","Routine revision number must follow the current history.");
       await assertPostgresRoutineDefinitionReferences(client,userId,current.groupId,candidate.currentRevision,false);
+      const schedules = await client.query("SELECT * FROM routine_schedules WHERE owner_id=$1 AND routine_id=$2 AND active=true FOR UPDATE",[userId,current.id]);
+      const occurrences = await client.query(`SELECT occurrence.*, EXISTS (
+        SELECT 1 FROM routine_runs run WHERE run.owner_id=occurrence.owner_id AND run.occurrence_id=occurrence.id
+        ) AS has_run FROM routine_occurrences occurrence
+        WHERE occurrence.owner_id=$1 AND occurrence.routine_id=$2 AND occurrence.status='planned' AND occurrence.planned_for>$3
+        FOR UPDATE OF occurrence`,[userId,current.id,candidate.currentRevision.revision.createdAt]);
+      const scheduling = planRoutineRevisionScheduling(candidate.currentRevision.revision,schedules.rows.map(mapRoutineSchedule),
+        occurrences.rows.map(mapRoutineOccurrence),new Set(occurrences.rows.filter((row)=>row.has_run).map((row)=>String(row.id))));
       try { await persistPostgresRoutineCreation(client,candidate,false); }
       catch (error) { if (isPostgresUniqueViolation(error)) return routineIdConflict(); throw error; }
+      for (const schedule of scheduling.schedules) await client.query(
+        "UPDATE routine_schedules SET routine_revision_id=$3,revision=$4,updated_at=$5 WHERE id=$1 AND owner_id=$2",
+        [schedule.id,userId,schedule.routineRevisionId,schedule.revision,schedule.updatedAt]);
+      for (const occurrence of scheduling.occurrences) await client.query(
+        "UPDATE routine_occurrences SET routine_revision_id=$3,schedule_revision=$4,updated_at=$5 WHERE id=$1 AND owner_id=$2",
+        [occurrence.id,userId,occurrence.routineRevisionId,occurrence.scheduleRevision,occurrence.updatedAt]);
       return candidate.currentRevision;
     }, null);
   }
@@ -3264,9 +3284,9 @@ async function persistPostgresRoutineCreation(queryable: Queryable,candidate: Ca
   const {routine,currentRevision}=candidate;
   if(insertRoutine)await queryable.query(`INSERT INTO routines(id,owner_id,group_id,current_revision_id,created_at,updated_at,archived_at)
     VALUES($1,$2,$3,$4,$5,$6,$7)`,[routine.id,routine.ownerId,routine.groupId,routine.currentRevisionId,routine.createdAt,routine.updatedAt,routine.archivedAt]);
-  await queryable.query(`INSERT INTO routine_revisions(id,owner_id,routine_id,revision_number,title,purpose,instructions,created_at)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[currentRevision.revision.id,currentRevision.revision.ownerId,currentRevision.revision.routineId,currentRevision.revision.revisionNumber,
-    currentRevision.revision.title,currentRevision.revision.purpose,currentRevision.revision.instructions,currentRevision.revision.createdAt]);
+  await queryable.query(`INSERT INTO routine_revisions(id,owner_id,routine_id,revision_number,title,purpose,instructions,created_at,ordering)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,[currentRevision.revision.id,currentRevision.revision.ownerId,currentRevision.revision.routineId,currentRevision.revision.revisionNumber,
+    currentRevision.revision.title,currentRevision.revision.purpose,currentRevision.revision.instructions,currentRevision.revision.createdAt,currentRevision.revision.ordering]);
   for(const step of currentRevision.steps)await queryable.query(`INSERT INTO routine_steps
     (id,owner_id,routine_revision_id,activity_id,activity_title,position,instructions,optional,planned_values)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)`,[step.id,step.ownerId,step.routineRevisionId,step.activityId,step.activityTitle,step.position,step.instructions,step.optional,JSON.stringify(step.plannedValues)]);
@@ -3337,7 +3357,7 @@ function mapRoutineGroup(row: Record<string,unknown>): RoutineGroupRecord{return
 function mapRoutineActivity(row: Record<string,unknown>): ActivityRecord{return {id:String(row.id),ownerId:String(row.owner_id),title:String(row.title),notes:String(row.notes),createdAt:toIso(row.created_at),updatedAt:toIso(row.updated_at),archivedAt:nullableIso(row.archived_at)};}
 function mapRoutine(row: Record<string,unknown>): RoutineRecord{return {id:String(row.id),ownerId:String(row.owner_id),groupId:nullableString(row.group_id),currentRevisionId:String(row.current_revision_id),createdAt:toIso(row.created_at),updatedAt:toIso(row.updated_at),archivedAt:nullableIso(row.archived_at)};}
 function mapRoutineSummary(row: Record<string,unknown>): RoutineSummaryRecord{return {...mapRoutine(row),revisionNumber:Number(row.revision_number),title:String(row.title),purpose:String(row.purpose)};}
-function mapRoutineRevision(row: Record<string,unknown>): RoutineRevisionRecord{return {id:String(row.id),ownerId:String(row.owner_id),routineId:String(row.routine_id),revisionNumber:Number(row.revision_number),title:String(row.title),purpose:String(row.purpose),instructions:String(row.instructions),createdAt:toIso(row.created_at)};}
+function mapRoutineRevision(row: Record<string,unknown>): RoutineRevisionRecord{return {id:String(row.id),ownerId:String(row.owner_id),routineId:String(row.routine_id),revisionNumber:Number(row.revision_number),title:String(row.title),purpose:String(row.purpose),instructions:String(row.instructions),ordering:normalizeRoutineOrdering(String(row.ordering)),createdAt:toIso(row.created_at)};}
 function mapRoutineStep(row: Record<string,unknown>): RoutineStepRecord{return {id:String(row.id),ownerId:String(row.owner_id),routineRevisionId:String(row.routine_revision_id),activityId:String(row.activity_id),activityTitle:String(row.activity_title),position:Number(row.position),instructions:String(row.instructions),optional:Boolean(row.optional),plannedValues:row.planned_values as RoutineStepRecord["plannedValues"]};}
 function mapRoutineBinding(row: Record<string,unknown>): RoutineContextBindingRecord{return {id:String(row.id),ownerId:String(row.owner_id),routineRevisionId:String(row.routine_revision_id),routineStepId:nullableString(row.routine_step_id),targetType:row.target_type as RoutineContextBindingRecord["targetType"],targetId:String(row.target_id)};}
 function mapRoutineSchedule(row: Record<string,unknown>): RoutineScheduleRecord{return {id:String(row.id),ownerId:String(row.owner_id),routineId:String(row.routine_id),routineRevisionId:String(row.routine_revision_id),rule:row.rule as RoutineScheduleRecord["rule"],revision:Number(row.revision),active:Boolean(row.active),createdAt:toIso(row.created_at),updatedAt:toIso(row.updated_at)};}

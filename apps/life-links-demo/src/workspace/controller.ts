@@ -64,6 +64,7 @@ import {
   type RoutineGroupPatch,
   type RoutineGroupRecord,
   type RoutinePatch,
+  type RoutineRevisionSnapshot,
   type RoutineSchedulePatch,
   type RoutineSessionProjection,
   type RoutineValue,
@@ -120,6 +121,7 @@ import {
   getActiveRoutineRun,
   getRoutine,
   getRoutineRevision,
+  getRoutineOccurrence,
   getRoutineRun,
   getRoutineSession,
   listCollections,
@@ -356,6 +358,7 @@ export type LifeLinksWorkspaceApi = {
   searchLifeLinks: typeof searchLifeLinks;
   searchRecords: typeof searchRecords;
   getRoutineRevision: typeof getRoutineRevision;
+  getRoutineOccurrence: typeof getRoutineOccurrence;
   updateLifeLink: typeof updateLifeLink;
   moveLifeLink: typeof moveLifeLink;
   uploadLifeLinkMedia: typeof uploadLifeLinkMedia;
@@ -463,6 +466,7 @@ const defaultApi: LifeLinksWorkspaceApi = {
   searchLifeLinks,
   searchRecords,
   getRoutineRevision,
+  getRoutineOccurrence,
   updateLifeLink,
   moveLifeLink,
   uploadLifeLinkMedia,
@@ -502,6 +506,7 @@ export interface LifeLinksWorkspaceActions {
   loadRoutineOccurrences(options?: RoutineOccurrenceListOptions): Promise<void>;
   loadRoutineCalendarWindow(options: { startDate: string; endDate: string; signal?: AbortSignal; background?: boolean }): Promise<void>;
   startRoutineRun(routineId: string, input: { id: string; occurrenceId?: string | null }, signal?: AbortSignal): Promise<void>;
+  loadRoutineRunPlan(routineId: string, occurrenceId: string, signal?: AbortSignal): Promise<RoutineRevisionSnapshot | null>;
   resumeRoutineRun(runId: string, signal?: AbortSignal): Promise<void>;
   putRoutineRunStepResult(runId: string, routineStepId: string, input: {
     expectedUpdatedAt: string; actualValues: RoutineValue[]; proposedNextValues: RoutineValue[]; notes?: string;
@@ -885,6 +890,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     this.updateRoutineWorkspace((current) => ({
       routines: mergeById(current.routines, [routineSummaryFromDetail(routine)]),
       selectedRoutine: routine,
+      revisionsById: { ...current.revisionsById, [routine.currentRevision.revision.id]: routine.currentRevision },
       schedules: [], schedulesNextCursor: null, activeRun: null, error: ""
     }));
   }
@@ -912,9 +918,16 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     signal?.throwIfAborted();
     if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
         selectionRevision !== this.routineSelectionRevision) return;
+    const revisionsById = await this.loadRoutineRevisionSnapshots([
+      ...(activeRun.run ? [activeRun.run] : []), ...sessions.sessions.map((entry) => entry.session)
+    ], signal, routine.routine.currentRevision);
+    signal?.throwIfAborted();
+    if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
+        selectionRevision !== this.routineSelectionRevision) return;
     this.updateRoutineWorkspace((current) => ({
       routines: mergeById(current.routines, [routineSummaryFromDetail(routine.routine)]),
       selectedRoutine: routine.routine,
+      revisionsById: { ...current.revisionsById, ...revisionsById },
       schedules: schedules.schedules,
       schedulesNextCursor: schedules.nextCursor,
       activeRun: runLookupRevision === this.routineRunLookupRevision ? activeRun.run : current.activeRun,
@@ -934,8 +947,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const { run } = await this.api.getActiveRoutineRun(routineId, signal);
     signal?.throwIfAborted();
     if (!sameOwner() || revision !== this.routineRunLookupRevision) return;
+    const revisionsById = await this.loadRoutineRevisionSnapshots(run ? [run] : [], signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || revision !== this.routineRunLookupRevision) return;
     this.updateRoutineWorkspace((current) => current.selectedRoutine?.routine.id === routineId
-      ? { activeRun: run, error: "" }
+      ? { activeRun: run, revisionsById: { ...current.revisionsById, ...revisionsById }, error: "" }
       : {});
   }
 
@@ -1009,8 +1025,29 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     signal?.throwIfAborted();
     if (!sameOwner() || selectionRevision !== this.routineSelectionRevision) return;
     this.updateRoutineWorkspace((current) => ({
-      routines: mergeById(current.routines, [routineSummaryFromDetail(routine)]), selectedRoutine: routine, error: ""
+      routines: mergeById(current.routines, [routineSummaryFromDetail(routine)]), selectedRoutine: routine,
+      revisionsById: { ...current.revisionsById,
+        ...(current.selectedRoutine ? { [current.selectedRoutine.currentRevision.revision.id]: current.selectedRoutine.currentRevision } : {}),
+        [routine.currentRevision.revision.id]: routine.currentRevision }, error: ""
     }));
+    // The server re-pins future plans atomically. Read those results; never
+    // emulate that transaction with client-side schedule writes.
+    this.clearSelectedRoutinePlanningState(routineId);
+    const calendarRange = this.snapshot.routineWorkspace.calendarRange;
+    ++this.routineCalendarLoadRevision;
+    this.updateRoutineWorkspace({ calendarOccurrences: [], calendarError: "" });
+    try {
+      await this.refreshSelectedRoutineOperationalState(routineId, selectionRevision, signal, true);
+      if (sameOwner() && selectionRevision === this.routineSelectionRevision && calendarRange &&
+          this.snapshot.routineWorkspace.calendarRange?.startDate === calendarRange.startDate &&
+          this.snapshot.routineWorkspace.calendarRange?.endDate === calendarRange.endDate) {
+        await this.loadRoutineCalendarWindow({ ...calendarRange, signal });
+      }
+    } catch (error) {
+      if (sameOwner() && selectionRevision === this.routineSelectionRevision && !signal?.aborted) {
+        this.updateRoutineWorkspace({ error: `Routine saved. Could not refresh its plans: ${messageFromError(error)}` });
+      }
+    }
   }
 
   async createRoutineSchedule(routineId: string, input: RoutineScheduleCreateInput, signal?: AbortSignal): Promise<void> {
@@ -1112,6 +1149,20 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
   }
 
+  async loadRoutineRunPlan(routineId: string, occurrenceId: string, signal?: AbortSignal): Promise<RoutineRevisionSnapshot | null> {
+    const sameOwner = this.captureRoutineOwner();
+    const selectionRevision = this.routineSelectionRevision;
+    const { occurrence } = await this.api.getRoutineOccurrence(occurrenceId, signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || selectionRevision !== this.routineSelectionRevision) return null;
+    if (occurrence.id !== occurrenceId || occurrence.routineId !== routineId) throw new Error("This plan belongs to another Routine.");
+    const revisionsById = await this.loadRoutineRevisionSnapshots([occurrence], signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || selectionRevision !== this.routineSelectionRevision) return null;
+    this.updateRoutineWorkspace((current) => ({ revisionsById: { ...current.revisionsById, ...revisionsById } }));
+    return revisionsById[occurrence.routineRevisionId] ?? null;
+  }
+
   async startRoutineRun(
     routineId: string, input: { id: string; occurrenceId?: string | null }, signal?: AbortSignal
   ): Promise<void> {
@@ -1121,8 +1172,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const { run } = await this.api.startRoutineRun(routineId, input, signal);
     signal?.throwIfAborted();
     if (!sameOwner() || revision !== this.routineRunLookupRevision || selectionRevision !== this.routineSelectionRevision) return;
+    const revisionsById = await this.loadRoutineRevisionSnapshots([run], signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || revision !== this.routineRunLookupRevision || selectionRevision !== this.routineSelectionRevision) return;
     this.updateRoutineWorkspace((current) => current.selectedRoutine?.routine.id === routineId && run.routineId === routineId
-      ? { activeRun: run.status === "active" ? run : null, error: "" }
+      ? { activeRun: run.status === "active" ? run : null, revisionsById: { ...current.revisionsById, ...revisionsById }, error: "" }
       : {});
   }
 
@@ -1134,9 +1188,12 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const { run } = await this.api.getRoutineRun(runId, signal);
     signal?.throwIfAborted();
     if (!sameOwner() || revision !== this.routineRunLookupRevision || selectionRevision !== this.routineSelectionRevision) return;
+    const revisionsById = await this.loadRoutineRevisionSnapshots([run], signal);
+    signal?.throwIfAborted();
+    if (!sameOwner() || revision !== this.routineRunLookupRevision || selectionRevision !== this.routineSelectionRevision) return;
     this.updateRoutineWorkspace((current) => selectedRoutineId && current.selectedRoutine?.routine.id === selectedRoutineId &&
       run.routineId === selectedRoutineId && run.id === runId
-      ? { activeRun: run.status === "active" ? run : null, error: "" }
+      ? { activeRun: run.status === "active" ? run : null, revisionsById: { ...current.revisionsById, ...revisionsById }, error: "" }
       : {});
   }
 
@@ -1193,8 +1250,13 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     options.signal?.throwIfAborted();
     if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
         listRevision !== this.routineSessionListRevision) return;
+    const revisionsById = await this.loadRoutineRevisionSnapshots(page.sessions.map((entry) => entry.session), options.signal);
+    options.signal?.throwIfAborted();
+    if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
+        listRevision !== this.routineSessionListRevision) return;
     this.updateRoutineWorkspace((current) => ({
       sessions: options.cursor ? mergeRoutineSessions(current.sessions, page.sessions) : page.sessions,
+      revisionsById: { ...current.revisionsById, ...revisionsById },
       sessionsNextCursor: page.nextCursor, error: ""
     }));
   }
@@ -1226,7 +1288,10 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       });
       options.signal?.throwIfAborted();
       if (!isCurrent()) return;
-      this.updateRoutineWorkspace((current) => ({ history: {
+      const revisionsById = await this.loadRoutineRevisionSnapshots(page.sessions.map((entry) => entry.session), options.signal);
+      options.signal?.throwIfAborted();
+      if (!isCurrent()) return;
+      this.updateRoutineWorkspace((current) => ({ revisionsById: { ...current.revisionsById, ...revisionsById }, history: {
         routineId, sessions: options.cursor ? mergeRoutineSessions(current.history.sessions, page.sessions) : page.sessions,
         nextCursor: page.nextCursor, loaded: true, loading: false, error: ""
       } }));
@@ -1253,7 +1318,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
         selectionRevision !== this.routineSessionSelectionRevision) return;
     this.updateRoutineWorkspace((current) => ({
-      sessions: mergeRoutineSessions(current.sessions, [session]), selectedSession: session, selectedSessionRevision: recordedRevision, error: ""
+      sessions: mergeRoutineSessions(current.sessions, [session]), selectedSession: session, selectedSessionRevision: recordedRevision, error: "",
+      revisionsById: { ...current.revisionsById, [recordedRevision.revision.id]: recordedRevision }
     }));
   }
 
@@ -5181,6 +5247,36 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     return () => Boolean(ownerId) && ownerRevision === this.ownerRevision && ownerId === this.snapshot.currentUser?.id;
   }
 
+  private async loadRoutineRevisionSnapshots(
+    references: Array<{ routineId: string; routineRevisionId: string }>, signal?: AbortSignal,
+    known?: RoutineRevisionSnapshot
+  ): Promise<Record<string, RoutineRevisionSnapshot>> {
+    const sameOwner = this.captureRoutineOwner();
+    const current = this.snapshot.routineWorkspace;
+    const snapshots = { ...current.revisionsById };
+    for (const revision of [current.selectedRoutine?.currentRevision, current.selectedSessionRevision, known]) {
+      if (revision) snapshots[revision.revision.id] = revision;
+    }
+    const missing = [...new Map(references.filter((reference) =>
+      snapshots[reference.routineRevisionId]?.revision.routineId !== reference.routineId
+    ).map((reference) => [reference.routineRevisionId, reference])).values()];
+    for (let offset = 0; offset < missing.length; offset += 4) {
+      await Promise.all(missing.slice(offset, offset + 4).map(async (reference) => {
+        signal?.throwIfAborted();
+        if (!sameOwner()) return;
+        const { routineRevision } = await this.api.getRoutineRevision(reference.routineId, reference.routineRevisionId, signal);
+        signal?.throwIfAborted();
+        if (!sameOwner()) return;
+        if (routineRevision.revision.id !== reference.routineRevisionId || routineRevision.revision.routineId !== reference.routineId) {
+          throw new Error("The saved Routine revision could not be verified.");
+        }
+        snapshots[routineRevision.revision.id] = routineRevision;
+      }));
+      if (!sameOwner()) return {};
+    }
+    return snapshots;
+  }
+
   private clearSelectedRoutinePlanningState(routineId: string) {
     ++this.routineOccurrenceListRevision;
     this.updateRoutineWorkspace((current) => current.selectedRoutine?.routine.id === routineId
@@ -5343,6 +5439,7 @@ function emptyWorkspacePresentation(): WorkspacePresentation {
 
 function emptyRoutineWorkspaceState(): RoutineWorkspaceState {
   return {
+    revisionsById: {},
     presentation: { tab: "routines", historyRoutineId: null, showRemoved: false, collapsedGroupIds: [] },
     history: { routineId: null, sessions: [], nextCursor: null, loaded: false, loading: false, error: "" },
     groups: [], groupsNextCursor: null, activities: [], activitiesNextCursor: null,

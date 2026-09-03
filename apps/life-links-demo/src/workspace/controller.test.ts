@@ -2277,6 +2277,68 @@ describe("Routine workspace controller contract", () => {
     return { group, activity, routine, summary, run, schedule, occurrence, session };
   };
 
+  it("keeps the active Run's frozen ordering while revising defaults and refreshes server-repinned plans", async () => {
+    const current = fixture(51);
+    current.routine.currentRevision.revision.ordering = "ordered";
+    const latest = structuredClone(current.routine);
+    latest.currentRevision.revision = { ...latest.currentRevision.revision, id: "routine-revision-00000000-0000-4000-8000-000000000052", ordering: "unordered", revisionNumber: 2 };
+    latest.routine.currentRevisionId = latest.currentRevision.revision.id;
+    const api = fakeApi();
+    api.getRoutine.mockResolvedValue({ routine: current.routine });
+    api.getActiveRoutineRun.mockResolvedValue({ run: current.run });
+    api.reviseRoutine.mockResolvedValue({ routine: latest });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/routines") });
+    await controller.start(); await controller.selectRoutine(current.routine.routine.id);
+    await controller.loadRoutineCalendarWindow({ startDate: "2026-09-01", endDate: "2026-09-07" });
+    const refreshedSchedule = { ...current.schedule, routineRevisionId: latest.currentRevision.revision.id, revision: 2 };
+    const refreshedOccurrence = { ...current.occurrence, routineRevisionId: latest.currentRevision.revision.id, scheduleRevision: 2 };
+    api.listRoutineSchedules.mockResolvedValue({ schedules: [refreshedSchedule], nextCursor: null, truncated: false });
+    api.listRoutineOccurrences.mockResolvedValue({ occurrences: [refreshedOccurrence], nextCursor: null, truncated: false });
+    const input = { revisionId: latest.currentRevision.revision.id, expectedCurrentRevisionId: current.routine.currentRevision.revision.id,
+      title: "Updated Routine", ordering: "unordered" as const, steps: [] };
+    await controller.reviseRoutine(current.routine.routine.id, input);
+    const state = controller.getSnapshot().routineWorkspace;
+    expect(api.reviseRoutine).toHaveBeenCalledWith(current.routine.routine.id, input, undefined);
+    expect(state).toMatchObject({ selectedRoutine: latest, activeRun: current.run, schedules: [refreshedSchedule], occurrences: [refreshedOccurrence], calendarOccurrences: [refreshedOccurrence] });
+    expect(state.revisionsById[current.run.routineRevisionId].revision.ordering).toBe("ordered");
+    expect(state.revisionsById[latest.currentRevision.revision.id].revision.ordering).toBe("unordered");
+    expect(api.updateRoutineSchedule).not.toHaveBeenCalled();
+    expect(api.createRoutineSchedule).not.toHaveBeenCalled(); controller.dispose();
+  });
+
+  it("loads an old occurrence and an existing active Run from their exact saved revision, not latest defaults", async () => {
+    const old = fixture(53); old.routine.currentRevision.revision.ordering = "ordered";
+    const latest = structuredClone(old.routine);
+    latest.currentRevision.revision = { ...latest.currentRevision.revision, id: "routine-revision-00000000-0000-4000-8000-000000000054", ordering: "unordered" };
+    const api = fakeApi();
+    api.getRoutine.mockResolvedValue({ routine: latest });
+    api.getRoutineOccurrence.mockResolvedValue({ occurrence: old.occurrence });
+    api.getRoutineRevision.mockResolvedValue({ routineRevision: old.routine.currentRevision });
+    api.getActiveRoutineRun.mockResolvedValue({ run: old.run });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/routines") });
+    await controller.start(); await controller.selectRoutine(old.routine.routine.id);
+    expect(api.getRoutineRevision).toHaveBeenCalledExactlyOnceWith(old.routine.routine.id, old.run.routineRevisionId, undefined);
+    expect(controller.getSnapshot().routineWorkspace.revisionsById[old.run.routineRevisionId]).toEqual(old.routine.currentRevision);
+    const signal = new AbortController().signal;
+    expect(await controller.loadRoutineRunPlan(old.routine.routine.id, old.occurrence.id, signal)).toEqual(old.routine.currentRevision);
+    expect(api.getRoutineOccurrence).toHaveBeenCalledWith(old.occurrence.id, signal);
+    expect(api.getRoutineRevision).toHaveBeenCalledOnce(); // Same immutable revision is reused.
+    expect(api.startRoutineRun).not.toHaveBeenCalled(); controller.dispose();
+  });
+
+  it("does not install a delayed frozen revision after logout", async () => {
+    const current = fixture(55); const api = fakeApi();
+    const revision = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["getRoutineRevision"]>>>();
+    api.listRoutineSessions.mockResolvedValue({ sessions: [current.session], nextCursor: null, truncated: false });
+    api.getRoutineRevision.mockReturnValue(revision.promise);
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start(); const loading = controller.loadRoutineHistory();
+    await vi.waitFor(() => expect(api.getRoutineRevision).toHaveBeenCalledOnce());
+    await controller.logout(); revision.resolve({ routineRevision: current.routine.currentRevision }); await loading;
+    expect(controller.getSnapshot().routineWorkspace.revisionsById).toEqual({});
+    expect(controller.getSnapshot().routineWorkspace.history.sessions).toEqual([]); controller.dispose();
+  });
+
   it("boots and navigates the additive Routines routes without loading the Life Link library", async () => {
     const current = fixture(15, "Tuesday reset");
     const route = new FakeRoute(ownerRoutinePath(current.routine.routine.id));
@@ -2390,6 +2452,7 @@ describe("Routine workspace controller contract", () => {
   it("keeps paged owner History independent of focused Routine Sessions and navigation", async () => {
     const first = fixture(31, "First history"); const second = fixture(32, "Second history");
     const api = fakeApi();
+    api.getRoutineRevision.mockImplementation(async (id) => ({ routineRevision: id === first.routine.routine.id ? first.routine.currentRevision : second.routine.currentRevision }));
     const ownerPage = deferred<{ sessions: typeof first.session[]; nextCursor: string | null; truncated: boolean }>();
     api.listRoutineSessions.mockImplementation(async (options = {}) => {
       if (options.routineId) return { sessions: [first.session], nextCursor: null, truncated: false };
@@ -2423,6 +2486,7 @@ describe("Routine workspace controller contract", () => {
   it("refuses late History pages after changing Routine scope and retains the scoped cursor", async () => {
     const first = fixture(33); const second = fixture(34);
     const api = fakeApi();
+    api.getRoutineRevision.mockResolvedValue({ routineRevision: second.routine.currentRevision });
     const late = deferred<{ sessions: typeof first.session[]; nextCursor: string | null; truncated: boolean }>();
     api.listRoutineSessions.mockImplementation(async (options = {}) => options.routineId === second.routine.routine.id
       ? { sessions: [second.session], nextCursor: "scoped-page-2", truncated: true } : late.promise);
@@ -2747,6 +2811,7 @@ describe("Routine workspace controller contract", () => {
     const first = fixture(5, "First page");
     const second = fixture(6, "Second page");
     const api = fakeApi();
+    api.getRoutineRevision.mockImplementation(async (id) => ({ routineRevision: id === first.routine.routine.id ? first.routine.currentRevision : second.routine.currentRevision }));
     api.listRoutineGroups.mockResolvedValueOnce({ routineGroups: [first.group], nextCursor: "groups-next", truncated: true });
     api.listRoutineActivities.mockResolvedValueOnce({ activities: [first.activity], nextCursor: "activities-next", truncated: true });
     api.listRoutines.mockResolvedValueOnce({ routines: [first.summary], nextCursor: "routines-next", truncated: true });
@@ -3323,6 +3388,7 @@ function fakeApi() {
   return {
     searchRecords: vi.fn<LifeLinksWorkspaceApi["searchRecords"]>(async (input) => ({ category: input.category, results: [], nextCursor: null, scanned: 0, warnings: [] })),
     getRoutineRevision: vi.fn<LifeLinksWorkspaceApi["getRoutineRevision"]>(),
+    getRoutineOccurrence: vi.fn<LifeLinksWorkspaceApi["getRoutineOccurrence"]>(),
     authorizeMicrosoftCalendar: vi.fn<LifeLinksWorkspaceApi["authorizeMicrosoftCalendar"]>(),
     authorizeGoogleCalendar: vi.fn<LifeLinksWorkspaceApi["authorizeGoogleCalendar"]>(),
     getCalendarAuthorization: vi.fn<LifeLinksWorkspaceApi["getCalendarAuthorization"]>(),

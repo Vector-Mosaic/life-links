@@ -61,6 +61,8 @@ export type RoutineSummaryRecord = RoutineRecord & {
   purpose: string;
 };
 
+export type RoutineOrdering = "unordered" | "ordered";
+
 export type RoutineRevisionRecord = {
   id: string;
   ownerId: string;
@@ -69,6 +71,7 @@ export type RoutineRevisionRecord = {
   title: string;
   purpose: string;
   instructions: string;
+  ordering: RoutineOrdering;
   createdAt: string;
 };
 
@@ -299,6 +302,7 @@ export type CreateRoutineRevisionCommand = {
   title: string;
   purpose?: string;
   instructions?: string;
+  ordering?: RoutineOrdering;
   steps: CreateRoutineStepInput[];
   bindings?: CreateRoutineContextBindingInput[];
   createdAt: string;
@@ -314,6 +318,7 @@ export type CreateRoutineCommand = {
   title: string;
   purpose?: string;
   instructions?: string;
+  ordering?: RoutineOrdering;
   steps: CreateRoutineStepInput[];
   bindings?: CreateRoutineContextBindingInput[];
   createdAt: string;
@@ -667,12 +672,18 @@ export function applyActivityPatch(record: ActivityRecord, patchValue: unknown, 
   return { ...record, ...patch, updatedAt };
 }
 
-export function createCanonicalRoutineRevision(command: CreateRoutineRevisionCommand): RoutineRevisionSnapshot {
+export function normalizeRoutineOrdering(value: unknown): RoutineOrdering {
+  if (value === undefined) return "unordered";
+  if (value !== "unordered" && value !== "ordered") throw invalidRoutine("Routine ordering must be unordered or ordered.", "invalid_ordering");
+  return value;
+}
+
+export function createCanonicalRoutineRevision(command: CreateRoutineRevisionCommand, inheritedOrdering?: RoutineOrdering): RoutineRevisionSnapshot {
   assertExactKeys(
     command,
-    ["id", "ownerId", "routineId", "revisionNumber", "title", "purpose", "instructions", "steps", "bindings", "createdAt"],
+    ["id", "ownerId", "routineId", "revisionNumber", "title", "purpose", "instructions", "ordering", "steps", "bindings", "createdAt"],
     "invalid_revision",
-    ["purpose", "instructions", "bindings"]
+    ["purpose", "instructions", "ordering", "bindings"]
   );
   const ownerId = normalizeOwnerId(command.ownerId);
   const revisionId = normalizeRoutineRevisionId(command.id);
@@ -712,6 +723,7 @@ export function createCanonicalRoutineRevision(command: CreateRoutineRevisionCom
       title: normalizeBoundedText(command.title, MAX_TITLE_LENGTH, true, "invalid_routine_title"),
       purpose: normalizeBoundedText(command.purpose ?? "", MAX_ROUTINE_PURPOSE_LENGTH, false, "invalid_routine_purpose"),
       instructions: normalizeBoundedText(command.instructions ?? "", MAX_BODY_LENGTH, false, "invalid_routine_instructions"),
+      ordering: normalizeRoutineOrdering(command.ordering === undefined ? inheritedOrdering : command.ordering),
       createdAt
     },
     steps,
@@ -722,9 +734,9 @@ export function createCanonicalRoutineRevision(command: CreateRoutineRevisionCom
 export function createCanonicalRoutine(command: CreateRoutineCommand): CanonicalRoutineCreation {
   assertExactKeys(
     command,
-    ["id", "revisionId", "ownerId", "groupId", "title", "purpose", "instructions", "steps", "bindings", "createdAt"],
+    ["id", "revisionId", "ownerId", "groupId", "title", "purpose", "instructions", "ordering", "steps", "bindings", "createdAt"],
     "invalid_create",
-    ["groupId", "purpose", "instructions", "bindings"]
+    ["groupId", "purpose", "instructions", "ordering", "bindings"]
   );
   const routineId = normalizeRoutineId(command.id);
   const ownerId = normalizeOwnerId(command.ownerId);
@@ -737,6 +749,7 @@ export function createCanonicalRoutine(command: CreateRoutineCommand): Canonical
     title: command.title,
     purpose: command.purpose,
     instructions: command.instructions,
+    ordering: command.ordering,
     steps: command.steps,
     bindings: command.bindings,
     createdAt
@@ -757,7 +770,8 @@ export function createCanonicalRoutine(command: CreateRoutineCommand): Canonical
 
 export function reviseCanonicalRoutine(
   routine: RoutineRecord,
-  command: ReviseRoutineCommand
+  command: ReviseRoutineCommand,
+  previousRevision: RoutineRevisionRecord
 ): CanonicalRoutineCreation {
   if (normalizeRoutineId(command.routineId) !== routine.id || normalizeOwnerId(command.ownerId) !== routine.ownerId) {
     throw new LifeLinkDomainError("routine_reference_conflict", "Routine revision does not belong to the Routine owner.", {
@@ -771,8 +785,11 @@ export function reviseCanonicalRoutine(
       reason: "stale_current_revision"
     });
   }
+  if (previousRevision.id !== expectedCurrentRevisionId || previousRevision.routineId !== routine.id || previousRevision.ownerId !== routine.ownerId) {
+    throw new LifeLinkDomainError("routine_reference_conflict", "Routine previous revision does not match.", { reason: "previous_revision_mismatch" });
+  }
   const { expectedCurrentRevisionId: _expectedCurrentRevisionId, ...revisionCommand } = command;
-  const currentRevision = createCanonicalRoutineRevision(revisionCommand);
+  const currentRevision = createCanonicalRoutineRevision(revisionCommand, previousRevision.ordering);
   if (currentRevision.revision.revisionNumber < 2) {
     throw invalidRoutine("A replacement Routine revision number must be greater than one.", "invalid_revision_number");
   }
@@ -840,6 +857,30 @@ export function applyRoutineSchedulePatch(
     revision: schedule.revision + 1,
     updatedAt: normalizeTimestamp(updatedAtValue)
   };
+}
+
+/** Re-pin only future plans; execution and historical revisions are never inputs to mutate. */
+export function planRoutineRevisionScheduling(
+  revision: RoutineRevisionRecord,
+  schedules: readonly RoutineScheduleRecord[],
+  occurrences: readonly RoutineOccurrenceRecord[],
+  runOccurrenceIds: ReadonlySet<string>
+): { schedules: RoutineScheduleRecord[]; occurrences: RoutineOccurrenceRecord[] } {
+  const cutoff = Date.parse(normalizeTimestamp(revision.createdAt));
+  const advancedTime = (previous: string) => new Date(Math.max(cutoff, Date.parse(previous) + 1)).toISOString();
+  const revisedSchedules = schedules.filter((schedule) => schedule.ownerId === revision.ownerId && schedule.routineId === revision.routineId &&
+    schedule.active && schedule.routineRevisionId !== revision.id)
+    .map((schedule) => applyRoutineSchedulePatch(schedule, revision.id, {}, advancedTime(schedule.updatedAt)));
+  const byId = new Map(revisedSchedules.map((schedule) => [schedule.id, schedule]));
+  const revisedOccurrences: RoutineOccurrenceRecord[] = [];
+  for (const occurrence of occurrences) {
+    const schedule = byId.get(occurrence.scheduleId);
+    if (!schedule || occurrence.ownerId !== revision.ownerId || occurrence.routineId !== revision.routineId ||
+        occurrence.status !== "planned" || Date.parse(occurrence.plannedFor) <= cutoff || runOccurrenceIds.has(occurrence.id)) continue;
+    revisedOccurrences.push({ ...occurrence, routineRevisionId: revision.id, scheduleRevision: schedule.revision,
+      updatedAt: advancedTime(occurrence.updatedAt) });
+  }
+  return { schedules: revisedSchedules, occurrences: revisedOccurrences };
 }
 
 export function createCanonicalRoutineOccurrence(

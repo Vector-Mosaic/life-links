@@ -9,6 +9,101 @@ const id = (prefix: string) => `${prefix}-${randomUUID()}`;
 
 export function routineStoreContract(getStore: () => LifeLinksStore): void {
   describe("general Routines store contract", () => {
+    it("defaults new definitions to unordered and rejects invalid modes without saving", async () => {
+      const store = getStore();
+      const command = { id: id("routine"), revisionId: id("routine-revision"), ownerId: DEMO_GUEST_ID,
+        title: "Flexible actions", createdAt: "2026-09-01T12:00:00.000Z", steps: [] };
+      for (const ordering of [null, "sequential", true]) {
+        await expect(store.createRoutine({ ...command, ordering } as never)).rejects.toMatchObject({ reason: "invalid_ordering" });
+        expect(await store.getRoutine(DEMO_GUEST_ID, command.id)).toBeNull();
+      }
+      const created = await store.createRoutine(command);
+      expect(created.currentRevision.revision.ordering).toBe("unordered");
+      expect(await store.createRoutine(command)).toEqual(created);
+    });
+
+    it("atomically saves ordering and re-pins future plans once while preserving Runs, history and old materialized slots", async () => {
+      const store = getStore();
+      const ownerId = DEMO_GUEST_ID;
+      const createdAt = "2026-09-01T12:00:00.000Z";
+      const cutoff = "2026-09-10T12:00:00.000Z";
+      const activity = await store.createActivity({ id: id("activity"), ownerId, title: "Check", createdAt });
+      const created = await store.createRoutine({ id: id("routine"), revisionId: id("routine-revision"), ownerId,
+        title: "Legacy ordered routine", ordering: "ordered", createdAt,
+        steps: [{ id: id("routine-step"), activityId: activity.id, activityTitle: activity.title, position: 0 }] });
+      const schedule = await store.createRoutineSchedule({ id: id("routine-schedule"), ownerId, routineId: created.routine.id,
+        routineRevisionId: created.routine.currentRevisionId, createdAt,
+        rule: { kind: "daily", startDate: "2026-09-09", endDate: null, intervalDays: 1, localTime: "12:00", timeZone: "UTC" } });
+      const inactive = await store.createRoutineSchedule({ id: id("routine-schedule"), ownerId, routineId: created.routine.id,
+        routineRevisionId: created.routine.currentRevisionId, createdAt, active: false,
+        rule: { kind: "once", localDate: "2026-09-20", localTime: "12:00", timeZone: "UTC" } });
+      const cancelable = await store.createRoutineSchedule({ id: id("routine-schedule"), ownerId, routineId: created.routine.id,
+        routineRevisionId: created.routine.currentRevisionId, createdAt,
+        rule: { kind: "once", localDate: "2099-09-20", localTime: "12:00", timeZone: "UTC" } });
+      const [willCancel] = await store.materializeRoutineOccurrences(ownerId, created.routine.id, { startDate: "2099-09-20", endDate: "2099-09-20" });
+      const disabled = (await store.updateRoutineSchedule(ownerId, { scheduleId: cancelable.id, expectedUpdatedAt: cancelable.updatedAt, patch: { active: false } }))!;
+      // The daily schedule may also match that date; select the exact canceled slot.
+      const canceled = (await store.listRoutineOccurrences(ownerId, { routineId: created.routine.id, startDate: "2099-09-20", endDate: "2099-09-20" }))
+        .items.find((occurrence) => occurrence.scheduleId === cancelable.id)!;
+      expect(willCancel).toBeDefined();
+      expect(canceled.status).toBe("canceled");
+      const occurrences = await store.materializeRoutineOccurrences(ownerId, created.routine.id, { startDate: "2026-09-09", endDate: "2026-09-14" });
+      const completedSlot = occurrences.find((occurrence) => occurrence.localDate === "2026-09-12")!;
+      const completedRun = (await store.startRoutineRun(ownerId, { id: id("routine-run"), routineId: created.routine.id,
+        occurrenceId: completedSlot.id, startedAt: "2026-09-05T12:00:00.000Z" }))!;
+      const session = (await store.finalizeRoutineRun(ownerId, { runId: completedRun.id, sessionId: id("routine-session"),
+        expectedUpdatedAt: completedRun.updatedAt, completedAt: "2026-09-05T12:10:00.000Z" }))!;
+      const activeSlot = occurrences.find((occurrence) => occurrence.localDate === "2026-09-13")!;
+      const activeRun = (await store.startRoutineRun(ownerId, { id: id("routine-run"), routineId: created.routine.id,
+        occurrenceId: activeSlot.id, startedAt: "2026-09-06T12:00:00.000Z" }))!;
+      const before = new Map(await Promise.all(occurrences.map(async (occurrence) => [occurrence.id, (await store.getRoutineOccurrence(ownerId, occurrence.id))!] as const)));
+      const beforeHistory = await store.getRoutineSession(ownerId, session.session.id);
+      const revisionCommand = { id: id("routine-revision"), ownerId, routineId: created.routine.id, revisionNumber: 2,
+        expectedCurrentRevisionId: created.routine.currentRevisionId, title: "Updated default", createdAt: cutoff,
+        steps: [{ id: id("routine-step"), activityId: activity.id, activityTitle: activity.title, position: 0 }] };
+      await expect(store.reviseRoutine(ownerId, { ...revisionCommand, ordering: "bad" } as never)).rejects.toMatchObject({ reason: "invalid_ordering" });
+      await expect(store.reviseRoutine(ownerId, { ...revisionCommand, steps: [{ ...revisionCommand.steps[0], activityId: id("activity") }] }))
+        .rejects.toMatchObject({ code: "routine_reference_conflict" });
+      await expect(store.reviseRoutine(ownerId, { ...revisionCommand, steps: [{ ...revisionCommand.steps[0], id: created.currentRevision.steps[0].id }] }))
+        .rejects.toMatchObject({ code: "routine_conflict" });
+      expect((await store.getRoutine(ownerId, created.routine.id))?.currentRevision).toEqual(created.currentRevision);
+      expect(await store.getRoutineRevision(ownerId, created.routine.id, revisionCommand.id)).toBeNull();
+      expect((await store.listRoutineSchedules(ownerId, created.routine.id))?.items.find((row) => row.id === schedule.id)).toEqual(schedule);
+      const revised = (await store.reviseRoutine(ownerId, revisionCommand))!;
+      expect(revised.revision.ordering).toBe("ordered");
+      const afterSchedules = (await store.listRoutineSchedules(ownerId, created.routine.id))!.items;
+      const activeSchedule = afterSchedules.find((row) => row.id === schedule.id)!;
+      expect(activeSchedule).toEqual({ ...schedule, routineRevisionId: revised.revision.id, revision: 2, updatedAt: cutoff });
+      expect(afterSchedules.find((row) => row.id === inactive.id)).toEqual(inactive);
+      expect(afterSchedules.find((row) => row.id === disabled.id)).toEqual(disabled);
+      for (const old of before.values()) {
+        const current = (await store.getRoutineOccurrence(ownerId, old.id))!;
+        const eligible = old.status === "planned" && old.plannedFor > cutoff;
+        expect(current).toEqual(eligible ? { ...old, routineRevisionId: revised.revision.id, scheduleRevision: 2,
+          updatedAt: new Date(Math.max(Date.parse(cutoff), Date.parse(old.updatedAt) + 1)).toISOString() } : old);
+      }
+      expect(await store.getRoutineOccurrence(ownerId, canceled.id)).toEqual(canceled);
+      expect(await store.getRoutineRun(ownerId, activeRun.id)).toEqual(activeRun);
+      expect(await store.getRoutineSession(ownerId, session.session.id)).toEqual(beforeHistory);
+      expect(await store.getRoutineRevision(ownerId, created.routine.id, created.routine.currentRevisionId)).toEqual(created.currentRevision);
+      expect(await store.reviseRoutine(ownerId, { ...revisionCommand, createdAt: "2026-09-10T13:00:00.000Z" })).toEqual(revised);
+      expect((await store.listRoutineSchedules(ownerId, created.routine.id))!.items).toEqual(afterSchedules);
+      await expect(store.reviseRoutine(ownerId, { ...revisionCommand, ordering: "unordered" })).rejects.toMatchObject({ code: "routine_conflict" });
+      await expect(store.reviseRoutine(ownerId, { ...revisionCommand, id: id("routine-revision"), revisionNumber: 3 })).rejects.toMatchObject({ code: "stale_routine" });
+      expect(await store.reviseRoutine(DEMO_OWNER_ID, revisionCommand)).toBeNull();
+      await expect(store.updateRoutineSchedule(ownerId, { scheduleId: schedule.id, expectedUpdatedAt: schedule.updatedAt, patch: { active: false } }))
+        .rejects.toMatchObject({ code: "stale_routine" });
+      const late = await store.materializeRoutineOccurrences(ownerId, created.routine.id, { startDate: "2026-09-09", endDate: "2026-09-15" });
+      for (const old of before.values()) expect(late.find((row) => row.id === old.id)).toEqual(await store.getRoutineOccurrence(ownerId, old.id));
+      expect(late.find((row) => row.localDate === "2026-09-15")).toMatchObject({ routineRevisionId: revised.revision.id, scheduleRevision: 2 });
+      const switched = (await store.reviseRoutine(ownerId, { ...revisionCommand, id: id("routine-revision"), revisionNumber: 3,
+        expectedCurrentRevisionId: revised.revision.id, ordering: "unordered", steps: [{ ...revisionCommand.steps[0], id: id("routine-step") }],
+        createdAt: "2026-09-10T14:00:00.000Z" }))!;
+      expect(switched.revision.ordering).toBe("unordered");
+      expect(await store.getRoutineRun(ownerId, activeRun.id)).toEqual(activeRun);
+      expect(await store.getRoutineSession(ownerId, session.session.id)).toEqual(beforeHistory);
+    });
+
     it("limits Workspace v3 Routine access to owner reads and archive-only writes with live revocation", async () => {
       const store = getStore();
       const ownerId = DEMO_GUEST_ID;
@@ -265,8 +360,8 @@ export function routineStoreContract(getStore: () => LifeLinksStore): void {
       expect(archivedActivity.archivedAt).not.toBeNull();
       const routineSchedulesAfterActivityArchive = await store.listRoutineSchedules(DEMO_OWNER_ID, created.routine.id, { limit: 100 });
       const disabledByActivityArchive = routineSchedulesAfterActivityArchive!.items.find((item) => item.id === schedule.id)!;
-      expect(disabledByActivityArchive).toMatchObject({ active: false, revision: monday.revision + 1,
-        routineRevisionId: monday.routineRevisionId });
+      expect(disabledByActivityArchive).toMatchObject({ active: false, revision: monday.revision + 2,
+        routineRevisionId: revision!.revision.id });
       expect(await store.getRoutineOccurrence(DEMO_OWNER_ID, occurrences[0].id)).toMatchObject({ status: "completed" });
       expect(await store.getRoutineOccurrence(DEMO_OWNER_ID, occurrences[1].id)).toMatchObject({ status: "canceled" });
       expect((await store.getRoutineSession(DEMO_OWNER_ID, sessionId))?.session).toEqual(built.session);
@@ -287,7 +382,7 @@ export function routineStoreContract(getStore: () => LifeLinksStore): void {
         startedAt: "2026-09-21T13:00:00.000Z" })).rejects.toMatchObject({ code: "routine_conflict" });
     });
 
-    it("archives only schedules whose pinned revision uses the archived Activity", async () => {
+    it("archives only schedules whose current pin still uses the Activity after a definition save", async () => {
       const store = getStore();
       const createdAt = "2026-09-01T12:00:00.000Z";
       const firstActivity = await store.createActivity({ id: id("activity"), ownerId: DEMO_OWNER_ID,
@@ -318,16 +413,20 @@ export function routineStoreContract(getStore: () => LifeLinksStore): void {
         patch: { archivedAt: "2026-09-03T12:00:00.000Z" } });
 
       const schedules = (await store.listRoutineSchedules(DEMO_OWNER_ID, created.routine.id, { limit: 100 }))!.items;
-      expect(schedules.find((item) => item.id === firstSchedule.id)).toMatchObject({ active: false,
-        revision: firstSchedule.revision + 1, routineRevisionId: firstSchedule.routineRevisionId });
+      expect(schedules.find((item) => item.id === firstSchedule.id)).toMatchObject({ active: true,
+        revision: firstSchedule.revision + 1, routineRevisionId: secondRevision.revision.id });
       expect(schedules.find((item) => item.id === secondSchedule.id)).toEqual(secondSchedule);
       const occurrencesAfterArchive = (await store.listRoutineOccurrences(DEMO_OWNER_ID, {
         routineId: created.routine.id, limit: 100
       })).items;
       expect(occurrencesAfterArchive.find((item) => item.id === occurrences.find((item) => item.scheduleId === firstSchedule.id)!.id))
-        .toMatchObject({ status: "canceled" });
+        .toMatchObject({ status: "planned" });
       expect(occurrencesAfterArchive.find((item) => item.id === occurrences.find((item) => item.scheduleId === secondSchedule.id)!.id))
         .toMatchObject({ status: "planned" });
+      await store.updateActivity(DEMO_OWNER_ID, { activityId: secondActivity.id, expectedUpdatedAt: secondActivity.updatedAt,
+        patch: { archivedAt: "2026-09-03T13:00:00.000Z" } });
+      expect((await store.listRoutineSchedules(DEMO_OWNER_ID, created.routine.id, { limit: 100 }))!.items.every((item) => !item.active)).toBe(true);
+      expect((await store.listRoutineOccurrences(DEMO_OWNER_ID, { routineId: created.routine.id, limit: 100 })).items.every((item) => item.status === "canceled")).toBe(true);
     });
   });
 }

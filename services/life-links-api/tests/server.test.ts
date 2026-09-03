@@ -731,6 +731,67 @@ describe("Life Links API", () => {
     expect((await guarded.store.listCalendars("demo-owner")).items).toEqual([]);
   });
 
+  it("saves Routine ordering and future plans atomically through HTTP with stable revision retries", async () => {
+    await login();
+    const activity = await ctx.agent.post("/api/routine-activities").send({ title: "Check equipment" });
+    expect(activity.status).toBe(201);
+    const steps = [{ activityId: activity.body.activity.id, activityTitle: "Check equipment", position: 0 }];
+    const created = await ctx.agent.post("/api/routines").send({ title: "Ordered preparation", ordering: "ordered", steps });
+    expect(created.status).toBe(201);
+    const routineId = created.body.routine.routine.id;
+    const original = created.body.routine.currentRevision;
+    expect(original.revision.ordering).toBe("ordered");
+    const localDate = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+    const schedule = await ctx.agent.post(`/api/routines/${routineId}/schedules`).send({
+      rule: { kind: "once", localDate, localTime: "09:00", timeZone: "UTC" }
+    });
+    expect(schedule.status).toBe(201);
+    const firstRequest = {
+      revisionId: "routine-revision-00000000-0000-4000-8000-000000000080",
+      expectedCurrentRevisionId: original.revision.id,
+      title: "Updated preparation",
+      steps
+    };
+    const first = await ctx.agent.post(`/api/routines/${routineId}/revisions`).send(firstRequest);
+    expect(first.status).toBe(201);
+    expect(first.body.routine.currentRevision.revision).toMatchObject({ ordering: "ordered", revisionNumber: 2 });
+    const schedulesAfterFirst = await ctx.agent.get(`/api/routines/${routineId}/schedules`);
+    const firstReplay = await ctx.agent.post(`/api/routines/${routineId}/revisions`).send(firstRequest);
+    expect(firstReplay.status).toBe(201);
+    expect(firstReplay.body).toEqual(first.body);
+    expect((await ctx.agent.get(`/api/routines/${routineId}/schedules`)).body).toEqual(schedulesAfterFirst.body);
+    const secondRequest = {
+      ...firstRequest,
+      revisionId: "routine-revision-00000000-0000-4000-8000-000000000081",
+      expectedCurrentRevisionId: firstRequest.revisionId,
+      ordering: "unordered"
+    };
+    const second = await ctx.agent.post(`/api/routines/${routineId}/revisions`).send(secondRequest);
+    expect(second.status).toBe(201);
+    expect(second.body.routine.currentRevision.revision).toMatchObject({ ordering: "unordered", revisionNumber: 3 });
+    const schedulesAfterSecond = await ctx.agent.get(`/api/routines/${routineId}/schedules`);
+    const secondReplay = await ctx.agent.post(`/api/routines/${routineId}/revisions`).send(secondRequest);
+    expect(secondReplay.status).toBe(201);
+    expect(secondReplay.body).toEqual(second.body);
+    expect((await ctx.agent.get(`/api/routines/${routineId}/schedules`)).body).toEqual(schedulesAfterSecond.body);
+    const occurrences = await ctx.agent.get("/api/routine-occurrences").query({ routineId, startDate: localDate, endDate: localDate });
+    expect(occurrences.status).toBe(200);
+    expect(occurrences.body.occurrences).toEqual([expect.objectContaining({
+      routineRevisionId: secondRequest.revisionId, status: "planned"
+    })]);
+    const previous = await ctx.agent.get(`/api/routines/${routineId}/revisions/${original.revision.id}`);
+    expect(previous.status).toBe(200);
+    expect(previous.body.routineRevision).toEqual(original);
+    const invalid = await ctx.agent.post(`/api/routines/${routineId}/revisions`).send({
+      ...secondRequest,
+      revisionId: "routine-revision-00000000-0000-4000-8000-000000000082",
+      expectedCurrentRevisionId: secondRequest.revisionId,
+      ordering: "automatic"
+    });
+    expect(invalid.status).toBe(400);
+    expect((await ctx.agent.get(`/api/routines/${routineId}/schedules`)).body).toEqual(schedulesAfterSecond.body);
+  });
+
   it("completes the owner-only general Routines journey with stable retries and immutable corrected history", async () => {
     const events: LogEvent[] = [];
     ctx = await createSeededAgent({
@@ -791,6 +852,7 @@ describe("Life Links API", () => {
     };
     const created = await ctx.agent.post("/api/routines").send(routineRequest);
     expect(created.status).toBe(201);
+    expect(created.body.routine.currentRevision.revision.ordering).toBe("unordered");
     expect(created.body.routine.currentRevision.steps[0].id).toMatch(/^routine-step-/);
     expect(created.body.routine.currentRevision.bindings.map((binding: { id: string }) => binding.id))
       .toEqual([expect.stringMatching(/^routine-binding-/), expect.stringMatching(/^routine-binding-/)]);

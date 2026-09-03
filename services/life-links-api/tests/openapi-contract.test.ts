@@ -925,6 +925,14 @@ describe("Life Links OpenAPI v1", () => {
       const steps = objectValue(objectValue(objectValue(schemas[name], name).properties, `${name} properties`).steps, `${name} steps`);
       expect(steps).not.toHaveProperty("minItems");
     }
+    expect(objectValue(schemas.RoutineOrdering, "RoutineOrdering").enum).toEqual(["unordered", "ordered"]);
+    expect(objectValue(schemas.RoutineRevision, "RoutineRevision").required).toContain("ordering");
+    const createProperties = objectValue(objectValue(schemas.RoutineCreateRequest, "RoutineCreateRequest").properties, "create properties");
+    const revisionProperties = objectValue(objectValue(schemas.RoutineRevisionCreateRequest, "RoutineRevisionCreateRequest").properties, "revision properties");
+    expect(createProperties.ordering).toMatchObject({ $ref: "#/components/schemas/RoutineOrdering", default: "unordered" });
+    expect(revisionProperties.ordering).not.toHaveProperty("default");
+    expect(String(objectValue(revisionProperties.ordering, "revision ordering").description)).toContain("preserves the exact expected previous revision");
+    expect(operations.get("POST /api/routines/{routineId}/revisions")?.description).toContain("atomically repins active Schedules");
     expect(objectValue(schemas.RoutineRunStepResultPutRequest, "RoutineRunStepResultPutRequest").required).toEqual([
       "expectedUpdatedAt",
       "actualValues",

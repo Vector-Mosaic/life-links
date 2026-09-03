@@ -21,6 +21,8 @@ import {
   RoutineValueList,
   formatRoutineDateTime,
   routineScheduleMeta,
+  routineEntryLabel,
+  routineRecordedRevision,
   type RoutineDialogState
 } from "./RoutineShared";
 
@@ -116,7 +118,6 @@ export function RoutineWorkspacePanel({ controller, snapshot, onOpenDialog, onOp
       <div><h1>My Routines</h1><p className="ll-subtitle">{routines.length} {routines.length === 1 ? "Routine" : "Routines"}{showRemoved ? " including removed" : ""} · actions and progress over time</p></div>
       <ActionMenu label="Create in My Routines" className="ll-icon-button ll-primary ll-main-plus" items={[
         { label: "New Routine", icon: <Repeat2 size={17} />, onClick: () => onOpenDialog({ kind: "new-routine" }) },
-        { label: "New Activity", icon: <CircleCheck size={17} />, onClick: () => onOpenDialog({ kind: "new-activity" }) },
         { label: "New Group", icon: <Layers3 size={17} />, onClick: () => onOpenDialog({ kind: "new-group" }) },
         { label: "Edit", icon: <Pencil size={17} />, onClick: () => { controller.setRoutinePresentation({ tab: "routines" }); setSelectedIds([]); setEditing(true); } }
       ]}><Plus size={22} /></ActionMenu>
@@ -160,7 +161,7 @@ export function RoutineWorkspacePanel({ controller, snapshot, onOpenDialog, onOp
       </select></label><button type="button" className="ll-text-button" disabled={state.history.loading} onClick={() => void controller.loadRoutineHistory()}>Refresh history</button></div>
       {state.history.error && <p className="ll-error" role="alert">{state.history.error}</p>}
       {state.history.loading && <p role="status" className="ll-muted">Loading history…</p>}
-      {(state.history.loaded || state.history.sessions.length > 0) && <SessionIndex sessions={state.history.sessions} routines={state.routines} onSelect={(session) => void showSession(session)} />}
+      {(state.history.loaded || state.history.sessions.length > 0) && <SessionIndex sessions={state.history.sessions} snapshot={snapshot} onSelect={(session) => void showSession(session)} />}
     </div>}
     {state.routinesNextCursor && <button className="ll-button ll-load-more" onClick={() => void controller.loadMoreRoutines()}>{tab === "history" ? "Load more Routine choices" : "Load more Routines"}</button>}
     {tab === "history" && state.history.nextCursor && <button className="ll-button ll-load-more" disabled={state.history.loading} onClick={() => void controller.loadRoutineHistory({ cursor: state.history.nextCursor })}>Load more history</button>}
@@ -180,7 +181,7 @@ function RoutineIndex({ routines, groups, collapsedGroups, selectedRoutineId, ed
   onToggle(id: string): void;
   onSelect(id: string): void;
 }) {
-  if (!routines.length) return <div className="ll-empty ll-routine-empty"><strong>No Routines yet</strong><p>Create a reusable sequence of actions, planned targets, and optional schedule.</p></div>;
+  if (!routines.length && !groups.some((group) => group.kind === "group")) return <div className="ll-empty ll-routine-empty"><strong>No Routines yet</strong><p>Create reusable Activities with planned targets, optional ordering, and an optional schedule.</p></div>;
   const availableGroupIds = new Set(groups.filter((group) => group.kind === "group").map((group) => group.id));
   return <div className="ll-routine-groups">{groups.map((group) => {
     const items = routines.filter((routine) => group.kind === "ungrouped" ? routine.groupId === null
@@ -190,7 +191,7 @@ function RoutineIndex({ routines, groups, collapsedGroups, selectedRoutineId, ed
     const collapsed = collapsedGroups.includes(group.id);
     return <section className="ll-collection-group ll-routine-group" key={group.id}>
       <div className="ll-group-heading"><button type="button" aria-expanded={!collapsed} onClick={() => onToggle(group.id)}>
-        {collapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}<strong>{group.title}</strong><small>{items.length} {items.length === 1 ? "Routine" : "Routines"}</small>
+        {collapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}<span className="ll-routine-layer">{group.kind === "group" ? "Group" : "Routines"}</span><strong>{group.title}</strong><small>{items.length} {items.length === 1 ? "Routine" : "Routines"}</small>
       </button></div>
       {!collapsed && <div className="ll-group-members ll-record-list">{items.length ? items.map((routine) => <RoutineRow key={routine.id} routine={routine} selected={selectedRoutineId === routine.id}
         editing={editing} checked={selectedIds.includes(routine.id)} onToggleSelection={() => onToggleSelection(routine.id)}
@@ -206,21 +207,21 @@ function RoutineRow({ routine, selected, editing, checked, restoring, onToggleSe
   return <div className={`ll-member-row ll-routine-row${selected ? " selected" : ""}`} data-routine-id={routine.id}>
     {editing && !routine.archivedAt && <input type="checkbox" className="ll-selection-dot" aria-label={`Select ${routine.title}`} checked={checked} onChange={onToggleSelection} />}
     <button className="ll-row-main" onClick={editing && !routine.archivedAt ? onToggleSelection : onSelect} aria-current={selected ? "true" : undefined}>
-      <Repeat2 size={18} /><span className="ll-row-copy"><strong>{routine.title}</strong><small>{routine.purpose || "No purpose added"}</small></span>
+      <Repeat2 size={18} /><span className="ll-row-copy"><span className="ll-routine-layer">Routine</span><strong>{routine.title}</strong><small>{routine.purpose || "No purpose added"}</small></span>
       <span className="ll-chip ll-neutral">{routine.archivedAt ? "Removed" : `Revision ${routine.revisionNumber}`}</span>
     </button>
     {routine.archivedAt && <button type="button" className="ll-text-button" disabled={restoring} onClick={onRestore}>Restore</button>}
   </div>;
 }
 
-function SessionIndex({ sessions, routines, onSelect }: { sessions: RoutineSessionProjection[]; routines: RoutineSummaryRecord[]; onSelect(session: RoutineSessionProjection): void }) {
+function SessionIndex({ sessions, snapshot, onSelect }: { sessions: RoutineSessionProjection[]; snapshot: LifeLinksWorkspaceSnapshot; onSelect(session: RoutineSessionProjection): void }) {
   const items = [...sessions].sort((left, right) => right.session.completedAt.localeCompare(left.session.completedAt));
   if (!items.length) return <div className="ll-empty ll-routine-empty"><History size={24} /><strong>No completed Sessions yet</strong><p>Completed Runs become immutable history here.</p></div>;
   return <div className="ll-record-list ll-routine-sessions">{items.map((session) => {
-    const routine = routines.find((candidate) => candidate.id === session.session.routineId);
+    const recorded = routineRecordedRevision(snapshot.routineWorkspace, session.session.routineRevisionId);
     return <div className="ll-member-row ll-routine-row" key={session.session.id}>
       <button className="ll-row-main" onClick={() => onSelect(session)}>
-        <CircleCheck size={18} /><span className="ll-row-copy"><strong>{routine?.title ?? "Completed Routine"}</strong><small>{formatRoutineDateTime(session.session.completedAt)} · {session.stepResults.length} recorded {session.stepResults.length === 1 ? "Step" : "Steps"}</small></span>
+        <CircleCheck size={18} /><span className="ll-row-copy"><strong>{recorded?.revision.title ?? "Completed Routine"}</strong><small>{formatRoutineDateTime(session.session.completedAt)} · {session.stepResults.length} recorded {routineEntryLabel(recorded?.revision.ordering, session.stepResults.length !== 1)}</small></span>
       </button>
     </div>;
   })}</div>;
@@ -231,12 +232,14 @@ export function RoutineDetailPanel({ controller, snapshot, onOpenDialog, onShowS
 }) {
   const state = snapshot.routineWorkspace;
   const selected = state.selectedRoutine;
-  if (!selected) return <div className="ll-empty">Select a Routine to see its steps, schedule, and history.</div>;
+  if (!selected) return <div className="ll-empty">Select a Routine to see its Activities, schedule, and history.</div>;
   const { routine, currentRevision } = selected;
   const group = state.groups.find((candidate) => candidate.id === routine.groupId);
   const sessions = state.sessions.filter((candidate) => candidate.session.routineId === routine.id)
     .sort((left, right) => right.session.completedAt.localeCompare(left.session.completedAt));
   const activeRun = state.activeRun?.routineId === routine.id ? state.activeRun : null;
+  const runRevision = activeRun ? routineRecordedRevision(state, activeRun.routineRevisionId) : null;
+  const ordering = currentRevision.revision.ordering;
   async function showSession(sessionId: string) {
     await controller.selectRoutineSession(sessionId);
     if (controller.getSnapshot().routineWorkspace.error) return;
@@ -247,31 +250,31 @@ export function RoutineDetailPanel({ controller, snapshot, onOpenDialog, onShowS
     <div className="ll-title-row ll-detail-title-row"><h2>{currentRevision.revision.title}</h2>
       {(!routine.archivedAt || activeRun) && <ActionMenu label={`Actions for ${currentRevision.revision.title}`} className="ll-icon-button ll-primary ll-detail-plus" items={[
         ...(!routine.archivedAt ? [
-          { label: "Edit future Routine", icon: <Pencil size={17} />, onClick: () => onOpenDialog({ kind: "revise-routine" }) },
+          { label: "Edit Routine", icon: <Pencil size={17} />, onClick: () => onOpenDialog({ kind: "revise-routine" }) },
           { label: "Add schedule", icon: <CalendarPlus size={17} />, onClick: () => onOpenDialog({ kind: "new-schedule" }) }
         ] : []),
         { label: activeRun ? "Resume Run" : "Start Run", icon: <Play size={17} />, onClick: () => onOpenDialog({ kind: "run" }) }
       ]}><Plus size={21} /></ActionMenu>}
     </div>
-    <div className="ll-detail-badges"><span className="ll-chip ll-neutral">Private Routine</span><span className="ll-chip ll-blue">Revision {currentRevision.revision.revisionNumber}</span>{group && <span className="ll-chip ll-neutral">{group.title}</span>}{activeRun && <span className="ll-chip ll-truth-planned">Run in progress</span>}</div>
+    <div className="ll-detail-badges"><span className="ll-chip ll-neutral">Private Routine</span><span className="ll-chip ll-neutral">{ordering === "ordered" ? "In order" : "Any order"}</span><span className="ll-chip ll-blue">Revision {currentRevision.revision.revisionNumber}</span>{group && <span className="ll-chip ll-neutral">Group: {group.title}</span>}{activeRun && <span className="ll-chip ll-truth-planned">Run in progress</span>}</div>
     {routine.archivedAt && <p className="ll-inline-warning">Removed from active Routines. History and Runs in progress are retained. Restore it from Show removed routines before adding future plans; schedules stay stopped until you edit them.</p>}
     {currentRevision.revision.purpose && <p className="ll-collection-purpose">{currentRevision.revision.purpose}</p>}
-    {activeRun && <section className="ll-routine-active-card"><div><strong>Continue your current Run</strong><span>Started {formatRoutineDateTime(activeRun.startedAt)} · {activeRun.stepResults.length} of {currentRevision.steps.length} Steps recorded</span></div><button className="ll-button ll-primary" onClick={() => onOpenDialog({ kind: "run" })}><Play size={16} />Resume</button></section>}
+    {activeRun && <section className="ll-routine-active-card"><div><strong>Continue your current Run</strong><span>Started {formatRoutineDateTime(activeRun.startedAt)} · {activeRun.stepResults.length}{runRevision ? ` of ${runRevision.steps.length}` : ""} {routineEntryLabel(runRevision?.revision.ordering, true)} recorded</span></div><button className="ll-button ll-primary" onClick={() => onOpenDialog({ kind: "run" })}><Play size={16} />Resume</button></section>}
     {currentRevision.revision.instructions && <section className="ll-detail-section"><h3>Instructions</h3><p className="ll-preserve-lines">{currentRevision.revision.instructions}</p></section>}
-    <section className="ll-detail-section ll-routine-step-list"><header><h3>Steps</h3><span className="ll-muted">Planned targets</span></header>
-      {currentRevision.steps.map((step, index) => <div className="ll-routine-step" key={step.id}>
-        <span className="ll-routine-step-number">{index + 1}</span><div><strong>{step.activityTitle}</strong>{step.optional && <span className="ll-chip ll-neutral">Optional</span>}{step.instructions && <p>{step.instructions}</p>}<RoutineValueList values={step.plannedValues} empty="No planned values" /></div>
+    <section className="ll-detail-section ll-routine-step-list"><header><h3>{routineEntryLabel(ordering, true)}</h3><span className="ll-muted">Planned targets</span></header>
+      {currentRevision.steps.map((step, index) => <div className={`ll-routine-step${ordering === "unordered" ? " ll-routine-step-unordered" : ""}`} key={step.id}>
+        {ordering === "ordered" && <span className="ll-routine-step-number">{index + 1}</span>}<div><strong>{step.activityTitle}</strong>{step.optional && <span className="ll-chip ll-neutral">Optional</span>}{step.instructions && <p>{step.instructions}</p>}<RoutineValueList values={step.plannedValues} empty="No planned values" /></div>
       </div>)}
     </section>
     <section className="ll-detail-section"><header><h3>Schedule</h3>{!routine.archivedAt && <button className="ll-text-button" onClick={() => onOpenDialog({ kind: "new-schedule" })}><CalendarPlus size={15} />Add</button>}</header>
       {!state.schedules.length ? <p className="ll-muted">{routine.archivedAt ? "No active schedule." : "No schedule. This Routine can still be started any time."}</p> : state.schedules.map((schedule) => <div className="ll-routine-schedule" key={schedule.id}><div><strong>{routineScheduleMeta(schedule)}</strong><small>Schedule revision {schedule.revision}</small></div>{!routine.archivedAt && <button className="ll-text-button" onClick={() => onOpenDialog({ kind: "edit-schedule", scheduleId: schedule.id })}>Edit</button>}</div>)}
     </section>
     <section className="ll-detail-section"><h3>Connected context</h3>
-      {!currentRevision.bindings.length ? <p className="ll-muted">No Life Links or Collections connected.</p> : <ul className="ll-routine-context-list">{currentRevision.bindings.map((binding) => <li key={binding.id}><span className="ll-chip ll-neutral">{binding.targetType === "life_link" ? "Life Link" : "Collection"}</span><span>{contextTargetTitle(snapshot, binding.targetType, binding.targetId)}</span>{binding.routineStepId && <small>Step-specific</small>}</li>)}</ul>}
+      {!currentRevision.bindings.length ? <p className="ll-muted">No Life Links or Collections connected.</p> : <ul className="ll-routine-context-list">{currentRevision.bindings.map((binding) => <li key={binding.id}><span className="ll-chip ll-neutral">{binding.targetType === "life_link" ? "Life Link" : "Collection"}</span><span>{contextTargetTitle(snapshot, binding.targetType, binding.targetId)}</span>{binding.routineStepId && <small>{routineEntryLabel(ordering)}-specific</small>}</li>)}</ul>}
       {activeRun?.contextSnapshot.length ? <p className="ll-muted">This Run has frozen a context snapshot. Later Collection or Life Link changes will not rewrite it.</p> : null}
     </section>
     <section className="ll-detail-section"><header><h3>Recent Sessions</h3><button className="ll-text-button" onClick={() => void controller.loadRoutineSessions({ routineId: routine.id })}>Refresh</button><button className="ll-text-button" onClick={() => controller.setRoutinePresentation({ tab: "history", historyRoutineId: routine.id })}>View all history</button></header>
-      {!sessions.length ? <p className="ll-muted">No completed Sessions</p> : sessions.slice(0, 4).map((session) => <button className="ll-search-result" key={session.session.id} onClick={() => void showSession(session.session.id)}><strong>{formatRoutineDateTime(session.session.completedAt)}</strong><small>{session.stepResults.length} recorded {session.stepResults.length === 1 ? "Step" : "Steps"} · immutable history</small></button>)}
+      {!sessions.length ? <p className="ll-muted">No completed Sessions</p> : sessions.slice(0, 4).map((session) => <button className="ll-search-result" key={session.session.id} onClick={() => void showSession(session.session.id)}><strong>{formatRoutineDateTime(session.session.completedAt)}</strong><small>{session.stepResults.length} recorded {routineEntryLabel(routineRecordedRevision(state, session.session.routineRevisionId)?.revision.ordering, session.stepResults.length !== 1)} · immutable history</small></button>)}
     </section>
     <details className="ll-record-meta"><summary>Routine details</summary><dl><dt>Routine ID</dt><dd>{routine.id}</dd><dt>Revision ID</dt><dd>{currentRevision.revision.id}</dd><dt>Updated</dt><dd>{formatRoutineDateTime(routine.updatedAt)}</dd></dl></details>
   </article>;
@@ -280,10 +283,10 @@ export function RoutineDetailPanel({ controller, snapshot, onOpenDialog, onShowS
 export function RoutineSessionDetailPanel({ snapshot, onBack, onOpenDialog }: Pick<SharedPanelProps, "snapshot" | "onOpenDialog"> & { onBack(): void }) {
   const selected = snapshot.routineWorkspace.selectedSession;
   if (!selected) return <div className="ll-empty">Select a completed Session to review its results.</div>;
-  const candidate = snapshot.routineWorkspace.selectedSessionRevision ?? snapshot.routineWorkspace.selectedRoutine?.currentRevision;
-  const recordedRevision = candidate?.revision.id === selected.session.routineRevisionId ? candidate : null;
+  const recordedRevision = routineRecordedRevision(snapshot.routineWorkspace, selected.session.routineRevisionId);
+  const ordering = recordedRevision?.revision.ordering;
   const title = recordedRevision?.revision.title ?? "Completed Routine";
-  const stepTitle = (stepId: string, index: number) => recordedRevision?.steps.find((step) => step.id === stepId)?.activityTitle ?? `Step ${index + 1}`;
+  const stepTitle = (stepId: string, index: number) => recordedRevision?.steps.find((step) => step.id === stepId)?.activityTitle ?? `${routineEntryLabel(ordering)}${ordering === "ordered" ? ` ${index + 1}` : ""}`;
   return <article className="ll-detail-content ll-routine-session-detail" data-routine-session-id={selected.session.id}>
     <button className="ll-text-button ll-hierarchy-return" onClick={onBack}><ChevronLeft size={15} />Back to Routine</button>
     <p className="ll-context-row">My Routines / History</p>
@@ -291,9 +294,9 @@ export function RoutineSessionDetailPanel({ snapshot, onBack, onOpenDialog }: Pi
     <div className="ll-detail-badges"><span className="ll-chip ll-neutral">Immutable Session</span><span className="ll-chip ll-neutral">{formatRoutineDateTime(selected.session.completedAt)}</span></div>
     <p className="ll-muted">The original Session is preserved. Corrections are append-only and change only the effective reading.</p>
     <section className="ll-detail-section ll-routine-session-summary"><h3>Timing</h3><dl><div><dt>Started</dt><dd>{formatRoutineDateTime(selected.session.startedAt)}</dd></div><div><dt>Completed</dt><dd>{formatRoutineDateTime(selected.session.completedAt)}</dd></div></dl></section>
-    <section className="ll-detail-section"><header><h3>Recorded results</h3><button className="ll-text-button" onClick={() => onOpenDialog({ kind: "correct-session", sessionId: selected.session.id, stepResultId: null })}>Add session note</button></header>
+    <section className="ll-detail-section"><header><h3>Recorded {routineEntryLabel(ordering, true)}</h3><button className="ll-text-button" onClick={() => onOpenDialog({ kind: "correct-session", sessionId: selected.session.id, stepResultId: null })}>Add session note</button></header>
       {selected.stepResults.map((result, index) => <div className="ll-routine-session-step" key={result.original.id}>
-        <header><div><span className="ll-routine-step-number">{index + 1}</span><strong>{stepTitle(result.original.routineStepId, index)}</strong></div><button className="ll-text-button" onClick={() => onOpenDialog({ kind: "correct-session", sessionId: selected.session.id, stepResultId: result.original.id })}>Correct</button></header>
+        <header><div>{ordering === "ordered" && <span className="ll-routine-step-number">{(recordedRevision?.steps.find((step) => step.id === result.original.routineStepId)?.position ?? index) + 1}</span>}<strong>{stepTitle(result.original.routineStepId, index)}</strong></div><button className="ll-text-button" onClick={() => onOpenDialog({ kind: "correct-session", sessionId: selected.session.id, stepResultId: result.original.id })}>Correct</button></header>
         <div className="ll-routine-result-columns"><section><h4>Actual</h4><RoutineValueList values={result.effectiveActualValues} empty="Unknown" /></section><section><h4>Next-time proposal</h4><RoutineValueList values={result.effectiveProposedNextValues} empty="No proposal" /></section></div>
         {result.original.notes && <p className="ll-preserve-lines">{result.original.notes}</p>}
         {result.amendments.length > 0 && <details open={snapshot.recordSearchTarget?.kind === "session" && snapshot.recordSearchTarget.sessionId === selected.session.id || undefined}><summary>{result.amendments.length} {result.amendments.length === 1 ? "correction" : "corrections"}</summary>

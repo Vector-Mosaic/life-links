@@ -158,6 +158,7 @@ export type AgentCollectionListResult =
   | Exclude<AgentToolControllerActionResult, { ok: true }>;
 
 export type RoutineWorkspaceState = {
+  revisionsById: Record<string, RoutineRevisionSnapshot>;
   selectedSessionRevision: RoutineRevisionSnapshot | null;
   presentation: {
     tab: "routines" | "history";
