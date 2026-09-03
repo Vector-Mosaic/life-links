@@ -3,7 +3,7 @@ import { LIFE_LINK_CONTEXT_FIELDS, deriveLifeLinkPhysicalLocator, type LifeLinkD
 import { RichBodyRenderer } from "../richBody";
 import { ActionMenu } from "./FieldLedgerPrimitives";
 import { PathBreadcrumbs } from "./PathBreadcrumbs";
-import { AttachmentList } from "./AttachmentList";
+import { AttachmentList, type AttachmentSearchTarget } from "./AttachmentList";
 
 export const contextLabels = { summary: "Summary", condition: "Condition", experience: "Experience", plan: "Plan" } as const;
 export const truthLabels = { owner_reported: "Owner reported", agent_inference: "Agent inference", planned: "Planned", unknown: "Unknown" } as const;
@@ -18,13 +18,14 @@ export function ContextFields({ context }: { context?: LifeLinkContext }) {
   })}</>;
 }
 
-export function LifeLinkDetail({ detail, busy, memberships, membershipsLoading, membershipsComplete, onNavigate, onEdit, onCreateChild, onMove, onQr, onMedia, onCollection, onMemberships, collectionMode }: {
+export function LifeLinkDetail({ detail, busy, memberships, membershipsLoading, membershipsComplete, onNavigate, onEdit, onCreateChild, onMove, onQr, onMedia, onCollection, onMemberships, collectionMode, searchAttachment }: {
   detail: DetailRecord | null;
   busy: boolean;
   memberships: LifeLinkCollectionMembership[];
   membershipsLoading: boolean;
   membershipsComplete: boolean;
   collectionMode: boolean;
+  searchAttachment?: AttachmentSearchTarget;
   onNavigate(id: string | null): void;
   onEdit(id: string): void;
   onCreateChild(id: string): void;
@@ -76,7 +77,7 @@ export function LifeLinkDetail({ detail, busy, memberships, membershipsLoading, 
     {lifeLink.body && <section className="ll-detail-section"><h3>Notes</h3><RichBodyRenderer body={lifeLink.body} bodyDoc={lifeLink.bodyDoc} /></section>}
     <section className="ll-detail-section" aria-labelledby="ll-attachments-heading"><h3 id="ll-attachments-heading">Attachments</h3>
       <p className="ll-muted ll-attachment-privacy">Attachments stay private. Your connected agent can read supported document text.</p>
-      {lifeLink.media.length ? <AttachmentList attachments={lifeLink.media} lifeLinkId={lifeLink.id} /> : <p className="ll-muted">No attachments</p>}
+      {lifeLink.media.length ? <AttachmentList attachments={lifeLink.media} lifeLinkId={lifeLink.id} searchTarget={searchAttachment} /> : <p className="ll-muted">No attachments</p>}
     </section>
     <details className="ll-record-meta"><summary>Record details</summary><dl><dt>Life Link ID</dt><dd>{lifeLink.id}</dd><dt>Updated</dt><dd>{new Date(lifeLink.updatedAt).toLocaleString()}</dd>{lifeLink.qrId && <><dt>QR code</dt><dd>{lifeLink.qrId}</dd></>}</dl></details>
   </article>;

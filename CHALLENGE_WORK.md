@@ -98,9 +98,25 @@ paged readback, deletion returns a nonblocking pending state and requires the
 owner's actual in-app Yes. Polling the same preview cannot supply consent.
 Exact Collection moves do not need that deletion prompt. Routine discovery and
 removal do not imply general Routine authoring, scheduling or execution tools.
-Earlier fourteen- and twenty-one-tool evidence retains its exact release scope
-and does not qualify a newer deployed release; deployment identity and proof are
-recorded separately from this source capability description.
+Search-v4 adds `search_my_records` for twenty-seven tools, with a separate
+explicit owner upgrade. Earlier v1/v2/v3 grants retain exactly 14/21/26 tools;
+none silently acquire whole-app search. The human Search records page and new
+tool share one category-paged owner API for Life Links, Collections, current
+Routines, recorded Session history, authorized Calendar events and attachment
+text. Collection members retain their physical Life Link identity, and Session
+results open the recorded Routine revision rather than its current definition.
+Calendar results cover synchronized provider projections, not a provider crawl.
+Attachment search reuses the existing reader with migration 017's private,
+source/extractor-revision-bound disposable cache; original bytes stay canonical.
+Coverage warnings and continuations distinguish partial scans or unreadable
+text from a complete no-match result. Agent output remains bounded to 2,048
+UTF-8 bytes without silently dropping hits, and returned text is untrusted.
+The original physical search endpoint/tool and per-calendar permissions are
+unchanged; this adds no hidden agent backend or general Routine mutation tool.
+
+Earlier 14/21/26-tool evidence retains its exact release scope and does not
+qualify a newer deployed release; deployment identity and proof are recorded
+separately from this source capability description.
 
 The successor `webmcp-field-ledger-family-v3` fixture contains exactly one
 synthetic owner, 60 physical Life Links, eight QR inventory rows/bindings, one
@@ -136,7 +152,7 @@ dependent Expo/iOS source and distribution lane are retired. Browser cookie and
 operator/API bearer authentication remain supported; this is a web-first
 successor, not a new native-client implementation.
 
-Inspect and search retain one `physicalLocator` object or null,
+Physical inspect and search retain one `physicalLocator` object or null,
 using the same core derivation as human detail/search. The nearest QR-bound
 ancestor excluding the subject wins, even if the subject retains its own QR;
 the subject is a fallback only when a complete path proves no QR-bound ancestor
@@ -156,7 +172,7 @@ Rust/Skia reconstruction formerly tracked as BC-270 is not a current release
 gate. Retained native/source/license material remains scoped evidence, not a
 claim of universal redistribution clearance. Neither the earlier fourteen-tool
 journey nor the twenty-one-tool provider checks substitute for exact-release
-Workspace-v3 qualification evidence.
+Workspace-v3 or Search-v4 qualification evidence.
 Final competition submission remains separate from implementation and release.
 
 ## Projection and deployed-source mapping

@@ -162,6 +162,7 @@ import {
 } from "@life-links/core";
 
 import { hashPassword, verifyPassword } from "./password.js";
+import type { AttachmentTextExtraction } from "./attachment-content.js";
 
 export type StoredUser = UserRecord & {
   passwordHash: string;
@@ -172,10 +173,12 @@ export type StoredUser = UserRecord & {
 export const LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID = "life-links-page-webmcp-v1" as const;
 export const LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID = "life-links-calendar-v2" as const;
 export const LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID = "life-links-workspace-v3" as const;
+export const LIFE_LINKS_AGENT_TOOL_CATALOG_V4_ID = "life-links-search-v4" as const;
 export type AgentToolCatalogId =
   | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID
   | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID
-  | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID;
+  | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID
+  | typeof LIFE_LINKS_AGENT_TOOL_CATALOG_V4_ID;
 
 export class WorkspaceAgentAccessError extends Error {
   readonly code = "agent_access_denied";
@@ -188,7 +191,8 @@ export function assertWorkspaceAgentConnection(
   user: Pick<StoredUser, "agentConnectedAt" | "agentToolCatalogId"> | null | undefined,
   actor: CalendarActor
 ): void {
-  if (actor === "agent" && (!user?.agentConnectedAt || user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID)) {
+  if (actor === "agent" && (!user?.agentConnectedAt ||
+      (user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID && user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V4_ID))) {
     throw new WorkspaceAgentAccessError("workspace_agent_connection_required");
   }
 }
@@ -210,7 +214,8 @@ export function assertCalendarAgentConnection(
   actor: CalendarActor
 ): void {
   if (actor === "agent" && (!user?.agentConnectedAt ||
-      (user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID && user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID))) {
+      (user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID && user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID &&
+       user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V4_ID))) {
     throw new CalendarDomainError("calendar_access_denied", "An active Calendar agent connection is required.", { reason: "calendar_agent_connection_required" });
   }
 }
@@ -381,6 +386,7 @@ export type LifeLinksStore = {
   deleteSessionByTokenHash(tokenHash: string): Promise<void>;
 
   listLifeLinks(userId: string, parentId: string | null, page?: LifeLinkPageRequest): Promise<LifeLinkPage<LifeLinkSummary>>;
+  listRecordSearchLifeLinks(userId: string, page?: LifeLinkPageRequest): Promise<LifeLinkPage<LifeLinkRecord>>;
   getLifeLinkDetail(userId: string, lifeLinkId: string, page?: LifeLinkPageRequest): Promise<LifeLinkDetail | null>;
   searchLifeLinks(
     userId: string,
@@ -395,6 +401,8 @@ export type LifeLinksStore = {
   createLifeLinkMedia(userId: string, lifeLinkId: string, input: LinkMediaInput): Promise<LifeLinkMediaRecord | null>;
   deleteLifeLinkMedia(userId: string, lifeLinkId: string, mediaId: string): Promise<boolean>;
   getLifeLinkMedia(userId: string, lifeLinkId: string, mediaId: string): Promise<LifeLinkMediaFile | null>;
+  getAttachmentText(file: LifeLinkMediaFile, revision: string): Promise<AttachmentTextExtraction | null>;
+  putAttachmentText(file: LifeLinkMediaFile, revision: string, extraction: AttachmentTextExtraction): Promise<void>;
 
   listCollections(userId: string, page?: LifeLinkPageRequest): Promise<LifeLinkPage<CollectionRecord>>;
   getCollection(userId: string, collectionId: string): Promise<CollectionRecord | null>;
@@ -539,6 +547,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   private qrInventory = new Map<string, QrInventoryRecord>();
   private qrBindings = new Map<string, LifeLinkQrBindingRecord>();
   private media = new Map<string, StoredLifeLinkMedia>();
+  private attachmentText = new Map<string, { source: StoredLifeLinkMedia; revision: string; extraction: AttachmentTextExtraction }>();
   private batches = new Map<string, ExportBatchRecord>();
   private batchQrIds = new Map<string, string[]>();
   private claimEvents = new Map<string, ClaimEventRecord>();
@@ -711,6 +720,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
         if (delta.table === "collections" && delta.before === undefined) this.assertCollectionsNotCurrentRoutineContext(userId, new Set([delta.key]));
       }
       for (const delta of entry.deltas) {
+        if (delta.table === "media") this.attachmentText.delete(delta.key);
         if (delta.before === undefined) {
           tables[delta.table].delete(delta.key);
           if (["lifeLinks", "collections", "collectionSections"].includes(delta.table)) this.usedChangeIds.add(`${delta.table}\u0000${delta.key}`);
@@ -1013,6 +1023,32 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       return null;
     }
     return { media: this.publicLifeLinkMedia(media), data: media.data };
+  }
+
+  async listRecordSearchLifeLinks(userId: string, page: LifeLinkPageRequest = {}): Promise<LifeLinkPage<LifeLinkRecord>> {
+    const rows = [...this.lifeLinks.values()].filter((row) => row.ownerId === userId).sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const result = pageCollectionRecords(rows, page);
+    return { ...result, items: result.items.map((row) => this.hydrateLifeLink(row)) };
+  }
+
+  async getAttachmentText(file: LifeLinkMediaFile, revision: string): Promise<AttachmentTextExtraction | null> {
+    const source = this.media.get(file.media.id);
+    const cached = this.attachmentText.get(file.media.id);
+    if (!source || source !== cached?.source) { this.attachmentText.delete(file.media.id); return null; }
+    if (!this.currentAttachmentSource(source, file) || cached.revision !== revision) return null;
+    return structuredClone(cached.extraction);
+  }
+
+  async putAttachmentText(file: LifeLinkMediaFile, revision: string, extraction: AttachmentTextExtraction): Promise<void> {
+    const source = this.media.get(file.media.id);
+    if (source && this.currentAttachmentSource(source, file)) {
+      this.attachmentText.set(file.media.id, { source, revision, extraction: structuredClone(extraction) });
+    }
+  }
+
+  private currentAttachmentSource(source: StoredLifeLinkMedia, file: LifeLinkMediaFile): boolean {
+    return source.ownerId === file.media.ownerId && this.lifeLinks.get(source.lifeLinkId)?.ownerId === file.media.ownerId &&
+      source.lifeLinkId === file.media.lifeLinkId && source.mimeType === file.media.mimeType && source.data.equals(file.data);
   }
 
   async listCollections(userId: string, page: LifeLinkPageRequest = {}): Promise<LifeLinkPage<CollectionRecord>> {
@@ -2703,6 +2739,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     removeMapEntries(this.collectionSections, (section) => section.ownerId === ownerId);
     removeMapEntries(this.collections, (collection) => collection.ownerId === ownerId);
     removeMapEntries(this.media, (item) => item.ownerId === ownerId);
+    removeMapEntries(this.attachmentText, (item) => item.source.ownerId === ownerId);
     removeMapEntries(this.qrBindings, (binding) => ownerLifeLinkIds.has(binding.lifeLinkId));
     removeMapEntries(this.lifeLinks, (item) => item.ownerId === ownerId);
     removeMapEntries(this.qrInventory, (qr) => Boolean(qr.batchId && ownerBatchIds.has(qr.batchId)));
@@ -2880,6 +2917,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     try {
       const result = await work();
       const deltas = ownerChangeDeltas(before, this.ownerChangeSnapshot(ownerId), false);
+      for (const delta of deltas) if (delta.table === "media") this.attachmentText.delete(delta.key);
       // Related parent rows may change only their revision when an association
       // changes. Retain those rows so Undo also invalidates stale parent edits.
       if (deltas.some((delta) => !sameChangeRow(delta.before, delta.after))) {

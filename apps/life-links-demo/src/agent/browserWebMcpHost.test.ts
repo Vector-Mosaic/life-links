@@ -5,6 +5,8 @@ import {
   LIFE_LINKS_LEGACY_TOOL_CATALOG_ID,
   LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
   LIFE_LINKS_CALENDAR_PAGE_TOOL_NAMES,
+  LIFE_LINKS_WORKSPACE_PAGE_TOOL_NAMES,
+  LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID,
   LIFE_LINKS_PAGE_TOOL_NAMES,
   validateLifeLinksPageToolCatalog
 } from "./browserWebMcpHost";
@@ -68,7 +70,10 @@ describe("browser WebMCP host", () => {
     const calendar = validateLifeLinksPageToolCatalog(makeCatalog(), LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID);
     expect(calendar.ok && calendar.definitions.map(({ name }) => name)).toEqual(LIFE_LINKS_CALENDAR_PAGE_TOOL_NAMES);
     expect(calendar.ok && calendar.definitions.length).toBe(21);
-    expect(LIFE_LINKS_PAGE_TOOL_NAMES).toHaveLength(26);
+    const workspace = validateLifeLinksPageToolCatalog(makeCatalog(), LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID);
+    expect(workspace.ok && workspace.definitions.map(({ name }) => name)).toEqual(LIFE_LINKS_WORKSPACE_PAGE_TOOL_NAMES);
+    expect(workspace.ok && workspace.definitions.length).toBe(26);
+    expect(LIFE_LINKS_PAGE_TOOL_NAMES).toHaveLength(27);
 
     expect(validateLifeLinksPageToolCatalog(makeCatalog().slice(0, 4))).toMatchObject({
       ok: false,
@@ -104,7 +109,7 @@ describe("browser WebMCP host", () => {
     expect(modelContext.registrations.map(({ definition }) => definition.name)).toEqual(
       LIFE_LINKS_PAGE_TOOL_NAMES
     );
-    expect(modelContext.registrations).toHaveLength(26);
+    expect(modelContext.registrations).toHaveLength(27);
     expect(
       new Set(modelContext.registrations.map(({ options }) => options?.signal))
     ).toEqual(new Set([controller.signal]));

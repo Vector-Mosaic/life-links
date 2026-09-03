@@ -1,4 +1,6 @@
 import type {
+  RecordSearchInput,
+  RecordSearchPage,
   AttachmentContentPage,
   AttachmentContentReadOptions,
   AttachmentImageReadOptions,
@@ -133,7 +135,16 @@ export type ApiAgentConnection = {
   toolCatalogId: ApiAgentToolCatalogId | null;
 };
 
-export type ApiAgentToolCatalogId = "life-links-page-webmcp-v1" | "life-links-calendar-v2" | "life-links-workspace-v3";
+export type ApiAgentToolCatalogId = "life-links-page-webmcp-v1" | "life-links-calendar-v2" | "life-links-workspace-v3" | "life-links-search-v4";
+
+export function searchRecords(input: RecordSearchInput, options: { signal?: AbortSignal; actor?: CalendarActor } = {}) {
+  const params = new URLSearchParams({ q: input.q, category: input.category });
+  if (input.cursor) params.set("cursor", input.cursor);
+  if (input.limit !== undefined) params.set("limit", String(input.limit));
+  return apiFetch<RecordSearchPage>(`/api/records/search?${params}`, {
+    signal: options.signal, headers: calendarActorHeaders(options.actor)
+  });
+}
 
 export type ApiSession = {
   user: ApiUser | null;

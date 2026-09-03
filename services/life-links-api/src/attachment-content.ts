@@ -12,7 +12,18 @@ import { prepareOfficePdf } from "./attachment-office.js";
 import { isTemporalAttachment, prepareTemporalImage } from "./attachment-temporal.js";
 import { transcribeVideoWindow } from "./attachment-speech.js";
 
-type Extraction = Pick<AttachmentContentPage, "status" | "reason" | "text" | "warnings" | "transcript">;
+export type AttachmentTextExtraction = Pick<AttachmentContentPage, "status" | "reason" | "text" | "warnings" | "transcript">;
+type Extraction = AttachmentTextExtraction;
+export type AttachmentTextCachePort = {
+  get(file: LifeLinkMediaFile, revision: string): Promise<AttachmentTextExtraction | null>;
+  put(file: LifeLinkMediaFile, revision: string, extraction: AttachmentTextExtraction): Promise<void>;
+};
+export type AttachmentTextSearchResult = Pick<AttachmentContentPage, "revision" | "status" | "reason" | "format" | "warnings"> & {
+  matched: boolean; snippet: string; offset: number | null;
+};
+export function cacheableAttachmentText(result: AttachmentTextExtraction): boolean {
+  return result.status === "ready" || ["unsupported_media", "scanned_or_no_text", "encrypted", "malformed"].includes(result.reason ?? "");
+}
 const unreadable = (reason: AttachmentContentPage["reason"]): Extraction => ({ status: "unreadable", reason, text: "", warnings: [] });
 type WaitingJob = { cost: number; start(): void; cancel(): void; signal?: AbortSignal };
 export class AttachmentContentRequestError extends Error {
@@ -25,7 +36,8 @@ export class AttachmentContentReader {
   private active = 0;
   private waiting: WaitingJob[] = [];
   private cache = new Map<string, { lifeLinkId: string; mediaId: string; expiresAt: number; timer: NodeJS.Timeout; result: Extraction }>();
-  constructor(private readonly timeoutMs = 15000, private readonly runtime: AttachmentNativeRuntime = attachmentRuntime()) {}
+  constructor(private readonly timeoutMs = 15000, private readonly runtime: AttachmentNativeRuntime = attachmentRuntime(),
+    private readonly persistentCache?: AttachmentTextCachePort) {}
 
   invalidate(lifeLinkIds: string[], mediaId?: string): void {
     for (const [key, item] of this.cache) if ((!lifeLinkIds.length || lifeLinkIds.includes(item.lifeLinkId)) && (!mediaId || item.mediaId === mediaId)) this.removeCached(key);
@@ -48,6 +60,37 @@ export class AttachmentContentReader {
         !Number.isSafeInteger(durationMs) || durationMs < 1 || durationMs > 30000 ||
         (options.audioStreamIndex !== undefined && (!Number.isSafeInteger(options.audioStreamIndex) || options.audioStreamIndex < 0 || options.audioStreamIndex > 7))))
       throw new AttachmentContentRequestError(400, "invalid_audio_window");
+    const { revision, result } = await this.extraction(file, options, signal);
+    if (offset > result.text.length || (offset > 0 && /[\uDC00-\uDFFF]/.test(result.text[offset] ?? ""))) throw new AttachmentContentRequestError(400, "invalid_attachment_content_page");
+    let end = Math.min(offset + limit, result.text.length);
+    if (end < result.text.length && /[\uDC00-\uDFFF]/.test(result.text[end])) end--;
+    if (end === offset && end < result.text.length) end += 2;
+    return { mediaId: file.media.id, revision, status: result.status, reason: result.reason, format,
+      text: result.text.slice(offset, end), offset, nextOffset: end < result.text.length ? end : null,
+      totalChars: result.text.length, warnings: result.warnings, ...(result.transcript ? { transcript: result.transcript } : {}) };
+  }
+
+  async search(file: LifeLinkMediaFile, query: string, signal?: AbortSignal): Promise<AttachmentTextSearchResult> {
+    signal?.throwIfAborted();
+    const phrase = query.trim();
+    if (!phrase || phrase.length > 2048) throw new AttachmentContentRequestError(400, "invalid_attachment_search_query");
+    const { revision, result } = await this.extraction(file, {}, signal);
+    const match = result.status === "ready" ? new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "iu").exec(result.text) : null;
+    const offset = match?.index ?? null;
+    let start = offset === null ? 0 : Math.max(0, offset - 60);
+    if (start > 0 && /[\uDC00-\uDFFF]/.test(result.text[start] ?? "")) start--;
+    let end = Math.min(start + 240, result.text.length);
+    if (end < result.text.length && /[\uDC00-\uDFFF]/.test(result.text[end])) end--;
+    return { revision, status: result.status, reason: result.reason, format: attachmentFormat(file.media.mimeType),
+      matched: offset !== null, offset, snippet: offset === null ? "" : result.text.slice(start, end), warnings: [...result.warnings] };
+  }
+
+  private async extraction(file: LifeLinkMediaFile, options: AttachmentContentReadOptions, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const format = attachmentFormat(file.media.mimeType);
+    const transcript = options.representation === "transcript";
+    const startMs = options.startMs ?? 0; const durationMs = options.durationMs ?? 30000;
+    const offset = options.offset ?? 0;
     // DOCX v2 includes secondary stories and source labels. An old body-only
     // cursor must never continue into the new representation of the same file.
     const extractionVersion = transcript ? `life-links-transcript-v1/ffmpeg-9.0.1/pcm16k-mono\0${startMs}\0${durationMs}\0${options.audioStreamIndex ?? "first"}\0${this.runtime.whisper.version}\0${this.runtime.whisper.modelSha256}\0` :
@@ -57,24 +100,24 @@ export class AttachmentContentReader {
     if (options.revision && options.revision !== revision) throw new AttachmentContentRequestError(409, "attachment_content_changed");
     const key = `${file.media.ownerId}\0${file.media.id}\0${revision}`;
     for (const [key, value] of this.cache) if (value.expiresAt <= Date.now()) this.removeCached(key);
-    let result = this.cache.get(key)?.result;
+    // Persistent entries are checked against live canonical ownership/bytes by
+    // the store even when a previous request warmed the process-local cache.
+    let result = !transcript && this.persistentCache ? await this.persistentCache.get(file, revision) ?? undefined : this.cache.get(key)?.result;
+    signal?.throwIfAborted();
     if (!result) {
       result = transcript ? (format === "video" ? await this.transcribe(file, { startMs, durationMs, audioStreamIndex: options.audioStreamIndex }, signal) : unreadable("unsupported_media")) :
         format === "image" || format === "video" ? unreadable("unsupported_media") : await this.extract(file.data, format, signal);
-      if (result.status === "ready") {
+      signal?.throwIfAborted();
+      if (!transcript && this.persistentCache && cacheableAttachmentText(result)) await this.persistentCache.put(file, revision, result);
+      if ((!this.persistentCache || transcript) && (result.status === "ready" || (!transcript && cacheableAttachmentText(result)))) {
         this.removeCached(key);
         const timer = setTimeout(() => this.removeCached(key), 300000); timer.unref();
         this.cache.set(key, { lifeLinkId: file.media.lifeLinkId, mediaId: file.media.id, expiresAt: Date.now() + 300000, timer, result });
         while (this.cache.size > 4) this.removeCached(this.cache.keys().next().value!);
       }
     }
-    if (offset > result.text.length || (offset > 0 && /[\uDC00-\uDFFF]/.test(result.text[offset] ?? ""))) throw new AttachmentContentRequestError(400, "invalid_attachment_content_page");
-    let end = Math.min(offset + limit, result.text.length);
-    if (end < result.text.length && /[\uDC00-\uDFFF]/.test(result.text[end])) end--;
-    if (end === offset && end < result.text.length) end += 2;
-    return { mediaId: file.media.id, revision, status: result.status, reason: result.reason, format,
-      text: result.text.slice(offset, end), offset, nextOffset: end < result.text.length ? end : null,
-      totalChars: result.text.length, warnings: result.warnings, ...(result.transcript ? { transcript: result.transcript } : {}) };
+    signal?.throwIfAborted();
+    return { revision, result };
   }
 
   async readImage(file: LifeLinkMediaFile, options: AttachmentImageReadOptions, signal?: AbortSignal): Promise<AttachmentImageResult> {

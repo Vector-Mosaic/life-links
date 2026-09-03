@@ -16,6 +16,7 @@ export type AgentActivityVisibleEffect =
   | "life_link_change_applied"
   | "current_life_link_focused"
   | "search_results_shown"
+  | "record_search_results_shown"
   | "life_link_opened"
   | "life_link_content_updated"
   | "find_mode_started"
@@ -94,6 +95,7 @@ export function agentActivityLabel(entry: AgentActivityEntry) {
   }
   const labels: Partial<Record<AgentActivityVisibleEffect, string>> = {
     attachment_content_read: "Read attachment information",
+    record_search_results_shown: "Showed bounded whole-app search results",
     attachment_image_described: "Read attachment image metadata",
     attachment_image_bytes_ready: "Prepared attachment image bytes for the agent",
     life_link_change_previewed: "Prepared an exact move or deletion preview", life_link_change_applied: "Applied a confirmed Life Link change",
@@ -200,6 +202,7 @@ function visibleEffectForTool(tool: LifeLinksAgentToolName): AgentActivityVisibl
       return "current_life_link_focused";
     case "search_my_life_links":
       return "search_results_shown";
+    case "search_my_records": return "record_search_results_shown";
     case "open_life_link":
       return "life_link_opened";
     case "update_life_link_content":
@@ -247,6 +250,7 @@ function toolLabel(tool: LifeLinksAgentToolName) {
       return "Inspect";
     case "search_my_life_links":
       return "Search";
+    case "search_my_records": return "Search records";
     case "open_life_link":
       return "Open";
     case "update_life_link_content":

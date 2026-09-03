@@ -72,12 +72,12 @@ export function AgentAccessPanel({
 
       <div className="agent-access-scope">
         {upgradeAvailable && <p className="agent-access-scope-item connection">
-          <strong>More workspace actions are available:</strong> update this saved connection to grant the current Calendar, Collection move/removal, and Routine discovery/removal tools. Existing access stays unchanged until you choose to update it.
+          <strong>Whole-app search is available:</strong> update this saved connection to add search across Life Links, Collections, Routines, completed session history, authorized Calendar events, and indexed document text, alongside the existing workspace tools. Existing access stays unchanged until you choose to update it. Each Calendar keeps its separate No access, Read only, or Read and edit choice.
         </p>}
         <p className="agent-access-scope-item allowed">
           <strong>Your agent can:</strong> find and open Life Links; create, move, and edit folders and items;
           manage QR codes and public fields; organize Collections and Sections; read supported attachments; start Find Mode;
-          and, when granted, read and manage authorized Calendar events, move or remove Collection entries, and find or remove Routines.
+          and, when granted, read and manage authorized Calendar events, move or remove Collection entries, find or remove Routines, and search records, completed session history, and indexed attachment text across the app.
           Deletions require one exact confirmation in the app. Routine removal retains history and resumable Runs.
         </p>
         <p className="agent-access-scope-item connection">

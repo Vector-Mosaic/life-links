@@ -550,6 +550,23 @@ export class PostgresCalendarProviderStateStore implements CalendarProviderState
     return result.rows[0] ? mapProjection(result.rows[0]) : null;
   }
 
+  async pageProjections(connectionId: string, calendarId: string, after: string | null, limit: number) {
+    const result = await this.pool.query<ProviderProjectionRow>(
+      `SELECT * FROM calendar_provider_event_projections WHERE connection_id=$1 AND calendar_id=$2
+       AND ($3::text IS NULL OR provider_event_id COLLATE "C" > $3 COLLATE "C")
+       ORDER BY provider_event_id COLLATE "C" LIMIT $4`, [connectionId, calendarId, after, limit + 1]
+    );
+    const items = result.rows.slice(0, limit).map(mapProjection);
+    return { items, nextAfter: result.rows.length > limit ? items.at(-1)!.providerEventId : null };
+  }
+
+  async findCalendarConnection(ownerId: string, calendarId: string): Promise<string | null> {
+    const result = await this.pool.query<{ connection_id: string }>(
+      "SELECT connection_id FROM calendar_provider_bindings WHERE owner_id=$1 AND calendar_id=$2", [ownerId, calendarId]
+    );
+    return result.rows[0]?.connection_id ?? null;
+  }
+
   async getTombstone(connectionId: string, calendarId: string, providerEventId: string): Promise<CalendarProviderEventTombstone | null> {
     const result = await this.pool.query<ProviderTombstoneRow>(
       `SELECT * FROM calendar_provider_event_tombstones

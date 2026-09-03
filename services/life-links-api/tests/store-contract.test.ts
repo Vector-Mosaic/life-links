@@ -22,11 +22,12 @@ import {
   LifeLinkDomainError,
 } from "@life-links/core";
 
-import { ClaimIdempotencyConflictError, InMemoryLifeLinksStore } from "../src/store.js";
+import { ClaimIdempotencyConflictError, InMemoryLifeLinksStore, assertCalendarAgentConnection, assertWorkspaceAgentConnection } from "../src/store.js";
 import { fieldLedgerStoreContract } from "./field-ledger-contract.js";
 import { changeHistoryStoreContract } from "./change-history-contract.js";
 import { routineStoreContract } from "./routine-store-contract.js";
 import { calendarStoreContract } from "./calendar-store-contract.js";
+import { attachmentTextStoreContract } from "./attachment-text-store-contract.js";
 
 describe("canonical Life Links store contract", () => {
   let store: InMemoryLifeLinksStore;
@@ -35,6 +36,7 @@ describe("canonical Life Links store contract", () => {
   changeHistoryStoreContract(() => store);
   routineStoreContract(() => store);
   calendarStoreContract(() => store);
+  attachmentTextStoreContract(() => store);
 
   beforeEach(async () => {
     store = new InMemoryLifeLinksStore();
@@ -57,10 +59,18 @@ describe("canonical Life Links store contract", () => {
     const upgraded = await store.connectAgent(DEMO_OWNER_ID, "life-links-calendar-v2");
     expect(upgraded?.agentToolCatalogId).toBe("life-links-calendar-v2");
     expect(Date.parse(upgraded!.agentConnectedAt!)).toBeGreaterThan(Date.parse(connected!.agentConnectedAt!));
+    const searchGrant = await store.connectAgent(DEMO_OWNER_ID, "life-links-search-v4");
+    expect(searchGrant?.agentToolCatalogId).toBe("life-links-search-v4");
+    expect((await store.connectAgent(DEMO_OWNER_ID, "life-links-search-v4"))?.agentConnectedAt).toBe(searchGrant?.agentConnectedAt);
+    expect(() => assertCalendarAgentConnection(searchGrant, "agent")).not.toThrow();
+    expect(() => assertWorkspaceAgentConnection(searchGrant, "agent")).not.toThrow();
+    expect(() => assertWorkspaceAgentConnection(upgraded, "agent")).toThrow();
 
     const disconnected = await store.disconnectAgent(DEMO_OWNER_ID);
     expect(disconnected?.agentConnectedAt).toBeNull();
     expect(disconnected?.agentToolCatalogId).toBeNull();
+    expect(() => assertCalendarAgentConnection(disconnected, "agent")).toThrow();
+    expect(() => assertWorkspaceAgentConnection(disconnected, "agent")).toThrow();
     expect((await store.disconnectAgent(DEMO_OWNER_ID))?.agentConnectedAt).toBeNull();
     expect(await store.connectAgent("missing-owner")).toBeNull();
     expect(await store.disconnectAgent("missing-owner")).toBeNull();

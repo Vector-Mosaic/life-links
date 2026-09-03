@@ -37,6 +37,7 @@ describe("Routine selection, retained-history deletion, and scoped History", () 
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     const routineWorkspace: RoutineWorkspaceState = {
+      selectedSessionRevision: null,
       presentation: { tab: "routines", historyRoutineId: null, showRemoved: false, collapsedGroupIds: [] },
       history: { routineId: null, sessions: [], nextCursor: null, loaded: false, loading: false, error: "" },
       groups: [], groupsNextCursor: null, activities: [], activitiesNextCursor: null,

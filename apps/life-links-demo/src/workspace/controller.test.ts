@@ -250,6 +250,65 @@ describe("LifeLinksWorkspaceController", () => {
     controller.dispose();
   });
 
+  it("searches every category without routing through the old physical-only UI search", async () => {
+    const api = fakeApi(); const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    await controller.searchRecords("strength");
+    expect(api.searchRecords.mock.calls.map(([input]) => input.category).sort()).toEqual(["attachments", "calendar", "collections", "history", "life_links", "routines"]);
+    expect(api.searchLifeLinks).not.toHaveBeenCalled();
+    expect(Object.values(controller.getSnapshot().recordSearch.groups).every((group) => group.searched && !group.loading)).toBe(true);
+    controller.dispose();
+  });
+
+  it.each(["new query", "logout", "navigation"])("does not publish stale whole-app results after %s", async (change) => {
+    const api = fakeApi(); const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    const delayed = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["searchRecords"]>>>();
+    api.searchRecords.mockImplementation(async (input) => input.q === "old" && input.category === "history" ? delayed.promise :
+      { category: input.category, results: [], nextCursor: null, scanned: 1, warnings: [] });
+    const search = controller.searchRecords("old");
+    if (change === "new query") await controller.searchRecords("new");
+    else if (change === "logout") await controller.logout();
+    else controller.setActiveView("home");
+    delayed.resolve({ category: "history", results: [{ id: "late", category: "history", title: "Stale private history", snippet: "old", matchedField: "recorded_title",
+      reference: { kind: "session", routineId: "r1", sessionId: "s1", routineRevisionId: "rev1" } }], scanned: 1, nextCursor: null, warnings: [] });
+    await search;
+    expect(controller.getSnapshot().recordSearch.groups.history.results).toEqual([]);
+    expect(controller.getSnapshot().recordSearch.groups.history.loading).toBe(false);
+    if (change === "new query") expect(controller.getSnapshot().recordSearch.query).toBe("new");
+    if (change === "logout") expect(controller.getSnapshot().lifeLinkSearchQuery).toBe("");
+    controller.dispose();
+  });
+
+  it("requires Search-v4 and sends agent search through narrowed HTTP", async () => {
+    const api = fakeApi(); const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    expect((await controller.agentSearchRecords({ q: "strength", category: "history" })).ok).toBe(false);
+    expect(api.searchRecords).not.toHaveBeenCalled();
+    api.connectAgent.mockResolvedValue({ agentConnection: { ...connectedAgentConnection, toolCatalogId: "life-links-search-v4" } });
+    await controller.connectAgent();
+    expect((await controller.agentSearchRecords({ q: "strength", category: "history" })).ok).toBe(true);
+    expect(api.searchRecords).toHaveBeenLastCalledWith({ q: "strength", category: "history" }, { signal: undefined, actor: "agent" });
+    controller.dispose();
+  });
+
+  it.each(["new query", "navigation"])("does not let delayed agent search replace the page after %s", async (change) => {
+    const api = fakeApi(); const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
+    await controller.start();
+    api.connectAgent.mockResolvedValue({ agentConnection: { ...connectedAgentConnection, toolCatalogId: "life-links-search-v4" } });
+    await controller.connectAgent();
+    const delayed = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["searchRecords"]>>>();
+    api.searchRecords.mockImplementation(async (input) => input.q === "old" ? delayed.promise :
+      { category: input.category, results: [], nextCursor: null, scanned: 1, warnings: [] });
+    const search = controller.agentSearchRecords({ q: "old", category: "history" });
+    if (change === "new query") await controller.searchRecords("new");
+    else controller.setActiveView("search");
+    delayed.resolve({ category: "history", results: [], scanned: 1, nextCursor: null, warnings: [] });
+    expect((await search).ok).toBe(false);
+    expect(controller.getSnapshot().lifeLinkSearchQuery).not.toBe("old");
+    controller.dispose();
+  });
+
   it("boots an exact Calendar event route through Calendar boundaries only", async () => {
     const route = new FakeRoute(ownerCalendarEventPath(nativeCalendarEvent.event.id));
     const api = fakeApi();
@@ -1042,7 +1101,7 @@ describe("LifeLinksWorkspaceController", () => {
 
     await controller.connectAgent();
     expect(api.connectAgent).toHaveBeenCalledOnce();
-    expect(api.connectAgent).toHaveBeenCalledWith("life-links-workspace-v3");
+    expect(api.connectAgent).toHaveBeenCalledWith("life-links-search-v4");
     expect(controller.getSnapshot().agentConnection).toEqual(connectedAgentConnection);
     controller.dispose();
   });
@@ -3094,6 +3153,8 @@ class FakeRoute implements WorkspaceBrowserRoute {
 
 function fakeApi() {
   return {
+    searchRecords: vi.fn<LifeLinksWorkspaceApi["searchRecords"]>(async (input) => ({ category: input.category, results: [], nextCursor: null, scanned: 0, warnings: [] })),
+    getRoutineRevision: vi.fn<LifeLinksWorkspaceApi["getRoutineRevision"]>(),
     authorizeMicrosoftCalendar: vi.fn<LifeLinksWorkspaceApi["authorizeMicrosoftCalendar"]>(),
     authorizeGoogleCalendar: vi.fn<LifeLinksWorkspaceApi["authorizeGoogleCalendar"]>(),
     getCalendarAuthorization: vi.fn<LifeLinksWorkspaceApi["getCalendarAuthorization"]>(),

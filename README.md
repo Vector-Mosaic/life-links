@@ -28,6 +28,9 @@ application from work completed for the challenge.
 - a dedicated private Calendar with native past/future events, timezone-aware
   month/week/day/agenda views, read-only Routine projections and selected
   external calendars with explicit per-calendar agent permissions;
+- grouped whole-app search across physical records, Collections, current
+  Routines, recorded Session history, authorized Calendar events and attachment
+  text, with exact source references and explicit coverage/continuation;
 - one human/agent physical-locator derivation that selects the nearest
   QR-bound container from canonical ancestry without storing a second location
   field; and
@@ -134,8 +137,21 @@ owner-visible Yes/Cancel confirmation and immediately returns a pending status;
 polling the same preview is not confirmation. Exact Collection moves apply
 without that deletion prompt. General Routine authoring, scheduling and execution
 are not exposed by these five tools.
-Earlier fourteen- and twenty-one-tool evidence does not qualify a newer deployed
-release; deployment identity and proof are recorded separately from this source
+An explicit **Search v4** upgrade adds `search_my_records`, for twenty-seven
+total. Existing v1/v2/v3 grants retain exactly 14/21/26 tools until the owner
+approves the broader read scope. The new tool searches one category per call:
+Life Links, Collections, Routines, completed history, Calendar or attachments.
+It uses the same owner search API/controller as the human Search records page;
+the original physical search tool and its output remain unchanged. Historical
+results reference the Session's recorded Routine revision. Provider coverage is
+limited to already synchronized events and current per-calendar permissions.
+Attachment text reuses the existing reader and a private, revision-bound,
+disposable cache; original bytes remain canonical. Unsupported or unreadable
+text is reported, not silently treated as no match. Search results and document
+text are untrusted data, never instructions or new write permission.
+
+Earlier 14/21/26-tool evidence does not qualify a newer deployed release;
+deployment identity and proof are recorded separately from this source
 capability description.
 
 The Calendar tools share native/provider-discriminated routes, exact calendar
@@ -148,13 +164,16 @@ it does not use native-event restore. Routine projections remain read-only.
 The tools reuse the ordinary application controller and authorization paths.
 They create visible page effects, reject stale or unauthorized context, and do
 not give an agent a hidden or parallel write path. Inspection returns bounded
-substantive selected-record context, and search returns bounded paths plus note
+substantive selected-record context, and physical search returns bounded paths plus note
 summaries. Both also return the same derived physical locator shown in human
 detail/search: nearest QR-bound ancestor first, QR-bound subject only as a
 complete-path fallback, and null for missing or truncated-ambiguous placement.
 This is recorded placement, not live-location proof.
-Every result is bounded to 2,048 UTF-8 JSON bytes with explicit truncation;
-Collection members, Sections, and assignments expose resumable continuation.
+Every result is bounded to 2,048 UTF-8 JSON bytes. Existing bounded fields report
+truncation; Collection members, Sections, assignments and whole-app search
+expose resumable continuation. Whole-app search re-requests an oversized page
+at the same cursor with a smaller limit rather than dropping hits while keeping
+a later cursor; an irreducibly oversized result is explicitly refused.
 `update_life_link_content` immediately saves a title, plain-text body, and/or
 complete structured context replacement through the canonical owner PATCH,
 using the exact `updatedAt` revision obtained from a prior read. It rejects stale
@@ -173,7 +192,7 @@ continuation. It does not upload attachments or provide arbitrary binary
 transport.
 Find Mode prepares the target; the human performs the scan.
 
-These v1/v2 grants are profiles of one curated logical page-bound WebMCP
+These v1/v2/v3/v4 grants are profiles of one curated logical page-bound WebMCP
 interface registered by an eligible live owner page. They are not a remote or
 server MCP endpoint, background/delegated identity, or guarantee that any named
 host implements the page registration API.
@@ -293,13 +312,13 @@ retrying the same preview reconciles the operation. Uninterrupted confirmation
 transport and universal provider/account compatibility are not claimed.
 
 Google uses the same authorization owner, provider gateway and manager, with the
-same Calendar tools retained in Calendar-v2 and Workspace-v3. Connect and
+same Calendar tools retained in Calendar-v2, Workspace-v3 and Search-v4. Connect and
 reconnect select the exact provider; Google redirects to its own sign-in host.
 The production product's dedicated Web OAuth client is configured, and its
 bounded live human/agent, permission, retry, disconnect/reconnect and cleanup
 journey has passed. Both provider sign-ins also returned successfully on the
 canonical product hostname. Those earlier provider results do not qualify the
-new Workspace-v3 tools or every provider/account configuration. Optional provider
+new catalog capabilities or every provider/account configuration. Optional provider
 credentials are not distributed; both providers remain disabled in
 `.env.example` by default.
 
@@ -353,7 +372,7 @@ events merely because the implementation or documentation exists.
 The Field Ledger, Routines and native Calendar/Outlook/Google baseline has been publicly
 released and deployed. Earlier family-journey/native-Chrome results and later
 Calendar/provider checks remain tied to their exact source and release scope;
-they do not automatically qualify every host or the Workspace-v3 extension.
+they do not automatically qualify every host or later catalog extensions.
 The admitted native source/license
 evidence is retained; the former duplicate Rust/Skia reconstruction is not a
 release prerequisite. Screenshots, video, final supported-host presentation and

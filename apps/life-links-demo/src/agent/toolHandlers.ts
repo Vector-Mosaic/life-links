@@ -49,6 +49,7 @@ import {
   type CalendarAgentToolController
 } from "./calendarToolHandlers";
 import { createWorkspaceAgentToolCatalog, type WorkspaceAgentToolController, type WorkspaceAgentAccessSnapshot } from "./workspaceToolHandlers";
+import { createSearchAgentToolCatalog, type SearchAgentToolController } from "./searchToolHandlers";
 import { validateAttachmentImageEnvelope } from "../attachmentImage";
 import { validateAttachmentTranscript } from "../attachmentTranscript";
 
@@ -129,7 +130,7 @@ export type AgentStartFindModeInput = {
   readonly lifeLinkId: string;
 };
 
-export interface LifeLinksAgentToolController extends CalendarAgentToolController, WorkspaceAgentToolController {
+export interface LifeLinksAgentToolController extends CalendarAgentToolController, WorkspaceAgentToolController, SearchAgentToolController {
   agentReadAttachment(input: AgentReadAttachmentInput, signal?: AbortSignal): Promise<AgentReadAttachmentResult>;
   agentPreviewLifeLinkChange(input: PreviewLifeLinkChangeInput, signal?: AbortSignal): Promise<AgentToolControllerActionResult | { ok: true; preview: LifeLinkChangePreview }>;
   agentApplyLifeLinkChange(previewId: string, signal?: AbortSignal): Promise<Exclude<AgentToolControllerActionResult, { ok: true }> | { ok: true; change: LifeLinkChangeResult }>;
@@ -670,7 +671,7 @@ export function createLifeLinksAgentToolCatalog(
       execute: (input, context = {}) => readAttachment(controller, input, context)
     }
   ];
-  return [...fieldLedgerCatalog, ...createCalendarAgentToolCatalog(controller), ...createWorkspaceAgentToolCatalog(controller)];
+  return [...fieldLedgerCatalog, ...createCalendarAgentToolCatalog(controller), ...createWorkspaceAgentToolCatalog(controller), ...createSearchAgentToolCatalog(controller)];
 }
 
 async function readAttachment(controller: LifeLinksAgentToolController, input: unknown, context: WebMcpExecutionContext): Promise<WebMcpJsonValue> {

@@ -3,6 +3,7 @@ import {
   getBrowserWebMcpHost,
   LIFE_LINKS_LEGACY_TOOL_CATALOG_ID,
   LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID,
+  LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID,
   LIFE_LINKS_PAGE_TOOL_CATALOG_ID,
   LIFE_LINKS_PAGE_TOOL_NAMES,
   validateLifeLinksPageToolCatalog,
@@ -124,6 +125,7 @@ export function eligiblePageToolScopeKey(eligibility: PageToolEligibility): stri
   const ownerId = eligibility.authenticatedOwnerId?.trim();
   const grantedCatalog = eligibility.catalogId === LIFE_LINKS_LEGACY_TOOL_CATALOG_ID ||
     eligibility.catalogId === LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID ||
+    eligibility.catalogId === LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID ||
     eligibility.catalogId === LIFE_LINKS_PAGE_TOOL_CATALOG_ID
     ? eligibility.catalogId
     : null;

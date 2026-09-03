@@ -1,4 +1,6 @@
 import QRCode from "qrcode";
+import { LIFE_LINKS_SEARCH_TOOL_CATALOG_ID } from "../agent/searchToolHandlers";
+import { collectRecordSearchPage, emptyRecordSearch } from "./recordSearch";
 import {
   LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID,
   type RoutineDeletionTarget, type RoutineDeletionPreview, type RoutineDeletionResult,
@@ -8,6 +10,11 @@ import { validateAttachmentTranscript } from "../attachmentTranscript";
 import { providerEventCanMutate } from "../owner/calendar";
 import {
   DEFAULT_QR_BASE_URL,
+  RECORD_SEARCH_CATEGORIES,
+  type RecordSearchInput,
+  type RecordSearchCategory,
+  type RecordSearchHit,
+  type RecordSearchPage,
   DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
   DEFAULT_LIFE_LINK_SEARCH_LIMIT,
   MAX_LIFE_LINK_SOURCE_REFERENCE_COUNT,
@@ -112,6 +119,7 @@ import {
   getCalendarEvent,
   getActiveRoutineRun,
   getRoutine,
+  getRoutineRevision,
   getRoutineRun,
   getRoutineSession,
   listCollections,
@@ -178,6 +186,7 @@ import {
   logout,
   moveLifeLink,
   searchLifeLinks,
+  searchRecords,
   updateLifeLink,
   uploadLifeLinkMedia,
   uploadLinkMedia
@@ -345,6 +354,8 @@ export type LifeLinksWorkspaceApi = {
   getLifeLinkAttachmentContent: typeof getLifeLinkAttachmentContent;
   getLifeLinkAttachmentImage: typeof getLifeLinkAttachmentImage;
   searchLifeLinks: typeof searchLifeLinks;
+  searchRecords: typeof searchRecords;
+  getRoutineRevision: typeof getRoutineRevision;
   updateLifeLink: typeof updateLifeLink;
   moveLifeLink: typeof moveLifeLink;
   uploadLifeLinkMedia: typeof uploadLifeLinkMedia;
@@ -450,6 +461,8 @@ const defaultApi: LifeLinksWorkspaceApi = {
   getLifeLinkAttachmentContent,
   getLifeLinkAttachmentImage,
   searchLifeLinks,
+  searchRecords,
+  getRoutineRevision,
   updateLifeLink,
   moveLifeLink,
   uploadLifeLinkMedia,
@@ -555,6 +568,11 @@ export interface LifeLinksWorkspaceActions {
   detachLifeLink(lifeLinkId: string): Promise<void>;
   attachQrToLifeLink(lifeLinkId: string, scanText: string): Promise<void>;
   searchLifeLinks(query?: string, append?: boolean): Promise<void>;
+  searchRecords(query?: string): Promise<void>;
+  loadMoreRecordSearch(category: RecordSearchCategory): Promise<void>;
+  cancelRecordSearch(): void;
+  openRecordSearchHit(hit: RecordSearchHit): Promise<void>;
+  agentSearchRecords(input: RecordSearchInput, signal?: AbortSignal): Promise<{ ok: true; page: RecordSearchPage } | { ok: false; code: string }>;
   agentInspectCurrentLifeLink(
     input: { lifeLinkId: string },
     signal?: AbortSignal
@@ -629,6 +647,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private readonly removedCalendarAccounts = new Map<string, number>();
   private readonly removedConnectedCalendars = new Map<string, number>();
   private searchRevision = 0;
+  private recordSearchRevision = 0;
+  private recordSearchRequests = new Map<RecordSearchCategory, AbortController>();
   private selectionRevision = 0;
   private readonly pendingCreateIds = new Map<string, string>();
   private readonly pendingQrBindings = new Map<string, { commandId: string; expectedUpdatedAt: string }>();
@@ -1223,8 +1243,14 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     signal?.throwIfAborted();
     if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
         selectionRevision !== this.routineSessionSelectionRevision) return;
+    const currentRevision = this.snapshot.routineWorkspace.selectedRoutine?.currentRevision;
+    const recordedRevision = currentRevision?.revision.id === session.session.routineRevisionId ? currentRevision :
+      (await this.api.getRoutineRevision(session.session.routineId, session.session.routineRevisionId, signal)).routineRevision;
+    signal?.throwIfAborted();
+    if (ownerRevision !== this.ownerRevision || ownerId !== this.snapshot.currentUser?.id ||
+        selectionRevision !== this.routineSessionSelectionRevision) return;
     this.updateRoutineWorkspace((current) => ({
-      sessions: mergeRoutineSessions(current.sessions, [session]), selectedSession: session, error: ""
+      sessions: mergeRoutineSessions(current.sessions, [session]), selectedSession: session, selectedSessionRevision: recordedRevision, error: ""
     }));
   }
 
@@ -2402,7 +2428,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
 
   private assertWorkspaceAgentActive(ownerId = this.currentAgentOwnerId(), epoch = this.workspaceAgentEpoch) {
     if (!ownerId || this.currentAgentOwnerId() !== ownerId || epoch !== this.workspaceAgentEpoch ||
-        !this.snapshot.agentConnection.connected || this.snapshot.agentConnection.toolCatalogId !== LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID) {
+        !this.snapshot.agentConnection.connected || ![LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID, LIFE_LINKS_SEARCH_TOOL_CATALOG_ID].includes(this.snapshot.agentConnection.toolCatalogId as typeof LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID | typeof LIFE_LINKS_SEARCH_TOOL_CATALOG_ID)) {
       throw new AgentCommandError("life_link_unavailable");
     }
     if (this.snapshot.canonicalEditingId !== null) throw new AgentCommandError("editor_open");
@@ -2762,6 +2788,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   dispose() {
+    this.cancelRecordSearch();
     this.invalidateWorkspaceAgentChanges();
     this.update({ agentWorkspaceChangeConfirmation: null });
     this.confirmAgentChange(false);
@@ -3416,7 +3443,124 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
   }
 
+  async searchRecords(query = this.snapshot.lifeLinkSearchQuery) {
+    this.cancelRecordSearch();
+    ++this.searchRevision;
+    const normalized = query.trim();
+    this.update({ activeView: "search", detailsOpen: false, lifeLinkSearchQuery: query,
+      lifeLinkSearchLoading: false, recordSearch: emptyRecordSearch(normalized), error: "" });
+    if (!normalized || !this.snapshot.currentUser || this.snapshot.guestView || this.snapshot.routeQrId) return;
+    await Promise.all(RECORD_SEARCH_CATEGORIES.map((category) => this.loadMoreRecordSearch(category)));
+  }
+
+  cancelRecordSearch() {
+    ++this.recordSearchRevision;
+    for (const request of this.recordSearchRequests.values()) request.abort();
+    this.recordSearchRequests.clear();
+    this.update((current) => ({ recordSearch: { ...current.recordSearch, groups: Object.fromEntries(
+      RECORD_SEARCH_CATEGORIES.map((category) => {
+        const group = current.recordSearch.groups[category];
+        return [category, group.loading ? { ...group, loading: false, error: "Search paused. Continue to finish checking this category." } : group];
+      })
+    ) as typeof current.recordSearch.groups } }));
+  }
+
+  async loadMoreRecordSearch(category: RecordSearchCategory) {
+    const query = this.snapshot.recordSearch.query;
+    const previous = this.snapshot.recordSearch.groups[category];
+    if (!query || previous.loading || !this.snapshot.currentUser || this.snapshot.guestView || this.snapshot.routeQrId) return;
+    const ownerId = this.snapshot.currentUser.id;
+    const ownerRevision = this.ownerRevision;
+    const revision = this.recordSearchRevision;
+    const request = new AbortController();
+    this.recordSearchRequests.set(category, request);
+    const current = () => !request.signal.aborted && ownerRevision === this.ownerRevision && revision === this.recordSearchRevision &&
+      this.snapshot.currentUser?.id === ownerId && this.snapshot.activeView === "search" && this.snapshot.recordSearch.query === query;
+    const patch = (changes: Partial<typeof previous>) => this.update((snapshot) => ({ recordSearch: {
+      ...snapshot.recordSearch, groups: { ...snapshot.recordSearch.groups, [category]: { ...snapshot.recordSearch.groups[category], ...changes } }
+    } }));
+    patch({ loading: true, error: "" });
+    try {
+      await collectRecordSearchPage((input, signal) => this.api.searchRecords(input, { signal }), {
+        q: query, category, cursor: previous.nextCursor, limit: 10
+      }, (page) => {
+        if (!current()) return;
+        patch({ ...page, results: [...new Map([...previous.results, ...page.results].map((hit) => [hit.id, hit])).values()],
+          scanned: previous.scanned + page.scanned, warnings: [...new Set([...previous.warnings, ...page.warnings])], searched: true });
+      }, request.signal);
+    } catch (error) {
+      if (current()) patch({ error: messageFromError(error) });
+    } finally {
+      if (current()) patch({ loading: false });
+      if (this.recordSearchRequests.get(category) === request) this.recordSearchRequests.delete(category);
+    }
+  }
+
+  async agentSearchRecords(input: RecordSearchInput, signal?: AbortSignal): Promise<{ ok: true; page: RecordSearchPage } | { ok: false; code: string }> {
+    const ownerId = this.currentAgentOwnerId();
+    const ownerRevision = this.ownerRevision;
+    const navigation = this.navigationRevision;
+    const searchRevision = this.recordSearchRevision;
+    const agentEpoch = this.workspaceAgentEpoch;
+    const eligible = () => this.currentAgentOwnerId() === ownerId && ownerRevision === this.ownerRevision &&
+      navigation === this.navigationRevision && searchRevision === this.recordSearchRevision && agentEpoch === this.workspaceAgentEpoch &&
+      this.snapshot.agentConnection.connected && this.snapshot.agentConnection.toolCatalogId === LIFE_LINKS_SEARCH_TOOL_CATALOG_ID &&
+      this.snapshot.canonicalEditingId === null;
+    if (!ownerId || !eligible()) return { ok: false, code: "search_catalog_not_granted" };
+    try {
+      signal?.throwIfAborted();
+      const page = await this.api.searchRecords(input, { signal, actor: "agent" });
+      signal?.throwIfAborted();
+      if (!eligible()) return { ok: false, code: "search_catalog_not_granted" };
+      this.cancelRecordSearch();
+      const state = this.snapshot.recordSearch.query === input.q ? this.snapshot.recordSearch : emptyRecordSearch(input.q);
+      this.update({ activeView: "search", detailsOpen: false, lifeLinkSearchQuery: input.q, recordSearch: {
+        ...state, groups: { ...state.groups, [input.category]: { ...page, searched: true, loading: false, error: "" } }
+      } });
+      return { ok: true, page };
+    } catch (error) {
+      return { ok: false, code: signal?.aborted || isAbortError(error) ? "cancelled" : error instanceof ApiError ? error.code : "search_unavailable" };
+    }
+  }
+
+  async openRecordSearchHit(hit: RecordSearchHit) {
+    const ownerId = this.snapshot.currentUser?.id;
+    if (!ownerId || this.snapshot.guestView || this.snapshot.routeQrId) return;
+    const ownerRevision = this.ownerRevision;
+    const sameOwner = () => ownerRevision === this.ownerRevision && this.snapshot.currentUser?.id === ownerId;
+    this.cancelRecordSearch();
+    const target = hit.reference;
+    this.update({ recordSearchTarget: target, error: "" });
+    try {
+      if (target.kind === "life_link" || target.kind === "attachment") {
+        await this.activateLifeLink(target.lifeLinkId);
+      } else if (target.kind === "collection") {
+        await this.openCollection(target.collectionId);
+        if (sameOwner() && this.snapshot.selectedCollection?.id === target.collectionId && target.sectionId) {
+          this.setCollectionPresentation(target.collectionId, { view: "sections", expandedGroups: [`section:${target.sectionId}`] });
+        }
+      } else if (target.kind === "routine" || target.kind === "session") {
+        await this.openRoutine(target.routineId);
+        if (!sameOwner() || this.snapshot.workspaceMode !== "routines" || this.snapshot.routineWorkspace.selectedRoutine?.routine.id !== target.routineId) return;
+        if (target.kind === "session") {
+          await this.selectRoutineSession(target.sessionId);
+          if (!sameOwner() || this.snapshot.workspaceMode !== "routines" || this.snapshot.routineWorkspace.selectedSession?.session.id !== target.sessionId) return;
+          this.setRoutineDetailPresentation("session");
+          this.setDetailsOpen(true);
+        }
+      } else if (target.authority === "native") {
+        await this.openCalendarEvent(target.eventId);
+      } else {
+        await this.openProviderCalendarEvent(target);
+      }
+    } catch (error) {
+      if (sameOwner()) this.update({ error: `That search result could not be opened. It may have changed or been removed. ${messageFromError(error)}` });
+    }
+  }
+
   async searchLifeLinks(query = this.snapshot.lifeLinkSearchQuery, append = false) {
+    this.cancelRecordSearch();
+    this.update({ recordSearch: emptyRecordSearch() });
     const search = ++this.searchRevision;
     const ownerRevision = this.ownerRevision;
     const normalized = query.trim();
@@ -3681,6 +3825,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     input: { query: string; limit: number },
     signal?: AbortSignal
   ): Promise<AgentSearchLifeLinksControllerResult> {
+    this.cancelRecordSearch();
+    this.update({ recordSearch: emptyRecordSearch() });
     const agentOwnerId = this.currentAgentOwnerId();
     const revision = ++this.searchRevision;
     if (!agentOwnerId) {
@@ -4025,6 +4171,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async logout() {
+    this.cancelRecordSearch();
     this.invalidateWorkspaceAgentChanges();
     this.confirmAgentChange(false);
     this.confirmAgentCalendarDeletion(false);
@@ -4072,7 +4219,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
     this.update({ busy: true, error: "" });
     try {
-      const result = await this.api.connectAgent(LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID);
+      const result = await this.api.connectAgent(LIFE_LINKS_SEARCH_TOOL_CATALOG_ID);
       this.update({ agentConnection: result.agentConnection });
     } catch (connectionError) {
       this.update({ error: messageFromError(connectionError) });
@@ -4391,7 +4538,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   private agentCalendarOwnerId() {
-    return this.snapshot.agentConnection.connected && (this.snapshot.agentConnection.toolCatalogId === LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID || this.snapshot.agentConnection.toolCatalogId === LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID)
+    return this.snapshot.agentConnection.connected && (this.snapshot.agentConnection.toolCatalogId === LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID || this.snapshot.agentConnection.toolCatalogId === LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID || this.snapshot.agentConnection.toolCatalogId === LIFE_LINKS_SEARCH_TOOL_CATALOG_ID)
       ? this.currentAgentOwnerId() : null;
   }
 
@@ -4988,6 +5135,22 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const ownerChanged = next.currentUser !== undefined && next.currentUser?.id !== this.snapshot.currentUser?.id;
     const previous = this.snapshot;
     let updated = { ...previous, ...next };
+    if (ownerChanged || (previous.activeView === "search" && updated.activeView !== "search")) {
+      ++this.recordSearchRevision;
+      for (const request of this.recordSearchRequests.values()) request.abort();
+      this.recordSearchRequests.clear();
+      updated.recordSearch = ownerChanged ? emptyRecordSearch() : { ...updated.recordSearch, groups: Object.fromEntries(
+        RECORD_SEARCH_CATEGORIES.map((category) => {
+          const group = updated.recordSearch.groups[category];
+          return [category, group.loading ? { ...group, loading: false, error: "Search paused. Continue to finish checking this category." } : group];
+        })
+      ) as typeof updated.recordSearch.groups };
+      if (ownerChanged) {
+        updated.recordSearchTarget = null;
+        updated.lifeLinkSearchQuery = "";
+        updated.lifeLinkSearchResults = [];
+      }
+    }
     if (ownerChanged || updated.routeQrId !== previous.routeQrId || updated.guestView !== previous.guestView ||
         updated.agentConnection.connected !== previous.agentConnection.connected || updated.agentConnection.toolCatalogId !== previous.agentConnection.toolCatalogId ||
         updated.agentConnection.connectedAt !== previous.agentConnection.connectedAt ||
@@ -5033,6 +5196,7 @@ function emptyLifeLinkBranch(): LifeLinkBranchState {
 
 function emptyFieldLedgerState() {
   return {
+    recordSearch: emptyRecordSearch(), recordSearchTarget: null,
     presentation: emptyWorkspacePresentation(), middleCollapsed: false,
     changeHistory: { limit: 5 as const, entries: [] }, agentChangeConfirmation: null, agentWorkspaceChangeConfirmation: null,
     agentCalendarDeletionConfirmation: null,
@@ -5089,7 +5253,7 @@ function emptyRoutineWorkspaceState(): RoutineWorkspaceState {
     routines: [], routinesNextCursor: null, selectedRoutine: null,
     schedules: [], schedulesNextCursor: null, occurrences: [], occurrencesNextCursor: null,
     calendarOccurrences: [], calendarRange: null, calendarLoading: false, calendarError: "",
-    activeRun: null, sessions: [], sessionsNextCursor: null, selectedSession: null,
+    activeRun: null, sessions: [], sessionsNextCursor: null, selectedSession: null, selectedSessionRevision: null,
     includeArchived: false, loading: false, error: ""
   };
 }

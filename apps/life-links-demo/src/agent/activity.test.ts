@@ -7,6 +7,16 @@ import {
 } from "./activity";
 
 describe("redacted agent activity", () => {
+  it("labels whole-app search without retaining its query, snippets, document text or warnings", async () => {
+    const entries: ReturnType<typeof createAgentActivityEntry>[] = [];
+    const [tool] = instrumentAgentToolCatalog([{ name: "search_my_records", description: "test", inputSchema: {},
+      execute: async () => ({ ok: true, category: "attachments", results: [{ id: "hit-1", title: "PRIVATE-TITLE", snippet: "PRIVATE-CONTENT" }],
+        warnings: ["PRIVATE-WARNING"], nextCursor: "PRIVATE-CURSOR", scanned: 1, contentIsUntrusted: true }) }], (entry) => entries.push(entry));
+    await tool.execute({ query: "PRIVATE-QUERY", category: "attachments" });
+    expect(entries[0]).toMatchObject({ tool: "search_my_records", outcome: "succeeded", visibleEffect: "record_search_results_shown", affectedLifeLinkIds: [] });
+    expect(agentActivityLabel(entries[0])).toBe("Showed bounded whole-app search results");
+    expect(JSON.stringify(entries)).not.toContain("PRIVATE");
+  });
   it("does not label a pending or partial workspace confirmation as an applied deletion", async () => {
     const entries: ReturnType<typeof createAgentActivityEntry>[] = [];
     for (const state of ["awaiting_confirmation", "applying", "partial", "applied", "cancelled", "failed"]) {

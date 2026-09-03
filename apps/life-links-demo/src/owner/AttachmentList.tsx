@@ -5,27 +5,33 @@ import { getLifeLinkAttachmentContent } from "../api";
 
 type Attachment = Pick<LifeLinkMediaRecord, "id" | "kind" | "mimeType" | "fileName" | "sizeBytes" | "url">;
 
-export function AttachmentList({ attachments, lifeLinkId, compact = false, busy = false, onRemove }: {
+export type AttachmentSearchTarget = { mediaId: string; revision?: string; offset?: number };
+
+export function AttachmentList({ attachments, lifeLinkId, compact = false, busy = false, onRemove, searchTarget }: {
   attachments: readonly Attachment[];
   lifeLinkId?: string;
   compact?: boolean;
   busy?: boolean;
+  searchTarget?: AttachmentSearchTarget;
   onRemove?(mediaId: string): void;
 }) {
   return <div className={`ll-attachment-list${compact ? " ll-attachment-list-compact" : ""}`}>
-    {attachments.map((attachment) => <AttachmentItem key={`${lifeLinkId ?? "qr"}:${attachment.id}`} attachment={attachment} lifeLinkId={lifeLinkId} compact={compact} busy={busy} onRemove={onRemove} />)}
+    {attachments.map((attachment) => <AttachmentItem key={`${lifeLinkId ?? "qr"}:${attachment.id}`} attachment={attachment} lifeLinkId={lifeLinkId} compact={compact} busy={busy} onRemove={onRemove} searchTarget={searchTarget?.mediaId === attachment.id ? searchTarget : undefined} />)}
   </div>;
 }
 
-function AttachmentItem({ attachment, lifeLinkId, compact, busy, onRemove }: {
+function AttachmentItem({ attachment, lifeLinkId, compact, busy, onRemove, searchTarget }: {
   attachment: Attachment;
   lifeLinkId?: string;
   compact: boolean;
   busy: boolean;
+  searchTarget?: AttachmentSearchTarget;
   onRemove?(mediaId: string): void;
 }) {
   const textId = useId();
+  const article = useRef<HTMLElement | null>(null);
   const request = useRef<AbortController | null>(null);
+  const retryRead = useRef<{ append: boolean; target?: AttachmentSearchTarget }>({ append: false });
   const [content, setContent] = useState<AttachmentContentPage | null>(null);
   const [text, setText] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -33,18 +39,26 @@ function AttachmentItem({ attachment, lifeLinkId, compact, busy, onRemove }: {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => () => request.current?.abort(), [lifeLinkId, attachment.id]);
+  useEffect(() => {
+    if (!searchTarget) return;
+    article.current?.scrollIntoView?.({ block: "nearest" });
+    article.current?.focus({ preventScroll: true });
+    if (attachment.kind === "document" && searchTarget.revision) void readText(false, searchTarget);
+  }, [searchTarget, lifeLinkId, attachment.id]);
 
-  async function readText(append = false) {
+  async function readText(append = false, target?: AttachmentSearchTarget) {
     if (!lifeLinkId) return;
+    retryRead.current = { append, target };
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
     setVisible(true);
     setLoading(true);
     setError("");
+    if (!append) { setContent(null); setText(""); setWarnings([]); }
     try {
       const page = await getLifeLinkAttachmentContent(lifeLinkId, attachment.id, {
-        ...(append && content ? { offset: content.nextOffset ?? 0, revision: content.revision } : {}),
+        ...(append && content ? { offset: content.nextOffset ?? 0, revision: content.revision } : target?.revision ? { offset: target.offset ?? 0, revision: target.revision } : {}),
         signal: controller.signal
       });
       if (controller.signal.aborted || request.current !== controller) return;
@@ -70,7 +84,7 @@ function AttachmentItem({ attachment, lifeLinkId, compact, busy, onRemove }: {
 
   const Icon = attachment.kind === "image" ? Image : attachment.kind === "video" ? Video : FileText;
   const formatLabel = { text: "Text", pdf: "PDF", docx: "DOCX", xlsx: "XLSX", image: "Image", video: "Video" }[attachmentFormat(attachment.mimeType)];
-  return <article className="ll-attachment" data-attachment-id={attachment.id} aria-label={attachment.fileName}>
+  return <article ref={article} tabIndex={searchTarget ? -1 : undefined} className="ll-attachment" data-attachment-id={attachment.id} aria-label={attachment.fileName}>
     {!compact && attachment.kind === "image" && <a className="ll-attachment-preview" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.fileName} loading="lazy" /></a>}
     {!compact && attachment.kind === "video" && <video className="ll-attachment-preview" src={attachment.url} aria-label={attachment.fileName} controls preload="metadata" />}
     <div className="ll-attachment-info"><Icon size={18} aria-hidden="true" /><div><strong title={attachment.fileName}>{attachment.fileName}</strong><small title={attachment.mimeType}>{formatBytes(attachment.sizeBytes)} · {formatLabel}</small></div></div>
@@ -85,7 +99,7 @@ function AttachmentItem({ attachment, lifeLinkId, compact, busy, onRemove }: {
       {content?.status === "unreadable" && <p role="status">{unreadableMessage(content.reason)}</p>}
       {warnings.length > 0 && <ul className="ll-attachment-warnings">{warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>}
       {loading && <p role="status">Loading attachment text…</p>}
-      {error && <p role="alert">{error} <button type="button" onClick={() => void readText(content?.nextOffset !== null && content !== null)}>Retry</button></p>}
+      {error && <p role="alert">{error} <button type="button" onClick={() => void readText(retryRead.current.append, retryRead.current.target)}>Retry</button></p>}
       {content?.status === "ready" && content.nextOffset !== null && <button type="button" disabled={loading} aria-label={`Load more text from ${attachment.fileName}`} onClick={() => void readText(true)}>Load more text</button>}
     </div>}
   </article>;

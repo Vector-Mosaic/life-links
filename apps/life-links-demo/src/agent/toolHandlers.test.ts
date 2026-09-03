@@ -90,6 +90,7 @@ function snapshot(overrides: Partial<AgentToolWorkspaceSnapshot> = {}): AgentToo
 }
 
 class FakeController implements LifeLinksAgentToolController {
+  readonly agentSearchRecords = vi.fn<LifeLinksAgentToolController["agentSearchRecords"]>(async (input) => ({ ok: true, page: { category: input.category, results: [], nextCursor: null, scanned: 0, warnings: [] } }));
   readonly agentCheckWorkspaceAccess = vi.fn<LifeLinksAgentToolController["agentCheckWorkspaceAccess"]>(async () => ({ ok: true }));
   readonly agentListRoutines = vi.fn<LifeLinksAgentToolController["agentListRoutines"]>(async () => ({ ok: true, routines: [], nextCursor: null }));
   readonly agentPreviewCollectionChange = vi.fn<LifeLinksAgentToolController["agentPreviewCollectionChange"]>(async () => ({ ok: false, code: "preview_unavailable" }));
@@ -283,7 +284,7 @@ describe("Life Links connected tool catalog", () => {
     expect(reader.description).toContain("never base64");
     expect(reader.description).toContain("not model_seen");
     expect(reader.description).toContain("If your host cannot emit images");
-    expect(tools.size).toBe(26);
+    expect(tools.size).toBe(27);
     result.source!.width = 100; result.source!.height = 100;
     result.rendition!.region = { x: 10, y: 15, width: 80, height: 80 };
     const crop = { ...input, mode: "crop", region: result.rendition!.region };
@@ -442,7 +443,7 @@ describe("Life Links connected tool catalog", () => {
   it("exports exactly the fixed names with the accepted annotations", () => {
     const definitions = createLifeLinksAgentToolCatalog(controller);
     expect(definitions.map((tool) => tool.name)).toEqual(LIFE_LINKS_AGENT_TOOL_NAMES);
-    expect(definitions).toHaveLength(26);
+    expect(definitions).toHaveLength(27);
     expect(definitions.map((tool) => tool.annotations)).toEqual([
       { readOnlyHint: true, untrustedContentHint: true },
       { readOnlyHint: true, untrustedContentHint: true },
@@ -469,7 +470,8 @@ describe("Life Links connected tool catalog", () => {
       { readOnlyHint: true, untrustedContentHint: true },
       { readOnlyHint: false, untrustedContentHint: true },
       { readOnlyHint: true, untrustedContentHint: true },
-      { readOnlyHint: false, untrustedContentHint: true }
+      { readOnlyHint: false, untrustedContentHint: true },
+      { readOnlyHint: true, untrustedContentHint: true }
     ]);
     expect(definitions.every((tool) => tool.inputSchema.additionalProperties === false)).toBe(true);
   });

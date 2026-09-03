@@ -334,6 +334,8 @@ export interface CalendarProviderStateStore {
   removeConnectedCalendar(input: { ownerId: string; connectionId: string; calendarId: string; expectedUpdatedAt: string; deletedAt: string }): Promise<void>;
   getSyncState(connectionId: string, calendarId: string): Promise<CalendarProviderSyncState | null>;
   listProjections(connectionId: string, calendarId: string): Promise<CalendarProviderEventProjection[]>;
+  findCalendarConnection(ownerId: string, calendarId: string): Promise<string | null>;
+  pageProjections(connectionId: string, calendarId: string, after: string | null, limit: number): Promise<{ items: CalendarProviderEventProjection[]; nextAfter: string | null }>;
   getProjection(connectionId: string, calendarId: string, providerEventId: string): Promise<CalendarProviderEventProjection | null>;
   getTombstone(connectionId: string, calendarId: string, providerEventId: string): Promise<CalendarProviderEventTombstone | null>;
   applySyncMutation(mutation: CalendarProviderSyncMutation): Promise<void>;
@@ -871,6 +873,26 @@ export class CalendarProviderGateway {
     await this.#ownedCalendar(ownerId, connectionId, calendarId, "read", actor, false);
     const projection = await this.store.getProjection(connectionId, calendarId, providerEventId);
     return projection ? cloneProjection(projection) : null;
+  }
+
+  /** Cache-only bounded discovery; permission is rechecked before and after storage. */
+  async pageProjections(ownerId: string, connectionId: string, calendarId: string, after: string | null,
+    limit: number, actor: "owner" | "agent" = "owner") {
+    assertActor(actor);
+    calendarId = canonicalCalendarId(calendarId);
+    if (after !== null) assertIdentifier(after, "after");
+    if (!Number.isInteger(limit) || limit < 1 || limit > 25) throw new CalendarProviderGatewayError("invalid_input", "Invalid cache page size.");
+    await this.#ownedCalendar(ownerId, connectionId, calendarId, "read", actor, false);
+    const page = await this.store.pageProjections(connectionId, calendarId, after, limit);
+    await this.#ownedCalendar(ownerId, connectionId, calendarId, "read", actor, false);
+    return { items: page.items.map(cloneProjection), nextAfter: page.nextAfter };
+  }
+
+  async pageCalendarProjections(ownerId: string, calendarId: string, after: string | null,
+    limit: number, actor: "owner" | "agent" = "owner") {
+    const connectionId = await this.store.findCalendarConnection(ownerId, canonicalCalendarId(calendarId));
+    if (!connectionId) throw new CalendarProviderGatewayError("calendar_not_found", "The provider Calendar was not found.");
+    return this.pageProjections(ownerId, connectionId, calendarId, after, limit, actor);
   }
 
   async synchronizeCalendar(input: {
@@ -1817,6 +1839,16 @@ export class InMemoryCalendarProviderStateStore implements CalendarProviderState
     return [...this.#projections.values()]
       .filter((projection) => projection.connectionId === connectionId && projection.calendarId === calendarId)
       .map(cloneProjection);
+  }
+  async pageProjections(connectionId: string, calendarId: string, after: string | null, limit: number) {
+    const rows = [...this.#projections.values()]
+      .filter((row) => row.connectionId === connectionId && row.calendarId === calendarId && (after === null || row.providerEventId > after))
+      .sort((a, b) => a.providerEventId < b.providerEventId ? -1 : a.providerEventId > b.providerEventId ? 1 : 0);
+    const items = rows.slice(0, limit).map(cloneProjection);
+    return { items, nextAfter: rows.length > limit ? items.at(-1)!.providerEventId : null };
+  }
+  async findCalendarConnection(ownerId: string, calendarId: string) {
+    return [...this.#calendars.values()].find((row) => row.ownerId === ownerId && row.calendarId === calendarId)?.connectionId ?? null;
   }
   async getProjection(connectionId: string, calendarId: string, providerEventId: string) {
     const projection = this.#projections.get(eventKey(connectionId, calendarId, providerEventId));

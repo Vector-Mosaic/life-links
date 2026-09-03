@@ -131,6 +131,8 @@ import type { CalendarProviderGateway } from "./calendar-provider-gateway.js";
 import type { CalendarAuthorizationService } from "./calendar-authorization.js";
 import { createCalendarProviderNotificationRouter, type CalendarProviderSubscriptionService } from "./calendar-provider-subscriptions.js";
 import { handleProviderCalendarEventRequest, listProviderCalendarBindings } from "./calendar-provider-events.js";
+import { RecordSearchError, RecordSearchService } from "./record-search.js";
+import { RECORD_SEARCH_CATEGORIES, type RecordSearchCategory } from "@life-links/core";
 
 const SESSION_COOKIE = "life_links_session";
 const MEDIA_UPLOAD_FIELD = "file";
@@ -202,7 +204,11 @@ export type LifeLinksAppDeps = {
 export function createLifeLinksApp({ store, config, logger, calendarProviderGateway, calendarAuthorizationService,
   calendarSubscriptionService, wakeCalendarRuntime }: LifeLinksAppDeps): Express {
   const app = express();
-  const attachmentReader = new AttachmentContentReader(undefined, config.attachmentRuntime);
+  const attachmentReader = new AttachmentContentReader(undefined, config.attachmentRuntime, {
+    get: (file, revision) => store.getAttachmentText(file, revision),
+    put: (file, revision, extraction) => store.putAttachmentText(file, revision, extraction)
+  });
+  const recordSearch = new RecordSearchService(store, calendarProviderGateway, attachmentReader);
   app.disable("x-powered-by");
   app.set("trust proxy", config.trustProxy ? 1 : false);
   app.use(securityHeaders(config));
@@ -623,6 +629,39 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
       body_length: lifeLink.body.length
     });
     response.status(201).json({ lifeLink });
+  });
+
+  app.get("/api/records/search", requireAuthenticated, async (request: AppRequest, response) => {
+    response.setHeader("Cache-Control", "private, no-store");
+    const cancellation = attachmentRequestCancellation(request, response);
+    try {
+      const { q, category, cursor, limit } = request.query;
+      if (Object.keys(request.query).some((key) => !["q", "category", "cursor", "limit"].includes(key)) ||
+          typeof q !== "string" || typeof category !== "string" || !RECORD_SEARCH_CATEGORIES.includes(category as RecordSearchCategory) ||
+          (cursor !== undefined && typeof cursor !== "string") ||
+          (limit !== undefined && (typeof limit !== "string" || !/^\d+$/.test(limit)))) throw new RecordSearchError(400, "invalid_record_search");
+      const header = request.get("X-Life-Links-Actor");
+      if (header !== undefined && header !== "agent") throw new RecordSearchError(400, "invalid_record_search_actor");
+      const ownerId = request.user!.id;
+      const connectionEpoch = request.user!.agentConnectedAt;
+      const result = await recordSearch.search(ownerId, { q, category: category as RecordSearchCategory,
+        ...(cursor === undefined ? {} : { cursor }), ...(limit === undefined ? {} : { limit: Number(limit) }) }, {
+        actor: header === "agent" ? "agent" : "human", signal: cancellation.signal,
+        authorize: async () => {
+          const current = request.sessionTokenHash ? await store.getSessionByTokenHash(request.sessionTokenHash) : null;
+          if (!current || current.user.id !== ownerId) throw new RecordSearchError(401, "search_session_required");
+          if (header === "agent" && current.user.agentConnectedAt !== connectionEpoch) throw new RecordSearchError(403, "search_agent_connection_required");
+        }
+      });
+      logger.info("life_links.records.searched", { msg: "Owner records searched", ...requestLogFields(request),
+        category, actor: header === "agent" ? "agent" : "human", result_count: result.results.length,
+        scanned: result.scanned, has_more: result.nextCursor !== null });
+      response.json(result);
+    } catch (error) {
+      if (cancellation.signal.aborted) return;
+      if (!(error instanceof RecordSearchError)) throw error;
+      response.status(error.status).json({ error: { code: error.code, message: "Record search could not be completed." } });
+    } finally { cancellation.dispose(); }
   });
 
   app.get("/api/life-links/search", requireAuthenticated, async (request: AppRequest, response) => {

@@ -3,6 +3,7 @@ import {
   type CollectionChangeInput, type CollectionChangePreview, type CollectionChangeResult, type RoutineSummaryRecord
 } from "@life-links/core";
 import type { WebMcpExecutionContext, WebMcpJsonValue, WebMcpToolDefinition } from "../webmcpCompatibility";
+import { LIFE_LINKS_SEARCH_TOOL_CATALOG_ID } from "./searchToolHandlers";
 
 export const LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID = "life-links-workspace-v3" as const;
 export const LIFE_LINKS_WORKSPACE_TOOL_NAMES = [
@@ -186,7 +187,7 @@ function accessFailure(controller: WorkspaceAgentToolController, context: WebMcp
   const snapshot = controller.getSnapshot();
   if (context.signal?.aborted) return failure("cancelled");
   if (!snapshot.currentUser || snapshot.routeQrId !== null || snapshot.guestView || expectedOwnerId !== undefined && snapshot.currentUser.id !== expectedOwnerId) return failure("owner_workspace_unavailable");
-  if (!snapshot.agentConnection.connected || snapshot.agentConnection.toolCatalogId !== LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID) return failure("workspace_catalog_not_granted");
+  if (!snapshot.agentConnection.connected || (snapshot.agentConnection.toolCatalogId !== LIFE_LINKS_WORKSPACE_TOOL_CATALOG_ID && snapshot.agentConnection.toolCatalogId !== LIFE_LINKS_SEARCH_TOOL_CATALOG_ID)) return failure("workspace_catalog_not_granted");
   return snapshot.canonicalEditingId !== null ? failure("editor_open") : null;
 }
 function object(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }

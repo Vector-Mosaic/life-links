@@ -40,6 +40,7 @@ import { fieldLedgerStoreContract } from "./field-ledger-contract.js";
 import { changeHistoryStoreContract } from "./change-history-contract.js";
 import { routineStoreContract } from "./routine-store-contract.js";
 import { calendarStoreContract } from "./calendar-store-contract.js";
+import { attachmentTextStoreContract } from "./attachment-text-store-contract.js";
 import { CalendarProviderGateway, calendarProviderCredentialHandle } from "../src/calendar-provider-gateway.js";
 import { PostgresCalendarProviderStateStore } from "../src/calendar-provider-postgres.js";
 import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
@@ -249,6 +250,7 @@ describe("Life Links Postgres integration", () => {
       if (paritySchema) await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(paritySchema)} CASCADE`);
     });
     changeHistoryStoreContract(() => parityStore);
+    attachmentTextStoreContract(() => parityStore);
 
     it("removes and explicitly reselects only one provider Calendar without admitting its old sync generation", async () => {
       const ownerId = DEMO_OWNER_ID, connectionId = "postgres-provider-removal";
@@ -421,7 +423,7 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(16);
+    expect(migrations.rows[0].count).toBe(17);
     const agentConnectionColumn = await adminPool.query(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -1337,7 +1339,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(16);
+      expect(receiptCount.rows[0].count).toBe(17);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1370,7 +1372,8 @@ describe("Life Links Postgres integration", () => {
         "013_calendar_authorization.sql",
         "014_calendar_account_email.sql",
         "015_collection_changes.sql",
-        "016_workspace_agent_catalog.sql"
+        "016_workspace_agent_catalog.sql",
+        "017_record_search_attachment_text.sql"
       ]);
     } finally {
       await concurrent.store.close();

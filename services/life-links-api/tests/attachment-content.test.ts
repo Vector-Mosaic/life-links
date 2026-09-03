@@ -1,8 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import JSZip from "jszip";
 import { createHash } from "node:crypto";
 import { ATTACHMENT_EXTRACTION_MAX_BYTES, resolveAttachmentMimeType } from "@life-links/core";
-import { AttachmentContentReader } from "../src/attachment-content.js";
+import { AttachmentContentReader, type AttachmentTextExtraction } from "../src/attachment-content.js";
 import type { LifeLinkMediaFile } from "../src/store.js";
 import { extendedConditionalFormattingWorkbook, textPdf, wordDocument, wordSecondaryFacts, workbookDocument } from "./attachment-fixtures.js";
 
@@ -14,6 +14,57 @@ const file = (data: Buffer, mimeType = "text/plain"): LifeLinkMediaFile => ({ da
 } });
 
 describe("private attachment text extraction", () => {
+  it("searches the full ordinary text beyond paging limits with literal Unicode-safe bounded snippets", async () => {
+    const reader = new AttachmentContentReader();
+    const source = "前🏕️".repeat(1500) + "Exact [needle].* words" + "後🏕️".repeat(100);
+    const input = file(Buffer.from(source));
+    const found = await reader.search(input, "EXACT [needle].* WORDS");
+    expect(found).toMatchObject({ status: "ready", matched: true, offset: source.indexOf("Exact"), format: "text", reason: null });
+    expect(found.snippet).toContain("Exact [needle].* words");
+    expect(found.snippet.length).toBeLessThanOrEqual(240);
+    expect(found.snippet).not.toMatch(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/u);
+    expect((await reader.read(input)).nextOffset).toBe(1000);
+    expect(await reader.search(input, "does not occur")).toMatchObject({ matched: false, offset: null, snippet: "" });
+    expect(await reader.search(file(Buffer.from("pixels"), "image/png"), "pixels"))
+      .toMatchObject({ status: "unreadable", reason: "unsupported_media", matched: false, snippet: "" });
+  });
+
+  it("reuses persistent ordinary extraction across readers but not changed sources or transient failures", async () => {
+    const entries = new Map<string, AttachmentTextExtraction>();
+    const port = { get: vi.fn(async (_file: LifeLinkMediaFile, revision: string) => entries.get(revision) ?? null),
+      put: vi.fn(async (_file: LifeLinkMediaFile, revision: string, result: AttachmentTextExtraction) => { entries.set(revision, result); }) };
+    const input = file(Buffer.from("Stored full text."));
+    const first = new AttachmentContentReader(undefined, undefined, port);
+    const initial = await first.search(input, "full");
+    expect(port.put).toHaveBeenCalledTimes(1);
+    const second = new AttachmentContentReader(undefined, undefined, port);
+    const extractor = vi.spyOn(second as unknown as { extract: (...args: unknown[]) => Promise<AttachmentTextExtraction> }, "extract");
+    expect((await second.search(input, "stored")).revision).toBe(initial.revision);
+    expect((await second.read(input)).text).toBe("Stored full text.");
+    expect(extractor).not.toHaveBeenCalled();
+    expect((await second.search(file(Buffer.from("Replacement fact.")), "replacement")).revision).not.toBe(initial.revision);
+    expect(extractor).toHaveBeenCalledTimes(1);
+    extractor.mockResolvedValue({ status: "unreadable", reason: "extraction_timeout", text: "", warnings: [] });
+    const transient = file(Buffer.from("Temporary failure"));
+    await second.search(transient, "failure"); await second.search(transient, "failure");
+    expect(extractor).toHaveBeenCalledTimes(3);
+    expect(port.put).toHaveBeenCalledTimes(2);
+    const aborted = new AbortController(); aborted.abort();
+    await expect(second.search(input, "text", aborted.signal)).rejects.toBeDefined();
+    expect(port.put).toHaveBeenCalledTimes(2);
+  });
+
+  it("caches stable unreadable representations without claiming searchable image text", async () => {
+    const entries = new Map<string, AttachmentTextExtraction>();
+    const port = { get: vi.fn(async (_file: LifeLinkMediaFile, revision: string) => entries.get(revision) ?? null),
+      put: vi.fn(async (_file: LifeLinkMediaFile, revision: string, result: AttachmentTextExtraction) => { entries.set(revision, result); }) };
+    const input = file(Buffer.from("pixels"), "image/png");
+    await new AttachmentContentReader(undefined, undefined, port).search(input, "pixels");
+    expect(await new AttachmentContentReader(undefined, undefined, port).search(input, "pixels"))
+      .toMatchObject({ status: "unreadable", reason: "unsupported_media", matched: false, offset: null });
+    expect(port.put).toHaveBeenCalledTimes(1);
+  });
+
   it("reads an XLSX produced through ExcelJS's extended conditional-format UUID path", async () => {
     const data = await extendedConditionalFormattingWorkbook();
     const zip = await JSZip.loadAsync(data);

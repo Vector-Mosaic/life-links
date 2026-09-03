@@ -1,4 +1,6 @@
 import type {
+  RoutineRevisionSnapshot,
+  RecordSearchReference,
   AttachmentContentPage,
   AttachmentImageReadOptions,
   AttachmentImageResult,
@@ -39,6 +41,7 @@ import type {
 import type { ApiAgentConnection, ApiUser, CalendarClock, CalendarEventDetail } from "../api";
 import type { AgentCalendarDeletionPreview, AgentProviderCalendarDeletionPreview } from "../agent/calendarToolHandlers";
 import type { RoutineDeletionPreview } from "../agent/workspaceToolHandlers";
+import type { RecordSearchState } from "./recordSearch";
 
 export type AgentWorkspaceChangeConfirmation = (
   | { kind: "collection"; preview: CollectionChangePreview }
@@ -155,6 +158,7 @@ export type AgentCollectionListResult =
   | Exclude<AgentToolControllerActionResult, { ok: true }>;
 
 export type RoutineWorkspaceState = {
+  selectedSessionRevision: RoutineRevisionSnapshot | null;
   presentation: {
     tab: "routines" | "history";
     historyRoutineId: string | null;
@@ -319,6 +323,8 @@ export type LifeLinksWorkspaceSnapshot = {
   highlightedLifeLinkId: string | null;
   canonicalEditingId: string | null;
   lifeLinkSearchQuery: string;
+  recordSearch: RecordSearchState;
+  recordSearchTarget: RecordSearchReference | null;
   lifeLinkSearchResults: LifeLinkSearchItem[];
   lifeLinkSearchTotalCount: number;
   lifeLinkSearchNextCursor: string | null;

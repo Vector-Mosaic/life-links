@@ -47,12 +47,12 @@ async function readAll(tool: ReturnType<typeof catalog> extends Map<string, infe
 describe("workspace-v3 page tools", () => {
   it("adds only five tools, preserving every published v2 descriptor and host size headroom", () => {
     const definitions = createLifeLinksAgentToolCatalog(new Proxy({} as LifeLinksAgentToolController, { get: () => () => { throw new Error("discovery invoked a controller"); } }));
-    expect(definitions).toHaveLength(26);
-    expect(definitions.slice(21).map((tool) => tool.name)).toEqual(LIFE_LINKS_WORKSPACE_TOOL_NAMES);
+    expect(definitions).toHaveLength(27);
+    expect(definitions.slice(21, 26).map((tool) => tool.name)).toEqual(LIFE_LINKS_WORKSPACE_TOOL_NAMES);
     const frozen = JSON.parse(readFileSync(new URL("../../../../contracts/mcp/life-links-calendar-v2.authenticated-owner-page.full.json", import.meta.url), "utf8"));
     const validation = validateLifeLinksPageToolCatalog(definitions, LIFE_LINKS_CALENDAR_TOOL_CATALOG_ID);
     expect(validation.ok).toBe(true);
-    const descriptors = definitions.map(({ execute: _execute, ...descriptor }) => descriptor);
+    const descriptors = definitions.slice(0, 26).map(({ execute: _execute, ...descriptor }) => descriptor);
     expect(descriptors.slice(0, 21)).toEqual(frozen.catalog.tools);
     expect(size({ tools: descriptors, pageUrl: `https://lifelinks.vmosaic.com/${"x".repeat(2048)}`, origin: "https://lifelinks.vmosaic.com" })).toBeLessThan(65_536);
     expect(size({ tools: descriptors })).toBeLessThan(60_000);

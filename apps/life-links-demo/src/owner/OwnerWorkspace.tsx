@@ -14,6 +14,7 @@ import { CalendarDetailPanel, CalendarWorkspacePanel } from "./CalendarPanels";
 import { CollectionChangeDialog, type CollectionSelection, type CollectionChangeDraft } from "./CollectionChangeDialog";
 import { AgentCalendarDeletionDialog, CalendarDialogHost, type CalendarDialogState } from "./CalendarDialogs";
 import { AgentWorkspaceChangeDialog } from "./AgentWorkspaceChangeDialog";
+import { RecordSearchPanel } from "./RecordSearchPanel";
 
 // Keep this aligned with the phone-layout media query in styles.css.
 const PHONE_LAYOUT_QUERY = "(max-width: 700px) and (hover: none), (max-width: 700px) and (pointer: coarse)";
@@ -291,7 +292,7 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
             <button className="ll-button ll-danger-text" disabled={busy || !collectionSelectionCount || (Boolean(selectedCollection) && !snapshot.collectionComplete)} onClick={() => beginCollectionChange("delete")}><Trash2 size={16} />Delete</button>
             <button className="ll-text-button" disabled={busy} onClick={finishCollectionEditing}>Done</button>
           </div><p className="ll-history-warning">Collection changes never delete or relocate your Life Links. {CHANGE_HISTORY_WARNING}</p></section>}
-          {!routinesMode && !calendarMode && <div className="ll-title-row"><div><h1 ref={headingRef} tabIndex={-1}>{title}</h1><p className="ll-subtitle">{dataMode ? collectionsMode ? selectedCollection ? `${snapshot.collectionMembers.length} unique members · ${snapshot.collectionSections.length} sections` : `${snapshot.collections.length} Collections` : `${branch?.items.length ?? 0}${branch?.nextCursor ? "+" : ""} direct Life Links` : searchMode ? "Life Links, Collections, and sections" : "Open a QR from its code or URL"}</p></div>
+          {!routinesMode && !calendarMode && <div className="ll-title-row"><div><h1 ref={headingRef} tabIndex={-1}>{title}</h1><p className="ll-subtitle">{dataMode ? collectionsMode ? selectedCollection ? `${snapshot.collectionMembers.length} unique members · ${snapshot.collectionSections.length} sections` : `${snapshot.collections.length} Collections` : `${branch?.items.length ?? 0}${branch?.nextCursor ? "+" : ""} direct Life Links` : searchMode ? "Search across your LifeLinks workspace" : "Open a QR from its code or URL"}</p></div>
              {dataMode && <ActionMenu key={snapshot.routePathname} label={`Add to ${title}`} className="ll-icon-button ll-primary ll-main-plus" items={createActions}><Plus size={24} /></ActionMenu>}
           </div>}
           {dataMode && !collectionsMode && !routinesMode && !calendarMode && <div className="ll-record-list">{branch?.items.map(renderHierarchyRow)}{branch?.loading && <p className="ll-muted">Loading Life Links…</p>}{branch?.loaded && !branch.items.length && <p className="ll-empty">No Life Links here yet. Use + to create a folder or item.</p>}{branch?.nextCursor && <button className="ll-text-button ll-load-more" onClick={() => void controller.loadMoreLifeLinks(snapshot.hierarchyParentId)}>Load more Life Links</button>}{branch?.truncated && !branch.nextCursor && <p className="ll-inline-warning">This layer could not be fully loaded.</p>}</div>}
@@ -319,7 +320,8 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
             autoRefreshPaused={Boolean(busy || undoing || middleCollapsed || dialog || routineDialog || calendarDialog || collectionChange || snapshot.canonicalEditingId ||
               snapshot.agentChangeConfirmation || snapshot.agentCalendarDeletionConfirmation || snapshot.agentWorkspaceChangeConfirmation ||
               snapshot.calendarWorkspace.connectionFlow?.loading || snapshot.calendarWorkspace.connectionManagement?.loading)} />}
-          {searchMode && <section className="ll-search-screen"><form className="ll-search-form" onSubmit={(event) => { event.preventDefault(); void controller.searchLifeLinks(); }}><Search size={19} /><input aria-label="Search records" placeholder="Search places, things, and notes" value={snapshot.lifeLinkSearchQuery} onChange={(event) => controller.setLifeLinkSearchQuery(event.target.value)} /><button className="ll-button ll-primary" disabled={snapshot.lifeLinkSearchLoading}>Search</button></form>
+          {searchMode && <RecordSearchPanel controller={controller} snapshot={snapshot} />}
+          {searchMode && !snapshot.recordSearch.query && <section className="ll-search-screen" aria-label="Life Link search results">
             {snapshot.lifeLinkSearchLoading && <p className="ll-muted">Searching…</p>}
             {snapshot.lifeLinkSearchResults.map((result) => {
               const locator = deriveLifeLinkPhysicalLocator(result.path);
@@ -350,6 +352,7 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
           ? <RoutineSessionDetailPanel snapshot={snapshot} onBack={() => setRoutineDetailKind("routine")} onOpenDialog={setRoutineDialog} />
           : <RoutineDetailPanel controller={controller} snapshot={snapshot} onOpenDialog={setRoutineDialog} onShowSession={() => setRoutineDetailKind("session")} />
           : <LifeLinkDetail detail={selectedLifeLinkDetail} busy={busy} collectionMode={collectionsMode} memberships={snapshot.selectedLifeLinkMemberships} membershipsLoading={snapshot.membershipsLoading} membershipsComplete={snapshot.membershipsComplete}
+            searchAttachment={snapshot.recordSearchTarget?.kind === "attachment" && snapshot.recordSearchTarget.lifeLinkId === selectedLifeLinkDetail?.lifeLink.id ? snapshot.recordSearchTarget : undefined}
             onNavigate={(id) => void (id === null ? controller.openHierarchy() : controller.activateLifeLink(id))} onEdit={(id) => void controller.openCanonicalEditor(id)} onCreateChild={(id) => openCreate(id)} onMove={(id) => setDialog({ kind: "move", lifeLinkIds: [id] })} onQr={(id) => setDialog({ kind: "qr", lifeLinkId: id })}
             onMedia={(id) => { mediaTarget.current = id; mediaInput.current?.click(); }} onCollection={(id, memberId, sectionId) => void openMembership(id, memberId, sectionId)} onMemberships={(id) => void manageMemberships(id)} />}</div>}
       </aside>

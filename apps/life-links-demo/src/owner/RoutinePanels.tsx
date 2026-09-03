@@ -280,12 +280,10 @@ export function RoutineDetailPanel({ controller, snapshot, onOpenDialog, onShowS
 export function RoutineSessionDetailPanel({ snapshot, onBack, onOpenDialog }: Pick<SharedPanelProps, "snapshot" | "onOpenDialog"> & { onBack(): void }) {
   const selected = snapshot.routineWorkspace.selectedSession;
   if (!selected) return <div className="ll-empty">Select a completed Session to review its results.</div>;
-  const currentRoutine = snapshot.routineWorkspace.selectedRoutine;
-  const sameRevision = currentRoutine?.currentRevision.revision.id === selected.session.routineRevisionId;
-  const title = sameRevision ? currentRoutine?.currentRevision.revision.title ?? "Completed Routine" : "Completed Routine";
-  const stepTitle = (stepId: string, index: number) => sameRevision
-    ? currentRoutine?.currentRevision.steps.find((step) => step.id === stepId)?.activityTitle ?? `Step ${index + 1}`
-    : `Step ${index + 1}`;
+  const candidate = snapshot.routineWorkspace.selectedSessionRevision ?? snapshot.routineWorkspace.selectedRoutine?.currentRevision;
+  const recordedRevision = candidate?.revision.id === selected.session.routineRevisionId ? candidate : null;
+  const title = recordedRevision?.revision.title ?? "Completed Routine";
+  const stepTitle = (stepId: string, index: number) => recordedRevision?.steps.find((step) => step.id === stepId)?.activityTitle ?? `Step ${index + 1}`;
   return <article className="ll-detail-content ll-routine-session-detail" data-routine-session-id={selected.session.id}>
     <button className="ll-text-button ll-hierarchy-return" onClick={onBack}><ChevronLeft size={15} />Back to Routine</button>
     <p className="ll-context-row">My Routines / History</p>
@@ -298,7 +296,10 @@ export function RoutineSessionDetailPanel({ snapshot, onBack, onOpenDialog }: Pi
         <header><div><span className="ll-routine-step-number">{index + 1}</span><strong>{stepTitle(result.original.routineStepId, index)}</strong></div><button className="ll-text-button" onClick={() => onOpenDialog({ kind: "correct-session", sessionId: selected.session.id, stepResultId: result.original.id })}>Correct</button></header>
         <div className="ll-routine-result-columns"><section><h4>Actual</h4><RoutineValueList values={result.effectiveActualValues} empty="Unknown" /></section><section><h4>Next-time proposal</h4><RoutineValueList values={result.effectiveProposedNextValues} empty="No proposal" /></section></div>
         {result.original.notes && <p className="ll-preserve-lines">{result.original.notes}</p>}
-        {result.amendments.length > 0 && <details><summary>{result.amendments.length} {result.amendments.length === 1 ? "correction" : "corrections"}</summary><ul>{result.amendments.map((amendment) => <li key={amendment.id}>{amendment.note}<small>{formatRoutineDateTime(amendment.createdAt)}</small></li>)}</ul></details>}
+        {result.amendments.length > 0 && <details open={snapshot.recordSearchTarget?.kind === "session" && snapshot.recordSearchTarget.sessionId === selected.session.id || undefined}><summary>{result.amendments.length} {result.amendments.length === 1 ? "correction" : "corrections"}</summary>
+          <h4>Original actual results</h4><RoutineValueList values={result.original.actualValues} empty="Unknown" />
+          <h4>Original next-time proposal</h4><RoutineValueList values={result.original.proposedNextValues} empty="No proposal" />
+          <ul>{result.amendments.map((amendment) => <li key={amendment.id}>{amendment.note}<small>{formatRoutineDateTime(amendment.createdAt)}</small></li>)}</ul></details>}
       </div>)}
     </section>
     {selected.sessionAmendments.length > 0 && <section className="ll-detail-section"><h3>Session notes</h3><ul className="ll-routine-amendments">{selected.sessionAmendments.map((amendment) => <li key={amendment.id}><span>{amendment.note}</span><small>{formatRoutineDateTime(amendment.createdAt)}</small></li>)}</ul></section>}

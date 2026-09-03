@@ -24,6 +24,7 @@ import {
   type ExportBatchRecord,
   type LifeLinkDetail,
   LifeLinkDomainError,
+  normalizeLifeLinkChildPageLimit,
   type LifeLinkMediaRecord,
   type LifeLinkPage,
   type LifeLinkPageRequest,
@@ -210,6 +211,7 @@ import {
   expectedCompetitionFixtureCounts,
   sameCompetitionFixtureCounts
 } from "./store.js";
+import type { AttachmentTextExtraction } from "./attachment-content.js";
 
 type Queryable = Pick<Pool, "query">;
 type StoredLifeLink = Omit<LifeLinkRecord, "qrId" | "media">;
@@ -311,6 +313,27 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     page: LifeLinkPageRequest = {}
   ): Promise<LifeLinkPage<LifeLinkSummary>> {
     return pageLifeLinkChildren(await this.loadOwnerLifeLinks(this.pool, userId), userId, parentId, page);
+  }
+
+  async listRecordSearchLifeLinks(userId: string, page: LifeLinkPageRequest = {}): Promise<LifeLinkPage<LifeLinkRecord>> {
+    const limit = normalizeLifeLinkChildPageLimit(page.limit);
+    let afterId: string | null = null;
+    if (page.cursor) {
+      let candidate: { id?: unknown } = {};
+      try { candidate = JSON.parse(decodeURIComponent(page.cursor)) ?? {}; } catch { /* canonical cursor validation below */ }
+      // Reuse the existing stable-record cursor grammar and its error contract.
+      const found = typeof candidate.id === "string"
+        ? await this.pool.query("SELECT id FROM life_links WHERE owner_id=$1 AND id=$2", [userId, candidate.id]) : { rows: [] };
+      pageCollectionRecords(found.rows.map((row) => ({ id: String(row.id) })), page);
+      afterId = candidate.id as string;
+    }
+    const rows = await this.pool.query(
+      `SELECT ll.*, b.qr_id FROM life_links ll
+       LEFT JOIN life_link_qr_bindings b ON b.life_link_id=ll.id
+       WHERE ll.owner_id=$1 AND ($2::text IS NULL OR ll.id COLLATE "C" > $2 COLLATE "C")
+       ORDER BY ll.id COLLATE "C" LIMIT $3`, [userId, afterId, limit + 1]);
+    const result = pageCollectionRecords(rows.rows.map(mapLifeLinkRow), { limit });
+    return { ...result, items: await this.attachLifeLinkMedia(this.pool, result.items) };
   }
 
   async getLifeLinkDetail(
@@ -1018,6 +1041,28 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     return row
       ? { media: mapLifeLinkMedia(row), data: asBuffer(row.data) }
       : null;
+  }
+
+  async getAttachmentText(file: LifeLinkMediaFile, revision: string): Promise<AttachmentTextExtraction | null> {
+    const result = await this.pool.query(
+      `SELECT cached.extraction FROM attachment_text_cache cached
+       JOIN link_media lm ON lm.id=cached.media_id JOIN life_links ll ON ll.id=lm.life_link_id
+       WHERE lm.id=$1 AND lm.life_link_id=$2 AND lm.owner_id=$3 AND ll.owner_id=$3
+         AND cached.revision=$4 AND lm.mime_type=$5 AND lm.data=$6`,
+      [file.media.id, file.media.lifeLinkId, file.media.ownerId, revision, file.media.mimeType, file.data]);
+    return result.rows[0] ? JSON.parse(asBuffer(result.rows[0].extraction).toString("utf8")) as AttachmentTextExtraction : null;
+  }
+
+  async putAttachmentText(file: LifeLinkMediaFile, revision: string, extraction: AttachmentTextExtraction): Promise<void> {
+    await this.pool.query(
+      `WITH source AS MATERIALIZED (
+         SELECT lm.id FROM link_media lm JOIN life_links ll ON ll.id=lm.life_link_id
+         WHERE lm.id=$1 AND lm.life_link_id=$2 AND lm.owner_id=$3 AND ll.owner_id=$3
+           AND lm.mime_type=$5 AND lm.data=$6 FOR SHARE OF lm, ll
+       ) INSERT INTO attachment_text_cache (media_id,revision,extraction)
+       SELECT id,$4,$7::bytea FROM source
+       ON CONFLICT (media_id) DO UPDATE SET revision=EXCLUDED.revision,extraction=EXCLUDED.extraction`,
+      [file.media.id, file.media.lifeLinkId, file.media.ownerId, revision, file.media.mimeType, file.data, Buffer.from(JSON.stringify(extraction), "utf8")]);
   }
 
   async listLinks(userId: string): Promise<LinkRecord[]> {

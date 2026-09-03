@@ -4,6 +4,7 @@ import { MAX_BODY_LENGTH, MAX_TITLE_LENGTH } from "./limits.js";
 
 export * from "./fieldLedger.js";
 export * from "./changeHistory.js";
+export * from "./recordSearch.js";
 export { MAX_BODY_LENGTH, MAX_TITLE_LENGTH } from "./limits.js";
 
 export type PrivacyStatus = "public" | "private";
