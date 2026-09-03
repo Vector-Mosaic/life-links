@@ -3517,7 +3517,8 @@ textarea {
 .ll-hierarchy-row.selected, .ll-member-row.selected { background: var(--ll-selected); }
 .ll-hierarchy-row.selected::before, .ll-member-row.selected::before { content: ""; position: absolute; left: -4px; top: 8px; bottom: 8px; width: 3px; border-radius: 2px; background: var(--ll-accent); }
 .ll-hierarchy-node { min-width: 0; }
-.ll-edit-children { min-width: 0; padding-left: 12px; margin-left: 10px; border-left: 1px solid var(--ll-line); }
+.ll-hierarchy-toolbar { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; margin: -8px 0 12px; }
+.ll-hierarchy-continuation { padding: 8px 0 8px 22px; }
 .ll-selection-dot { appearance: none; display: block; width: 20px; min-width: 20px; height: 20px; min-height: 20px; flex: 0 0 20px; padding: 0; margin: 0 0 0 4px; border: 1.5px solid var(--ll-muted); border-radius: 50%; background: var(--ll-paper); cursor: pointer; }
 .ll-selection-dot:checked { background: var(--ll-accent); border-color: var(--ll-accent); box-shadow: inset 0 0 0 4px var(--ll-paper); }
 .ll-selection-dot:focus-visible { outline: 2px solid var(--ll-accent); outline-offset: 3px; }

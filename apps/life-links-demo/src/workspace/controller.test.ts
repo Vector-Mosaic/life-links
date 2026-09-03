@@ -3123,6 +3123,174 @@ describe("owner-session peer navigation and panel presentation", () => {
   });
 });
 
+describe("current hierarchy bulk expansion", () => {
+  const nested = { ...rootLifeLink, id: "life-link-nested", parentId: rootLifeLink.id, title: "Nested folder" };
+  const deep = { ...rootLifeLink, id: "life-link-deep", parentId: nested.id, title: "Deep folder" };
+  const leaf = { ...canonicalLink, id: "life-link-deep-item", parentId: deep.id, qrId: null };
+  const other = { ...rootLifeLink, id: "life-link-other", title: "Other root" };
+  const otherItem = { ...canonicalLink, id: "life-link-other-item", parentId: other.id, qrId: null };
+  const records = [rootLifeLink, canonicalLink, nested, deep, leaf, other, otherItem];
+  const children = (parentId: string | null) => records.filter((record) => record.parentId === parentId)
+    .map((record) => summary(record, records.filter((child) => child.parentId === record.id).length));
+  const page = (parentId: string | null) => ({ lifeLinks: children(parentId), nextCursor: null, truncated: false });
+  const setup = async () => {
+    const api = fakeApi();
+    api.listLifeLinks.mockImplementation(async ({ parentId = null } = {}) => page(parentId));
+    const route = new FakeRoute("/life-links");
+    const controller = new LifeLinksWorkspaceController({ api, route });
+    await controller.start();
+    return { api, route, controller };
+  };
+
+  it("explicitly expands every current root/descendant page serially without navigating", async () => {
+    const { api, route, controller } = await setup();
+    expect(controller.getSnapshot()).toMatchObject({ expandedLifeLinkIds: [], hierarchyExpanding: false });
+    let concurrent = 0;
+    let maximum = 0;
+    api.listLifeLinks.mockImplementation(async ({ parentId = null, cursor } = {}) => {
+      maximum = Math.max(maximum, ++concurrent);
+      await Promise.resolve();
+      concurrent -= 1;
+      if (parentId === null && !cursor) return { lifeLinks: [summary(rootLifeLink, 2)], nextCursor: "next-root", truncated: true };
+      if (parentId === null) return { lifeLinks: [summary(other, 1)], nextCursor: null, truncated: false };
+      if (parentId === rootLifeLink.id && !cursor) return { lifeLinks: [canonicalSummary], nextCursor: "next-child", truncated: true };
+      if (parentId === rootLifeLink.id) return { lifeLinks: [summary(nested, 1)], nextCursor: null, truncated: false };
+      return page(parentId);
+    });
+    await controller.openHierarchy();
+    await controller.expandHierarchy();
+    expect(maximum).toBe(1);
+    expect(controller.getSnapshot().expandedLifeLinkIds).toEqual([rootLifeLink.id, other.id, nested.id, deep.id]);
+    expect(api.listLifeLinks).toHaveBeenCalledWith(expect.objectContaining({ parentId: null, cursor: "next-root", limit: 25 }));
+    expect(api.listLifeLinks).toHaveBeenCalledWith(expect.objectContaining({ parentId: rootLifeLink.id, cursor: "next-child", limit: 25 }));
+    expect(controller.getSnapshot().lifeLinkChildren[deep.id].items).toEqual(children(deep.id));
+    expect(controller.getSnapshot()).toMatchObject({ hierarchyParentId: null, hierarchyExpanding: false, selectedLifeLinkId: null, error: "" });
+    expect(route.pushes).toEqual([]);
+    const reads = api.listLifeLinks.mock.calls.length;
+    await controller.expandHierarchy();
+    expect(api.listLifeLinks).toHaveBeenCalledTimes(reads);
+    controller.collapseHierarchy();
+    expect(controller.getSnapshot().expandedLifeLinkIds).toEqual([]);
+    expect(controller.getSnapshot().lifeLinkChildren[deep.id].items).toEqual(children(deep.id));
+    controller.dispose();
+  });
+
+  it("limits expansion and collapse to the displayed subtree, preserving its parent, other branches and selected Details", async () => {
+    const { api, route, controller } = await setup();
+    await controller.toggleLifeLinkExpanded(other.id);
+    await controller.selectLifeLink({ lifeLinkId: canonicalLink.id, source: "human" });
+    const selected = controller.getSnapshot().selectedLifeLinkDetail;
+    const parent = controller.getSnapshot().hierarchyParentDetail;
+    const pathname = route.pathname();
+    api.listLifeLinks.mockClear();
+    await controller.expandHierarchy();
+    expect(controller.getSnapshot().expandedLifeLinkIds).toEqual([other.id, rootLifeLink.id, nested.id, deep.id]);
+    expect(api.listLifeLinks.mock.calls.map(([options]) => options?.parentId)).toEqual([nested.id, deep.id]);
+    controller.collapseHierarchy();
+    expect(controller.getSnapshot().expandedLifeLinkIds).toEqual([other.id, rootLifeLink.id]);
+    expect(controller.getSnapshot().selectedLifeLinkDetail).toBe(selected);
+    expect(controller.getSnapshot().hierarchyParentDetail).toBe(parent);
+    expect(controller.getSnapshot()).toMatchObject({ hierarchyParentId: rootLifeLink.id, selectedLifeLinkId: canonicalLink.id, detailsOpen: true });
+    expect(route.pathname()).toBe(pathname);
+    controller.dispose();
+  });
+
+  it.each(["collapse", "toggle", "navigation", "owner", "dispose"] as const)("cancels on %s and ignores an abort-insensitive late page", async (action) => {
+    const { api, controller } = await setup();
+    const delayed = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listLifeLinks"]>>>();
+    let signal: AbortSignal | undefined;
+    api.listLifeLinks.mockImplementationOnce((options) => { signal = options?.signal; return delayed.promise; });
+    const expansion = controller.expandHierarchy();
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    expect(controller.getSnapshot().hierarchyExpanding).toBe(true);
+    const calls = api.listLifeLinks.mock.calls.length;
+    if (action === "collapse") controller.collapseHierarchy();
+    else if (action === "toggle") await controller.toggleLifeLinkExpanded(rootLifeLink.id);
+    else if (action === "navigation") await controller.openCollections();
+    else if (action === "owner") await controller.logout();
+    else controller.dispose();
+    expect(signal?.aborted).toBe(true);
+    expect(controller.getSnapshot().hierarchyExpanding).toBe(false);
+    delayed.resolve(page(rootLifeLink.id));
+    await expansion;
+    expect(api.listLifeLinks).toHaveBeenCalledTimes(calls);
+    expect(controller.getSnapshot().expandedLifeLinkIds).not.toContain(nested.id);
+    expect(controller.getSnapshot().lifeLinkChildren[rootLifeLink.id]?.loaded ?? false).toBe(false);
+    expect(controller.getSnapshot().lifeLinkChildren[rootLifeLink.id]?.loading ?? false).toBe(false);
+    expect(controller.getSnapshot().error).toBe("");
+    controller.dispose();
+  });
+
+  it.each(["repeated cursor", "missing cursor", "read failure"] as const)("stops on %s with an honest incomplete error and permits retry", async (failure) => {
+    const { api, controller } = await setup();
+    if (failure === "read failure") api.listLifeLinks.mockRejectedValueOnce(new Error("offline"));
+    else api.listLifeLinks.mockImplementationOnce(async () => ({ lifeLinks: [canonicalSummary], nextCursor: failure === "missing cursor" ? null : "repeated", truncated: true }));
+    if (failure === "repeated cursor") api.listLifeLinks.mockImplementationOnce(async () => ({ lifeLinks: [], nextCursor: "repeated", truncated: true }));
+    const before = api.listLifeLinks.mock.calls.length;
+    await controller.expandHierarchy();
+    expect(api.listLifeLinks.mock.calls.length - before).toBe(failure === "repeated cursor" ? 2 : 1);
+    expect(controller.getSnapshot()).toMatchObject({ hierarchyExpanding: false, hierarchyParentId: null });
+    expect(controller.getSnapshot().error).toMatch(/Some hierarchy folders could not be expanded/);
+    await controller.expandHierarchy();
+    expect(controller.getSnapshot()).toMatchObject({ hierarchyExpanding: false, error: "" });
+    expect(controller.getSnapshot().expandedLifeLinkIds).toContain(deep.id);
+    controller.dispose();
+  });
+
+  it("does not duplicate a branch read already started by the individual chevron", async () => {
+    const { api, controller } = await setup();
+    const delayed = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listLifeLinks"]>>>();
+    api.listLifeLinks.mockImplementationOnce(() => delayed.promise);
+    const opening = controller.toggleLifeLinkExpanded(rootLifeLink.id);
+    const calls = api.listLifeLinks.mock.calls.length;
+    await controller.expandHierarchy();
+    expect(api.listLifeLinks).toHaveBeenCalledTimes(calls);
+    expect(controller.getSnapshot()).toMatchObject({ hierarchyExpanding: false });
+    expect(controller.getSnapshot().error).toContain("still loading");
+    delayed.resolve(page(rootLifeLink.id));
+    await opening;
+    await controller.expandHierarchy();
+    expect(controller.getSnapshot().expandedLifeLinkIds).toContain(deep.id);
+    expect(controller.getSnapshot().error).toBe("");
+    controller.dispose();
+  });
+
+  it("cancels expansion at mutation admission and never restores deleted children during delayed reconciliation", async () => {
+    const { api, controller } = await setup();
+    const staleBranch = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listLifeLinks"]>>>();
+    const freshRoots = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["listLifeLinks"]>>>();
+    let branchSignal: AbortSignal | undefined;
+    api.listLifeLinks.mockImplementationOnce((options) => { branchSignal = options?.signal; return staleBranch.promise; });
+    const expansion = controller.expandHierarchy();
+    await vi.waitFor(() => expect(branchSignal).toBeDefined());
+    let reconciling = false;
+    const remaining = { lifeLinks: [summary(other, 1)], nextCursor: null, truncated: false };
+    api.listLifeLinks.mockImplementationOnce(() => { reconciling = true; return freshRoots.promise; });
+    api.listLifeLinks.mockResolvedValue(remaining);
+    api.applyLifeLinkChange.mockResolvedValue({ operation: "delete", affectedIds: [rootLifeLink.id, nested.id, deep.id, canonicalLink.id, leaf.id], history: { limit: 5, entries: [] } });
+    const mutation = controller.applyLifeLinkChange("preview-delete-root");
+    expect(branchSignal?.aborted).toBe(true);
+    expect(controller.getSnapshot()).toMatchObject({ busy: true, hierarchyExpanding: false });
+    await vi.waitFor(() => expect(reconciling).toBe(true));
+    expect(controller.getSnapshot().lifeLinkChildren).toEqual({});
+    const reads = api.listLifeLinks.mock.calls.length;
+    await controller.expandHierarchy();
+    expect(api.listLifeLinks).toHaveBeenCalledTimes(reads);
+    expect(controller.getSnapshot().hierarchyExpanding).toBe(false);
+    // The old request ignores cancellation and finishes before the mutation's
+    // refresh can claim a new navigation revision. It must not repopulate cache.
+    staleBranch.resolve(page(rootLifeLink.id));
+    await expansion;
+    expect(controller.getSnapshot().lifeLinkChildren).toEqual({});
+    expect(controller.getSnapshot().expandedLifeLinkIds).not.toContain(nested.id);
+    freshRoots.resolve(remaining);
+    await mutation;
+    expect(controller.getSnapshot()).toMatchObject({ busy: false, hierarchyExpanding: false, lifeLinkChildren: {}, error: "" });
+    expect(controller.getSnapshot().rootLifeLinks.items).toEqual(remaining.lifeLinks);
+    controller.dispose();
+  });
+});
+
 class FakeRoute implements WorkspaceBrowserRoute {
   private listeners = new Set<() => void>();
   readonly pushes: string[] = [];

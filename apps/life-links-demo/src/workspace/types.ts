@@ -272,6 +272,7 @@ export type LifeLinksWorkspaceSnapshot = {
   workspaceMode: "hierarchies" | "collections" | "routines" | "calendar";
   hierarchyParentId: string | null;
   hierarchyParentDetail: LifeLinkDetail | null;
+  hierarchyExpanding: boolean;
   detailsOpen: boolean;
   collections: CollectionRecord[];
   collectionsLoading: boolean;

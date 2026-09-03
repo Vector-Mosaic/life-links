@@ -562,6 +562,8 @@ export interface LifeLinksWorkspaceActions {
   refresh(): Promise<void>;
   selectLifeLink(input: { lifeLinkId: string; source: "human" | "agent" | "route" | "search" | "scan" }): Promise<void>;
   toggleLifeLinkExpanded(lifeLinkId: string): Promise<void>;
+  expandHierarchy(): Promise<void>;
+  collapseHierarchy(): void;
   loadMoreLifeLinks(parentId: string | null): Promise<void>;
   createLifeLink(input: CreateLifeLinkInput): Promise<void>;
   moveLifeLink(lifeLinkId: string, parentId: string | null): Promise<void>;
@@ -625,6 +627,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private lifecycle = 0;
   private navigationRevision = 0;
   private ownerRevision = 0;
+  private hierarchyExpansion: { abort: AbortController; ownerRevision: number; navigation: number; parentId: string | null } | null = null;
   private routineWorkspaceLoadRevision = 0;
   private routineGroupListRevision = 0;
   private routineActivityListRevision = 0;
@@ -2788,6 +2791,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   dispose() {
+    this.cancelHierarchyExpansion();
     this.cancelRecordSearch();
     this.invalidateWorkspaceAgentChanges();
     this.update({ agentWorkspaceChangeConfirmation: null });
@@ -3332,6 +3336,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async toggleLifeLinkExpanded(lifeLinkId: string) {
+    this.cancelHierarchyExpansion();
     if (this.snapshot.expandedLifeLinkIds.includes(lifeLinkId)) {
       this.update((current) => ({
         expandedLifeLinkIds: current.expandedLifeLinkIds.filter((id) => id !== lifeLinkId)
@@ -3346,8 +3351,83 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async loadMoreLifeLinks(parentId: string | null) {
+    this.cancelHierarchyExpansion();
     const branch = parentId ? this.snapshot.lifeLinkChildren[parentId] : this.snapshot.rootLifeLinks;
     await this.loadLifeLinkBranch(parentId, Boolean(branch?.loaded));
+  }
+
+  async expandHierarchy(): Promise<void> {
+    if (this.hierarchyExpansion || !this.active || !this.snapshot.currentUser || this.snapshot.guestView || this.snapshot.busy ||
+        this.snapshot.workspaceMode !== "hierarchies" || this.snapshot.activeView !== "workspace" || this.snapshot.routeQrId) return;
+    const operation = { abort: new AbortController(), ownerRevision: this.ownerRevision,
+      navigation: this.navigationRevision, parentId: this.snapshot.hierarchyParentId };
+    this.hierarchyExpansion = operation;
+    const current = () => this.hierarchyExpansion === operation && !operation.abort.signal.aborted &&
+      this.active && operation.ownerRevision === this.ownerRevision && operation.navigation === this.navigationRevision;
+    this.update({ hierarchyExpanding: true, error: "" });
+    const pending: Array<string | null> = [operation.parentId];
+    const visited = new Set<string | null>();
+    try {
+      for (let index = 0; index < pending.length && current(); index += 1) {
+        const parentId = pending[index];
+        if (visited.has(parentId)) throw new Error("The hierarchy changed while expanding. Refresh and try again.");
+        visited.add(parentId);
+        const branch = () => parentId === null ? this.snapshot.rootLifeLinks : this.snapshot.lifeLinkChildren[parentId];
+        if (branch()?.loading) throw new Error("A hierarchy branch is still loading. Try Expand all again when it finishes.");
+        if (branch()?.loaded && branch()?.truncated && !branch()?.nextCursor) {
+          await this.loadLifeLinkBranch(parentId, false, true, { signal: operation.abort.signal, isCurrent: current });
+        }
+        const cursors = new Set<string>();
+        while (current() && (!branch()?.loaded || branch()?.nextCursor)) {
+          const next = branch();
+          const cursor = next?.loaded ? next.nextCursor : null;
+          if (cursor && cursors.has(cursor)) throw new Error("A hierarchy page repeated. Refresh and try again.");
+          if (cursor) cursors.add(cursor);
+          await this.loadLifeLinkBranch(parentId, Boolean(next?.loaded), true, { signal: operation.abort.signal, isCurrent: current });
+        }
+        if (!current()) return;
+        if (branch()?.truncated) throw new Error("The server returned an incomplete hierarchy without a continuation cursor.");
+        for (const item of branch()?.items ?? []) {
+          const cached = this.snapshot.lifeLinkChildren[item.id];
+          if (item.browsingRole !== "container" || (item.childCount === 0 && !cached?.items.length && !cached?.nextCursor)) continue;
+          if (visited.has(item.id)) throw new Error("The hierarchy changed while expanding. Refresh and try again.");
+          this.update((snapshot) => ({ expandedLifeLinkIds: mergeIds(snapshot.expandedLifeLinkIds, [item.id]) }));
+          pending.push(item.id);
+        }
+        // Yield between branches so a large cached tree still permits Collapse or navigation.
+        if (index + 1 < pending.length) await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      }
+    } catch (error) {
+      if (current()) this.update({ error: `Some hierarchy folders could not be expanded: ${messageFromError(error)}` });
+    } finally {
+      if (this.hierarchyExpansion === operation) {
+        this.hierarchyExpansion = null;
+        this.update({ hierarchyExpanding: false });
+      }
+    }
+  }
+
+  collapseHierarchy(): void {
+    this.cancelHierarchyExpansion();
+    if (this.snapshot.workspaceMode !== "hierarchies") return;
+    const parentId = this.snapshot.hierarchyParentId;
+    const pending = [...(parentId === null ? this.snapshot.rootLifeLinks.items : this.snapshot.lifeLinkChildren[parentId]?.items ?? [])];
+    const descendants = new Set<string>();
+    for (let index = 0; index < pending.length; index += 1) {
+      const item = pending[index];
+      if (item.id === parentId || descendants.has(item.id)) continue;
+      descendants.add(item.id);
+      pending.push(...(this.snapshot.lifeLinkChildren[item.id]?.items ?? []));
+    }
+    this.update((snapshot) => ({ expandedLifeLinkIds: snapshot.expandedLifeLinkIds.filter((id) => !descendants.has(id)) }));
+  }
+
+  private cancelHierarchyExpansion() {
+    const operation = this.hierarchyExpansion;
+    if (!operation) return;
+    this.hierarchyExpansion = null;
+    operation.abort.abort();
+    this.update({ hierarchyExpanding: false });
   }
 
   async createLifeLink(input: CreateLifeLinkInput & { id?: string }, options: WorkspaceCommandOptions = {}) {
@@ -4989,32 +5069,37 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       detailsOpen: false, publicQrState: null, activeView: "home" });
   }
 
-  private async loadLifeLinkBranch(parentId: string | null, append: boolean, propagateError = false) {
+  private async loadLifeLinkBranch(parentId: string | null, append: boolean, propagateError = false,
+    options: { signal?: AbortSignal; isCurrent?: () => boolean } = {}) {
     const ownerRevision = this.ownerRevision;
+    const current = () => ownerRevision === this.ownerRevision && !options.signal?.aborted && (options.isCurrent?.() ?? true);
+    if (!current()) return;
     const currentBranch = parentId ? this.snapshot.lifeLinkChildren[parentId] : this.snapshot.rootLifeLinks;
     if (append && !currentBranch?.nextCursor) {
       return;
     }
-    this.setBranch(parentId, {
+    const loadingBranch = {
       ...(currentBranch ?? emptyLifeLinkBranch()),
       loading: true
-    });
+    };
+    this.setBranch(parentId, loadingBranch);
     try {
       const result = await this.api.listLifeLinks({
         parentId,
         cursor: append ? currentBranch?.nextCursor : null,
-        limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT
+        limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT,
+        ...(options.signal ? { signal: options.signal } : {})
       });
-      if (ownerRevision !== this.ownerRevision) return;
+      if (!current()) return;
       const latest = parentId ? this.snapshot.lifeLinkChildren[parentId] : this.snapshot.rootLifeLinks;
       const preserveKnownPath = !append && !currentBranch?.loaded && Boolean(currentBranch?.items.length);
       const nextBranch = branchFromPage(result, append ? latest : undefined);
       this.setBranch(parentId, preserveKnownPath
         ? { ...nextBranch, items: mergeSummaries(nextBranch.items, latest.items) }
         : nextBranch);
-      await this.loadHierarchyMemberships(result.lifeLinks);
+      await this.loadHierarchyMemberships(result.lifeLinks, current, options.signal);
     } catch (branchError) {
-      if (ownerRevision !== this.ownerRevision) return;
+      if (!current()) return;
       this.setBranch(parentId, {
         ...(parentId ? this.snapshot.lifeLinkChildren[parentId] : this.snapshot.rootLifeLinks),
         loading: false
@@ -5023,6 +5108,9 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       if (propagateError) {
         throw branchError;
       }
+    } finally {
+      const latest = parentId === null ? this.snapshot.rootLifeLinks : this.snapshot.lifeLinkChildren[parentId];
+      if (latest === loadingBranch) this.setBranch(parentId, { ...latest, loading: false });
     }
   }
 
@@ -5135,6 +5223,14 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const ownerChanged = next.currentUser !== undefined && next.currentUser?.id !== this.snapshot.currentUser?.id;
     const previous = this.snapshot;
     let updated = { ...previous, ...next };
+    const expansion = this.hierarchyExpansion;
+    if (expansion && (ownerChanged || expansion.ownerRevision !== this.ownerRevision || expansion.navigation !== this.navigationRevision ||
+        updated.workspaceMode !== "hierarchies" || updated.activeView !== "workspace" || updated.guestView || updated.routeQrId || updated.busy ||
+        updated.hierarchyParentId !== expansion.parentId)) {
+      this.hierarchyExpansion = null;
+      expansion.abort.abort();
+      updated.hierarchyExpanding = false;
+    }
     if (ownerChanged || (previous.activeView === "search" && updated.activeView !== "search")) {
       ++this.recordSearchRevision;
       for (const request of this.recordSearchRequests.values()) request.abort();
@@ -5200,7 +5296,7 @@ function emptyFieldLedgerState() {
     presentation: emptyWorkspacePresentation(), middleCollapsed: false,
     changeHistory: { limit: 5 as const, entries: [] }, agentChangeConfirmation: null, agentWorkspaceChangeConfirmation: null,
     agentCalendarDeletionConfirmation: null,
-    workspaceMode: "hierarchies" as const, hierarchyParentId: null, hierarchyParentDetail: null,
+    workspaceMode: "hierarchies" as const, hierarchyParentId: null, hierarchyParentDetail: null, hierarchyExpanding: false,
     detailsOpen: false, collections: [], collectionsLoading: false, collectionsComplete: false,
     selectedCollection: null, collectionMembers: [], collectionSections: [], collectionMemberMemberships: {},
     collectionMemberDetails: {}, collectionLoading: false, collectionComplete: false,

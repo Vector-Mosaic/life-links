@@ -1,10 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Boxes, Box, Search, ScanLine, Pin, PinOff, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, ChevronRight, ChevronDown, FolderPlus, PackagePlus, Settings, HelpCircle, LogOut, Folder, Package, Pencil, Rows3, ListPlus, ChevronLeft, Menu, Download, QrCode, Trash2, Move, Undo2, Repeat2, CalendarDays } from "lucide-react";
-import { ATTACHMENT_FILE_ACCEPT, MAX_BATCH_COUNT, deriveLifeLinkPhysicalLocator, formatRecordedLifeLinkPath, type LifeLinkRecord, type LifeLinkSummary } from "@life-links/core";
+import { ATTACHMENT_FILE_ACCEPT, MAX_BATCH_COUNT, deriveLifeLinkPhysicalLocator, formatRecordedLifeLinkPath, type LifeLinkRecord } from "@life-links/core";
 import { LifeLinksWorkspaceController } from "../workspace/controller";
 import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
 import { LifeLinkDetail } from "./LifeLinkDetail";
 import { PathBreadcrumbs } from "./PathBreadcrumbs";
+import { buildVisibleLifeLinkRows, type VisibleLifeLinkTreeRow } from "./LifeLinkTree";
 import { ActionMenu, Dialog, LifeLinksGlyph, type MenuItem } from "./FieldLedgerPrimitives";
 import { CHANGE_HISTORY_WARNING, ChangePreviewDialog, FormDialog, LifeLinkChangeDialog, QrDialog, SectionAssignmentDialog, type WorkspaceDialog } from "./FieldLedgerDialogs";
 import { RoutineDialogHost } from "./RoutineDialogs";
@@ -59,8 +60,13 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
   const collectionsMode = workspaceMode === "collections";
   const routinesMode = workspaceMode === "routines";
   const calendarMode = workspaceMode === "calendar";
+  const hierarchyMode = dataMode && !collectionsMode && !routinesMode && !calendarMode;
   const parent = hierarchyParentDetail?.lifeLink;
   const branch = snapshot.hierarchyParentId ? snapshot.lifeLinkChildren[snapshot.hierarchyParentId] : snapshot.rootLifeLinks;
+  const hierarchyRows = hierarchyMode ? buildVisibleLifeLinkRows(branch?.items ?? [], snapshot.lifeLinkChildren, snapshot.expandedLifeLinkIds) : [];
+  const hierarchyExpanded = snapshot.hierarchyExpanding || hierarchyRows.some((row) => row.kind === "life-link" && row.expanded && row.lifeLink.browsingRole === "container");
+  const canToggleHierarchy = hierarchyExpanded || Boolean(branch?.nextCursor) || Boolean(branch?.items.some((item) => item.browsingRole === "container" &&
+    (item.childCount > 0 || snapshot.lifeLinkChildren[item.id]?.items.length || snapshot.lifeLinkChildren[item.id]?.nextCursor)));
   const title = searchMode ? "Search" : scanMode ? "Scan a QR" : calendarMode ? "My Calendar" : routinesMode ? "My Routines" : collectionsMode ? selectedCollection?.title ?? "My Collections" : parent?.title ?? "My Life Links";
   const panelName = searchMode ? "Search" : scanMode ? "Scan" : calendarMode ? "Calendar" : routinesMode ? "Routines" : collectionsMode ? "Collections" : "Hierarchies";
   const sectionGroupIds = [...snapshot.collectionSections.map((section) => section.id), "__unsectioned"];
@@ -210,28 +216,29 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
       {!collapsed && <div className="ll-group-members">{members.map((member) => renderMember(member, sectionId ?? null))}{!members.length && <p className="ll-empty-small">No items in this section.</p>}</div>}
     </section>;
   }
-  function renderHierarchyRow(item: LifeLinkSummary) {
+  function renderHierarchyRow(row: VisibleLifeLinkTreeRow) {
+    // Reuse the iterative hierarchy projection, including its cycle protection.
+    // Indentation stays bounded so a deep hierarchy remains usable on a phone.
+    const style = { marginInlineStart: `${Math.min(row.depth, 8) * 18}px` };
+    if (row.kind === "load-more") return <div className="ll-hierarchy-node ll-hierarchy-continuation" key={`more:${row.parentId}`} style={style}>
+      {row.loading ? <p className="ll-muted" role="status">Loading folder…</p> : row.canLoad
+        ? <button className="ll-text-button" disabled={snapshot.hierarchyExpanding} onClick={() => void controller.loadMoreLifeLinks(row.parentId)}>{row.loaded ? "Load more Life Links" : "Retry loading folder"}</button>
+        : <p className="ll-inline-warning">This folder could not be fully loaded.</p>}
+    </div>;
+    const { lifeLink: item, expanded, branch: children } = row;
     const memberships = snapshot.lifeLinkMemberships[item.id] ?? [];
-    const expanded = editingHierarchy && snapshot.expandedLifeLinkIds.includes(item.id);
-    const children = snapshot.lifeLinkChildren[item.id];
-    return <div className="ll-hierarchy-node" key={item.id}><div className={`ll-hierarchy-row ${editingHierarchy ? selectedIds.includes(item.id) ? "selected" : "" : item.id === snapshot.selectedLifeLinkId ? "selected" : ""}`}>
+    return <div className="ll-hierarchy-node" key={item.id} style={style}><div className={`ll-hierarchy-row ${editingHierarchy ? selectedIds.includes(item.id) ? "selected" : "" : item.id === snapshot.selectedLifeLinkId ? "selected" : ""}`}>
       {editingHierarchy && <input type="checkbox" className="ll-selection-dot" aria-label={`Select ${item.title}`} checked={selectedIds.includes(item.id)} disabled={busy} onChange={() => selectForChange(item.id)} />}
-      {editingHierarchy && item.browsingRole === "container" && <button className="ll-icon-button ll-tree-disclosure" aria-label={`${expanded ? "Collapse" : "Expand"} folder ${item.title}`} aria-expanded={expanded} disabled={busy} onClick={() => void controller.toggleLifeLinkExpanded(item.id)}>{expanded ? <ChevronDown size={17} /> : <ChevronRight size={17} />}</button>}
+      {item.browsingRole === "container" && <button className="ll-icon-button ll-tree-disclosure" aria-label={`${expanded ? "Collapse" : "Expand"} folder ${item.title}`} aria-expanded={expanded} disabled={busy} onClick={() => void controller.toggleLifeLinkExpanded(item.id)}>{expanded ? <ChevronDown size={17} /> : <ChevronRight size={17} />}</button>}
       <button className="ll-row-main" data-life-link-id={item.id} disabled={editingHierarchy && busy} onClick={() => editingHierarchy ? selectForChange(item.id) : void controller.activateLifeLink(item.id)} aria-current={!editingHierarchy && item.id === snapshot.selectedLifeLinkId ? "true" : undefined}>
-        {item.browsingRole === "container" ? editingHierarchy ? <Folder size={18} /> : <ChevronRight size={18} /> : <Package size={18} />}
+        {item.browsingRole === "container" ? <Folder size={18} /> : <Package size={18} />}
         <span className="ll-row-copy"><strong>{item.title}</strong><small>{item.browsingRole === "container" ? item.childCount ? `${item.childCount} direct Life Link${item.childCount === 1 ? "" : "s"}` : "No Life Links inside yet" : item.qrId ?? "Item"}</small></span>
       </button>
       {memberships[0] && <button className="ll-chip ll-blue" disabled={editingHierarchy} onClick={() => void controller.openCollection(memberships[0].collection.id, item.id)} title={memberships.map((entry) => entry.collection.title).join(", ")}>{memberships[0].collection.title}{memberships.length > 1 ? ` +${memberships.length - 1}` : ""}</button>}
       {!snapshot.lifeLinkMembershipsComplete[item.id] && <small className="ll-membership-loading" title="Collection memberships are not fully loaded">Collections pending</small>}
       {item.qrId && <QrCode size={17} className="ll-qr-indicator" aria-label="QR attached" />}
-    </div>{expanded && <div className="ll-edit-children">
-      {children?.items.map(renderHierarchyRow)}
-      {children?.loading && <p className="ll-muted" role="status">Loading folder…</p>}
-      {children?.loaded && !children.items.length && <p className="ll-muted">This folder is empty.</p>}
-      {!children?.loaded && !children?.loading && <button className="ll-text-button" onClick={() => void controller.loadMoreLifeLinks(item.id)}>Retry loading folder</button>}
-      {children?.nextCursor && <button className="ll-text-button" onClick={() => void controller.loadMoreLifeLinks(item.id)}>Load more Life Links</button>}
-      {children?.truncated && !children.nextCursor && <p className="ll-inline-warning">This folder could not be fully loaded.</p>}
-    </div>}</div>;
+    </div>{expanded && children?.loaded && !children.items.length && !children.loading && <p className="ll-muted ll-hierarchy-continuation">This folder is empty.</p>}
+    {expanded && !children && <button className="ll-text-button" onClick={() => void controller.loadMoreLifeLinks(item.id)}>Retry loading folder</button>}</div>;
   }
   const locationGroups = new Map<string, { title: string; members: LifeLinkRecord[] }>();
   for (const member of snapshot.collectionMembers) {
@@ -295,7 +302,13 @@ export function OwnerWorkspace({ controller, snapshot, agentPanel, scannerPanel,
           {!routinesMode && !calendarMode && <div className="ll-title-row"><div><h1 ref={headingRef} tabIndex={-1}>{title}</h1><p className="ll-subtitle">{dataMode ? collectionsMode ? selectedCollection ? `${snapshot.collectionMembers.length} unique members · ${snapshot.collectionSections.length} sections` : `${snapshot.collections.length} Collections` : `${branch?.items.length ?? 0}${branch?.nextCursor ? "+" : ""} direct Life Links` : searchMode ? "Search across your LifeLinks workspace" : "Open a QR from its code or URL"}</p></div>
              {dataMode && <ActionMenu key={snapshot.routePathname} label={`Add to ${title}`} className="ll-icon-button ll-primary ll-main-plus" items={createActions}><Plus size={24} /></ActionMenu>}
           </div>}
-          {dataMode && !collectionsMode && !routinesMode && !calendarMode && <div className="ll-record-list">{branch?.items.map(renderHierarchyRow)}{branch?.loading && <p className="ll-muted">Loading Life Links…</p>}{branch?.loaded && !branch.items.length && <p className="ll-empty">No Life Links here yet. Use + to create a folder or item.</p>}{branch?.nextCursor && <button className="ll-text-button ll-load-more" onClick={() => void controller.loadMoreLifeLinks(snapshot.hierarchyParentId)}>Load more Life Links</button>}{branch?.truncated && !branch.nextCursor && <p className="ll-inline-warning">This layer could not be fully loaded.</p>}</div>}
+          {hierarchyMode && <>
+            <div className="ll-hierarchy-toolbar">
+              {snapshot.hierarchyExpanding && <span className="ll-muted" role="status">Expanding folders…</span>}
+              <button type="button" className="ll-text-button ll-section-toggle-all" aria-label={hierarchyExpanded ? "Collapse all hierarchy folders" : "Expand all hierarchy folders"} aria-expanded={hierarchyExpanded} aria-controls="life-links-hierarchy-list" disabled={!canToggleHierarchy || (busy && !snapshot.hierarchyExpanding)} onClick={() => hierarchyExpanded ? controller.collapseHierarchy() : void controller.expandHierarchy()}>{hierarchyExpanded ? "Collapse all" : "Expand all"}</button>
+            </div>
+            <div id="life-links-hierarchy-list" className="ll-record-list">{hierarchyRows.map(renderHierarchyRow)}{branch?.loading && <p className="ll-muted">Loading Life Links…</p>}{branch?.loaded && !branch.items.length && <p className="ll-empty">No Life Links here yet. Use + to create a folder or item.</p>}{branch?.nextCursor && <button className="ll-text-button ll-load-more" disabled={snapshot.hierarchyExpanding} onClick={() => void controller.loadMoreLifeLinks(snapshot.hierarchyParentId)}>Load more Life Links</button>}{branch?.truncated && !branch.nextCursor && <p className="ll-inline-warning">This layer could not be fully loaded.</p>}</div>
+          </>}
           {dataMode && collectionsMode && !selectedCollection && <div className="ll-record-list">{!snapshot.collectionLoading && snapshot.collections.map((collection) => <div className="ll-member-row" key={collection.id}>
             {editingCollections && <input type="checkbox" className="ll-selection-dot" aria-label={`Select ${collection.title}`} checked={collectionSelection.collectionIds.includes(collection.id)} disabled={busy} onChange={() => toggleCollectionSelection("collectionIds", collection.id)} />}
             <button className="ll-collection-index-row ll-row-main" disabled={busy} onClick={() => editingCollections ? toggleCollectionSelection("collectionIds", collection.id) : void controller.openCollection(collection.id)}><Boxes size={24} /><span><strong>{collection.title}</strong><small>{collection.purpose}</small></span><ChevronRight size={18} /></button>
