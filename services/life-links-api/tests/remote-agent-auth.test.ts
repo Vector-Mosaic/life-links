@@ -110,6 +110,63 @@ async function fixture(env: NodeJS.ProcessEnv = {}, integrated = false) {
 }
 
 describe("Life Links remote OAuth authorization", () => {
+  it("reports only the signed-in owner's current remote authorizations", async () => {
+    const test = await fixture({}, true);
+    try {
+      const anonymous = await request(test.app).get("/api/remote-agent-connections");
+      expect(anonymous.status).toBe(401);
+      expect(anonymous.body).toEqual({ error: "auth_required" });
+
+      const ownerToken = createSessionToken();
+      await test.store.createSession(test.owner.id, hashSessionToken(ownerToken, test.config.sessionSecret),
+        new Date(Date.now() + 60_000).toISOString());
+      const ownerStatus = () => request(test.app).get("/api/remote-agent-connections")
+        .set("Cookie", `life_links_session=${ownerToken}`);
+      const initial = await ownerStatus();
+      expect(initial.status).toBe(200);
+      expect(initial.headers["cache-control"]).toBe("private, no-store");
+      expect(initial.body).toEqual({ available: true, authorizedCount: 0 });
+
+      const registration = await test.register({ client_name: "Status synthetic agent" });
+      const flow = await test.loginConsent(registration.body.client_id);
+      const token = await test.exchange(registration.body.client_id, flow.code, flow.verifier);
+      expect(token.status).toBe(200);
+      expect((await ownerStatus()).body).toEqual({ available: true, authorizedCount: 1 });
+
+      const foreign = (await test.store.getUserById(DEMO_GUEST_ID))!;
+      const foreignToken = createSessionToken();
+      await test.store.createSession(foreign.id, hashSessionToken(foreignToken, test.config.sessionSecret),
+        new Date(Date.now() + 60_000).toISOString());
+      const foreignStatus = await request(test.app).get("/api/remote-agent-connections")
+        .set("Cookie", `life_links_session=${foreignToken}`);
+      expect(foreignStatus.status).toBe(200);
+      expect(foreignStatus.body).toEqual({ available: true, authorizedCount: 0 });
+
+      const grant = (await test.state.listOwned("Grant", test.owner.id)).find(candidate =>
+        String(candidate.resources?.[test.auth.resource] ?? "").includes("records:read"));
+      expect(grant?.jti).toEqual(expect.any(String));
+      await test.state.revokeGrant(grant!.jti);
+      expect((await ownerStatus()).body).toEqual({ available: true, authorizedCount: 0 });
+    } finally { await test.app.locals.closeRemoteAgent(); }
+  });
+
+  it("does not report identity-only OAuth grants as Remote MCP authorizations", async () => {
+    const test = await fixture({}, true);
+    try {
+      const ownerToken = createSessionToken();
+      await test.store.createSession(test.owner.id, hashSessionToken(ownerToken, test.config.sessionSecret),
+        new Date(Date.now() + 60_000).toISOString());
+      const registration = await test.register({ client_name: "Identity-only synthetic client" });
+      await test.loginConsent(registration.body.client_id, { scope: "openid", resource: undefined });
+      expect(await test.state.listOwned("Grant", test.owner.id)).toHaveLength(1);
+
+      const status = await request(test.app).get("/api/remote-agent-connections")
+        .set("Cookie", `life_links_session=${ownerToken}`);
+      expect(status.status).toBe(200);
+      expect(status.body).toEqual({ available: true, authorizedCount: 0 });
+    } finally { await test.app.locals.closeRemoteAgent(); }
+  });
+
   it.each([false, true])("requires explicit login and consent for a newly signed-in private browser owner (existing client %s)", async sameClient => {
     const test = await fixture(JUDGE_REGISTRATION_ENV, true);
     try {

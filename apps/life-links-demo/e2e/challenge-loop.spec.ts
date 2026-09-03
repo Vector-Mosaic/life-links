@@ -159,13 +159,13 @@ test.describe("competition physical-context loop", () => {
     const geometry = await page.locator(".ll-middle").evaluate((element) => ({ width: element.clientWidth, scroll: element.scrollWidth }));
     expect(geometry.scroll).toBeLessThanOrEqual(geometry.width + 1);
     await openAgentDialog(page);
-    const disconnect = page.getByRole("button", { name: "Disconnect Agent", exact: true });
+    const disconnect = page.getByRole("button", { name: "Disable Browser WebMCP", exact: true });
     if (await disconnect.isVisible()) {
       await disconnect.click();
       await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
     }
     const registrationsBefore = (await controlledHostSnapshot(page)).registrationNames.length;
-    await page.getByRole("button", { name: "Connect Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Enable Browser WebMCP", exact: true }).click();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(EXPECTED_AGENT_TOOLS);
     expect((await controlledHostSnapshot(page)).registrationNames.slice(registrationsBefore).sort()).toEqual(EXPECTED_AGENT_TOOLS);
     await closeAgentDialog(page);
@@ -190,7 +190,7 @@ test.describe("competition physical-context loop", () => {
     await page.getByRole("button", { name: "Check QR", exact: true }).click();
     await expect(page.locator(".ll-scan-screen [role=status]")).toContainText("Match found");
     await openAgentDialog(page);
-    await page.getByRole("button", { name: "Disconnect Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Disable Browser WebMCP", exact: true }).click();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
     expect((await controlledHostSnapshot(page)).abortedNames.sort()).toEqual(EXPECTED_AGENT_TOOLS);
     await expect(invokeControlledTool(page, "inspect_current_life_link", {})).rejects.toThrow("Tool inspect_current_life_link is not active.");
@@ -274,7 +274,7 @@ function assertNoHierarchyDisclosure(value: unknown): void {
 async function assertPublicQrHasNoHierarchy(page: import("@playwright/test").Page, title: string): Promise<void> {
   await expect(page.locator(".public-content").getByRole("heading", { name: title })).toBeVisible();
   await expect(page.locator(".life-link-breadcrumbs")).toHaveCount(0);
-  await expect(page.getByRole("heading", { name: "Agent Connection" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Agent connections" })).toHaveCount(0);
   for (const ancestorTitle of [COMPETITION_FAMILY_ADVENTURE_GEAR_TITLE, COMPETITION_BASEMENT_GEAR_STORAGE_TITLE]) {
     await expect(page.getByText(ancestorTitle, { exact: true })).toHaveCount(0);
   }

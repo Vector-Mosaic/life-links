@@ -2826,6 +2826,42 @@ textarea {
     var(--surface);
 }
 
+.agent-connection-card {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+}
+
+.agent-access-subheading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.agent-access-subheading h4,
+.agent-access-subheading p,
+.agent-connection-card > p {
+  margin: 0;
+}
+
+.agent-access-subheading h4 {
+  color: var(--ink);
+  font-size: 1rem;
+  letter-spacing: -0.01em;
+}
+
+.agent-access-subheading p,
+.agent-connection-card > p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 .agent-activity-panel {
   background: color-mix(in srgb, var(--soft) 72%, var(--surface));
 }
@@ -3570,10 +3606,15 @@ textarea {
 .ll-brand > svg { width: 20px; height: 20px; }
 .ll-login-brand { margin: 0; color: var(--ll-ink); font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; font-size: 28px; line-height: 1.3; }
 .ll-login-brand > svg { width: 24px; height: 24px; }
-.ll-agent-status { border: 0; background: var(--ll-canvas); border-radius: 24px; min-height: 38px; padding: 8px 15px; font-weight: 550 !important; display: flex; align-items: center; gap: 9px; }
-.ll-agent-status.connected { background: var(--ll-selected); }
-.ll-agent-status > span { width: 8px; height: 8px; border-radius: 50%; background: var(--ll-muted); }
-.ll-agent-status.connected > span { background: var(--ll-accent); }
+.ll-agent-status { border: 1px solid var(--ll-line); background: var(--ll-canvas); border-radius: 24px; min-height: 40px; padding: 6px 12px; display: flex; align-items: center; gap: 10px; }
+.ll-agent-status:hover { background: var(--ll-line-soft); }
+.ll-agent-status-heading { font-weight: 650; }
+.ll-agent-status-item { display: inline-flex; align-items: center; gap: 4px; color: var(--ll-muted); font-size: 12px; white-space: nowrap; }
+.ll-agent-status-item strong { color: var(--ll-ink); font-weight: 650; }
+.ll-agent-status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--ll-muted); }
+.ll-agent-status-item.connected .ll-agent-status-dot { background: var(--ll-accent); }
+.ll-agent-status-item.unavailable .ll-agent-status-dot { background: var(--ll-copper); }
+.ll-agent-status-short { display: none; }
 .ll-layout { --nav-width: 60px; --middle-width: minmax(290px, 1fr); --details-width: minmax(300px, .79fr); flex: 1; min-height: 0; display: grid; grid-template-columns: var(--nav-width) var(--middle-width) var(--details-width); position: relative; }
 .ll-nav-pinned { --nav-width: 220px; }
 .ll-middle-collapsed { --middle-width: 46px; --details-width: minmax(0, 1fr); }
@@ -4140,7 +4181,11 @@ textarea {
   .ll-mobile-nav-toggle { display: inline-flex; width: 32px; flex-basis: 32px; }
   .ll-topbar .ll-brand { margin-right: auto; font-size: 17px; }
   .ll-topbar .ll-brand > svg { width: 18px; }
-  .ll-agent-status { font-size: 12px !important; padding: 6px 10px; min-height: 33px; gap: 6px; }
+  .ll-agent-status { padding: 5px 8px; min-height: 36px; gap: 7px; }
+  .ll-agent-status-heading, .ll-agent-status-full { display: none; }
+  .ll-agent-status-short { display: inline; }
+  .ll-agent-status-item { gap: 3px; font-size: 10px; }
+  .ll-agent-status-dot { width: 6px; height: 6px; flex-basis: 6px; }
   .ll-layout { display: block; }
   .ll-sidebar, .ll-nav-open .ll-sidebar, .ll-nav-pinned .ll-sidebar { display: none; }
   .ll-mobile-navigation-open .ll-sidebar { display: flex; position: absolute; top: 0; bottom: 0; left: 0; width: 250px; z-index: 100; }
@@ -4167,6 +4212,10 @@ textarea {
   .ll-dialog-backdrop { padding: 12px; }
   .ll-dialog { max-height: calc(100dvh - 24px); }
   .ll-dialog-body { padding: 17px; }
+}
+@media (max-width: 350px) and (hover: none), (max-width: 350px) and (pointer: coarse) {
+  .ll-topbar .ll-brand > svg { display: none; }
+  .ll-agent-status { gap: 5px; padding-left: 6px; padding-right: 6px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

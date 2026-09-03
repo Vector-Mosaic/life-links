@@ -154,6 +154,15 @@ export class RemoteAgentAuth {
   private async owner(request:Request){
     return browserSessionOwner(request.headers.cookie,this.store,this.config);
   }
+  private ownerGrants(ownerId:string){
+    return this.state.listOwned("Grant",ownerId);
+  }
+  async ownerAuthorizationCount(ownerId:string):Promise<number>{
+    const supportedScopes=new Set<string>(REMOTE_AGENT_SCOPES);
+    return (await this.ownerGrants(ownerId)).filter(grant=>
+      String(grant.resources?.[this.resource]??"").split(/\s+/).some(scope=>supportedScopes.has(scope))
+    ).length;
+  }
   private csrf(id:string):string{return createHmac("sha256",this.config.sessionSecret).update(`remote-consent:${id}`).digest("base64url");}
   private checkPost(request:Request,id:string){
     if(request.get("origin")!==new URL(this.config.qrBaseUrl).origin)throw new RemoteAgentAccessError("invalid_origin");
@@ -242,9 +251,9 @@ export class RemoteAgentAuth {
     }));
     this.router.get("/agent-connections",handler(async(req,res)=>{
       const owner=await this.owner(req);if(!owner){res.status(401).type("html").send(page("Sign in to Life Links",'<p>Open Life Links and sign in to manage agent connections.</p><a href="/">Open Life Links</a>'));return;}
-      const grants=await this.state.listOwned("Grant",owner.id);
-      const cards=await Promise.all(grants.map(async g=>{const client=await this.provider.Client.find(g.clientId);return `<section><h2>${html(client?.clientName??"Agent connection")}</h2><p>${html(g.resources?.[this.resource]??"")}</p><form method="post" action="/agent-connections/revoke"><input type="hidden" name="grantId" value="${html(g.jti)}"><input type="hidden" name="csrf" value="${this.csrf(`revoke:${owner.id}:${g.jti}`)}"><button>Disconnect agent</button></form></section>`;}));
-      res.type("html").send(page("Connected agents",`<p>Remote agents can use Life Links without an open website tab. Disconnecting revokes that client's access and refresh tokens; your records are preserved.</p>${cards.join("")||"<p>No remote agents connected.</p>"}<a href="/">Back to Life Links</a>`));
+      const grants=await this.ownerGrants(owner.id);
+      const cards=await Promise.all(grants.map(async g=>{const client=await this.provider.Client.find(g.clientId);return `<section><h2>${html(client?.clientName??"Remote agent")}</h2><p>${html(g.resources?.[this.resource]??"")}</p><form method="post" action="/agent-connections/revoke"><input type="hidden" name="grantId" value="${html(g.jti)}"><input type="hidden" name="csrf" value="${this.csrf(`revoke:${owner.id}:${g.jti}`)}"><button>Revoke authorization</button></form></section>`;}));
+      res.type("html").send(page("Remote MCP authorizations",`<p>A Remote MCP authorization may let its client use LifeLinks without an open website tab. Authorization does not indicate that a client is currently online. Revoking one authorization invalidates tokens issued under that authorization; your records and any separate authorizations are preserved.</p>${cards.join("")||"<p>No remote authorizations.</p>"}<a href="/">Back to LifeLinks</a>`));
     }));
     this.router.post("/agent-connections/revoke",express.urlencoded({extended:false,limit:"4kb"}),handler(async(req,res)=>{
       const owner=await this.owner(req);if(!owner || typeof req.body.grantId!=="string")throw new RemoteAgentAccessError();

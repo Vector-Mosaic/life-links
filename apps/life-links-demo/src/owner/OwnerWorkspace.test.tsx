@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCanonicalLifeLink, summarizeLifeLink, type CollectionRecord, type CollectionSectionRecord, type LifeLinkSummary } from "@life-links/core";
 import { LifeLinksWorkspaceController } from "../workspace/controller";
 import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
+import type { RemoteAgentAuthorizationView } from "../agent/AgentAccessPanel";
 import { OwnerWorkspace } from "./OwnerWorkspace";
 
 const timestamp = "2026-09-02T12:00:00.000Z";
@@ -16,6 +17,8 @@ describe("Collection owner workspace", () => {
   let root: Root; let host: HTMLDivElement; let snapshot: LifeLinksWorkspaceSnapshot;
   let controller: LifeLinksWorkspaceController;
   let actions: Record<string, ReturnType<typeof vi.fn>>;
+  let remoteAuthorization: RemoteAgentAuthorizationView;
+  let onOpenAgentConnections: ReturnType<typeof vi.fn>;
   beforeEach(() => {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
@@ -32,13 +35,36 @@ describe("Collection owner workspace", () => {
       loadCalendarClock: vi.fn().mockResolvedValue(undefined), loadCalendarWindow: vi.fn().mockResolvedValue(undefined),
       setCollectionPresentation: vi.fn((id, patch) => { snapshot = { ...snapshot, presentation: { ...snapshot.presentation, collections: { ...snapshot.presentation.collections,
         [id]: { ...(snapshot.presentation.collections[id] ?? { view: "sections", expandedGroups: [] }), ...patch } } } }; render(); }) };
+    remoteAuthorization = { status: "ready", available: true, authorizedCount: 0 };
+    onOpenAgentConnections = vi.fn();
     controller = new Proxy(actions, { get(target, key: string) { return target[key] ??= vi.fn(); } }) as unknown as LifeLinksWorkspaceController;
     host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   });
   afterEach(async () => { await act(async () => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-  function render() { root.render(<OwnerWorkspace controller={controller} snapshot={snapshot} />); }
+  function render() { root.render(<OwnerWorkspace controller={controller} snapshot={snapshot} remoteAuthorization={remoteAuthorization}
+    onOpenAgentConnections={onOpenAgentConnections} agentPanel={<p>Separate Browser WebMCP and Remote MCP settings</p>} />); }
   function button(text: string) { const result = [...document.querySelectorAll<HTMLButtonElement>("button")].find((node) => node.textContent?.trim() === text || node.getAttribute("aria-label") === text); expect(result, text).toBeTruthy(); return result!; }
   async function click(text: string) { await act(async () => button(text).click()); }
+
+  it("shows Browser WebMCP and Remote MCP as separate topbar states and refreshes before opening their dialog", async () => {
+    snapshot = { ...snapshot, agentConnection: { connected: true, connectedAt: timestamp, toolCatalogId: "life-links-search-v4" } };
+    remoteAuthorization = { status: "ready", available: true, authorizedCount: 2 };
+    await act(async () => render());
+
+    const status = button("Agent connections. Browser WebMCP: Enabled. Remote MCP: 2 authorizations.");
+    expect(status.type).toBe("button");
+    expect(status.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(status.textContent).toContain("Agent connections");
+    expect(status.textContent).toContain("Browser WebMCP:");
+    expect(status.textContent).toContain("Enabled");
+    expect(status.textContent).toContain("Remote MCP:");
+    expect(status.textContent).toContain("2 authorizations");
+
+    await act(async () => status.click());
+    expect(onOpenAgentConnections).toHaveBeenCalledOnce();
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Agent connections");
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Separate Browser WebMCP and Remote MCP settings");
+  });
 
   function hierarchyFixture() {
     const folder = createCanonicalLifeLink({ id: "hierarchy-storage", ownerId: collection.ownerId, title: "Storage", browsingRole: "container", createdAt: timestamp });

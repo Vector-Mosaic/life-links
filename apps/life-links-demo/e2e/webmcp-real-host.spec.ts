@@ -29,14 +29,14 @@ test.describe("installed Chrome native WebMCP host", () => {
     await page.getByRole("button", { name: /sign in/i }).click();
     await openAgentDialog(page);
     expect(await nativeHostShape(page)).toEqual({ modelContext: "object", registerTool: "function", getTools: "function", executeTool: "function" });
-    const existingDisconnect = page.getByRole("button", { name: "Disconnect Agent", exact: true });
+    const existingDisconnect = page.getByRole("button", { name: "Disable Browser WebMCP", exact: true });
     if (await existingDisconnect.isVisible()) {
       await existingDisconnect.click();
       await expect.poll(() => nativeToolNames(page)).toEqual([]);
     }
-    await page.getByRole("button", { name: "Connect Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Enable Browser WebMCP", exact: true }).click();
     await expect.poll(() => nativeToolNames(page)).toEqual(EXPECTED_AGENT_TOOLS);
-    await expect(page.getByText("Connected until you disconnect. Life Links tools are available to your agent.")).toBeVisible();
+    await expect(page.locator('[aria-labelledby="browser-webmcp-title"]').getByText("Enabled · active on this page.")).toBeVisible();
     await closeAgentDialog(page);
     await fieldLedgerAgentJourney(page, async (name, input) => {
       const response = await invokeNativeTool(page, name, input);
@@ -64,13 +64,13 @@ test.describe("installed Chrome native WebMCP host", () => {
       (error: unknown) => ({ status: "rejected" as const, message: error instanceof Error ? error.message : String(error) })
     );
     await started;
-    await page.getByRole("button", { name: "Disconnect Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Disable Browser WebMCP", exact: true }).click();
     await expect.poll(() => nativeToolNames(page)).toEqual([]);
     releaseSearch();
     expect(await pending).toMatchObject({ status: "rejected", message: expect.stringContaining("UnknownError") });
     await page.unroute(pattern);
     await expect(page.getByText("No agent activity yet.")).toBeVisible();
-    await page.getByRole("button", { name: "Connect Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Enable Browser WebMCP", exact: true }).click();
     await expect.poll(() => nativeToolNames(page)).toEqual(EXPECTED_AGENT_TOOLS);
     await closeAgentDialog(page);
     await page.getByRole("button", { name: "Account", exact: true }).click();
@@ -80,10 +80,10 @@ test.describe("installed Chrome native WebMCP host", () => {
     await page.getByLabel("Email").fill(DEMO_EMAIL);
     await page.getByLabel("Password").fill(DEMO_PASSWORD);
     await page.getByRole("button", { name: /sign in/i }).click();
-    await expect(page.locator(".ll-agent-status")).toHaveText("Agent connected");
+    await expect(page.locator(".ll-agent-status")).toHaveAttribute("aria-label", /Browser WebMCP: Enabled\./);
     await expect.poll(() => nativeToolNames(page)).toEqual(EXPECTED_AGENT_TOOLS);
     await openAgentDialog(page);
-    await page.getByRole("button", { name: "Disconnect Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Disable Browser WebMCP", exact: true }).click();
     await expect.poll(() => nativeToolNames(page)).toEqual([]);
     await closeAgentDialog(page);
   });

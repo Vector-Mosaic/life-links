@@ -137,6 +137,11 @@ export type ApiAgentConnection = {
 
 export type ApiAgentToolCatalogId = "life-links-page-webmcp-v1" | "life-links-calendar-v2" | "life-links-workspace-v3" | "life-links-search-v4";
 
+export type ApiRemoteAgentConnections = {
+  available: boolean;
+  authorizedCount: number;
+};
+
 export function searchRecords(input: RecordSearchInput, options: { signal?: AbortSignal; actor?: CalendarActor } = {}) {
   const params = new URLSearchParams({ q: input.q, category: input.category });
   if (input.cursor) params.set("cursor", input.cursor);
@@ -285,6 +290,10 @@ export async function getConfig() {
 
 export async function getMe() {
   return apiFetch<ApiSession>("/api/me");
+}
+
+export async function getRemoteAgentConnections() {
+  return apiFetch<ApiRemoteAgentConnections>("/api/remote-agent-connections");
 }
 
 export async function login(email: string, password: string) {

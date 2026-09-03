@@ -110,6 +110,7 @@ const EXPECTED_WEB_CLIENT_OPERATIONS = [
   "DELETE /api/life-links/{lifeLinkId}/media/{mediaId}",
   "DELETE /api/links/{qrId}/media/{mediaId}",
   "DELETE /api/agent-connection",
+  "GET /api/remote-agent-connections",
   "GET /api/config",
   "GET /api/life-links",
   "GET /api/life-links/search",
@@ -557,7 +558,7 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(125);
+    expect(published).toHaveLength(126);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
@@ -837,6 +838,21 @@ describe("Life Links OpenAPI v1", () => {
     }
     expect(operations.get("GET /agent-connections")?.security).toEqual([{ CookieSession: [] }]);
     expect(operations.get("POST /agent-connections/revoke")?.security).toEqual([{ CookieSession: [] }]);
+    const authorizationSummary = operations.get("GET /api/remote-agent-connections")!;
+    expect(authorizationSummary.operationId).toBe("getRemoteAgentConnections");
+    expect(authorizationSummary.security).toEqual([{ CookieSession: [] }, { BearerSession: [] }]);
+    expect(String(authorizationSummary.description)).toContain("not a connection heartbeat");
+    expect(objectValue(authorizationSummary.responses, "remote authorization summary responses")).toMatchObject({
+      "200": { $ref: "#/components/responses/RemoteAgentConnectionsOk" },
+      "401": { $ref: "#/components/responses/Unauthorized" }
+    });
+    const authorizationSchema = objectValue(objectValue(components.schemas, "schemas").RemoteAgentConnectionsResponse,
+      "RemoteAgentConnectionsResponse");
+    expect(authorizationSchema).toMatchObject({ type: "object", additionalProperties: false,
+      required: ["available", "authorizedCount"] });
+    expect(objectValue(authorizationSchema.properties, "RemoteAgentConnectionsResponse properties")).toMatchObject({
+      available: { type: "boolean" }, authorizedCount: { type: "integer", minimum: 0 }
+    });
     expect(operations.get("GET /.well-known/oauth-protected-resource")?.security).toEqual([]);
     expect(operations.get("GET /.well-known/oauth-protected-resource/mcp")?.security).toEqual([]);
     expect(operations.get("GET /.well-known/oauth-authorization-server/oauth")?.security).toEqual([]);

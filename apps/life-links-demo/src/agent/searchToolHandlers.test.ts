@@ -41,8 +41,9 @@ describe("search-v4 page tool", () => {
       visit(AgentAccessPanel({ supported: true, connected: true, busy: false,
         publicBaseUrl: "https://example.test",
         catalogCurrent: catalog === LIFE_LINKS_SEARCH_TOOL_CATALOG_ID, registrationStatus: "ready",
-        registrationError: "", onConnect, onDisconnect }));
-      const upgrade = buttons.find((button) => button.props.children === "Update Agent Access");
+        registrationError: "", remoteAuthorization: { status: "ready", available: true, authorizedCount: 0 },
+        onConnect, onDisconnect }));
+      const upgrade = buttons.find((button) => button.props.children === "Update Browser WebMCP access");
       expect(Boolean(upgrade)).toBe(catalog === "life-links-workspace-v3");
       expect(onConnect).not.toHaveBeenCalled();
       expect(onDisconnect).not.toHaveBeenCalled();
@@ -61,15 +62,17 @@ describe("search-v4 page tool", () => {
         elements.push(child); visit(child.props.children);
       });
       visit(AgentAccessPanel({ supported: false, connected: true, catalogCurrent: true, busy: false,
-        registrationStatus: "inactive", registrationError: "", publicBaseUrl, onConnect, onDisconnect }));
+        registrationStatus: "inactive", registrationError: "", remoteAuthorization: { status: "ready", available: true, authorizedCount: 2 },
+        publicBaseUrl, onConnect, onDisconnect }));
       const endpoint = elements.find((element) => element.type === "input" && element.props["aria-label"] === "Remote MCP endpoint");
       expect(endpoint?.props).toMatchObject({ value: `${new URL(publicBaseUrl).origin}/mcp`, readOnly: true });
       const management = elements.find((element) => element.type === "a" && element.props.children === "Manage remote connections");
       expect(management?.props.href).toBe(`${new URL(publicBaseUrl).origin}/agent-connections`);
-      expect(copy.join(" ")).toContain("with this page closed");
-      expect(copy.join(" ")).toContain("Browser tools require this Life Links page to stay open");
+      expect(copy.join(" ")).toContain("while this page is closed");
+      expect(copy.join(" ")).toContain("Enabled for your account, but this browser does not support Browser WebMCP");
+      expect(copy.join(" ")).toContain("2 Remote MCP authorizations");
       expect(onConnect).not.toHaveBeenCalled(); expect(onDisconnect).not.toHaveBeenCalled();
-      const disconnect = elements.find((element) => element.type === "button" && element.props.children === "Disconnect Agent");
+      const disconnect = elements.find((element) => element.type === "button" && element.props.children === "Disable Browser WebMCP");
       (disconnect?.props.onClick as () => void)();
       expect(onDisconnect).toHaveBeenCalledOnce(); expect(onConnect).not.toHaveBeenCalled();
       expect(readFileSync(new URL("../App.tsx", import.meta.url), "utf8")).toContain("publicBaseUrl={qrBaseUrl}");

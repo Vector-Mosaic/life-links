@@ -6,7 +6,7 @@ import {
   createCalendar, createCalendarEvent, createRoutine, reviseRoutine, getRoutine, updateRoutine, deleteCalendar, deleteCalendarEvent, finalizeRoutineRun,
   createCollectionSection, createLifeLink, disconnectAgent, getCollection, listCollections,
   getActiveRoutineRun, getCalendar, getCalendarClock, getCalendarEvent, listCalendarEvents, listCalendars, listRoutineGroups, listRoutines,
-  listCollectionMembers, listLifeLinkCollectionMemberships, login, getRegistration, registerAccount, moveLifeLink, removeCollectionMember,
+  listCollectionMembers, listLifeLinkCollectionMemberships, login, getRegistration, getRemoteAgentConnections, registerAccount, moveLifeLink, removeCollectionMember,
   removeCollectionSection, replaceCollectionSectionAssignments, setLifeLinkQrBinding,
   updateCollection, updateCollectionSection, updateLifeLink, getLifeLinkAttachmentContent, getLifeLinkAttachmentImage,
   listRoutineOccurrences, materializeRoutineOccurrences, putRoutineRunStepResult,
@@ -32,6 +32,21 @@ describe("Life Links API error normalization", () => {
     expect(fetchMock.mock.calls[1][0]).toBe("/api/auth/register");
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST", credentials: "include", body: JSON.stringify(input) });
     expect(new Headers(fetchMock.mock.calls[1][1].headers).has("X-Life-Links-Actor")).toBe(false);
+  });
+
+  it("reads the signed-in owner's remote MCP authorization summary without an agent actor header", async () => {
+    const summary = { available: true, authorizedCount: 2 };
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(summary), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await getRemoteAgentConnections()).toEqual(summary);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/remote-agent-connections");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ credentials: "include" });
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).has("X-Life-Links-Actor")).toBe(false);
   });
   it("narrows Workspace agent Collection and Routine calls without changing human defaults or payload identity", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ preview: { id: "preview-exact" } }), { status: 200, headers: { "Content-Type": "application/json" } }));

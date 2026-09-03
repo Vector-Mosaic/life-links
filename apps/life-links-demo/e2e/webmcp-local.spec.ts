@@ -83,8 +83,8 @@ test.describe("local controlled WebMCP host", () => {
 
     await page.goto("/");
     await page.locator(".ll-agent-status").click();
-    await expect(page.locator("#agent-access-title")).toHaveText("Agent Connection");
-    const connectButton = page.getByRole("button", { name: "Connect Agent", exact: true });
+    await expect(page.locator("#agent-access-title")).toHaveText("Agent connections");
+    const connectButton = page.getByRole("button", { name: "Enable Browser WebMCP", exact: true });
     await expect(connectButton).toBeVisible();
     await expect.poll(() => controlledHostSnapshot(page)).toMatchObject({
       activeNames: [],
@@ -92,11 +92,11 @@ test.describe("local controlled WebMCP host", () => {
     });
 
     await connectButton.click();
-    await expect(page.getByText("Connected until you disconnect. Life Links tools are available to your agent.")).toBeVisible();
+    await expect(page.locator('[aria-labelledby="browser-webmcp-title"] [role="status"]')).toContainText("Enabled");
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
     expect((await controlledHostSnapshot(page)).registrationNames.sort()).toEqual(CANONICAL_TOOL_NAMES);
     expect(state.connectRequests).toBe(1);
-    await page.getByRole("dialog").getByRole("button", { name: "Close Agent connection" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Close Agent connections" }).click();
 
     const openResult = await invokeControlledTool(page, "open_life_link", {
       lifeLinkId: targetLifeLink.id
@@ -212,7 +212,7 @@ test.describe("local controlled WebMCP host", () => {
     await expect(activity).not.toContainText("battery");
     await expect(activity).not.toContainText(targetLifeLink.id);
     expect(state.patchRequests).toHaveLength(1);
-    await page.getByRole("dialog").getByRole("button", { name: "Close Agent connection" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Close Agent connections" }).click();
 
     const newId = "life-link-agent-created-item";
     const created = await invokeControlledTool(page, "create_life_link", { id: newId, parentId: rootLifeLink.id, browsingRole: "item", title: "Field notebook" });
@@ -231,10 +231,10 @@ test.describe("local controlled WebMCP host", () => {
 
     await page.reload();
     await page.locator(".ll-agent-status").click();
-    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Disable Browser WebMCP" })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
     expect(state.connectRequests).toBe(1);
-    await page.getByRole("dialog").getByRole("button", { name: "Close Agent connection" }).click();
+    await page.getByRole("dialog").getByRole("button", { name: "Close Agent connections" }).click();
     await expect(invokeControlledTool(page, "open_life_link", {
       lifeLinkId: targetLifeLink.id
     })).resolves.toMatchObject({ ok: true, lifeLinkId: targetLifeLink.id });
@@ -246,7 +246,7 @@ test.describe("local controlled WebMCP host", () => {
 
     await page.getByRole("button", { name: "Open in My Life Links" }).click();
     await expect(page).toHaveURL(new RegExp(`/life-links/${targetLifeLink.id}$`));
-    await expect(page.locator(".ll-agent-status")).toHaveText("Agent connected");
+    await expect(page.locator(".ll-agent-status")).toHaveAttribute("aria-label", "Agent connections. Browser WebMCP: Enabled. Remote MCP: 2 authorizations.");
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
 
     state.holdLogout = true;
@@ -262,20 +262,20 @@ test.describe("local controlled WebMCP host", () => {
     await page.getByLabel("Password").fill("durable-agent-connection");
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.locator(".ll-agent-status").click();
-    await expect(page.locator("#agent-access-title")).toHaveText("Agent Connection");
-    await expect(page.getByRole("button", { name: "Disconnect Agent" })).toBeVisible();
+    await expect(page.locator("#agent-access-title")).toHaveText("Agent connections");
+    await expect(page.getByRole("button", { name: "Disable Browser WebMCP" })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual(CANONICAL_TOOL_NAMES);
     expect(state.connectRequests).toBe(1);
     expect(state.disconnectRequests).toBe(0);
 
-    await page.getByRole("button", { name: "Disconnect Agent" }).click();
-    await expect(page.getByRole("button", { name: "Connect Agent", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Disable Browser WebMCP" }).click();
+    await expect(page.getByRole("button", { name: "Enable Browser WebMCP", exact: true })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
     expect(state.disconnectRequests).toBe(1);
 
     await page.reload();
     await page.locator(".ll-agent-status").click();
-    await expect(page.getByRole("button", { name: "Connect Agent", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Enable Browser WebMCP", exact: true })).toBeVisible();
     await expect.poll(async () => (await controlledHostSnapshot(page)).activeNames).toEqual([]);
 
     expect(state.patchRequests).toHaveLength(1);
@@ -289,6 +289,7 @@ type MockApiState = {
   patchRequests: Array<{ path: string; body: unknown }>;
   connectRequests: number;
   disconnectRequests: number;
+  remoteAuthorizedCount: number;
   connected: boolean;
   signedIn: boolean;
   holdLogout: boolean;
@@ -311,6 +312,7 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
     patchRequests: [],
     connectRequests: 0,
     disconnectRequests: 0,
+    remoteAuthorizedCount: 2,
     connected: false,
     signedIn: true,
     holdLogout: false,
@@ -354,6 +356,10 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
     }
     if (path === "/api/config" && method === "GET") {
       await route.fulfill({ json: { qrBaseUrl: baseURL, maxBatchCount: 10000 } });
+      return;
+    }
+    if (path === "/api/remote-agent-connections" && method === "GET") {
+      await route.fulfill({ json: { available: true, authorizedCount: state.remoteAuthorizedCount } });
       return;
     }
     if (path === "/api/change-history" && method === "GET") {
@@ -509,7 +515,8 @@ async function mockLifeLinksApi(page: Page, baseURL: string): Promise<MockApiSta
 function mockAgentConnection(connected: boolean) {
   return {
     connected,
-    connectedAt: connected ? "2026-08-27T21:00:00.000Z" : null
+    connectedAt: connected ? "2026-08-27T21:00:00.000Z" : null,
+    toolCatalogId: connected ? "life-links-search-v4" as const : null
   };
 }
 

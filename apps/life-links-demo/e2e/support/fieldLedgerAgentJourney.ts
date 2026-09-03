@@ -18,11 +18,11 @@ export const EXPECTED_AGENT_TOOLS = [
 
 export async function openAgentDialog(page: Page): Promise<void> {
   await page.locator(".ll-agent-status").click();
-  await expect(page.getByRole("dialog", { name: "Agent connection", exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Agent connections", exact: true })).toBeVisible();
 }
 
 export async function closeAgentDialog(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Close Agent connection", exact: true }).click();
+  await page.getByRole("button", { name: "Close Agent connections", exact: true }).click();
 }
 
 export async function ownerRecord(page: Page, id: string): Promise<LifeLinkRecord> {
@@ -229,7 +229,7 @@ export async function fieldLedgerAgentJourney(page: Page, invoke: InvokeAgentToo
   await call("manage_life_link_qr", { action: "set_public_projection", lifeLinkId: before.id, baseUpdatedAt: published.updatedAt, privacy: "private", publicFieldKeys: [] });
 
   await page.reload();
-  await expect(page.locator(".ll-agent-status")).toHaveText("Agent connected");
+  await expect(page.locator(".ll-agent-status")).toHaveAttribute("aria-label", /Browser WebMCP: Enabled\./);
   await expect(page.locator(`[data-selected-life-link-id="${before.id}"]`)).toBeVisible();
   const reloaded = await ownerRecord(page, before.id);
   expect(reloaded).toMatchObject({ id: before.id, context, body: before.body, qrId: COMPETITION_SLEEPING_PAD_QR_ID });

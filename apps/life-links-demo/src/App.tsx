@@ -17,7 +17,7 @@ import {
   type LinkRecord,
   buildQrUrl
 } from "@life-links/core";
-import { AgentAccessPanel, type AgentAccessRegistrationStatus } from "./agent/AgentAccessPanel";
+import { AgentAccessPanel, type AgentAccessRegistrationStatus, type RemoteAgentAuthorizationView } from "./agent/AgentAccessPanel";
 import { AgentActivityPanel } from "./agent/AgentActivityPanel";
 import {
   instrumentAgentToolCatalog,
@@ -41,6 +41,7 @@ import { AccountCreationLink, AccountRegistration } from "./AccountRegistration"
 import { LifeLinksIntroduction, PublicInformation } from "./PublicInformation";
 import { LifeLinksWorkspaceProvider, useLifeLinksWorkspace } from "./workspace/LifeLinksWorkspaceProvider";
 import { classifyLifeLinksRoute, isRegistrationPath, publicInformationPageFromPath } from "./workspace/routes";
+import { getRemoteAgentConnections } from "./api";
 
 type Html5QrcodeScanner = InstanceType<typeof import("html5-qrcode").Html5Qrcode>;
 
@@ -63,6 +64,15 @@ function LifeLinksApp() {
   } = snapshot; const [agentActivities, setAgentActivities] = useState<AgentActivityEntry[]>([]);
   const agentActivityEligibleRef = useRef(false);
   const ownerWorkspaceHeadingRef = useRef<HTMLHeadingElement>(null);
+  const currentOwnerIdRef = useRef<string | null>(currentUser?.id ?? null);
+  const remoteAuthorizationRequestRef = useRef(0);
+  currentOwnerIdRef.current = currentUser?.id ?? null;
+  const [remoteAuthorizationState, setRemoteAuthorizationState] = useState<RemoteAgentAuthorizationView & { ownerId: string | null }>({
+    ownerId: null,
+    status: "loading",
+    available: false,
+    authorizedCount: 0
+  });
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -75,6 +85,31 @@ function LifeLinksApp() {
 
   const route = classifyLifeLinksRoute(routePathname, Boolean(currentUser));
   const previousRouteSurfaceRef = useRef(route.surface);
+  const refreshRemoteAgentConnections = useCallback(async () => {
+    const requestId = ++remoteAuthorizationRequestRef.current;
+    const ownerId = currentOwnerIdRef.current;
+    if (!ownerId) {
+      setRemoteAuthorizationState({ ownerId: null, status: "loading", available: false, authorizedCount: 0 });
+      return;
+    }
+    setRemoteAuthorizationState({ ownerId, status: "loading", available: false, authorizedCount: 0 });
+    try {
+      const result = await getRemoteAgentConnections();
+      if (currentOwnerIdRef.current !== ownerId || remoteAuthorizationRequestRef.current !== requestId) return;
+      setRemoteAuthorizationState({ ownerId, status: "ready", ...result });
+    } catch {
+      if (currentOwnerIdRef.current !== ownerId || remoteAuthorizationRequestRef.current !== requestId) return;
+      setRemoteAuthorizationState({ ownerId, status: "error", available: false, authorizedCount: 0 });
+    }
+  }, []);
+  useEffect(() => {
+    if (currentUser && route.surface === "owner-workspace") void refreshRemoteAgentConnections();
+    else if (!currentUser) setRemoteAuthorizationState({ ownerId: null, status: "loading", available: false, authorizedCount: 0 });
+  }, [currentUser?.id, route.surface, refreshRemoteAgentConnections]);
+  const remoteAuthorization: RemoteAgentAuthorizationView =
+    remoteAuthorizationState.ownerId === (currentUser?.id ?? null)
+      ? remoteAuthorizationState
+      : { status: "loading", available: false, authorizedCount: 0 };
 
   useEffect(() => {
     const previousSurface = previousRouteSurfaceRef.current;
@@ -207,6 +242,8 @@ function LifeLinksApp() {
       <OwnerWorkspace
         controller={controller}
         snapshot={snapshot}
+        remoteAuthorization={remoteAuthorization}
+        onOpenAgentConnections={() => void refreshRemoteAgentConnections()}
         headingRef={ownerWorkspaceHeadingRef}
         onLogout={() => void handleLogout()}
         scannerPanel={<ScannerPanel mode="open" baseUrl={qrBaseUrl} sampleLinks={[]} targetId={null} onDecoded={(value) => void handleOpenScan(value)} />}
@@ -216,6 +253,7 @@ function LifeLinksApp() {
             publicBaseUrl={qrBaseUrl}
             catalogCurrent={agentConnection.toolCatalogId === LIFE_LINKS_SEARCH_TOOL_CATALOG_ID}
             registrationStatus={agentRegistrationStatus} registrationError={agentRegistrationError}
+            remoteAuthorization={remoteAuthorization}
             onConnect={() => void connectAgent()} onDisconnect={() => void disconnectAgent()} />
           <AgentActivityPanel activities={agentActivities} />
         </>}

@@ -452,6 +452,14 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     });
   });
 
+  app.get("/api/remote-agent-connections", requireAuthenticated, async (request: AppRequest, response) => {
+    const authorizedCount = remoteAgent
+      ? await remoteAgent.auth.ownerAuthorizationCount(request.user!.id)
+      : 0;
+    response.setHeader("Cache-Control", "private, no-store");
+    response.json({ available: Boolean(remoteAgent), authorizedCount });
+  });
+
   app.put("/api/agent-connection", requireAuthenticated, async (request: AppRequest, response) => {
     assertOwnerAgentConnectionManagement(request);
     const input = request.body === undefined || request.body === null

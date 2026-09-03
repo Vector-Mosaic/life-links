@@ -603,7 +603,7 @@
             "CookieSession": []
           }
         ],
-        "description": "Requires current owner cookie, exact owner-bound grantId, configured Origin and CSRF. Invalidates that client's delegated access/refresh authority while preserving owner records and separate page grants; not global provider-consent revocation.",
+        "description": "Requires current owner cookie, exact owner-bound grantId, configured Origin and CSRF. Invalidates tokens issued under that exact authorization while preserving owner records, separate authorizations and separate page grants; not global provider-consent revocation.",
         "parameters": [
           {
             "$ref": "#/components/parameters/XRequestId"
@@ -1607,6 +1607,40 @@
         "responses": {
           "200": {
             "$ref": "#/components/responses/MeOk"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/remote-agent-connections": {
+      "get": {
+        "operationId": "getRemoteAgentConnections",
+        "summary": "Read the owner's remote MCP authorization summary",
+        "description": "Returns whether this server exposes Remote MCP and the count of the authenticated owner's active delegated OAuth grants. The count includes only owner-bound grants that are unexpired, unrevoked and authorized for at least one supported LifeLinks resource scope at read time. It counts authorizations rather than distinct clients and is not a connection heartbeat or a claim that any client is currently online. This read does not grant, revoke, refresh, or otherwise mutate authority, and it remains separate from the owner's Browser WebMCP grant.",
+        "tags": [
+          "remote-agent"
+        ],
+        "security": [
+          {
+            "CookieSession": []
+          },
+          {
+            "BearerSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/RemoteAgentConnectionsOk"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
@@ -4873,6 +4907,25 @@
           }
         }
       },
+      "RemoteAgentConnectionsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "available",
+          "authorizedCount"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "description": "Whether this Life Links server exposes the Remote MCP authorization path. False does not change Browser WebMCP state."
+          },
+          "authorizedCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of this owner's unexpired, unrevoked delegated OAuth grants authorized for at least one supported LifeLinks resource scope at read time; zero when Remote MCP is unavailable. This counts authorizations rather than distinct clients and is not client online presence."
+          }
+        }
+      },
       "AgentConnectionRequest": {
         "type": "object",
         "additionalProperties": false,
@@ -7796,6 +7849,27 @@
           "application/json": {
             "schema": {
               "$ref": "#/components/schemas/MeResponse"
+            }
+          }
+        }
+      },
+      "RemoteAgentConnectionsOk": {
+        "description": "Private, non-mutating Remote MCP availability and authorization count for the current owner. The count is not client online presence.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "schema": {
+              "type": "string",
+              "const": "private, no-store"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/RemoteAgentConnectionsResponse"
             }
           }
         }
