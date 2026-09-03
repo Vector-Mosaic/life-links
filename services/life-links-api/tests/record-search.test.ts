@@ -275,7 +275,7 @@ describe("record search Calendar cache and HTTP boundaries", () => {
     expect(await all(ctx.service, "needle", "calendar")).toEqual([]);
   });
 
-  it("requires an owner session, validates input, and emits no query or content in structured logs", async () => {
+  it("upgrades through the actual owner HTTP route, persists v4 across login, refuses agent self-upgrade, and keeps search logs private", async () => {
     const store = await canonical();
     await routine(store);
     const logs: LogEvent[] = [];
@@ -292,7 +292,30 @@ describe("record search Calendar cache and HTTP boundaries", () => {
     expect((await agent.get("/api/records/search").query({ q: "a", category: "bogus" })).status).toBe(400);
     expect((await agent.get("/api/records/search").query({ q: "a", category: "routines", limit: 26 })).status).toBe(400);
     expect((await agent.get("/api/records/search").set("X-Life-Links-Actor", "agent").query({ q: "purpose", category: "routines" })).status).toBe(403);
-    await store.connectAgent(OWNER, "life-links-search-v4");
+    const v3 = await agent.put("/api/agent-connection").send({ toolCatalogId: "life-links-workspace-v3" });
+    expect(v3.status).toBe(200);
+    expect(v3.body.agentConnection).toMatchObject({ connected: true, toolCatalogId: "life-links-workspace-v3" });
+    expect((await agent.get("/api/records/search").set("X-Life-Links-Actor", "agent").query({ q: "purpose", category: "routines" })).status).toBe(403);
+    expect((await agent.put("/api/agent-connection").set("X-Life-Links-Actor", "agent").send({ toolCatalogId: "life-links-search-v4" })).status).toBe(403);
+    expect((await agent.get("/api/me")).body.agentConnection).toEqual(v3.body.agentConnection);
+    const upgraded = await agent.put("/api/agent-connection").send({ toolCatalogId: "life-links-search-v4" });
+    expect(upgraded.status).toBe(200);
+    expect(upgraded.body.agentConnection).toMatchObject({ connected: true, toolCatalogId: "life-links-search-v4" });
+    expect(upgraded.body.agentConnection.connectedAt).not.toBe(v3.body.agentConnection.connectedAt);
+    const me = await agent.get("/api/me");
+    expect(me.body.agentConnection).toEqual(upgraded.body.agentConnection);
+    expect(me.body.user).toMatchObject({ id: OWNER });
+    expect(me.body.user).not.toHaveProperty("passwordHash");
+    expect((await agent.put("/api/agent-connection").send({ toolCatalogId: "life-links-search-v4" })).body.agentConnection).toEqual(upgraded.body.agentConnection);
+    expect((await agent.put("/api/agent-connection").send({ toolCatalogId: "life-links-unapproved-v5" })).status).toBe(400);
+    expect((await agent.get("/api/routines").set("X-Life-Links-Actor", "agent")).status).toBe(200);
+    expect((await agent.get("/api/calendars").set("X-Life-Links-Actor", "agent")).status).toBe(200);
+    expect((await agent.get("/api/records/search").set("X-Life-Links-Actor", "agent").query({ q: "purpose", category: "routines" })).status).toBe(200);
+    expect((await agent.post("/api/auth/logout")).status).toBe(204);
+    const login = await agent.post("/api/auth/login").send({ email: (await store.getUserById(OWNER))!.email, password: DEMO_PASSWORD });
+    expect(login.status).toBe(200);
+    expect(login.body.agentConnection).toEqual(upgraded.body.agentConnection);
+    expect((await agent.get("/api/me")).body.agentConnection).toEqual(upgraded.body.agentConnection);
     expect((await agent.get("/api/records/search").set("X-Life-Links-Actor", "agent").query({ q: "purpose", category: "routines" })).status).toBe(200);
   });
 });

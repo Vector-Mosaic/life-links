@@ -114,6 +114,7 @@ import {
   LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID,
   LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID,
   LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID,
+  LIFE_LINKS_AGENT_TOOL_CATALOG_V4_ID,
   WorkspaceAgentAccessError,
   assertWorkspaceAgentConnection,
   assertCalendarAgentConnection,
@@ -401,7 +402,8 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     }
     if (requestedCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID &&
         requestedCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID &&
-        requestedCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID) {
+        requestedCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID &&
+        requestedCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V4_ID) {
       response.status(400).json({ error: "invalid_agent_tool_catalog" });
       return;
     }
