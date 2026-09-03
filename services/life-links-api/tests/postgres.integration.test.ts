@@ -25,7 +25,11 @@ import {
   DEFAULT_QR_BASE_URL,
   DEMO_GUEST_ID,
   DEMO_OWNER_ID,
-  DEMO_PASSWORD
+  DEMO_PASSWORD,
+  compareCollectionTitleOrder,
+  pageCollectionRecords,
+  pageLifeLinkChildren,
+  type LifeLinkRecord
 } from "@life-links/core";
 
 import { EXPECTED_REPRESENTATIVE_CANONICAL_LIFE_LINKS_SNAPSHOT, REPRESENTATIVE_LEGACY_LIFE_LINKS_SNAPSHOT } from "./legacyMigration.fixture.js";
@@ -546,6 +550,44 @@ describe("Life Links Postgres integration", () => {
     });
     changeHistoryStoreContract(() => parityStore);
     attachmentTextStoreContract(() => parityStore);
+
+    it("preserves canonical Unicode pages, fields, media and exact child counts with narrow reads", async () => {
+      const ownerId = DEMO_GUEST_ID, createdAt = "2026-09-03T12:00:00.000Z";
+      const parent = await parityStore.createLifeLink({ id: `read-parent-${randomUUID()}`, ownerId, title: "Read parent", createdAt });
+      const children: LifeLinkRecord[] = [];
+      for (const title of ["A", "Ａ", "a", "ä", "😀", "𐀀", "\ue000", "ß", "İ", "Same", "Same"]) {
+        children.push(await parityStore.createLifeLink({ id: `read-child-${randomUUID()}`, ownerId, parentId: parent.id,
+          title, body: `Private full content ${title}`, createdAt }));
+      }
+      const grandchild = await parityStore.createLifeLink({ id: `read-grandchild-${randomUUID()}`, ownerId,
+        parentId: children[0].id, title: "Grandchild", createdAt });
+      await parityStore.createLifeLinkMedia(ownerId, children[0].id, { kind: "document", mimeType: "text/plain",
+        fileName: "retained.txt", sizeBytes: 4, data: Buffer.from("data") });
+      children[0] = (await parityStore.getLifeLinkDetail(ownerId, children[0].id))!.lifeLink;
+      let collection = await parityStore.createCollection({ id: `collection-${randomUUID()}`, ownerId,
+        title: "Read page context", purpose: "Meaning remains", notes: "Notes remain", createdAt });
+      for (const child of children) collection = (await parityStore.addCollectionMember(ownerId, {
+        collectionId: collection.id, lifeLinkId: child.id, expectedUpdatedAt: collection.updatedAt }))!;
+      let cursor: string | null = null;
+      do {
+        const page = await parityStore.listLifeLinks(ownerId, parent.id, { limit: 3, cursor });
+        expect(page).toEqual(pageLifeLinkChildren([...children, grandchild], ownerId, parent.id, { limit: 3, cursor }));
+        cursor = page.nextCursor;
+      } while (cursor);
+      cursor = null;
+      do {
+        const page = (await parityStore.listCollectionMembers(ownerId, collection.id, { limit: 3, cursor }))!;
+        expect(page).toEqual(pageCollectionRecords([...children].sort(compareCollectionTitleOrder), { limit: 3, cursor }));
+        cursor = page.nextCursor;
+      } while (cursor);
+      expect((await parityStore.listLifeLinks(DEMO_OWNER_ID, parent.id)).items).toEqual([]);
+      expect(await parityStore.listCollectionMembers(DEMO_OWNER_ID, collection.id)).toBeNull();
+      await expect(parityStore.listCollectionMembers(ownerId, collection.id, {
+        cursor: encodeURIComponent(JSON.stringify({ version: 1, id: grandchild.id }))
+      })).rejects.toMatchObject({ code: "invalid_collection" });
+      expect((await parityStore.getLifeLinkDetail(ownerId, grandchild.id))!.ancestry.items.map(item => item.id))
+        .toEqual([parent.id, children[0].id, grandchild.id]);
+    });
 
     it("removes and explicitly reselects only one provider Calendar without admitting its old sync generation", async () => {
       const ownerId = DEMO_OWNER_ID, connectionId = "postgres-provider-removal";

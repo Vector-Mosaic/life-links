@@ -28,6 +28,7 @@ import {
   normalizeLifeLinkChildPageLimit,
   normalizeLifeLinkSearchLimit,
   pageLifeLinkChildren,
+  pageLifeLinkChildRecords,
   projectLifeLinkAsLink,
   projectPrivateClaimedQrAsLink,
   projectQrInventoryRecord,
@@ -61,6 +62,27 @@ function lifeLink(
 }
 
 describe("canonical recursive Life Link contract", () => {
+  it("selects unhydrated children with the same Unicode order and cursor contract", () => {
+    const records = ["A", "Ａ", "a", "ä", "😀", "𐀀", "\ue000", "ß", "İ", "Same", "Same"].map((title, index) =>
+      lifeLink(`child-${index}`, { title, parentId: "parent", createdAt: index % 2 ? NOW : "2026-08-24T12:00:00.000Z" }));
+    records.push(lifeLink("foreign", { title: "A", ownerId: "owner-other", parentId: "parent" }));
+    records.push(lifeLink("other-parent", { title: "A", parentId: "different" }));
+    const keys = records.map(({ id, ownerId, parentId, title, createdAt }) => ({ id, ownerId, parentId, title, createdAt }));
+    let cursor: string | null = null;
+    do {
+      const expected = pageLifeLinkChildren(records, "owner-alpha", "parent", { limit: 3, cursor });
+      const actual = pageLifeLinkChildRecords(keys, "owner-alpha", "parent", { limit: 3, cursor });
+      expect(actual.items.map(item => item.id)).toEqual(expected.items.map(item => item.id));
+      expect(actual.nextCursor).toBe(expected.nextCursor);
+      expect(actual.truncated).toBe(expected.truncated);
+      cursor = actual.nextCursor;
+    } while (cursor);
+    expect(() => pageLifeLinkChildRecords(keys, "owner-alpha", "parent", { cursor: "invalid" })).toThrow(LifeLinkDomainError);
+    const first = pageLifeLinkChildRecords(keys, "owner-alpha", "parent", { limit: 1 });
+    expect(pageLifeLinkChildRecords(keys.filter(item => item.id !== first.items[0].id), "owner-alpha", "parent", { cursor: first.nextCursor }))
+      .toEqual(pageLifeLinkChildRecords(keys, "owner-alpha", "parent", { cursor: first.nextCursor }));
+  });
+
   it("creates an untagged private root with coordinated body defaults", () => {
     const record = createCanonicalLifeLink({ id: "life-link-1", ownerId: "owner-alpha", createdAt: NOW });
 

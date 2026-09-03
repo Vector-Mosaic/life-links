@@ -3034,6 +3034,10 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async openHierarchy(parentId: string | null = null, updateHistory = true) {
+    await this.openHierarchyView(parentId, updateHistory);
+  }
+
+  private async openHierarchyView(parentId: string | null, updateHistory: boolean, initializedRoot?: LifeLinkBranchState) {
     ++this.routineSelectionRevision;
     ++this.routineRunLookupRevision;
     ++this.routineSessionSelectionRevision;
@@ -3053,7 +3057,12 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       routeLifeLinkId: null, publicQrState: null, canonicalEditingId: null, error: ""
     });
     if (updateHistory && this.route.pathname() !== "/life-links") this.route.push("/life-links");
-    await this.loadLifeLinkBranch(null, false);
+    // Only startup/login can supply their just-loaded branch; ordinary navigation
+    // always reads afresh, and any intervening branch replacement invalidates reuse.
+    if (!initializedRoot?.loaded || initializedRoot !== this.snapshot.rootLifeLinks ||
+        initializedRoot.items.some((item) => !this.snapshot.lifeLinkMembershipsComplete[item.id])) {
+      await this.loadLifeLinkBranch(null, false);
+    }
   }
 
   async activateLifeLink(lifeLinkId: string) {
@@ -4285,6 +4294,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       const activeQrId = this.snapshot.activeQrId;
       const result = await this.api.login(email, password);
       const nextRoute = classifyLifeLinksRoute(this.route.pathname(), true);
+      let initializedRoot: LifeLinkBranchState | undefined;
       this.update({
         currentUser: result.user,
         agentConnection: result.agentConnection,
@@ -4299,13 +4309,14 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         if (!isCollectionsPath(this.route.pathname()) && !isRoutinesPath(this.route.pathname()) &&
             !isCalendarPath(this.route.pathname())) {
           await this.refreshOwnerLibrary(result.user);
+          initializedRoot = this.snapshot.rootLifeLinks;
         }
       }
       if (nextRoute.surface === "owner-workspace" &&
           (nextRoute.lifeLinkId || isCollectionsPath(this.route.pathname()) || isRoutinesPath(this.route.pathname()) ||
             isCalendarPath(this.route.pathname()) ||
             this.route.pathname() === "/life-links")) {
-        await this.restoreOwnerRoute(this.route.pathname());
+        await this.restoreOwnerRoute(this.route.pathname(), initializedRoot);
       } else if (nextRoute.surface !== "public-qr" && activeQrId) {
         await this.refreshActiveQr(activeQrId);
       }
@@ -4748,7 +4759,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
 
   private async loadHierarchyMemberships(items: LifeLinkSummary[], isCurrent: () => boolean = () => true, signal?: AbortSignal) {
     const ownerRevision = this.ownerRevision;
-    for (const item of items) {
+    await forEachWorkspaceItem(items, async (item) => {
       if (ownerRevision !== this.ownerRevision || !isCurrent()) return;
       this.update((current) => ({ lifeLinkMembershipsComplete: { ...current.lifeLinkMembershipsComplete, [item.id]: false } }));
       try {
@@ -4761,7 +4772,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       } catch (error) {
         if (ownerRevision === this.ownerRevision && isCurrent()) this.update({ error: `Collection labels could not be fully loaded: ${messageFromError(error)}` });
       }
-    }
+    });
   }
 
   private async readCollectionSections(collectionId: string, signal?: AbortSignal) {
@@ -4785,7 +4796,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const members = this.snapshot.collectionMembers.filter((member) => memberIds.includes(member.id)
       && !this.snapshot.collectionMemberDetails[member.id]);
     try {
-      await forEachCollectionMember(members, async (member) => {
+      await forEachWorkspaceItem(members, async (member) => {
         if (!isCurrent()) return;
         const { detail } = await this.api.getLifeLinkDetail(member.id);
         if (isCurrent()) this.update((current) => ({ collectionMemberDetails: { ...current.collectionMemberDetails, [member.id]: detail } }));
@@ -4796,6 +4807,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   private async readCollectionWorkspace(collectionId: string, signal?: AbortSignal, selectedId?: string | null) {
+    // Anchor the revision before member reads; a newer header must not bless
+    // members captured before a concurrent Collection change.
     const { collection, sections } = await this.readCollectionSections(collectionId, signal);
     const members = await readAllPages(async (cursor) => {
       const page = await this.api.listCollectionMembers(collectionId, { cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal });
@@ -4805,7 +4818,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     const memberships: Record<string, LifeLinkCollectionMembership[]> = {};
     // Section membership is sufficient to display the collapsed overview. Full
     // canonical Details (including attachment metadata) load only on demand.
-    await forEachCollectionMember(members, async (member) => {
+    await forEachWorkspaceItem(members, async (member) => {
       memberships[member.id] = await this.readMemberships(member.id, signal);
     });
     if (selectedId && members.some((member) => member.id === selectedId)) {
@@ -5035,6 +5048,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       }
       const routePathname = this.route.pathname();
       const routeState = classifyLifeLinksRoute(routePathname, Boolean(me.user));
+      let initializedRoot: LifeLinkBranchState | undefined;
       this.update({
         qrBaseUrl: me.qrBaseUrl || config.qrBaseUrl,
         currentUser: me.user,
@@ -5050,6 +5064,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         if (!this.isCurrent(lifecycle)) {
           return;
         }
+        initializedRoot = this.snapshot.rootLifeLinks;
       }
       if (routeState.surface === "public-qr") {
         const publicQrState = await readQrState(this.api, routeState.qrId);
@@ -5063,7 +5078,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
           scanMessage: { tone: "neutral", title: "QR opened", detail: routeState.qrId }
         });
       } else if (routeState.surface === "owner-workspace") {
-        await this.restoreOwnerRoute(routePathname);
+        await this.restoreOwnerRoute(routePathname, initializedRoot);
       }
     } catch (bootError) {
       if (this.isCurrent(lifecycle)) {
@@ -5101,7 +5116,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     });
   }
 
-  private async restoreOwnerRoute(pathname: string) {
+  private async restoreOwnerRoute(pathname: string, initializedRoot?: LifeLinkBranchState) {
     if (isCalendarPath(pathname)) {
       const eventId = calendarEventIdFromPath(pathname);
       if (eventId) await this.openCalendarEvent(eventId, false);
@@ -5126,7 +5141,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       return;
     }
     if (pathname === "/life-links" || pathname === "/life-links/") {
-      await this.openHierarchy(null, false);
+      await this.openHierarchyView(null, false, initializedRoot);
       return;
     }
     ++this.navigationRevision;
@@ -5463,8 +5478,8 @@ function emptyCalendarWorkspaceState(): CalendarWorkspaceState {
   };
 }
 
-/** Bound network concurrency without serializing a Collection's entire index. */
-async function forEachCollectionMember<T>(items: readonly T[], visit: (item: T) => Promise<void>) {
+/** Bound independent hierarchy/Collection reads without serializing an entire index. */
+async function forEachWorkspaceItem<T>(items: readonly T[], visit: (item: T) => Promise<void>) {
   let next = 0;
   await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
     while (next < items.length) {

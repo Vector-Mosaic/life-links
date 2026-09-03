@@ -1188,6 +1188,21 @@ export function pageLifeLinkChildren(
   page: LifeLinkPageRequest = {}
 ): LifeLinkPage<LifeLinkSummary> {
   const childCounts = countLifeLinkChildren(lifeLinks);
+  const selected = pageLifeLinkChildRecords(lifeLinks, ownerId, parentId, page);
+  return {
+    ...selected,
+    items: selected.items.map((lifeLink) => summarizeLifeLink(lifeLink, childCounts.get(lifeLink.id) ?? 0))
+  };
+}
+
+/** Select a child page without requiring body/media hydration. Canonical title
+ * normalization, tuple ordering and cursor validation are shared by all stores. */
+export function pageLifeLinkChildRecords<T extends Pick<LifeLinkRecord, "id" | "ownerId" | "parentId" | "title" | "createdAt">>(
+  lifeLinks: readonly T[],
+  ownerId: string,
+  parentId: string | null,
+  page: LifeLinkPageRequest = {}
+): LifeLinkPage<T> {
   const cursor = page.cursor ? decodeLifeLinkTreeCursor(page.cursor) : null;
   const limit = normalizeLifeLinkChildPageLimit(page.limit);
   const matches = lifeLinks
@@ -1197,7 +1212,7 @@ export function pageLifeLinkChildren(
   const selected = matches.slice(0, limit);
   const hasMore = matches.length > selected.length;
   return {
-    items: selected.map((lifeLink) => summarizeLifeLink(lifeLink, childCounts.get(lifeLink.id) ?? 0)),
+    items: selected,
     nextCursor: hasMore && selected.length ? encodeLifeLinkTreeCursor(selected[selected.length - 1]) : null,
     truncated: hasMore
   };
@@ -1493,7 +1508,7 @@ function boundLifeLinkPath(
   };
 }
 
-function compareLifeLinkTreeOrder(left: LifeLinkRecord, right: LifeLinkRecord): number {
+function compareLifeLinkTreeOrder(left: Pick<LifeLinkRecord, "title" | "createdAt" | "id">, right: Pick<LifeLinkRecord, "title" | "createdAt" | "id">): number {
   const titleOrder = compareCanonicalText(
     normalizeLifeLinkSearchText(left.title),
     normalizeLifeLinkSearchText(right.title)
@@ -1514,7 +1529,7 @@ type LifeLinkSearchCursorTuple = {
   id: string;
 };
 
-function compareLifeLinkTreeTuple(lifeLink: LifeLinkRecord, cursor: LifeLinkTreeCursorTuple): number {
+function compareLifeLinkTreeTuple(lifeLink: Pick<LifeLinkRecord, "title" | "createdAt" | "id">, cursor: LifeLinkTreeCursorTuple): number {
   return (
     compareCanonicalText(normalizeLifeLinkSearchText(lifeLink.title), cursor.normalizedTitle) ||
     compareCanonicalText(lifeLink.createdAt, cursor.createdAt) ||
@@ -1522,7 +1537,7 @@ function compareLifeLinkTreeTuple(lifeLink: LifeLinkRecord, cursor: LifeLinkTree
   );
 }
 
-function encodeLifeLinkTreeCursor(lifeLink: LifeLinkRecord): string {
+function encodeLifeLinkTreeCursor(lifeLink: Pick<LifeLinkRecord, "title" | "createdAt" | "id">): string {
   return encodeOpaqueLifeLinkCursor("tree", {
     normalizedTitle: normalizeLifeLinkSearchText(lifeLink.title),
     createdAt: lifeLink.createdAt,

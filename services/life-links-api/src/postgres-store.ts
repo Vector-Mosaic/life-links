@@ -164,6 +164,7 @@ import {
   lifeLinkCreatePayloadMatches,
   pageCollectionRecords,
   pageLifeLinkChildren,
+  pageLifeLinkChildRecords,
   projectLifeLinkAsLink,
   projectPrivateClaimedQrAsLink,
   projectUnclaimedQrAsLink,
@@ -315,7 +316,24 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     parentId: string | null,
     page: LifeLinkPageRequest = {}
   ): Promise<LifeLinkPage<LifeLinkSummary>> {
-    return pageLifeLinkChildren(await this.loadOwnerLifeLinks(this.pool, userId), userId, parentId, page);
+    // Sorting remains canonical JavaScript (including NFKC/UTF-16 behavior).
+    // Scan only this sibling set's summary/order metadata, never owner-wide
+    // bodies or attachment metadata. Counts share the statement's snapshot.
+    const result = await this.pool.query(
+      `SELECT ll.id, ll.owner_id, ll.parent_id, ll.title, ll.created_at, ll.updated_at,
+              ll.privacy, ll.browsing_role, b.qr_id,
+              (SELECT count(*) FROM life_links child
+               WHERE child.owner_id = ll.owner_id AND child.parent_id = ll.id) AS child_count
+       FROM life_links ll
+       LEFT JOIN life_link_qr_bindings b ON b.life_link_id = ll.id
+       WHERE ll.owner_id = $1 AND ll.parent_id IS NOT DISTINCT FROM $2`, [userId, parentId]);
+    const selected = pageLifeLinkChildRecords(result.rows.map(row => ({
+      id: String(row.id), ownerId: String(row.owner_id), parentId: nullableString(row.parent_id),
+      title: String(row.title), createdAt: toIso(row.created_at), updatedAt: toIso(row.updated_at),
+      privacy: row.privacy as LifeLinkSummary["privacy"], browsingRole: row.browsing_role as LifeLinkSummary["browsingRole"],
+      qrId: nullableString(row.qr_id), childCount: Number(row.child_count)
+    })), userId, parentId, page);
+    return { ...selected, items: selected.items.map(({ ownerId: _ownerId, createdAt: _createdAt, ...summary }) => summary) };
   }
 
   async listRecordSearchLifeLinks(userId: string, page: LifeLinkPageRequest = {}): Promise<LifeLinkPage<LifeLinkRecord>> {
@@ -768,15 +786,34 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     userId: string, collectionId: string, page: LifeLinkPageRequest = {}
   ): Promise<LifeLinkPage<LifeLinkRecord> | null> {
     collectionId = normalizeCollectionId(collectionId);
-    if (!(await loadCollection(this.pool, userId, collectionId))) return null;
-    const result = await this.pool.query(
-      `SELECT ll.*, b.qr_id FROM collection_memberships m
-       JOIN life_links ll ON ll.id = m.life_link_id AND ll.owner_id = m.owner_id
-       LEFT JOIN life_link_qr_bindings b ON b.life_link_id = ll.id
-       WHERE m.owner_id = $1 AND m.collection_id = $2`, [userId, collectionId]
-    );
-    const members = await this.attachLifeLinkMedia(this.pool, result.rows.map(mapLifeLinkRow));
-    return pageCollectionRecords(members.sort(compareTitledRecords), page);
+    const client = await this.pool.connect();
+    try {
+      // Selection and full hydration must see the same title/membership state.
+      // This short read-only snapshot takes no owner-wide mutation lock.
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      if (!(await loadCollection(client, userId, collectionId))) {
+        await client.query("COMMIT"); return null;
+      }
+      // Narrow O(member-count) metadata selection preserves the exact existing
+      // Unicode comparator and identity cursor; no SQL collation substitute.
+      const metadata = await client.query(
+        `SELECT ll.id, ll.title FROM collection_memberships m
+         JOIN life_links ll ON ll.id = m.life_link_id AND ll.owner_id = m.owner_id
+         WHERE m.owner_id = $1 AND m.collection_id = $2`, [userId, collectionId]);
+      const selected = pageCollectionRecords(metadata.rows.map(row => ({ id: String(row.id), title: String(row.title) })).sort(compareTitledRecords), page);
+      let items: LifeLinkRecord[] = [];
+      if (selected.items.length) {
+        const result = await client.query(
+          `SELECT ll.*, b.qr_id FROM life_links ll
+           LEFT JOIN life_link_qr_bindings b ON b.life_link_id = ll.id
+           WHERE ll.owner_id = $1 AND ll.id = ANY($2::text[])`, [userId, selected.items.map(item => item.id)]);
+        const byId = new Map(result.rows.map(row => { const record = mapLifeLinkRow(row); return [record.id, record] as const; }));
+        items = await this.attachLifeLinkMedia(client, selected.items.map(item => byId.get(item.id)!));
+      }
+      await client.query("COMMIT");
+      return { ...selected, items };
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
+    finally { client.release(); }
   }
 
   async addCollectionMember(userId: string, command: CollectionMemberCommand): Promise<CollectionRecord | null> {

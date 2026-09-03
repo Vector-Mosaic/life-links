@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { randomUUID } from "node:crypto";
 import express from "express";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -6,9 +7,13 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ElicitRequestSchema, type CallToolResult, type ClientCapabilities, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { DEFAULT_QR_BASE_URL, DEMO_PASSWORD } from "@life-links/core";
 import { createRemoteMcpRouter, type RemoteMcpRouterOptions } from "../src/remote-mcp.js";
-import { RemoteAgentAccessError, runWithRemoteAgentPrincipal, currentRemoteAgentPrincipal, type RemoteAgentPrincipal, type RemoteApproval, type RemoteApprovalService } from "../src/remote-agent-principal.js";
-import type { RemoteAgentOperation } from "../src/remote-agent-operations.js";
+import { RemoteAgentAccessError, assertRemoteScope, runWithRemoteAgentPrincipal, currentRemoteAgentPrincipal, type RemoteAgentPrincipal, type RemoteApproval, type RemoteApprovalService } from "../src/remote-agent-principal.js";
+import { createRemoteAgentOperations, type RemoteAgentOperation } from "../src/remote-agent-operations.js";
+import { InMemoryLifeLinksStore } from "../src/store.js";
+import { RecordSearchService } from "../src/record-search.js";
+import { AttachmentContentReader } from "../src/attachment-content.js";
 
 const principal: RemoteAgentPrincipal = { ownerId: "synthetic-owner", clientId: "synthetic-client", grantId: "synthetic-grant", scopes: ["records:read", "records:write"], expiresAt: Date.now() + 3_600_000 };
 const effects = { operation: "delete", revision: "revision-one", records: [{ id: "synthetic-one", title: "Synthetic record" }, { id: "synthetic-two", title: "Synthetic child" }] };
@@ -98,6 +103,78 @@ async function fixture(input: Partial<RemoteMcpRouterOptions> = {}) {
 }
 
 describe("remote MCP Streamable HTTP boundary", () => {
+  it("records bounded canonical in-memory read timings through the official SDK without model thinking", async () => {
+    // Diagnostic samples, not machine-dependent latency assertions or live DB/OAuth/provider proof.
+    // Setup is excluded; output contains tool names, counts and timings only, never record content or credentials.
+    const store = new InMemoryLifeLinksStore();
+    await store.seedDemo(DEMO_PASSWORD, DEFAULT_QR_BASE_URL);
+    const actor: RemoteAgentPrincipal = { ...principal, ownerId: "demo-owner",
+      scopes: ["records:read", "collections:read", "routines:read", "calendar:read"] };
+    const id = (kind: string) => `${kind}-${randomUUID()}`;
+    const createdAt = "2026-09-03T12:00:00.000Z";
+    const records = await Promise.all(Array.from({ length: 20 }, (_, index) => store.createLifeLink({
+      id: id("life-link"), ownerId: actor.ownerId, title: `Transport timing item ${index}`, createdAt
+    })));
+    let collection = await store.createCollection({ id: id("collection"), ownerId: actor.ownerId, title: "Transport timing collection", createdAt });
+    for (const record of records) collection = (await store.addCollectionMember(actor.ownerId, {
+      collectionId: collection.id, lifeLinkId: record.id, expectedUpdatedAt: collection.updatedAt
+    }))!;
+    const activity = await store.createActivity({ id: id("activity"), ownerId: actor.ownerId, title: "Transport timing activity", createdAt });
+    const routine = await store.createRoutine({ id: id("routine"), revisionId: id("routine-revision"), ownerId: actor.ownerId,
+      title: "Transport timing routine", createdAt, steps: Array.from({ length: 3 }, (_, position) => ({
+        id: id("routine-step"), activityId: activity.id, activityTitle: activity.title, position, plannedValues: []
+      })) });
+    const calendar = await store.createCalendar({ id: id("calendar"), ownerId: actor.ownerId, title: "Transport timing calendar", timeZone: "America/New_York", createdAt });
+    await store.createCalendarEvent({ id: id("calendar-event"), revisionId: id("calendar-event-revision"), ownerId: actor.ownerId,
+      calendarId: calendar.id, title: "Transport timing event", createdAt,
+      span: { kind: "all_day", startDate: "2026-09-03", endDateExclusive: "2026-09-04" } });
+    const reader = new AttachmentContentReader();
+    const operationSamples = new Map<string, number[]>();
+    const operations = createRemoteAgentOperations({ store, recordSearch: new RecordSearchService(store, undefined, reader), attachmentReader: reader })
+      .map((operation): RemoteAgentOperation => ({ ...operation, async execute(input, context) {
+        const started = performance.now();
+        try { return await operation.execute(input, context); }
+        finally { operationSamples.set(operation.name, [...operationSamples.get(operation.name) ?? [], performance.now() - started]); }
+      } }));
+    const host = await fixture({ operations,
+      authenticate: async (request) => request.get("Authorization") === "Bearer synthetic-token" ? actor : null,
+      reauthorize: async (current) => assertRemoteScope(current),
+      authorize: async (current, access) => {
+        assertRemoteScope(current, access);
+        if (access.calendarId && !(await store.getCalendar(current.ownerId, access.calendarId, "agent"))) throw new RemoteAgentAccessError();
+      } });
+    const { client } = await host.connect();
+    const cases: Array<{ name: string; arguments: Record<string, unknown>; expected: unknown }> = [
+      { name: "list_records", arguments: { limit: 10 }, expected: { items: expect.any(Array) } },
+      { name: "inspect_record", arguments: { lifeLinkId: records[0].id }, expected: { lifeLink: { id: records[0].id } } },
+      { name: "search_records", arguments: { q: "Transport timing", category: "life_links", limit: 10 }, expected: { category: "life_links" } },
+      { name: "list_collections", arguments: { limit: 10 }, expected: { items: expect.arrayContaining([expect.objectContaining({ id: collection.id })]) } },
+      { name: "inspect_collection", arguments: { collectionId: collection.id, section: "members", limit: 10 }, expected: { collection: { id: collection.id }, entries: { items: expect.any(Array) } } },
+      { name: "list_routines", arguments: { kind: "routines", limit: 10 }, expected: { items: expect.arrayContaining([expect.objectContaining({ id: routine.routine.id })]) } },
+      { name: "inspect_routine", arguments: { routineId: routine.routine.id }, expected: { routine: { id: routine.routine.id }, stepCount: 3 } },
+      { name: "list_calendars", arguments: { limit: 10 }, expected: { items: expect.arrayContaining([expect.objectContaining({ id: calendar.id })]) } },
+      { name: "query_calendar", arguments: { calendarId: calendar.id, authority: "native", startDate: "2026-09-03", endDate: "2026-09-03", limit: 10 }, expected: { items: expect.any(Array) } }
+    ];
+    const timings: Array<{ tool: string; clientMs: number[]; canonicalOperationMs: number[]; calls: number }> = [];
+    const round = (value: number) => Math.round(value * 100) / 100;
+    for (const entry of cases) {
+      const clientMs: number[] = [];
+      for (let sample = 0; sample < 3; sample++) {
+        const started = performance.now();
+        const response = await client.callTool({ name: entry.name, arguments: entry.arguments });
+        clientMs.push(round(performance.now() - started));
+        expect(response.isError).not.toBe(true);
+        expect(response.structuredContent).toMatchObject({ contentIsUntrusted: true, data: entry.expected });
+      }
+      const canonicalOperationMs = operationSamples.get(entry.name) ?? [];
+      expect(canonicalOperationMs).toHaveLength(3);
+      timings.push({ tool: entry.name, clientMs, canonicalOperationMs: canonicalOperationMs.map(round), calls: canonicalOperationMs.length });
+    }
+    expect([...operationSamples.values()].reduce((sum, samples) => sum + samples.length, 0)).toBe(27);
+    console.info(JSON.stringify({ measurement: "local-sdk-canonical-memory-reads", authentication: "synthetic", operationCount: 27,
+      addedFixture: { records: 20, collectionMembers: 20, routineSteps: 3, nativeEvents: 1 }, timings }));
+  });
+
   it.each([
     [new Error("private provider credential synthetic-secret-value"), "operation_failed"],
     [new RemoteAgentAccessError("private-unrecognized-code"), "access_denied"],

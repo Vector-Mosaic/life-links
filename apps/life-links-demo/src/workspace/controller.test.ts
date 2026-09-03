@@ -250,6 +250,28 @@ describe("LifeLinksWorkspaceController", () => {
     controller.dispose();
   });
 
+  it.each(["boot", "login"] as const)("loads the hierarchy root once during %s without losing QR inventory or memberships", async (mode) => {
+    const api = fakeApi();
+    const memberships = [{ collection, sections: [section] }];
+    api.listLifeLinkCollectionMemberships.mockResolvedValue({ memberships, nextCursor: null, truncated: false });
+    if (mode === "login") api.getMe.mockResolvedValue({ user: null, qrBaseUrl: "https://example.test", agentConnection: disconnectedAgentConnection });
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    if (mode === "login") await controller.login(owner.email, "password");
+    expect(api.listLinks).toHaveBeenCalledTimes(1);
+    expect(api.listLifeLinks).toHaveBeenCalledTimes(1);
+    expect(api.listLifeLinkCollectionMemberships).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot()).toMatchObject({
+      currentUser: owner, links: [link], rootLifeLinks: { items: [rootSummary], loaded: true },
+      activeView: "workspace", hierarchyParentId: null, selectedLifeLinkId: null, detailsOpen: false,
+      lifeLinkMemberships: { [rootLifeLink.id]: memberships }, lifeLinkMembershipsComplete: { [rootLifeLink.id]: true }
+    });
+    await controller.openHierarchy();
+    expect(api.listLifeLinks).toHaveBeenCalledTimes(2);
+    expect(api.listLifeLinkCollectionMemberships).toHaveBeenCalledTimes(2);
+    controller.dispose();
+  });
+
   it("searches every category without routing through the old physical-only UI search", async () => {
     const api = fakeApi(); const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/") });
     await controller.start();
@@ -257,6 +279,29 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.searchRecords.mock.calls.map(([input]) => input.category).sort()).toEqual(["attachments", "calendar", "collections", "history", "life_links", "routines"]);
     expect(api.searchLifeLinks).not.toHaveBeenCalled();
     expect(Object.values(controller.getSnapshot().recordSearch.groups).every((group) => group.searched && !group.loading)).toBe(true);
+    controller.dispose();
+  });
+
+  it.each([
+    { mode: "boot", recovery: false }, { mode: "login", recovery: false },
+    { mode: "boot", recovery: true }, { mode: "login", recovery: true }
+  ])("retries incomplete $mode membership loading with recovery=$recovery", async ({ mode, recovery }) => {
+    const api = fakeApi();
+    if (mode === "login") api.getMe.mockResolvedValue({ user: null, qrBaseUrl: "https://example.test", agentConnection: disconnectedAgentConnection });
+    const memberships = [{ collection, sections: [section] }];
+    api.listLifeLinkCollectionMemberships.mockRejectedValueOnce(new Error("Membership read unavailable"));
+    if (recovery) api.listLifeLinkCollectionMemberships.mockResolvedValue({ memberships, nextCursor: null, truncated: false });
+    else api.listLifeLinkCollectionMemberships.mockRejectedValue(new Error("Membership read unavailable"));
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    if (mode === "login") await controller.login(owner.email, "password");
+    expect(api.listLifeLinks).toHaveBeenCalledTimes(2);
+    expect(api.listLifeLinkCollectionMemberships).toHaveBeenCalledTimes(2);
+    expect(controller.getSnapshot().lifeLinkMembershipsComplete[rootLifeLink.id]).toBe(recovery);
+    if (recovery) {
+      expect(controller.getSnapshot().lifeLinkMemberships[rootLifeLink.id]).toEqual(memberships);
+      expect(controller.getSnapshot().error).toBe("");
+    } else expect(controller.getSnapshot().error).toContain("Membership read unavailable");
     controller.dispose();
   });
 
@@ -1874,6 +1919,66 @@ describe("LifeLinksWorkspaceController", () => {
     controller.dispose();
   });
 
+  it.each(["hierarchy", "Collection"] as const)("measures complete %s membership loading with bounded independent reads", async (mode) => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    vi.useFakeTimers();
+    try {
+      const records = Array.from({ length: 8 }, (_, index) => ({ ...canonicalLink, id: `life-link-timing-${index}`, title: `Item ${index}` }));
+      const summaries = records.map((record) => ({ ...canonicalSummary, ...record }));
+      const anotherCollection = { ...collection, id: "collection-second", title: "Winter" };
+      const anotherSection = { ...section, id: "section-second", title: "Cycling", position: 1 };
+      const memberships = [{ collection, sections: [section] }, { collection: anotherCollection, sections: [] }];
+      let requests = 0;
+      let active = 0;
+      let maximum = 0;
+      const delayed = async <T,>(result: T): Promise<T> => {
+        requests += 1;
+        maximum = Math.max(maximum, ++active);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        active -= 1;
+        return result;
+      };
+      api.listLifeLinks.mockImplementation(async () => delayed({ lifeLinks: summaries, nextCursor: null, truncated: false }));
+      api.getCollection.mockImplementation(async (_id, options = {}) => delayed({
+        collection, sections: options.cursor ? [anotherSection] : [section],
+        sectionsPage: { nextCursor: options.cursor || options.limit === 1 ? null : "sections-2", truncated: !options.cursor && options.limit !== 1 }
+      }));
+      api.listCollectionMembers.mockImplementation(async (_id, options = {}) => delayed({
+        lifeLinks: options.cursor ? records.slice(4) : records.slice(0, 4),
+        nextCursor: options.cursor ? null : "members-2", truncated: !options.cursor
+      }));
+      api.listLifeLinkCollectionMemberships.mockImplementation(async (_id, options = {}) => delayed({
+        memberships: [memberships[options.cursor ? 1 : 0]],
+        nextCursor: options.cursor ? null : "memberships-2", truncated: !options.cursor
+      }));
+      const started = Date.now();
+      const pending = mode === "hierarchy" ? controller.openHierarchy() : controller.openCollection(collection.id);
+      await vi.advanceTimersByTimeAsync(25);
+      if (mode === "hierarchy") {
+        expect(controller.getSnapshot().rootLifeLinks.items).toEqual(summaries);
+        expect(Object.values(controller.getSnapshot().lifeLinkMembershipsComplete)).not.toContain(true);
+      } else {
+        expect(controller.getSnapshot()).toMatchObject({ collectionLoading: true, collectionComplete: false });
+      }
+      await vi.runAllTimersAsync();
+      await pending;
+      expect({ elapsed: Date.now() - started, requests, maximum }).toEqual(mode === "hierarchy"
+        ? { elapsed: 125, requests: 17, maximum: 4 }
+        : { elapsed: 225, requests: 21, maximum: 4 });
+      expect(controller.getSnapshot().lifeLinkMemberships).toEqual(Object.fromEntries(records.map((record) => [record.id, memberships])));
+      expect(controller.getSnapshot().lifeLinkMembershipsComplete).toEqual(Object.fromEntries(records.map((record) => [record.id, true])));
+      if (mode === "Collection") {
+        expect(controller.getSnapshot()).toMatchObject({ collectionMembers: records, collectionSections: [section, anotherSection], collectionComplete: true });
+        expect(api.getLifeLinkDetail).not.toHaveBeenCalled();
+      }
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("exhausts Collection, Section, member and Details membership pages on a deep link", async () => {
     const api = fakeApi();
     const anotherCollection = { ...collection, id: "collection-cccccccc-cccc-4ccc-8ccc-cccccccccccc", title: "Winter" };
@@ -1906,6 +2011,65 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.listLifeLinkCollectionMemberships).toHaveBeenCalledWith(canonicalLink.id, { cursor: "membership-page-2", limit: 25 });
     expect(route.pushes).toEqual([]);
     expect(api.getLifeLinkDetail.mock.calls.every(([id]) => id === canonicalLink.id)).toBe(true);
+    controller.dispose();
+  });
+
+  it("discards in-flight parallel hierarchy memberships and stops queued reads after logout", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    const records = Array.from({ length: 8 }, (_, index) => ({ ...canonicalSummary, id: `life-link-pending-${index}` }));
+    api.listLifeLinks.mockResolvedValue({ lifeLinks: records, nextCursor: null, truncated: false });
+    const pendingReads: Array<() => void> = [];
+    api.listLifeLinkCollectionMemberships.mockImplementation(() => new Promise((resolve) => {
+      pendingReads.push(() => resolve({ memberships: [{ collection, sections: [section] }], nextCursor: null, truncated: false }));
+    }));
+    const pending = controller.openHierarchy();
+    await vi.waitFor(() => expect(pendingReads).toHaveLength(4));
+    await controller.logout();
+    pendingReads.forEach((resolve) => resolve());
+    await pending;
+    expect(api.listLifeLinkCollectionMemberships).toHaveBeenCalledTimes(4);
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, lifeLinkMemberships: {}, lifeLinkMembershipsComplete: {} });
+    controller.dispose();
+  });
+
+  it("does not call Collection data complete when the final revision changed", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    api.getCollection.mockImplementation(async (_id, options = {}) => ({
+      collection: options.limit === 1 ? { ...collection, updatedAt: "2026-09-03T12:00:00.000Z" } : collection,
+      sections: [section], sectionsPage: { nextCursor: null, truncated: false }
+    }));
+    await controller.openCollection(collection.id);
+    expect(api.listCollectionMembers).toHaveBeenCalledTimes(1);
+    expect(api.listLifeLinkCollectionMemberships).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot()).toMatchObject({ collectionComplete: false, collectionLoading: false, collectionMembers: [], selectedCollection: null });
+    expect(controller.getSnapshot().error).toContain("Collection changed while loading");
+    controller.dispose();
+  });
+
+  it("anchors Collection membership reads after the first header revision", async () => {
+    const api = fakeApi();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/collections") });
+    await controller.start();
+    const header = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["getCollection"]>>>();
+    const changed = { ...collection, updatedAt: "2026-09-03T12:00:00.000Z" };
+    const anotherMember = { ...canonicalLink, id: "life-link-added-during-header", qrId: null };
+    let currentMembers = [canonicalLink];
+    api.getCollection.mockImplementationOnce(() => header.promise).mockResolvedValue({
+      collection: changed, sections: [section], sectionsPage: { nextCursor: null, truncated: false }
+    });
+    api.listCollectionMembers.mockImplementation(async () => ({ lifeLinks: [...currentMembers], nextCursor: null, truncated: false }));
+    const pending = controller.openCollection(collection.id);
+    // The first header is delayed across an atomic membership/revision change.
+    // A speculative member read here would retain the old member snapshot.
+    currentMembers = [canonicalLink, anotherMember];
+    header.resolve({ collection: changed, sections: [section], sectionsPage: { nextCursor: null, truncated: false } });
+    await pending;
+    expect(controller.getSnapshot()).toMatchObject({ selectedCollection: changed, collectionComplete: true, collectionMembers: currentMembers });
+    expect(api.listCollectionMembers).toHaveBeenCalledTimes(1);
     controller.dispose();
   });
 
@@ -3474,7 +3638,7 @@ function fakeApi() {
     updateRoutineGroup: vi.fn<LifeLinksWorkspaceApi["updateRoutineGroup"]>(),
     updateRoutineSchedule: vi.fn<LifeLinksWorkspaceApi["updateRoutineSchedule"]>(),
     getConfig: vi.fn(async () => ({ qrBaseUrl: "https://example.test", maxBatchCount: 10000 })),
-    getMe: vi.fn(async () => ({
+    getMe: vi.fn<LifeLinksWorkspaceApi["getMe"]>(async () => ({
       user: owner,
       qrBaseUrl: "https://example.test",
       agentConnection: disconnectedAgentConnection
