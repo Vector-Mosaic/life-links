@@ -5,6 +5,13 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import {
   normalizeCollectionChangeInput, normalizeCalendarEventEditTarget, assertCalendarEventEditTargetMatches,
   resolveCalendarZonedDateTime, materializeCalendarEventWindow, pageCollectionRecords,
+  normalizeCollectionId, COLLECTION_ID_PREFIX, normalizeCollectionSectionId, COLLECTION_SECTION_ID_PREFIX,
+  normalizeRoutineId, ROUTINE_ID_PREFIX, normalizeRoutineRevisionId, ROUTINE_REVISION_ID_PREFIX,
+  normalizeActivityId, ACTIVITY_ID_PREFIX, normalizeRoutineGroupId, ROUTINE_GROUP_ID_PREFIX,
+  normalizeRoutineStepId, ROUTINE_STEP_ID_PREFIX, normalizeRoutineBindingId, ROUTINE_BINDING_ID_PREFIX,
+  normalizeRoutineScheduleId, ROUTINE_SCHEDULE_ID_PREFIX, normalizeRoutineRunId, ROUTINE_RUN_ID_PREFIX,
+  normalizeRoutineSessionId, ROUTINE_SESSION_ID_PREFIX, normalizeRoutineSessionAmendmentId, ROUTINE_SESSION_AMENDMENT_ID_PREFIX,
+  normalizeCalendarEventId, CALENDAR_EVENT_ID_PREFIX, normalizeCalendarEventRevisionId, CALENDAR_EVENT_REVISION_ID_PREFIX,
   type CreateRoutineCommand, type ReviseRoutineCommand, type CreateLifeLinkCommand, type UpdateLifeLinkCommand,
   type CalendarEventSpanInput, type CalendarEventRevisionRecord, type CreateCalendarEventCommand,
   type ReviseCalendarEventCommand, type ProviderCalendarEventWritableContent, type CalendarProviderEventProjection,
@@ -30,7 +37,33 @@ export type RemoteAgentOperationsDeps = {
   now?: () => string;
 };
 
-const id = z.string().min(1).max(4096);
+const id = z.string().min(1).max(4096).describe("Exact existing ID or revision handle returned by a Life Links tool. Copy it unchanged; do not invent, shorten, or replace its namespace.");
+function newCanonicalId(label: string, prefix: string, normalize: (value: unknown) => string) {
+  const description = `New ${label} ID: ${prefix}<UUID>, for example ${prefix}12345678-1234-4123-8123-123456789abc. A bare UUID is invalid. Generate once and reuse the same full ID and payload on retries.`;
+  // Core owns identity syntax. The MCP schema explains it; validation delegates
+  // to that same normalizer without inventing a prefix, ID or parallel regex.
+  return z.string().min(1).max(4096).refine(value => {
+    try { normalize(value); return true; } catch { return false; }
+  }, { message: description }).describe(description);
+}
+const newId = {
+  collection: newCanonicalId("Collection", COLLECTION_ID_PREFIX, normalizeCollectionId),
+  section: newCanonicalId("Collection Section", COLLECTION_SECTION_ID_PREFIX, normalizeCollectionSectionId),
+  routine: newCanonicalId("Routine", ROUTINE_ID_PREFIX, normalizeRoutineId),
+  revision: newCanonicalId("Routine revision", ROUTINE_REVISION_ID_PREFIX, normalizeRoutineRevisionId),
+  activity: newCanonicalId("Activity", ACTIVITY_ID_PREFIX, normalizeActivityId),
+  group: newCanonicalId("Routine Group", ROUTINE_GROUP_ID_PREFIX, normalizeRoutineGroupId),
+  step: newCanonicalId("Routine Step/activity entry", ROUTINE_STEP_ID_PREFIX, normalizeRoutineStepId),
+  binding: newCanonicalId("Routine context binding", ROUTINE_BINDING_ID_PREFIX, normalizeRoutineBindingId),
+  schedule: newCanonicalId("Routine Schedule", ROUTINE_SCHEDULE_ID_PREFIX, normalizeRoutineScheduleId),
+  run: newCanonicalId("Routine Run", ROUTINE_RUN_ID_PREFIX, normalizeRoutineRunId),
+  session: newCanonicalId("completed Routine Session", ROUTINE_SESSION_ID_PREFIX, normalizeRoutineSessionId),
+  amendment: newCanonicalId("Routine Session correction", ROUTINE_SESSION_AMENDMENT_ID_PREFIX, normalizeRoutineSessionAmendmentId),
+  event: newCanonicalId("native Calendar event", CALENDAR_EVENT_ID_PREFIX, normalizeCalendarEventId),
+  eventRevision: newCanonicalId("native Calendar event revision", CALENDAR_EVENT_REVISION_ID_PREFIX, normalizeCalendarEventRevisionId)
+};
+const newLifeLinkId = z.string().min(1).max(4096).describe("New stable physical Life Link ID. Any nonblank string is supported; a UUID or life-link-<UUID> is suitable. Generate once and reuse the exact ID and payload on retries. Do not reuse a QR label as a new record identity.");
+const commandId = z.string().min(1).max(4096).describe("New stable operation/command ID, not a record ID. Reuse it with the identical command on retries; do not reuse it for a different change.");
 const stamp = z.string().datetime({ offset: true });
 const text = z.string().max(4000);
 const title = z.string().min(1).max(120);
@@ -45,9 +78,9 @@ const values = z.array(z.discriminatedUnion("kind", [
   z.object({ ...valueBase, kind: z.literal("text"), text }).strict(),
   z.object({ ...valueBase, kind: z.literal("boolean"), value: z.boolean() }).strict()
 ])).max(32);
-const step = z.object({ id: id.optional(), activityId: id, activityTitle: title, position: z.number().int().nonnegative(),
+const step = z.object({ id: newId.step.optional().describe(`${newId.step.description} Optional: omission derives a stable ID from the revision and entry position.`), activityId: id, activityTitle: title, position: z.number().int().nonnegative(),
   instructions: text.optional(), optional: z.boolean().optional(), plannedValues: values.optional() }).strict();
-const binding = z.object({ id: id.optional(), routineStepId: id.nullable().optional(), targetType: z.enum(["life_link", "collection"]), targetId: id }).strict();
+const binding = z.object({ id: newId.binding.optional().describe(`${newId.binding.description} Optional: omission derives a stable ID from the revision and binding position.`), routineStepId: id.nullable().optional(), targetType: z.enum(["life_link", "collection"]), targetId: id }).strict();
 const definition = { title, purpose: z.string().max(500).optional(), instructions: text.optional(), ordering: z.enum(["unordered", "ordered"]).optional(),
   steps: z.array(step).max(100), bindings: z.array(binding).max(100).optional() };
 const namedPatch = z.object({ title: title.optional(), notes: text.optional() }).strict();
@@ -158,7 +191,7 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
       { actor: "agent", signal: c.signal, authorize: () => admit(c, categoryCapability(input.category)) }));
   add("maintain_record", "Create a private physical Life Link, edit its content, or move its exact current revision. New IDs must be stable across retries. Public visibility is not changed.", {
     command: z.discriminatedUnion("action", [
-      z.object({ action: z.literal("create"), id, title, parentId: id.nullable().optional(), browsingRole: z.enum(["container", "item"]).optional(), body: text.optional(), context: structured.optional() }).strict(),
+      z.object({ action: z.literal("create"), id: newLifeLinkId, title, parentId: id.nullable().optional(), browsingRole: z.enum(["container", "item"]).optional(), body: text.optional(), context: structured.optional() }).strict(),
       z.object({ action: z.literal("update"), lifeLinkId: id, expectedUpdatedAt: stamp, patch: z.object({ title: title.optional(), body: text.optional(), context: structured.optional() }).strict() }).strict(),
       z.object({ action: z.literal("move"), lifeLinkId: id, expectedUpdatedAt: stamp, parentId: id.nullable() }).strict()
     ])
@@ -170,8 +203,8 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
   });
   add("manage_record_qr", "Bind or clear a QR on an existing physical record using exact revision and stable command ID. Does not create a public projection.", {
     command: z.discriminatedUnion("action", [
-      z.object({ action: z.literal("bind"), commandId: id, lifeLinkId: id, expectedUpdatedAt: stamp, qrId: id }).strict(),
-      z.object({ action: z.literal("clear"), commandId: id, lifeLinkId: id, expectedUpdatedAt: stamp }).strict()
+      z.object({ action: z.literal("bind"), commandId, lifeLinkId: id, expectedUpdatedAt: stamp, qrId: id }).strict(),
+      z.object({ action: z.literal("clear"), commandId, lifeLinkId: id, expectedUpdatedAt: stamp }).strict()
     ])
   }, "records", true, async ({ command }, c) => {
     if (command.action === "bind") { const { action, ...input } = command; return required(await store.setLifeLinkQrBinding(c.ownerId, input)); }
@@ -188,10 +221,10 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
     });
   add("maintain_collection", "Create/edit a Collection, add a member, or maintain its local sections. Removal and bulk moves use prepare_change/apply_change.", {
     command: z.discriminatedUnion("action", [
-      z.object({ action: z.literal("create"), id, title, purpose: z.string().max(500).optional(), notes: text.optional() }).strict(),
+      z.object({ action: z.literal("create"), id: newId.collection, title, purpose: z.string().max(500).optional(), notes: text.optional() }).strict(),
       z.object({ action: z.literal("update"), collectionId: id, expectedUpdatedAt: stamp, patch: z.object({ title: title.optional(), purpose: z.string().max(500).optional(), notes: text.optional() }).strict() }).strict(),
       z.object({ action: z.literal("add_member"), collectionId: id, lifeLinkId: id, expectedUpdatedAt: stamp }).strict(),
-      z.object({ action: z.literal("create_section"), id, collectionId: id, title, expectedUpdatedAt: stamp }).strict(),
+      z.object({ action: z.literal("create_section"), id: newId.section, collectionId: id, title, expectedUpdatedAt: stamp }).strict(),
       z.object({ action: z.literal("update_section"), collectionId: id, sectionId: id, title, expectedUpdatedAt: stamp }).strict(),
       z.object({ action: z.literal("assign_sections"), collectionId: id, lifeLinkId: id, sectionIds: z.array(id).max(100), expectedUpdatedAt: stamp }).strict()
     ])
@@ -223,12 +256,12 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
     });
   add("maintain_routine", "Create or revise future Routine defaults, organize its Group, or maintain reusable Activities/Groups. New Routine defaults unordered; revisions preserve history and safely re-pin future plans. Supply stable new IDs.", {
     command: z.discriminatedUnion("action", [
-      z.object({ action: z.literal("create"), id, revisionId: id, groupId: id.nullable().optional(), ...definition }).strict(),
-      z.object({ action: z.literal("revise"), routineId: id, revisionId: id, expectedCurrentRevisionId: id, ...definition }).strict(),
+      z.object({ action: z.literal("create"), id: newId.routine, revisionId: newId.revision, groupId: id.nullable().optional(), ...definition }).strict(),
+      z.object({ action: z.literal("revise"), routineId: id, revisionId: newId.revision, expectedCurrentRevisionId: id, ...definition }).strict(),
       z.object({ action: z.literal("organize"), routineId: id, expectedUpdatedAt: stamp, groupId: id.nullable() }).strict(),
-      z.object({ action: z.literal("create_activity"), id, title, notes: text.optional() }).strict(),
+      z.object({ action: z.literal("create_activity"), id: newId.activity, title, notes: text.optional() }).strict(),
       z.object({ action: z.literal("update_activity"), activityId: id, expectedUpdatedAt: stamp, patch: namedPatch }).strict(),
-      z.object({ action: z.literal("create_group"), id, title, notes: text.optional() }).strict(),
+      z.object({ action: z.literal("create_group"), id: newId.group, title, notes: text.optional() }).strict(),
       z.object({ action: z.literal("update_group"), groupId: id, expectedUpdatedAt: stamp, patch: namedPatch }).strict()
     ])
   }, "routines", true, async ({ command }, c) => {
@@ -255,7 +288,7 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
   add("routine_schedule", "List/create/update schedules or materialize/read planned occurrences. Calendar time and execution history remain distinct; rule zones must be valid IANA zones.", {
     command: z.discriminatedUnion("action", [
       z.object({ action: z.literal("list"), routineId: id, ...page }).strict(),
-      z.object({ action: z.literal("create"), id, routineId: id, routineRevisionId: id, rule: scheduleRule, active: z.boolean().optional() }).strict(),
+      z.object({ action: z.literal("create"), id: newId.schedule, routineId: id, routineRevisionId: id, rule: scheduleRule, active: z.boolean().optional() }).strict(),
       z.object({ action: z.literal("update"), scheduleId: id, expectedUpdatedAt: stamp, patch: z.object({ rule: scheduleRule.optional(), active: z.boolean().optional() }).strict() }).strict(),
       z.object({ action: z.literal("materialize"), routineId: id, startDate: date, endDate: date }).strict(),
       z.object({ action: z.literal("occurrences"), routineId: id.optional(), startDate: date.optional(), endDate: date.optional(), ...page }).strict(),
@@ -320,10 +353,10 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
   });
   add("record_routine_run", "Start/resume execution, record actual and separately proposed future values, finalize one immutable Session, or append a correction. Returns compact saved identities/update tokens; retrieve full values with routine_history sections. Does not silently revise future defaults.", {
     command: z.discriminatedUnion("action", [
-      z.object({ action: z.literal("start"), id, routineId: id, occurrenceId: id.nullable().optional() }).strict(),
+      z.object({ action: z.literal("start"), id: newId.run, routineId: id, occurrenceId: id.nullable().optional() }).strict(),
       z.object({ action: z.literal("result"), runId: id, routineStepId: id, expectedUpdatedAt: stamp, actualValues: values, proposedNextValues: values, notes: text.optional() }).strict(),
-      z.object({ action: z.literal("finalize"), runId: id, sessionId: id, expectedUpdatedAt: stamp }).strict(),
-      z.object({ action: z.literal("amend"), id, sessionId: id, stepResultId: id.nullable().optional(), note: text,
+      z.object({ action: z.literal("finalize"), runId: id, sessionId: newId.session, expectedUpdatedAt: stamp }).strict(),
+      z.object({ action: z.literal("amend"), id: newId.amendment, sessionId: id, stepResultId: id.nullable().optional(), note: text,
         correctedActualValues: values.nullable().optional(), correctedProposedNextValues: values.nullable().optional() }).strict()
     ])
   }, "routines", true, async ({ command }, c) => {
@@ -399,8 +432,8 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
       });
     add("create_calendar_event", "Create one native event or one standalone Google/Outlook event with stable IDs. Provider invitations, conferences and recurring writes are unsupported; native recurrence remains explicit.", {
       command: z.discriminatedUnion("authority", [
-        z.object({ authority: z.literal("native"), id, revisionId: id, calendarId: id, ...eventFields }).strict(),
-        z.object({ authority: z.literal("provider"), commandId: id, connectionId: id, calendarId: id, content: providerContent }).strict()
+        z.object({ authority: z.literal("native"), id: newId.event, revisionId: newId.eventRevision, calendarId: id, ...eventFields }).strict(),
+        z.object({ authority: z.literal("provider"), commandId, connectionId: id, calendarId: id, content: providerContent }).strict()
       ])
     }, "calendar", true, async ({ command }, c) => {
       await admit(c, "calendar", true, command.calendarId);
@@ -416,10 +449,10 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
     });
     add("update_calendar_event", "Edit the exact current event revision. Native patch accepts explicit event/series scope. Provider edits require the full desired standalone content and exact provider revision; never send invitations.", {
       command: z.discriminatedUnion("authority", [
-        z.object({ authority: z.literal("native"), eventId: id, revisionId: id, expectedCurrentRevisionId: id, target: nativeTarget,
+        z.object({ authority: z.literal("native"), eventId: id, revisionId: newId.eventRevision, expectedCurrentRevisionId: id, target: nativeTarget,
           patch: z.object({ title: title.optional(), description: text.optional(), location: z.string().max(500).optional(), status: z.enum(["confirmed", "tentative", "canceled"]).optional(),
             span: nativeSpan.optional(), recurrence: structured.nullable().optional(), subjectLinks: z.array(structured).max(100).optional() }).strict() }).strict(),
-        z.object({ authority: z.literal("provider"), commandId: id, connectionId: id, calendarId: id, providerEventId: id,
+        z.object({ authority: z.literal("provider"), commandId, connectionId: id, calendarId: id, providerEventId: id,
           expectedProviderRevision: id, scope: z.literal("event"), content: providerContent }).strict()
       ])
     }, "calendar", true, async ({ command }, c) => {
@@ -494,7 +527,7 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
       z.object({ kind: z.literal("provider_calendar"), connectionId: id, calendarId: id, providerEventId: id, expectedProviderRevision: id, scope: z.literal("event") }).strict()
     ]);
     add("prepare_change", "Prepare the complete exact move/removal effects. Repeat the full target list to the user, then apply this same previewId. Deletion requires one trusted host confirmation; no confirmed argument is accepted. Routine deletion is recoverable archive; provider deletion affects originals.", {
-      requestId: z.string().uuid(), command: selection
+      requestId: z.string().uuid().describe("New bare UUID for this exact preview request; no namespace prefix. Reuse it with the identical selection on retries, then use the returned previewId for apply_change."), command: selection
     }, (input) => changeCapability(input.command.kind), true, async ({ requestId, command }, c) => {
       const approvalId = `remote-change-${requestId}`;
       try {

@@ -79,6 +79,10 @@ async function fixture(env: NodeJS.ProcessEnv = {}, integrated = false) {
     const result = new URL(redirect.headers.location);
     expect(result.origin).toBe(new URL(extra.redirect_uri ?? CALLBACK).origin); expect(result.searchParams.get("state")).toBe("synthetic-state");
     expect(result.searchParams.has("error")).toBe(false);
+    const metadata = await request(app).get("/oauth/.well-known/openid-configuration").set("Host", new URL(BASE).host);
+    expect(metadata.status).toBe(200); expect(metadata.body.issuer).toBe(auth.issuer);
+    expect(metadata.body.authorization_response_iss_parameter_supported).toBe(true);
+    expect(result.searchParams.getAll("iss")).toEqual([metadata.body.issuer]);
     return { code: result.searchParams.get("code")!, verifier, consent };
   };
   const exchange = (clientId: string, code: string, verifier: string, callback = CALLBACK) => request(app).post("/oauth/token").type("form").send({

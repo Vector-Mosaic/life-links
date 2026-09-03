@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import { DEFAULT_QR_BASE_URL, DEMO_PASSWORD } from "@life-links/core";
 import { InMemoryLifeLinksStore } from "../src/store.js";
 import { createRemoteAgentOperations } from "../src/remote-agent-operations.js";
@@ -43,6 +45,82 @@ async function harness() {
 }
 
 describe("remote MCP semantic operations", () => {
+  it("rejects a bare Collection UUID before mutation and accepts the documented stable Collection and Section identities", async () => {
+    const h = await harness();
+    const createCollection = vi.spyOn(h.store, "createCollection");
+    const uuid = randomUUID();
+    const command = { action: "create", id: uuid, title: "Camping context" };
+    await expect(h.call("maintain_collection", { command })).rejects.toMatchObject({ name: "ZodError", issues: expect.arrayContaining([
+      expect.objectContaining({ path: ["command", "id"], message: expect.stringContaining("collection-<UUID>") })
+    ]) });
+    expect(createCollection).not.toHaveBeenCalled();
+    const valid = { ...command, id: `collection-${uuid}` };
+    const created = await h.call("maintain_collection", { command: valid });
+    expect(created.id).toBe(valid.id);
+    expect(await h.call("maintain_collection", { command: valid })).toEqual(created);
+    const sectionId = id("section");
+    const section = await h.call("maintain_collection", { command: { action: "create_section", id: sectionId,
+      collectionId: created.id, expectedUpdatedAt: created.updatedAt, title: "Next trip" } });
+    expect(section.section.id).toBe(sectionId);
+  });
+
+  it("publishes precise canonical namespaces for every new entity ID while retaining exact returned-handle guidance", async () => {
+    const h = await harness(); const operations = createRemoteAgentOperations(h.deps);
+    const cases = [
+      ["maintain_collection", "create", "id", "collection-"],
+      ["maintain_collection", "create_section", "id", "section-"],
+      ["maintain_routine", "create", "id", "routine-"],
+      ["maintain_routine", "create", "revisionId", "routine-revision-"],
+      ["maintain_routine", "revise", "revisionId", "routine-revision-"],
+      ["maintain_routine", "create_activity", "id", "activity-"],
+      ["maintain_routine", "create_group", "id", "routine-group-"],
+      ["routine_schedule", "create", "id", "routine-schedule-"],
+      ["record_routine_run", "start", "id", "routine-run-"],
+      ["record_routine_run", "finalize", "sessionId", "routine-session-"],
+      ["record_routine_run", "amend", "id", "routine-session-amendment-"],
+      ["create_calendar_event", "native", "id", "calendar-event-"],
+      ["create_calendar_event", "native", "revisionId", "calendar-event-revision-"],
+      ["update_calendar_event", "native", "revisionId", "calendar-event-revision-"]
+    ];
+    for (const [toolName, action, field, prefix] of cases) {
+      const operation = operations.find(tool => tool.name === toolName)!;
+      const union = operation.inputSchema.command as z.ZodDiscriminatedUnion<string, any>;
+      const variant = union.options.find((item: any) => (item.shape.action ?? item.shape.authority).value === action) as z.AnyZodObject;
+      const schema = variant.shape[field];
+      expect(schema.safeParse(randomUUID()).success).toBe(false);
+      expect(schema.safeParse(`wrong-${randomUUID()}`).success).toBe(false);
+      expect(schema.safeParse(`${prefix}${randomUUID()}`).success).toBe(true);
+      // Preserve canonical normalizer acceptance rather than inventing stricter
+      // identifier syntax in the transport (core trims and lowercases IDs).
+      expect(schema.safeParse(` ${prefix}${randomUUID().toUpperCase()} `).success).toBe(true);
+      const published = toJsonSchemaCompat(z.object(operation.inputSchema), { strictUnions: true, pipeStrategy: "input" }) as any;
+      const publicVariant = published.properties.command.anyOf.find((item: any) => (item.properties.action ?? item.properties.authority).const === action);
+      const property = publicVariant.properties[field];
+      const publicId = property.$ref ? property.$ref.slice(2).split("/").reduce((value: any, key: string) => value[key], published) : property;
+      expect(publicId).toMatchObject({ type: "string", description: expect.stringContaining(`${prefix}<UUID>`) });
+      expect(publicId.description).toContain("bare UUID is invalid");
+      expect(publicId.description).toContain("reuse");
+    }
+    const routine = operations.find(tool => tool.name === "maintain_routine")!;
+    const create = (routine.inputSchema.command as z.ZodDiscriminatedUnion<string, any>).options[0] as z.AnyZodObject;
+    for (const [field, prefix] of [["steps", "routine-step-"], ["bindings", "routine-binding-"]]) {
+      const array = create.shape[field] instanceof z.ZodOptional ? create.shape[field].unwrap() : create.shape[field];
+      const schema = array.element.shape.id;
+      expect(schema.safeParse(undefined).success).toBe(true);
+      expect(schema.safeParse(randomUUID()).success).toBe(false);
+      expect(schema.safeParse(`${prefix}${randomUUID()}`).success).toBe(true);
+      const published = toJsonSchemaCompat(z.object(routine.inputSchema)) as any;
+      expect(published.properties.command.anyOf[0].properties[field].items.properties.id.description).toContain(`${prefix}<UUID>`);
+      expect(published.properties.command.anyOf[0].properties[field].items.properties.id.description).toContain("omission derives a stable ID");
+    }
+    const existing = toJsonSchemaCompat(z.object(operations.find(tool => tool.name === "inspect_collection")!.inputSchema)) as any;
+    expect(existing.properties.collectionId.description).toContain("Copy it unchanged");
+    const physical = operations.find(tool => tool.name === "maintain_record")!;
+    const physicalCreate = (physical.inputSchema.command as z.ZodDiscriminatedUnion<string, any>).options[0] as z.AnyZodObject;
+    expect(physicalCreate.shape.id.safeParse(randomUUID()).success).toBe(true);
+    expect(physicalCreate.shape.id.description).toContain("Any nonblank string");
+  });
+
   it("authors a Routine, schedules and executes it, then preserves immutable history while revising defaults and appending a correction", async () => {
     const h = await harness();
     const activity = await h.call("maintain_routine", { command: { action: "create_activity", id: id("activity"), title: "Prepare kit" } });
