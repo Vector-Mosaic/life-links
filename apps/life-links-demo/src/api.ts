@@ -361,7 +361,13 @@ export type CollectionDetailResponse = {
   sections: CollectionSectionRecord[];
   sectionsPage: { nextCursor: string | null; truncated: boolean };
 };
-export type CollectionMembersResponse = { lifeLinks: LifeLinkRecord[]; nextCursor: string | null; truncated: boolean };
+export type CollectionMemberPageOptions = PageOptions & { includeMemberships?: boolean };
+export type CollectionMembersResponse = {
+  lifeLinks: LifeLinkRecord[];
+  nextCursor: string | null;
+  truncated: boolean;
+  membershipPages?: Record<string, LifeLinkMembershipsResponse>;
+};
 export type LifeLinkMembershipsResponse = { memberships: LifeLinkCollectionMembership[]; nextCursor: string | null; truncated: boolean };
 
 function pageSuffix(options: RoutinePageOptions): string {
@@ -832,8 +838,10 @@ export async function updateCollection(collectionId: string, expectedUpdatedAt: 
   });
 }
 
-export async function listCollectionMembers(collectionId: string, options: PageOptions = {}) {
-  return apiFetch<CollectionMembersResponse>(`/api/collections/${encodeURIComponent(collectionId)}/members${pageSuffix(options)}`, { signal: options.signal });
+export async function listCollectionMembers(collectionId: string, options: CollectionMemberPageOptions = {}) {
+  const page = pageSuffix(options);
+  const suffix = `${page}${options.includeMemberships ? `${page ? "&" : "?"}include=memberships` : ""}`;
+  return apiFetch<CollectionMembersResponse>(`/api/collections/${encodeURIComponent(collectionId)}/members${suffix}`, { signal: options.signal });
 }
 
 export async function listLifeLinkCollectionMemberships(lifeLinkId: string, options: PageOptions = {}) {

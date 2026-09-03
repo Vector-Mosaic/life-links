@@ -578,6 +578,12 @@ describe("Life Links Postgres integration", () => {
       do {
         const page = (await parityStore.listCollectionMembers(ownerId, collection.id, { limit: 3, cursor }))!;
         expect(page).toEqual(pageCollectionRecords([...children].sort(compareCollectionTitleOrder), { limit: 3, cursor }));
+        const enriched = (await parityStore.listCollectionMembers(ownerId, collection.id, { limit: 3, cursor, includeMemberships: true }))!;
+        const { membershipPages, ...unchanged } = enriched;
+        expect(unchanged).toEqual(page);
+        expect(Object.keys(membershipPages!)).toEqual(page.items.map(item => item.id));
+        for (const member of page.items) expect(membershipPages![member.id])
+          .toEqual(await parityStore.listLifeLinkCollectionMemberships(ownerId, member.id));
         cursor = page.nextCursor;
       } while (cursor);
       expect((await parityStore.listLifeLinks(DEMO_OWNER_ID, parent.id)).items).toEqual([]);
@@ -587,6 +593,46 @@ describe("Life Links Postgres integration", () => {
       })).rejects.toMatchObject({ code: "invalid_collection" });
       expect((await parityStore.getLifeLinkDetail(ownerId, grandchild.id))!.ancestry.items.map(item => item.id))
         .toEqual([parent.id, children[0].id, grandchild.id]);
+    });
+
+    it("keeps enriched Collection workspace context in the member snapshot during a concurrent Section edit", async () => {
+      const ownerId = DEMO_GUEST_ID;
+      const member = await parityStore.createLifeLink({ id: `snapshot-member-${randomUUID()}`, ownerId,
+        title: "Snapshot member", createdAt: "2026-09-03T12:00:00.000Z" });
+      let collection = await parityStore.createCollection({ id: `collection-${randomUUID()}`, ownerId,
+        title: "Snapshot context", createdAt: "2026-09-03T12:00:00.000Z" });
+      collection = (await parityStore.addCollectionMember(ownerId, { collectionId: collection.id,
+        lifeLinkId: member.id, expectedUpdatedAt: collection.updatedAt }))!;
+      const section = (await parityStore.createCollectionSection(ownerId, { id: `section-${randomUUID()}`,
+        collectionId: collection.id, title: "Original section", expectedUpdatedAt: collection.updatedAt }))!;
+      collection = (await parityStore.replaceCollectionSectionAssignments(ownerId, { collectionId: collection.id,
+        lifeLinkId: member.id, sectionIds: [section.section.id], expectedUpdatedAt: section.collection.updatedAt }))!;
+      const operationClient = await parityPool.connect(), realQuery = operationClient.query;
+      let edited = false, claimed = false;
+      const querySpy = vi.spyOn(operationClient, "query").mockImplementation((...args: unknown[]) => {
+        const result = Reflect.apply(realQuery, operationClient, args);
+        if (typeof args[0] !== "string" || !args[0].includes("SELECT m.life_link_id, c.*")) return result;
+        return Promise.resolve(result).then(async (rows) => {
+          await parityStore.updateCollectionSection(ownerId, { collectionId: collection.id, sectionId: section.section.id,
+            expectedUpdatedAt: collection.updatedAt, title: "New section" });
+          edited = true;
+          return rows;
+        });
+      });
+      const connectSpy = vi.spyOn(parityPool, "connect").mockImplementationOnce(() => {
+        claimed = true; return Promise.resolve(operationClient) as never;
+      });
+      try {
+        const page = (await parityStore.listCollectionMembers(ownerId, collection.id, { includeMemberships: true }))!;
+        expect(edited).toBe(true);
+        expect(page.membershipPages![member.id].items).toEqual([{ collection, sections: [section.section] }]);
+      } finally {
+        querySpy.mockRestore(); connectSpy.mockRestore();
+        if (!claimed) operationClient.release();
+      }
+      const current = (await parityStore.listLifeLinkCollectionMemberships(ownerId, member.id))!;
+      expect(current.items[0].sections[0].title).toBe("New section");
+      expect(current.items[0].collection.updatedAt).not.toBe(collection.updatedAt);
     });
 
     it("removes and explicitly reselects only one provider Calendar without admitting its old sync generation", async () => {

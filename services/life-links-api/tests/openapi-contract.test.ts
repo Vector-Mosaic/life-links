@@ -1346,6 +1346,18 @@ describe("Life Links OpenAPI v1", () => {
     expect(detail.required).toEqual(["collection", "sections", "sectionsPage"]);
     const membership = objectValue(objectValue(schemas.LifeLinkCollectionMembership, "membership").properties, "membership properties");
     expect(objectValue(membership.sections, "membership sections")).not.toHaveProperty("maxItems");
+    const memberOperation = operations.get("GET /api/collections/{collectionId}/members")!;
+    expect(memberOperation.parameters).toContainEqual(expect.objectContaining({ name: "include", in: "query",
+      schema: { type: "string", enum: ["memberships"] } }));
+    const memberPage = objectValue(schemas.CollectionMemberListResponse, "CollectionMemberListResponse");
+    expect(memberPage.required).toEqual(["lifeLinks", "nextCursor", "truncated"]);
+    const memberProperties = objectValue(memberPage.properties, "member page properties");
+    expect(objectValue(memberProperties.lifeLinks, "full members").items).toEqual({ $ref: "#/components/schemas/LifeLink" });
+    const enriched = objectValue(memberProperties.membershipPages, "membershipPages");
+    expect(enriched.additionalProperties).toEqual({ allOf: [
+      { $ref: "#/components/schemas/CollectionMembershipListResponse" },
+      { properties: { memberships: { maxItems: 25 } } }
+    ] });
     const assignments = objectValue(schemas.CollectionSectionAssignmentsRequest, "assignment command");
     expect(assignments.required).toEqual(["sectionIds", "expectedUpdatedAt"]);
     expect(objectValue(schemas.QrBindingSetRequest, "set QR").required).toEqual(["commandId", "qrId", "expectedUpdatedAt"]);

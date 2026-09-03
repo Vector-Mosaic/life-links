@@ -1304,7 +1304,7 @@ describe("Life Links API", () => {
     expect(detail.body.detail).toMatchObject({ collectionMemberships: [], collectionMembershipsPage: { nextCursor: null, truncated: false } });
   });
 
-  it("serves revision-safe Collections, overlapping Sections and exhaustive membership reads", async () => {
+  it("serves revision-safe Collection workspace, overlapping Sections and exhaustive membership reads", async () => {
     await login();
     const lifeLink = (await ctx.agent.post("/api/life-links").send({ title: "Sleeping pad" })).body.lifeLink;
     const create = { id: "collection-00000000-0000-4000-8000-000000000210", title: "Camping Gear", purpose: "Annual trip", notes: "Two adults" };
@@ -1350,6 +1350,21 @@ describe("Life Links API", () => {
     expect(membershipPage.body.truncated).toBe(true);
     const membershipNext = await ctx.agent.get(`/api/life-links/${lifeLink.id}/collection-memberships`).query({ cursor: membershipPage.body.nextCursor, limit: 1 });
     expect(membershipNext.body.memberships[0].collection.id).toBe(secondCollection.body.collection.id);
+    const membersUrl = `/api/collections/${collection.id}/members`;
+    const legacyMembers = await ctx.agent.get(membersUrl).query({ limit: 1 });
+    const enrichedMembers = await ctx.agent.get(membersUrl).query({ limit: 1, include: "memberships" });
+    expect(enrichedMembers.status).toBe(200);
+    const { membershipPages, ...legacyShape } = enrichedMembers.body;
+    expect(legacyShape).toEqual(legacyMembers.body);
+    expect(legacyMembers.body).not.toHaveProperty("membershipPages");
+    expect(Object.keys(membershipPages)).toEqual([lifeLink.id]);
+    expect(membershipPages[lifeLink.id]).toEqual((await ctx.agent.get(`/api/life-links/${lifeLink.id}/collection-memberships`)).body);
+    expect(membershipPages[lifeLink.id].memberships).toHaveLength(2);
+    expect(membershipPages[lifeLink.id].memberships[0].sections).toHaveLength(2);
+    for (const include of ["", "all", ["memberships", "memberships"]]) {
+      expect((await ctx.agent.get(membersUrl).query({ include })).status).toBe(400);
+    }
+    expect((await request(ctx.app).get(membersUrl).query({ include: "memberships" })).status).toBe(401);
     const removedSection = await ctx.agent.delete(`/api/collections/${collection.id}/sections/${first.body.section.id}`).send({ expectedUpdatedAt: collection.updatedAt });
     expect(removedSection.status).toBe(200);
     collection = removedSection.body.collection;
@@ -1358,6 +1373,8 @@ describe("Life Links API", () => {
     expect(removed.status).toBe(200);
     expect((await ctx.agent.get(`/api/life-links/${lifeLink.id}`)).status).toBe(200);
     expect((await ctx.agent.get(`/api/collections/${collection.id}/members`)).body.lifeLinks).toEqual([]);
+    expect((await ctx.agent.get(membersUrl).query({ include: "memberships" })).body)
+      .toEqual({ lifeLinks: [], nextCursor: null, truncated: false, membershipPages: {} });
   });
 
   it("keeps Collections owner-scoped and validates exact mutation shapes", async () => {

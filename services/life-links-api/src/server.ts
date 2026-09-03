@@ -1150,11 +1150,18 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
 
   app.get("/api/collections/:collectionId/members", requireAuthenticated, async (request: AppRequest, response) => {
     const collectionId = normalizeCollectionId(paramValue(request.params.collectionId));
+    const include = request.query.include;
+    if (include !== undefined && include !== "memberships") {
+      rejectValidation(request, response, logger, "include", "invalid_collection_include"); return;
+    }
     const page = readLifeLinkPageQuery(request, response, logger, MAX_LIFE_LINK_CHILD_PAGE_LIMIT);
     if (!page) return;
-    const result = await store.listCollectionMembers(request.user!.id, collectionId, page);
+    const result = await store.listCollectionMembers(request.user!.id, collectionId,
+      { ...page, ...(include === "memberships" ? { includeMemberships: true } : {}) });
     if (!result) { sendCanonicalLifeLinkError(response, 404, "collection_not_found"); return; }
-    response.json({ lifeLinks: result.items, nextCursor: result.nextCursor, truncated: result.truncated });
+    response.json({ lifeLinks: result.items, nextCursor: result.nextCursor, truncated: result.truncated,
+      ...(result.membershipPages ? { membershipPages: Object.fromEntries(Object.entries(result.membershipPages).map(([id, page]) =>
+        [id, { memberships: page.items, nextCursor: page.nextCursor, truncated: page.truncated }])) } : {}) });
   });
 
   app.put("/api/collections/:collectionId/members/:lifeLinkId", requireAuthenticated, async (request: AppRequest, response) => {

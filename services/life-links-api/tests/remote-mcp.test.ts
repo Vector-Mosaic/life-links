@@ -330,8 +330,14 @@ describe("remote MCP Streamable HTTP boundary", () => {
     const operation: RemoteAgentOperation = { name: "held_read", description: "Synthetic selected-session read", inputSchema: {}, readOnly: true, destructive: false,
       execute: async (_args, context) => { await operationGate; context.signal!.throwIfAborted(); return text({ finished: true }); } };
     const test = await fixture({ operations: [operation], now: () => clock, limits: { sessions: 2, sessionsPerGrant: 1, idleMs: 10 } });
-    const expired = await test.connect({ token: "foreign-token" });
-    await expired.client.callTool({ name: "get_life_links_guide" });
+    // A real SDK client starts its GET stream without awaiting it. A late GET
+    // would refresh lastUsedAt after the fake clock advances, making this
+    // session non-expired and leaving the cleanup barrier waiting forever.
+    // Consume a raw initialize response instead: idle handshake expiry uses
+    // the same cleanup path, with no autonomous request racing the clock.
+    const expired = await initialize(test.url, 1, "foreign-token");
+    expect(expired.status).toBe(200);
+    await expired.text();
     clock += 5;
     const selected = await test.connect();
     await selected.client.callTool({ name: "get_life_links_guide" });

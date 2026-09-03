@@ -557,6 +557,21 @@ describe("Life Links API error normalization", () => {
     ]);
   });
 
+  it("requests bounded member enrichment explicitly without changing legacy member calls", async () => {
+    const response = { lifeLinks: [], membershipPages: {}, nextCursor: null, truncated: false };
+    const fetchMock = stubJsonResponse(200, response);
+    const abort = new AbortController();
+    await expect(listCollectionMembers("collection/1", { includeMemberships: true, signal: abort.signal })).resolves.toEqual(response);
+    await listCollectionMembers("collection/1", { cursor: "members/page", limit: 10, includeMemberships: true });
+    await listCollectionMembers("collection/1", { includeMemberships: false });
+    expect(fetchMock.mock.calls.map(([path]) => path)).toEqual([
+      "/api/collections/collection%2F1/members?include=memberships",
+      "/api/collections/collection%2F1/members?cursor=members%2Fpage&limit=10&include=memberships",
+      "/api/collections/collection%2F1/members"
+    ]);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ signal: abort.signal, credentials: "include" });
+  });
+
   it("preserves stable creation IDs, exact revisions and complete assignment replacement payloads", async () => {
     const fetchMock = stubJsonResponse(200, {});
     await createLifeLink({ id: "life-link-1", parentId: "parent-1", browsingRole: "container", title: "Tub" });

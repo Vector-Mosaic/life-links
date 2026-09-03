@@ -162,6 +162,7 @@ import {
   type CalendarEventDeleteInput,
   type CalendarEventRevisionInput,
   type CollectionCreateInput,
+  type LifeLinkMembershipsResponse,
   type RoutineCreateInput,
   type RoutineOccurrenceListOptions,
   type RoutineRevisionCreateInput,
@@ -4729,9 +4730,14 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     }
   }
 
-  private async readMemberships(lifeLinkId: string, signal?: AbortSignal) {
+  private async readMemberships(lifeLinkId: string, signal?: AbortSignal, initialPage?: LifeLinkMembershipsResponse, assertActive?: () => void) {
     return readAllPages(async (cursor) => {
-      const page = await this.api.listLifeLinkCollectionMemberships(lifeLinkId, { cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal });
+      signal?.throwIfAborted();
+      assertActive?.();
+      const page = cursor === null && initialPage ? initialPage
+        : await this.api.listLifeLinkCollectionMemberships(lifeLinkId, { cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal });
+      signal?.throwIfAborted();
+      assertActive?.();
       return { ...page, items: page.memberships };
     });
   }
@@ -4807,11 +4813,35 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   private async readCollectionWorkspace(collectionId: string, signal?: AbortSignal, selectedId?: string | null) {
+    const ownerRevision = this.ownerRevision;
+    const navigation = this.navigationRevision;
+    const assertActive = () => {
+      signal?.throwIfAborted();
+      if (ownerRevision !== this.ownerRevision || navigation !== this.navigationRevision) {
+        throw new Error("Collection loading was interrupted. Open it again to refresh.");
+      }
+    };
     // Anchor the revision before member reads; a newer header must not bless
     // members captured before a concurrent Collection change.
     const { collection, sections } = await this.readCollectionSections(collectionId, signal);
+    const initialMembershipPages = new Map<string, LifeLinkMembershipsResponse>();
     const members = await readAllPages(async (cursor) => {
-      const page = await this.api.listCollectionMembers(collectionId, { cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, signal });
+      assertActive();
+      const page = await this.api.listCollectionMembers(collectionId, { cursor, limit: DEFAULT_LIFE_LINK_CHILD_PAGE_LIMIT, includeMemberships: true, signal });
+      assertActive();
+      const memberIds = new Set(page.lifeLinks.map((member) => member.id));
+      if (!page.membershipPages || Object.keys(page.membershipPages).length !== memberIds.size ||
+          Object.keys(page.membershipPages).some((id) => !memberIds.has(id))) {
+        throw new Error("Collection membership pages are incomplete. Open it again to refresh.");
+      }
+      for (const member of page.lifeLinks) {
+        const membershipPage = page.membershipPages[member.id];
+        if (!membershipPage || !Array.isArray(membershipPage.memberships) || typeof membershipPage.truncated !== "boolean" ||
+            (membershipPage.nextCursor !== null && typeof membershipPage.nextCursor !== "string")) {
+          throw new Error("Collection membership pages are incomplete. Open it again to refresh.");
+        }
+        initialMembershipPages.set(member.id, membershipPage);
+      }
       return { ...page, items: page.lifeLinks };
     });
     const details: Record<string, LifeLinkDetail> = {};
@@ -4819,12 +4849,15 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     // Section membership is sufficient to display the collapsed overview. Full
     // canonical Details (including attachment metadata) load only on demand.
     await forEachWorkspaceItem(members, async (member) => {
-      memberships[member.id] = await this.readMemberships(member.id, signal);
+      memberships[member.id] = await this.readMemberships(member.id, signal, initialMembershipPages.get(member.id), assertActive);
     });
+    assertActive();
     if (selectedId && members.some((member) => member.id === selectedId)) {
       details[selectedId] = (await this.api.getLifeLinkDetail(selectedId, { signal })).detail;
     }
+    assertActive();
     const latest = await this.api.getCollection(collectionId, { limit: 1, signal });
+    assertActive();
     if (latest.collection.updatedAt !== collection.updatedAt) throw new Error("Collection changed while loading. Open it again to refresh.");
     return { collection, sections, members, details, memberships };
   }

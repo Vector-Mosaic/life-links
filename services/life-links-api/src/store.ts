@@ -375,6 +375,11 @@ export class CompetitionFixtureShapeMismatchError extends Error {}
  * QR views are projections used by the current
  * HTTP surface and must not grow an independent persistence path.
  */
+export type CollectionMemberPageRequest = LifeLinkPageRequest & { includeMemberships?: boolean };
+export type CollectionMemberPage = LifeLinkPage<LifeLinkRecord> & {
+  membershipPages?: Record<string, LifeLinkPage<LifeLinkCollectionMembership>>;
+};
+
 export type LifeLinksStore = {
   previewLifeLinkChange(userId: string, input: PreviewLifeLinkChangeInput): Promise<LifeLinkChangePreview>;
   getLifeLinkChangePreview(userId: string, previewId: string): Promise<LifeLinkChangePreview | null>;
@@ -415,7 +420,7 @@ export type LifeLinksStore = {
   getCollection(userId: string, collectionId: string): Promise<CollectionRecord | null>;
   createCollection(command: CreateCollectionCommand): Promise<CollectionRecord>;
   updateCollection(userId: string, command: UpdateCollectionCommand): Promise<CollectionRecord | null>;
-  listCollectionMembers(userId: string, collectionId: string, page?: LifeLinkPageRequest): Promise<LifeLinkPage<LifeLinkRecord> | null>;
+  listCollectionMembers(userId: string, collectionId: string, page?: CollectionMemberPageRequest): Promise<CollectionMemberPage | null>;
   addCollectionMember(userId: string, command: CollectionMemberCommand): Promise<CollectionRecord | null>;
   removeCollectionMember(userId: string, command: CollectionMemberCommand): Promise<CollectionRecord | null>;
   listCollectionSections(userId: string, collectionId: string, page?: LifeLinkPageRequest): Promise<LifeLinkPage<CollectionSectionRecord> | null>;
@@ -1107,7 +1112,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     });
   }
 
-  async listCollectionMembers(userId: string, collectionId: string, page: LifeLinkPageRequest = {}): Promise<LifeLinkPage<LifeLinkRecord> | null> {
+  async listCollectionMembers(userId: string, collectionId: string, page: CollectionMemberPageRequest = {}): Promise<CollectionMemberPage | null> {
     collectionId = normalizeCollectionId(collectionId);
     if (!this.ownedCollection(userId, collectionId)) {
       return null;
@@ -1117,7 +1122,9 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       .map((membership) => this.lifeLinks.get(membership.lifeLinkId)!)
       .sort(compareCollectionTitleOrder)
       .map((lifeLink) => this.hydrateLifeLink(lifeLink));
-    return pageCollectionRecords(members, page);
+    const result = pageCollectionRecords(members, page);
+    return page.includeMemberships ? { ...result, membershipPages: Object.fromEntries(result.items.map((member) =>
+      [member.id, this.readLifeLinkMembershipPage(userId, member.id)])) } : result;
   }
 
   async addCollectionMember(userId: string, command: CollectionMemberCommand): Promise<CollectionRecord | null> {
@@ -1270,6 +1277,10 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     if (!lifeLink || lifeLink.ownerId !== userId) {
       return null;
     }
+    return this.readLifeLinkMembershipPage(userId, lifeLinkId, page);
+  }
+
+  private readLifeLinkMembershipPage(userId: string, lifeLinkId: string, page: LifeLinkPageRequest = {}): LifeLinkPage<LifeLinkCollectionMembership> {
     const collections = Array.from(this.collectionMemberships.values())
       .filter((membership) => membership.ownerId === userId && membership.lifeLinkId === lifeLinkId)
       .map((membership) => this.collections.get(membership.collectionId)!)

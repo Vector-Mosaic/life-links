@@ -322,6 +322,52 @@ export function fieldLedgerStoreContract(getStore: () => LifeLinksStore): void {
       expect(new Set([...page!.items, ...rest!.items].map((entry) => entry.collection.id)).size).toBe(2);
     });
 
+    it("enriches Collection workspace member pages with complete bounded cross-Collection context", async () => {
+      const store = getStore(), ownerId = DEMO_GUEST_ID;
+      const first = await createItem("A enriched member", ownerId);
+      const second = await createItem("B enriched member", ownerId);
+      let collection = await createCollection("A enriched context", ownerId);
+      for (const item of [first, second]) collection = (await store.addCollectionMember(ownerId, {
+        collectionId: collection.id, lifeLinkId: item.id, expectedUpdatedAt: collection.updatedAt }))!;
+      const sections: string[] = [];
+      for (const title of ["First section", "Second section"]) {
+        const result = (await store.createCollectionSection(ownerId, { id: id("section"), collectionId: collection.id,
+          title, expectedUpdatedAt: collection.updatedAt }))!;
+        collection = result.collection; sections.push(result.section.id);
+      }
+      collection = (await store.replaceCollectionSectionAssignments(ownerId, { collectionId: collection.id,
+        lifeLinkId: first.id, sectionIds: sections, expectedUpdatedAt: collection.updatedAt }))!;
+      for (let index = 0; index < 25; index++) {
+        const other = await createCollection(`Context ${String(index).padStart(2, "0")}`, ownerId);
+        await store.addCollectionMember(ownerId, { collectionId: other.id, lifeLinkId: first.id, expectedUpdatedAt: other.updatedAt });
+      }
+      const legacy = (await store.listCollectionMembers(ownerId, collection.id, { limit: 1 }))!;
+      expect(legacy).not.toHaveProperty("membershipPages");
+      const enriched = (await store.listCollectionMembers(ownerId, collection.id, { limit: 1, includeMemberships: true }))!;
+      const { membershipPages, ...unchanged } = enriched;
+      expect(unchanged).toEqual(legacy);
+      expect(Object.keys(membershipPages!)).toEqual([first.id]);
+      const initial = membershipPages![first.id];
+      expect(initial).toEqual(await store.listLifeLinkCollectionMemberships(ownerId, first.id));
+      expect(initial.items).toHaveLength(25);
+      expect(initial.items[0].sections.map(section => section.id)).toEqual(sections);
+      expect(initial.truncated).toBe(true);
+      const rest = (await store.listLifeLinkCollectionMemberships(ownerId, first.id, { cursor: initial.nextCursor }))!;
+      expect(rest.items).toHaveLength(1);
+      expect(rest).toMatchObject({ nextCursor: null, truncated: false });
+      expect(new Set([...initial.items, ...rest.items].map(entry => entry.collection.id)).size).toBe(26);
+      const next = (await store.listCollectionMembers(ownerId, collection.id,
+        { limit: 1, cursor: enriched.nextCursor, includeMemberships: true }))!;
+      expect(Object.keys(next.membershipPages!)).toEqual([second.id]);
+      expect(next.membershipPages![second.id]).toEqual(await store.listLifeLinkCollectionMemberships(ownerId, second.id));
+      expect(next.membershipPages![second.id].items[0].sections).toEqual([]);
+      expect(await store.listCollectionMembers(DEMO_OWNER_ID, collection.id, { includeMemberships: true })).toBeNull();
+      expect(await store.listLifeLinkCollectionMemberships(DEMO_OWNER_ID, first.id)).toBeNull();
+      const empty = await createCollection("Empty enriched context", ownerId);
+      expect(await store.listCollectionMembers(ownerId, empty.id, { includeMemberships: true }))
+        .toEqual({ items: [], nextCursor: null, truncated: false, membershipPages: {} });
+    });
+
     it("rejects cross-owner and cross-Collection assignments without partial writes", async () => {
       const store = getStore();
       const item = await createItem();

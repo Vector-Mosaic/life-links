@@ -2339,7 +2339,7 @@
       "get": {
         "operationId": "listCollectionMembers",
         "summary": "Read a page of canonical Collection member items",
-        "description": "Owner-scoped canonical operation. Missing and other-owner targets are indistinguishable. Collection mutations require the Collection revision; exact target-state retries return current state without reapplying effects.",
+        "description": "Returns full canonical member records in canonical title/identity order. Missing and other-owner targets are indistinguishable. Optional include=memberships enriches every returned member with its first 25 cross-Collection memberships, including every assigned Section; membership cursors continue independently through the existing item collection-memberships endpoint. Member selection, full records/media and enriched context share one database snapshot. Omit include to retain the exact legacy response. Unsupported include values are rejected. Collection mutations require the Collection revision; exact target-state retries return current state without reapplying effects.",
         "tags": [
           "collections"
         ],
@@ -2355,6 +2355,13 @@
           },
           {
             "$ref": "#/components/parameters/LifeLinkPageLimit"
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "enum": ["memberships"] },
+            "description": "Opt in to a bounded membership page for every returned member; independent of the outer member limit."
           }
         ],
         "responses": {
@@ -2368,7 +2375,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/LifeLinkListResponse"
+                  "$ref": "#/components/schemas/CollectionMemberListResponse"
                 }
               }
             }
@@ -5633,6 +5640,27 @@
           },
           "truncated": {
             "type": "boolean"
+          }
+        }
+      },
+      "CollectionMemberListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["lifeLinks", "nextCursor", "truncated"],
+        "properties": {
+          "lifeLinks": { "type": "array", "maxItems": 100, "items": { "$ref": "#/components/schemas/LifeLink" } },
+          "nextCursor": { "oneOf": [{ "$ref": "#/components/schemas/LifeLinkCursor" }, { "type": "null" }] },
+          "truncated": { "type": "boolean" },
+          "membershipPages": {
+            "type": "object",
+            "maxProperties": 100,
+            "description": "Present only for include=memberships. Keys are exactly the returned member IDs (including an empty object for an empty page). Each value is the first 25 memberships with an independent ordinary continuation cursor; all assigned Sections remain included.",
+            "additionalProperties": {
+              "allOf": [
+                { "$ref": "#/components/schemas/CollectionMembershipListResponse" },
+                { "properties": { "memberships": { "maxItems": 25 } } }
+              ]
+            }
           }
         }
       },

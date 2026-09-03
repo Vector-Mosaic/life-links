@@ -188,6 +188,8 @@ import {
   type CompetitionFixtureResetOptions,
   type CompetitionFixtureResetReport,
   type LifeLinkMediaFile,
+  type CollectionMemberPageRequest,
+  type CollectionMemberPage,
   type LifeLinksStore,
   type MaterializeRoutineOccurrencesInput,
   type CalendarPageRequest,
@@ -783,8 +785,8 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
   }
 
   async listCollectionMembers(
-    userId: string, collectionId: string, page: LifeLinkPageRequest = {}
-  ): Promise<LifeLinkPage<LifeLinkRecord> | null> {
+    userId: string, collectionId: string, page: CollectionMemberPageRequest = {}
+  ): Promise<CollectionMemberPage | null> {
     collectionId = normalizeCollectionId(collectionId);
     const client = await this.pool.connect();
     try {
@@ -810,8 +812,10 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         const byId = new Map(result.rows.map(row => { const record = mapLifeLinkRow(row); return [record.id, record] as const; }));
         items = await this.attachLifeLinkMedia(client, selected.items.map(item => byId.get(item.id)!));
       }
+      const membershipPages = page.includeMemberships
+        ? await this.readLifeLinkMembershipPages(client, userId, items.map((item) => item.id)) : undefined;
       await client.query("COMMIT");
-      return { ...selected, items };
+      return { ...selected, items, ...(membershipPages ? { membershipPages } : {}) };
     } catch (error) { await client.query("ROLLBACK"); throw error; }
     finally { client.release(); }
   }
@@ -978,21 +982,44 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     userId: string, lifeLinkId: string, page: LifeLinkPageRequest = {}
   ): Promise<LifeLinkPage<LifeLinkCollectionMembership> | null> {
     if (!(await ownerHasLifeLink(this.pool, userId, lifeLinkId))) return null;
-    const result = await this.pool.query(
-      `SELECT c.* FROM collections c JOIN collection_memberships m ON m.collection_id = c.id AND m.owner_id = c.owner_id
-       WHERE m.owner_id = $1 AND m.life_link_id = $2`, [userId, lifeLinkId]
-    );
-    const collections = pageCollectionRecords(result.rows.map(mapCollection).sort(compareTitledRecords), page);
-    const assignments = await this.pool.query(
-      `SELECT s.* FROM collection_sections s JOIN collection_section_assignments a
-       ON a.section_id = s.id AND a.owner_id = s.owner_id AND a.collection_id = s.collection_id
-       WHERE a.owner_id = $1 AND a.life_link_id = $2 AND a.collection_id = ANY($3::text[])`,
-      [userId, lifeLinkId, collections.items.map((item) => item.id)]
-    );
-    const sections = assignments.rows.map(mapCollectionSection).sort(compareSections);
-    return { ...collections, items: collections.items.map((collection) => ({
-      collection, sections: sections.filter((section) => section.collectionId === collection.id)
-    })) };
+    return (await this.readLifeLinkMembershipPages(this.pool, userId, [lifeLinkId], page))[lifeLinkId];
+  }
+
+  // Both the ordinary continuation endpoint and opt-in member enrichment use
+  // this projection. Callers establish ownership; SQL repeats owner predicates.
+  private async readLifeLinkMembershipPages(
+    queryable: Queryable, userId: string, lifeLinkIds: string[], page: LifeLinkPageRequest = {}
+  ): Promise<Record<string, LifeLinkPage<LifeLinkCollectionMembership>>> {
+    if (!lifeLinkIds.length) return {};
+    const result = await queryable.query(
+      `SELECT m.life_link_id, c.* FROM collections c
+       JOIN collection_memberships m ON m.collection_id = c.id AND m.owner_id = c.owner_id
+       WHERE m.owner_id = $1 AND m.life_link_id = ANY($2::text[])`, [userId, lifeLinkIds]);
+    const byMember = new Map(lifeLinkIds.map((id) => [id, [] as CollectionRecord[]]));
+    for (const row of result.rows) byMember.get(String(row.life_link_id))?.push(mapCollection(row));
+    const pages = Array.from(byMember, ([id, collections]) => [id,
+      pageCollectionRecords(collections.sort(compareTitledRecords), page)] as const);
+    const selectedPairs = pages.flatMap(([lifeLinkId, result]) => result.items.map((collection) =>
+      ({ life_link_id: lifeLinkId, collection_id: collection.id })));
+    const byMemberSections = new Map<string, Map<string, CollectionSectionRecord[]>>();
+    if (selectedPairs.length) {
+      const assignments = await queryable.query(
+        `SELECT a.life_link_id, s.* FROM collection_sections s
+         JOIN collection_section_assignments a
+           ON a.section_id = s.id AND a.owner_id = s.owner_id AND a.collection_id = s.collection_id
+         JOIN jsonb_to_recordset($2::jsonb) AS selected(life_link_id text, collection_id text)
+           ON selected.life_link_id = a.life_link_id AND selected.collection_id = a.collection_id
+         WHERE a.owner_id = $1`, [userId, JSON.stringify(selectedPairs)]);
+      for (const row of assignments.rows) {
+        const memberId = String(row.life_link_id), section = mapCollectionSection(row);
+        const collections = byMemberSections.get(memberId) ?? new Map<string, CollectionSectionRecord[]>();
+        const sections = collections.get(section.collectionId) ?? [];
+        sections.push(section); collections.set(section.collectionId, sections); byMemberSections.set(memberId, collections);
+      }
+    }
+    return Object.fromEntries(pages.map(([id, result]) => [id, { ...result,
+      items: result.items.map((collection) => ({ collection,
+        sections: (byMemberSections.get(id)?.get(collection.id) ?? []).sort(compareSections) })) }]));
   }
 
   async setLifeLinkQrBinding(userId: string, command: SetLifeLinkQrBindingCommand): Promise<LifeLinkRecord | null> {

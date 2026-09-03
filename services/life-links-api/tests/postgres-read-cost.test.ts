@@ -30,7 +30,15 @@ function fixture() {
     metrics.queries++;
     if (/^(BEGIN|COMMIT|ROLLBACK)/.test(sql)) return { rows: [] };
     let rows: Record<string, unknown>[];
-    if (sql.includes("FROM collections")) {
+    if (sql.includes("SELECT m.life_link_id, c.*")) {
+      rows = records.filter(record => record.ownerId === values[0] && (values[1] as string[]).includes(record.id)
+        && membershipIds.has(record.id)).map(record => ({ life_link_id: record.id, ...collection }));
+    } else if (sql.includes("jsonb_to_recordset")) {
+      const pairs = JSON.parse(values[1] as string) as { life_link_id: string; collection_id: string }[];
+      rows = pairs.filter(pair => values[0] === OWNER && membershipIds.has(pair.life_link_id) && pair.collection_id === COLLECTION)
+        .map(pair => ({ ...pair, id: "section-11111111-1111-4111-8111-111111111111", owner_id: OWNER,
+          title: "Shared section", position: 0, created_at: NOW, updated_at: NOW }));
+    } else if (sql.includes("FROM collections")) {
       rows = values.includes(OWNER) && values.includes(COLLECTION) ? [collection] : [];
     } else if (sql.includes("FROM link_media lm")) {
       const selected = new Set(values[0] as string[]);
@@ -97,5 +105,29 @@ describe("PostgreSQL canonical page read costs", () => {
     expect(await test.store.listCollectionMembers(OWNER, COLLECTION)).toEqual({ items: [], nextCursor: null, truncated: false });
     expect(test.metrics.fullRecords).toBe(10);
     expect(test.metrics.mediaRows).toBe(10);
+  });
+
+  it("enriches one or 25 selected members with the same two owner-scoped queries in the member snapshot", async () => {
+    for (const limit of [1, 25]) {
+      const test = fixture();
+      const page = (await test.store.listCollectionMembers(OWNER, COLLECTION, { limit, includeMemberships: true }))!;
+      expect(Object.keys(page.membershipPages!)).toEqual(page.items.map(item => item.id));
+      expect(test.metrics).toMatchObject({ queries: 8, fullRecords: limit, mediaRows: limit });
+      for (const member of page.items) {
+        expect(page.membershipPages![member.id]).toMatchObject({ truncated: false, nextCursor: null,
+          items: [{ collection: { id: COLLECTION, ownerId: OWNER }, sections: [{ title: "Shared section" }] }] });
+      }
+      const calls = test.query.mock.calls;
+      expect(calls[0][0]).toBe("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      expect(calls.at(-1)![0]).toBe("COMMIT");
+      const membership = calls.find(([sql]) => sql.includes("SELECT m.life_link_id, c.*"))!;
+      expect(membership[1]).toEqual([OWNER, page.items.map(item => item.id)]);
+      expect(calls.find(([sql]) => sql.includes("jsonb_to_recordset"))![0]).toContain("WHERE a.owner_id = $1");
+      expect(test.release).toHaveBeenCalledTimes(1);
+    }
+    const empty = fixture(); empty.membershipIds.clear();
+    expect(await empty.store.listCollectionMembers(OWNER, COLLECTION, { includeMemberships: true }))
+      .toEqual({ items: [], nextCursor: null, truncated: false, membershipPages: {} });
+    expect(empty.metrics).toMatchObject({ queries: 4, fullRecords: 0, mediaRows: 0 });
   });
 });
