@@ -45,6 +45,173 @@ async function harness() {
 }
 
 describe("remote MCP semantic operations", () => {
+  it("adds bounded membership reads without changing tool names, annotations or default physical and Collection results", async () => {
+    const h = await harness();
+    const operations = createRemoteAgentOperations(h.deps);
+    expect(operations.map(operation => operation.name).sort()).toEqual([
+      "apply_change", "create_calendar_event", "inspect_calendar_event", "inspect_collection", "inspect_record", "inspect_routine",
+      "list_calendars", "list_collections", "list_records", "list_routines", "maintain_collection", "maintain_record", "maintain_routine",
+      "manage_record_qr", "prepare_change", "query_calendar", "read_attachment", "read_attachment_image", "record_routine_run",
+      "routine_history", "routine_schedule", "search_records", "update_calendar_event"
+    ]);
+    for (const name of ["inspect_record", "inspect_collection"]) {
+      expect(operations.find(operation => operation.name === name)).toMatchObject({ readOnly: true, destructive: false, idempotent: true });
+    }
+    const recordTool = operations.find(operation => operation.name === "inspect_record")!;
+    const collectionTool = operations.find(operation => operation.name === "inspect_collection")!;
+    expect(z.object(recordTool.inputSchema).parse({ lifeLinkId: "record" }).section).toBe("detail");
+    expect(z.object(recordTool.inputSchema).safeParse({ lifeLinkId: "record", section: "unknown" }).success).toBe(false);
+    expect(z.object(collectionTool.inputSchema).safeParse({ collectionId: id("collection"), includeMemberships: "true" }).success).toBe(false);
+
+    const folder = await h.store.createLifeLink({ id: id("life-link"), ownerId: OWNER, title: "Physical shelf", browsingRole: "container", createdAt: at });
+    const record = await h.store.createLifeLink({ id: id("life-link"), ownerId: OWNER, title: "Unchanged physical record", parentId: folder.id, createdAt: at });
+    const expectedDetail = await h.store.getLifeLinkDetail(OWNER, record.id, { limit: 10 });
+    const memberships = vi.spyOn(h.store, "listLifeLinkCollectionMemberships");
+    const recordsOnly = { ...h.context, scopes: ["records:read"] };
+    expect(await h.call("inspect_record", { lifeLinkId: record.id }, recordsOnly)).toEqual(expectedDetail);
+    expect(await h.call("inspect_record", { lifeLinkId: record.id, section: "detail" }, recordsOnly)).toEqual(expectedDetail);
+    expect(memberships).not.toHaveBeenCalled();
+
+    let collection = await h.store.createCollection({ id: id("collection"), ownerId: OWNER, title: "Existing Collection", purpose: "Same purpose", notes: "Same notes", createdAt: at });
+    collection = (await h.store.addCollectionMember(OWNER, { collectionId: collection.id, lifeLinkId: record.id, expectedUpdatedAt: collection.updatedAt }))!;
+    const expectedMembers = { collection, entries: await h.store.listCollectionMembers(OWNER, collection.id, { limit: 10 }) };
+    expect(await h.call("inspect_collection", { collectionId: collection.id })).toEqual(expectedMembers);
+    expect(await h.call("inspect_collection", { collectionId: collection.id, includeMemberships: false })).toEqual(expectedMembers);
+    expect(await h.call("inspect_collection", { collectionId: collection.id, section: "sections" }))
+      .toEqual({ collection, entries: await h.store.listCollectionSections(OWNER, collection.id, { limit: 10 }) });
+    await expect(h.call("inspect_collection", { collectionId: collection.id, section: "sections", includeMemberships: true }))
+      .rejects.toMatchObject({ code: "memberships_require_members" });
+  });
+
+  it("returns canonical cross-Collection memberships and exact assigned Sections with independent inner and outer continuation", async () => {
+    const h = await harness();
+    const first = await h.store.createLifeLink({ id: id("life-link"), ownerId: OWNER, title: "A shared member", createdAt: at });
+    const second = await h.store.createLifeLink({ id: id("life-link"), ownerId: OWNER, title: "B unsectioned member", createdAt: at });
+    let collection = await h.store.createCollection({ id: id("collection"), ownerId: OWNER, title: "A current Collection", createdAt: at });
+    for (const record of [first, second]) collection = (await h.store.addCollectionMember(OWNER, {
+      collectionId: collection.id, lifeLinkId: record.id, expectedUpdatedAt: collection.updatedAt }))!;
+    const assignedSections = [];
+    for (const title of ["Ready to pack", "Tuesday routine"]) {
+      const section = (await h.store.createCollectionSection(OWNER, { id: id("section"), collectionId: collection.id,
+        title, expectedUpdatedAt: collection.updatedAt }))!;
+      collection = section.collection; assignedSections.push(section.section);
+    }
+    collection = (await h.store.replaceCollectionSectionAssignments(OWNER, { collectionId: collection.id, lifeLinkId: first.id,
+      sectionIds: assignedSections.map(section => section.id), expectedUpdatedAt: collection.updatedAt }))!;
+    const otherIds: string[] = [];
+    let lastSection;
+    for (let index = 0; index < 25; index++) {
+      let other = await h.store.createCollection({ id: id("collection"), ownerId: OWNER,
+        title: `Other purpose ${String(index).padStart(2, "0")}`, createdAt: at });
+      other = (await h.store.addCollectionMember(OWNER, { collectionId: other.id, lifeLinkId: first.id, expectedUpdatedAt: other.updatedAt }))!;
+      if (index === 24) {
+        const created = (await h.store.createCollectionSection(OWNER, { id: id("section"), collectionId: other.id,
+          title: "Later-page assignment", expectedUpdatedAt: other.updatedAt }))!;
+        lastSection = created.section;
+        await h.store.replaceCollectionSectionAssignments(OWNER, { collectionId: other.id, lifeLinkId: first.id,
+          sectionIds: [created.section.id], expectedUpdatedAt: created.collection.updatedAt });
+      }
+      otherIds.push(other.id);
+    }
+    const expectedFirst = (await h.store.listCollectionMembers(OWNER, collection.id, { limit: 1, includeMemberships: true }))!;
+    const physicalDetails = vi.spyOn(h.store, "getLifeLinkDetail");
+    const canonicalMemberships = vi.spyOn(h.store, "listLifeLinkCollectionMemberships");
+    const collectionsOnly = { ...h.context, scopes: ["collections:read"] };
+    const result = await h.call("inspect_collection", { collectionId: collection.id, limit: 1, includeMemberships: true }, collectionsOnly);
+    expect(result).toEqual({ collection, entries: expectedFirst });
+    expect(canonicalMemberships).not.toHaveBeenCalled();
+    expect(Object.keys(result.entries.membershipPages)).toEqual([first.id]);
+    const initial = result.entries.membershipPages[first.id];
+    expect(initial).toMatchObject({ truncated: true, nextCursor: expect.any(String) });
+    expect(initial.items).toHaveLength(25);
+    expect(initial.items[0]).toEqual({ collection, sections: assignedSections });
+
+    const remaining = await h.call("inspect_record", { lifeLinkId: first.id, section: "memberships", cursor: initial.nextCursor, limit: 25 }, collectionsOnly);
+    expect(canonicalMemberships).toHaveBeenCalledTimes(1);
+    expect(canonicalMemberships).toHaveBeenLastCalledWith(OWNER, first.id, expect.objectContaining({ cursor: initial.nextCursor, limit: 25 }));
+    expect(remaining).toEqual(await h.store.listLifeLinkCollectionMemberships(OWNER, first.id, { cursor: initial.nextCursor, limit: 25 }));
+    expect(remaining).toMatchObject({ nextCursor: null, truncated: false });
+    expect(remaining.items).toHaveLength(1);
+    expect(remaining.items[0]).toMatchObject({ collection: { id: otherIds[24] }, sections: [lastSection] });
+    expect([...initial.items, ...remaining.items].map(entry => entry.collection.id)).toEqual([collection.id, ...otherIds]);
+    const ownFirstPage = await h.call("inspect_record", { lifeLinkId: first.id, section: "memberships", limit: 25 }, collectionsOnly);
+    expect(ownFirstPage).toEqual(initial);
+    const ordinaryDefault = await h.call("inspect_record", { lifeLinkId: first.id, section: "memberships" }, collectionsOnly);
+    expect(ordinaryDefault).toEqual(await h.store.listLifeLinkCollectionMemberships(OWNER, first.id, { limit: 10 }));
+
+    const next = await h.call("inspect_collection", { collectionId: collection.id, includeMemberships: true, limit: 1,
+      cursor: result.entries.nextCursor }, collectionsOnly);
+    expect(next.entries).toEqual(await h.store.listCollectionMembers(OWNER, collection.id, {
+      includeMemberships: true, limit: 1, cursor: result.entries.nextCursor }));
+    expect(Object.keys(next.entries.membershipPages)).toEqual([second.id]);
+    expect(next.entries.membershipPages[second.id]).toEqual({ items: [{ collection, sections: [] }], nextCursor: null, truncated: false });
+    expect(physicalDetails).not.toHaveBeenCalled();
+  });
+
+  it("distinguishes empty memberships from unavailable records and denies record-only scope before Collection store access", async () => {
+    const h = await harness();
+    const record = await h.store.createLifeLink({ id: id("life-link"), ownerId: OWNER, title: "Not a Collection member", createdAt: at });
+    const foreignRecord = await h.store.createLifeLink({ id: id("life-link"), ownerId: "demo-guest", title: "Other owner's record", createdAt: at });
+    const empty = await h.store.createCollection({ id: id("collection"), ownerId: OWNER, title: "Empty", createdAt: at });
+    const foreignCollection = await h.store.createCollection({ id: id("collection"), ownerId: "demo-guest", title: "Other owner's Collection", createdAt: at });
+    const memberships = vi.spyOn(h.store, "listLifeLinkCollectionMemberships");
+    const collectionRead = vi.spyOn(h.store, "getCollection");
+    const members = vi.spyOn(h.store, "listCollectionMembers");
+    const physicalDetails = vi.spyOn(h.store, "getLifeLinkDetail");
+    const recordsOnly = { ...h.context, scopes: ["records:read"] };
+    await expect(h.call("inspect_record", { lifeLinkId: record.id, section: "memberships" }, recordsOnly))
+      .rejects.toMatchObject({ code: "remote_agent_insufficient_scope" });
+    await expect(h.call("inspect_collection", { collectionId: empty.id, includeMemberships: true }, recordsOnly))
+      .rejects.toMatchObject({ code: "remote_agent_insufficient_scope" });
+    expect(memberships).not.toHaveBeenCalled(); expect(collectionRead).not.toHaveBeenCalled(); expect(members).not.toHaveBeenCalled();
+    const collectionsOnly = { ...h.context, scopes: ["collections:read"] };
+    await expect(h.call("inspect_record", { lifeLinkId: record.id }, collectionsOnly))
+      .rejects.toMatchObject({ code: "remote_agent_insufficient_scope" });
+    expect(physicalDetails).not.toHaveBeenCalled();
+    expect(await h.call("inspect_record", { lifeLinkId: record.id, section: "memberships" }, collectionsOnly))
+      .toEqual({ items: [], nextCursor: null, truncated: false });
+    expect(await h.call("inspect_collection", { collectionId: empty.id, includeMemberships: true }, collectionsOnly))
+      .toEqual({ collection: empty, entries: { items: [], nextCursor: null, truncated: false, membershipPages: {} } });
+    for (const lifeLinkId of [foreignRecord.id, id("life-link")]) {
+      await expect(h.call("inspect_record", { lifeLinkId, section: "memberships" }, collectionsOnly)).rejects.toMatchObject({ code: "record_unavailable" });
+    }
+    for (const collectionId of [foreignCollection.id, id("collection")]) {
+      await expect(h.call("inspect_collection", { collectionId, includeMemberships: true }, collectionsOnly)).rejects.toMatchObject({ code: "record_unavailable" });
+    }
+    expect(physicalDetails).not.toHaveBeenCalled();
+  });
+
+  it.each(["inspect_record", "inspect_collection"] as const)("withholds %s membership results if access is revoked or the request is aborted during the canonical read", async tool => {
+    for (const interruption of ["revoke", "abort"] as const) {
+      const h = await harness();
+      const record = await h.store.createLifeLink({ id: id("life-link"), ownerId: OWNER, title: "Private delayed result", createdAt: at });
+      let collection = await h.store.createCollection({ id: id("collection"), ownerId: OWNER, title: "Private Collection", createdAt: at });
+      collection = (await h.store.addCollectionMember(OWNER, { collectionId: collection.id, lifeLinkId: record.id, expectedUpdatedAt: collection.updatedAt }))!;
+      let entered!: () => void; const started = new Promise<void>(resolve => { entered = resolve; });
+      let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+      if (tool === "inspect_record") {
+        const read = h.store.listLifeLinkCollectionMemberships.bind(h.store);
+        vi.spyOn(h.store, "listLifeLinkCollectionMemberships").mockImplementationOnce(async (...args) => {
+          const result = await read(...args); entered(); await gate; return result;
+        });
+      } else {
+        const read = h.store.listCollectionMembers.bind(h.store);
+        vi.spyOn(h.store, "listCollectionMembers").mockImplementationOnce(async (...args) => {
+          const result = await read(...args); entered(); await gate; return result;
+        });
+      }
+      const abort = new AbortController();
+      const pending = h.call(tool, tool === "inspect_record" ? { lifeLinkId: record.id, section: "memberships" }
+        : { collectionId: collection.id, includeMemberships: true }, { ...h.context, scopes: ["collections:read"], signal: abort.signal });
+      try {
+        await started;
+        if (interruption === "revoke") h.revoke(); else abort.abort();
+        release();
+        await expect(pending).rejects.toMatchObject(interruption === "revoke" ? { code: "remote_agent_access_denied" } : { name: "AbortError" });
+      } finally { release(); await pending.catch(() => undefined); }
+    }
+  });
+
   it("rejects a bare Collection UUID before mutation and accepts the documented stable Collection and Section identities", async () => {
     const h = await harness();
     const createCollection = vi.spyOn(h.store, "createCollection");

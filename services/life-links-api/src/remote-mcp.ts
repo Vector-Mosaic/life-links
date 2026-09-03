@@ -57,7 +57,7 @@ function failure(code: string): CallToolResult {
 const WORKFLOW_ERROR_CODES = new Set(["record_unavailable", "calendar_authority_mismatch", "attachment_changed",
   "remote_approval_conflict", "remote_approval_unavailable", "remote_approval_expired", "remote_approval_required",
   "invalid_change_selection", "invalid_routine_selection", "stale_routine", "stale_calendar_event",
-  "effect_not_confirmed", "invalid_change_kind"]);
+  "effect_not_confirmed", "invalid_change_kind", "memberships_require_members"]);
 function operationFailure(error: unknown): CallToolResult {
   if (error instanceof RemoteMcpError) return failure(error.code);
   if (error instanceof RemoteAgentAccessError) return failure(WORKFLOW_ERROR_CODES.has(error.code) ? error.code : "access_denied");

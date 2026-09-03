@@ -1,6 +1,6 @@
 {
-  "canonical_source_byte_count": 41221154,
-  "canonical_source_tree_sha256": "71f75496af4a89e7f791be0ad99162204193d83bd1338f5f564fea0a83081e1c",
+  "canonical_source_byte_count": 41237751,
+  "canonical_source_tree_sha256": "974ba26e86d41e2ff447c1723c36d6d22faa2c2150a3a133ede6b0bb230c2981",
   "excluded_globs": [
     "**/node_modules/**",
     "**/dist/**",
@@ -334,7 +334,7 @@
   "profile_id": "life-links-webmcp-challenge",
   "profile_path": "systems/life_links/config/publication/webmcp_challenge_public_release.profile.json",
   "profile_sha256": "3fd4eb3c4c10597835db9970e1e4f82a2200b4fa53a8931105e6060f8b90fddd",
-  "projection_commit": "3c0e033a34e1e19ffffcedbea43487f7e6d9e830",
+  "projection_commit": "d174eded667ea7a90f1ac735797e6100a19cea6e",
   "scaffold_destinations": [
     ".dockerignore",
     ".env.example",
@@ -424,8 +424,8 @@
     }
   ],
   "schema_version": "life_links.source_projection.v2",
-  "source_byte_count": 41220337,
-  "source_commit": "3c0e033a34e1e19ffffcedbea43487f7e6d9e830",
+  "source_byte_count": 41236934,
+  "source_commit": "d174eded667ea7a90f1ac735797e6100a19cea6e",
   "source_file_count": 482,
   "source_mappings": [
     {
@@ -453,5 +453,5 @@
       "source": "systems/life_links/contracts/mcp"
     }
   ],
-  "source_tree_sha256": "acd14d74c85e68f927f71701ee850359067516869815404661a32eb6ac60cb9c"
+  "source_tree_sha256": "a34413d8ee703e624f579b576b63dd8a3bef2f609248bb697062322299f1d24a"
 }

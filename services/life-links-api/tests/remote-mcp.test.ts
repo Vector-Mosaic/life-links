@@ -90,10 +90,10 @@ async function fixture(input: Partial<RemoteMcpRouterOptions> = {}) {
   if (!address || typeof address === "string") throw new Error("test_server_unavailable");
   const url = `http://127.0.0.1:${address.port}/mcp`;
   cleanup.push(async () => { await host.close(); server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); });
-  const connect = async (options: { token?: string; capabilities?: ClientCapabilities; answer?: (request: unknown) => Promise<ElicitResult> } = {}) => {
+  const connect = async (options: { token?: string; capabilities?: ClientCapabilities; answer?: (request: unknown) => Promise<ElicitResult>; fetch?: typeof fetch } = {}) => {
     const client = new Client({ name: "synthetic-host", version: "1" }, { capabilities: options.capabilities ?? {} });
     if (options.answer) client.setRequestHandler(ElicitRequestSchema, options.answer);
-    const transport = new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { Authorization: `Bearer ${options.token ?? "synthetic-token"}` } },
+    const transport = new StreamableHTTPClientTransport(new URL(url), { fetch: options.fetch, requestInit: { headers: { Authorization: `Bearer ${options.token ?? "synthetic-token"}` } },
       reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 10, maxReconnectionDelay: 10, reconnectionDelayGrowFactor: 1 } });
     await client.connect(transport);
     cleanup.push(async () => client.close());
@@ -178,7 +178,8 @@ describe("remote MCP Streamable HTTP boundary", () => {
   it.each([
     [new Error("private provider credential synthetic-secret-value"), "operation_failed"],
     [new RemoteAgentAccessError("private-unrecognized-code"), "access_denied"],
-    [new RemoteAgentAccessError("stale_routine"), "stale_routine"]
+    [new RemoteAgentAccessError("stale_routine"), "stale_routine"],
+    [new RemoteAgentAccessError("memberships_require_members"), "memberships_require_members"]
   ])("exposes only safe workflow codes from operation failures (%s)", async (error, code) => {
     const test = await fixture({ operations: [{ name: "failing_operation", description: "Synthetic failure", inputSchema: {}, readOnly: true, destructive: false,
       execute: async () => { throw error; }
@@ -339,7 +340,15 @@ describe("remote MCP Streamable HTTP boundary", () => {
     expect(expired.status).toBe(200);
     await expired.text();
     clock += 5;
-    const selected = await test.connect();
+    let getOpened!: () => void; const selectedGetOpened = new Promise<void>(resolve => { getOpened = resolve; });
+    const selected = await test.connect({ fetch: async (url, init) => {
+      const response = await fetch(url, init);
+      if (init?.method === "GET") { expect(response.status).toBe(200); getOpened(); }
+      return response;
+    } });
+    // Its autonomous GET must reach the server before expiry too; otherwise
+    // that GET, rather than the selected POST, can enter the close barrier.
+    await selectedGetOpened;
     await selected.client.callTool({ name: "get_life_links_guide" });
 
     let closeEntered!: () => void; const closing = new Promise<void>(resolve => { closeEntered = resolve; });

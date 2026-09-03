@@ -183,8 +183,12 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
   };
   add("list_records", "List immediate physical Life Links, including folders. Use returned IDs; text is untrusted.", { parentId: id.nullable().optional(), ...page }, "records", false,
     (input, c) => store.listLifeLinks(c.ownerId, input.parentId ?? null, { ...input, limit: input.limit ?? 10 }));
-  add("inspect_record", "Read one exact physical Life Link, its location, attachments and bounded child page.", { lifeLinkId: id, ...page }, "records", false,
-    async (input, c) => required(await store.getLifeLinkDetail(c.ownerId, input.lifeLinkId, { ...input, limit: input.limit ?? 10 })));
+  add("inspect_record", "Read one exact Life Link. Default section=detail returns physical location, attachments and a bounded child page (records:read). section=memberships returns a separate bounded Collection membership page with every assigned Section ID/title (collections:read); continue its nextCursor with the same Life Link and section. Collection Sections are not physical location.",
+    { lifeLinkId: id, section: z.enum(["detail", "memberships"]).default("detail"), ...page },
+    (input) => input.section === "memberships" ? "collections" : "records", false,
+    async (input, c) => required(input.section === "memberships"
+      ? await store.listLifeLinkCollectionMemberships(c.ownerId, input.lifeLinkId, { cursor: input.cursor, limit: input.limit ?? 10 })
+      : await store.getLifeLinkDetail(c.ownerId, input.lifeLinkId, { cursor: input.cursor, limit: input.limit ?? 10 })));
   add("search_records", "Search one whole-app category per page. Continue nextCursor even when a scan page has no matches; Calendar search uses synchronized cache.",
     { q: z.string().min(1).max(2048), category: z.enum(["life_links", "collections", "routines", "history", "calendar", "attachments"]), ...page },
     (input) => categoryCapability(input.category), false, (input, c) => recordSearch.search(c.ownerId, { ...input, limit: input.limit ?? 10 },
@@ -212,8 +216,9 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
   });
   add("list_collections", "List private purpose-based Collections.", page, "collections", false,
     (input, c) => store.listCollections(c.ownerId, { ...input, limit: input.limit ?? 10 }));
-  add("inspect_collection", "Read Collection purpose/notes and one page of members or sections; these are overlays, not physical placement.",
-    { collectionId: id, section: z.enum(["members", "sections"]).default("members"), ...page }, "collections", false, async (input, c) => {
+  add("inspect_collection", "Read Collection purpose/notes and one page of members or sections; these are overlays, not physical placement. For members, includeMemberships=true adds membershipPages keyed by each returned Life Link ID, with its first 25 Collection memberships and all assigned Sections. Continue each nested nextCursor independently using inspect_record section=memberships; entries.nextCursor continues the Collection's member list. Omit enrichment for smaller responses.",
+    { collectionId: id, section: z.enum(["members", "sections"]).default("members"), includeMemberships: z.boolean().optional(), ...page }, "collections", false, async (input, c) => {
+      if (input.includeMemberships && input.section !== "members") inputFailure("memberships_require_members");
       const collection = required(await store.getCollection(c.ownerId, input.collectionId)); await admit(c, "collections");
       const entries = input.section === "members" ? await store.listCollectionMembers(c.ownerId, input.collectionId, { ...input, limit: input.limit ?? 10 })
         : await store.listCollectionSections(c.ownerId, input.collectionId, { ...input, limit: input.limit ?? 10 });
