@@ -18,10 +18,20 @@ const CLIENT_FIELDS = new Set(["redirect_uris", "client_name", "client_uri", "lo
 const OAUTH_ERRORS = new Set(["invalid_request", "invalid_client", "invalid_client_metadata", "invalid_redirect_uri", "invalid_grant", "invalid_scope", "invalid_target",
   "unauthorized_client", "unsupported_grant_type", "unsupported_response_type", "access_denied", "login_required", "consent_required", "interaction_required", "server_error"]);
 
+function publicClientRedirect(value: unknown): URL | undefined {
+  if(typeof value!=="string" || value.length>2048 || value.includes("\\"))return;
+  try {
+    const url=new URL(value);
+    if(url.username || url.password || url.hash ||
+      (url.protocol!=="https:" && !(url.protocol==="http:" && /^http:\/\/(127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:[/?]|$)/.test(value))))return;
+    return url;
+  } catch { return; }
+}
+
 function validateClient(metadata: Record<string, unknown>, original?: unknown): void {
   const reject = () => { throw new errors.InvalidClientMetadata("Client metadata is not supported by Life Links"); };
   if (original && typeof original === "object" && Object.keys(original).some((key) => !CLIENT_FIELDS.has(key))) reject();
-  if (metadata.token_endpoint_auth_method !== "none" || metadata.application_type !== "web") reject();
+  if (metadata.token_endpoint_auth_method !== "none" || !["web", "native"].includes(String(metadata.application_type))) reject();
   const grants = metadata.grant_types;
   if (!Array.isArray(grants) || !grants.includes("authorization_code") || grants.length > 2 ||
     grants.some((value) => value !== "authorization_code" && value !== "refresh_token") || new Set(grants).size !== grants.length) reject();
@@ -30,12 +40,7 @@ function validateClient(metadata: Record<string, unknown>, original?: unknown): 
   const redirects = metadata.redirect_uris;
   if (!Array.isArray(redirects) || redirects.length < 1 || redirects.length > 8) reject();
   for (const value of redirects as unknown[]) {
-    if (typeof value !== "string" || value.length > 2048) { reject(); continue; }
-    try {
-      const url = new URL(value);
-      if (url.username || url.password || url.hash || value.includes("\\") ||
-        (url.protocol !== "https:" && !(url.protocol === "http:" && /^http:\/\/(127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:[/?]|$)/.test(value)))) reject();
-    } catch { reject(); }
+    if (!publicClientRedirect(value)) reject();
   }
   for (const field of ["client_name", "software_id", "software_version"]) {
     const value = metadata[field]; if (value !== undefined && (typeof value !== "string" || value.length > 160 || /[\u0000-\u001f\u007f]/.test(value))) reject();
@@ -47,9 +52,11 @@ function validateClient(metadata: Record<string, unknown>, original?: unknown): 
   }
 }
 
-function interactionFormAction(response: Response, redirect: unknown, registered: readonly string[] | undefined): void {
-  if(typeof redirect!=="string" || !registered?.includes(redirect))throw new RemoteAgentAccessError("invalid_redirect_uri");
-  const url=new URL(redirect);
+function interactionFormAction(response: Response, redirect: unknown, client: { redirectUriAllowed(value: string): boolean } | undefined): void {
+  const url=publicClientRedirect(redirect);
+  // Reuse oidc-provider's registered-client matching: exact web/HTTPS URI, or
+  // only the loopback listener port may vary for a native client (RFC 8252).
+  if(!url || typeof redirect!=="string" || !client?.redirectUriAllowed(redirect))throw new RemoteAgentAccessError("invalid_redirect_uri");
   // CSP accepts an origin/path source, not OAuth query parameters. Parse rather
   // than interpolate raw metadata: a semicolon, space or wildcard must never
   // become a new directive or a broader callback source.
@@ -169,7 +176,7 @@ export class RemoteAgentAuth {
       const name=client?.clientName??"Your agent";
       const uid=details.uid;
       if(uid!==req.params.uid)throw new RemoteAgentAccessError();
-      interactionFormAction(res,details.params.redirect_uri,client?.redirectUris);
+      interactionFormAction(res,details.params.redirect_uri,client);
       const login=details.prompt.name==="login";
       const owner=login?browserOwner:details.session?.accountId?await this.store.getUserById(details.session.accountId):null;
       if(!login && (!owner || (browserOwner && browserOwner.id!==owner.id)))throw new RemoteAgentAccessError();
@@ -183,7 +190,7 @@ export class RemoteAgentAuth {
     this.router.post("/agent-authorize/:uid",express.urlencoded({extended:false,limit:"12kb"}),handler(async(req,res)=>{
       const details=await this.provider.interactionDetails(req,res);if(details.uid!==req.params.uid)throw new RemoteAgentAccessError();this.checkPost(req,details.uid);
       const client=await this.provider.Client.find(String(details.params.client_id));
-      interactionFormAction(res,details.params.redirect_uri,client?.redirectUris);
+      interactionFormAction(res,details.params.redirect_uri,client);
       if(req.body.action!=="approve"){await this.provider.interactionFinished(req,res,{error:"access_denied"},{mergeWithLastSubmission:false});return;}
       if(details.prompt.name==="login"){
         let owner=await this.owner(req);

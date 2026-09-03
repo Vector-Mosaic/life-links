@@ -17,6 +17,16 @@ import { createLifeLinksApp, startLifeLinksServer } from "../src/server.js";
 const BASE = "http://127.0.0.1:43100";
 const CALLBACK = "https://synthetic-agent.example/callback";
 const SCOPES = "openid offline_access records:read records:write routines:read routines:write";
+// Codex rust-v0.144.1 perform_oauth_login.rs calls RMCP 1.8.0
+// AuthorizationSession.start_authorization(..., Some("Codex")); that pinned
+// SDK's register_client sends precisely these metadata fields. Only the local
+// listener port and server-specific callback suffix are synthetic here.
+const CODEX_REGISTRATION = {
+  client_name: "Codex", redirect_uris: ["http://127.0.0.1:41777/callback/synthetic123"],
+  grant_types: ["authorization_code", "refresh_token"], token_endpoint_auth_method: "none", response_types: ["code"],
+  scope: "records:read records:write collections:read collections:write routines:read routines:write calendar:read calendar:write",
+  application_type: "native"
+};
 const localPath = (url: string) => { const value = new URL(url, BASE); return value.pathname + value.search; };
 const csrf = (body: string) => {
   const value = /name="csrf" value="([^"]+)"/.exec(body)?.[1];
@@ -67,17 +77,57 @@ async function fixture(env: NodeJS.ProcessEnv = {}, integrated = false) {
     const redirect = await submit(consent, {});
     expect(redirect.status).toBe(303);
     const result = new URL(redirect.headers.location);
-    expect(result.origin).toBe(new URL(CALLBACK).origin); expect(result.searchParams.get("state")).toBe("synthetic-state");
+    expect(result.origin).toBe(new URL(extra.redirect_uri ?? CALLBACK).origin); expect(result.searchParams.get("state")).toBe("synthetic-state");
     expect(result.searchParams.has("error")).toBe(false);
     return { code: result.searchParams.get("code")!, verifier, consent };
   };
-  const exchange = (clientId: string, code: string, verifier: string) => request(app).post("/oauth/token").type("form").send({
-    grant_type: "authorization_code", client_id: clientId, code, code_verifier: verifier, redirect_uri: CALLBACK, resource: auth.resource });
+  const exchange = (clientId: string, code: string, verifier: string, callback = CALLBACK) => request(app).post("/oauth/token").type("form").send({
+    grant_type: "authorization_code", client_id: clientId, code, code_verifier: verifier, redirect_uri: callback, resource: auth.resource });
   const authenticate = (token: string) => auth.authenticate({ get: (name: string) => name.toLowerCase() === "authorization" ? `Bearer ${token}` : undefined } as Request);
   return { app, auth, state, store, owner, browser, logs, logger, register, begin, submit, loginConsent, exchange, authenticate, config };
 }
 
 describe("Life Links remote OAuth authorization", () => {
+  it("accepts the exact Codex 0.144.1 native public-client metadata and completes S256 code plus refresh", async () => {
+    const test = await fixture({}, true);
+    try {
+      const registration = await request(test.app).post("/oauth/reg").send(CODEX_REGISTRATION);
+      expect(registration.status).toBe(201); expect(registration.body.application_type).toBe("native");
+      expect(registration.body).not.toHaveProperty("client_secret");
+      const callback = CODEX_REGISTRATION.redirect_uris[0];
+      const { code, verifier, consent } = await test.loginConsent(registration.body.client_id, { redirect_uri: callback, scope: CODEX_REGISTRATION.scope });
+      expect(consent.headers["content-security-policy"]).toContain(`form-action 'self' ${callback}`);
+      const tokens = await test.exchange(registration.body.client_id, code, verifier, callback); expect(tokens.status).toBe(200);
+      expect((await test.authenticate(tokens.body.access_token)).scopes.sort()).toEqual(CODEX_REGISTRATION.scope.split(" ").sort());
+      const refresh = await request(test.app).post("/oauth/token").type("form").send({ grant_type: "refresh_token", client_id: registration.body.client_id,
+        refresh_token: tokens.body.refresh_token, resource: test.auth.resource });
+      expect(refresh.status).toBe(200); expect((await test.authenticate(refresh.body.access_token)).ownerId).toBe(test.owner.id);
+    } finally { await test.app.locals.closeRemoteAgent(); }
+  });
+
+  it("allows only native loopback port variation while retaining PKCE and exact callback host, path and query", async () => {
+    const test = await fixture({}, true);
+    try {
+      const registration = await request(test.app).post("/oauth/reg").send(CODEX_REGISTRATION); expect(registration.status).toBe(201);
+      const callback = CODEX_REGISTRATION.redirect_uris[0].replace(":41777/", ":41999/");
+      for (const redirect of [callback.replace("/synthetic123", "/different"), `${callback}?different=1`,
+        callback.replace("127.0.0.1", "[::1]"), callback.replace("127.0.0.1", "untrusted.example"), callback.replace("127.0.0.1", "2130706433")]) {
+        const { response } = await test.begin(registration.body.client_id, { scope: CODEX_REGISTRATION.scope, redirect_uri: redirect });
+        expect(response.text).not.toContain('name="password"'); expect(await test.state.listOwned("Grant", test.owner.id)).toHaveLength(0);
+      }
+      for (const pkce of [{ code_challenge_method: "plain" }, { code_challenge: undefined, code_challenge_method: undefined }]) {
+        const { response } = await test.begin(registration.body.client_id, { scope: CODEX_REGISTRATION.scope, redirect_uri: callback, ...pkce });
+        expect(response.text).not.toContain('name="password"');
+      }
+      const web = await test.register({ redirect_uris: CODEX_REGISTRATION.redirect_uris, application_type: "web" }); expect(web.status).toBe(201);
+      expect((await test.begin(web.body.client_id, { redirect_uri: callback })).response.text).not.toContain('name="password"');
+      const { code, verifier, consent } = await test.loginConsent(registration.body.client_id, { redirect_uri: callback, scope: CODEX_REGISTRATION.scope });
+      expect(consent.headers["content-security-policy"]).toContain(`form-action 'self' ${callback}`);
+      expect(consent.headers["content-security-policy"]).not.toContain(":41777/");
+      expect((await test.exchange(registration.body.client_id, code, verifier, callback)).status).toBe(200);
+    } finally { await test.app.locals.closeRemoteAgent(); }
+  });
+
   it("allows only the selected registered callback in interaction form-action while preserving the rest of the site CSP", async () => {
     const test = await fixture({}, true);
     try {
@@ -262,7 +312,9 @@ describe("Life Links remote OAuth authorization", () => {
   it.each([
     { token_endpoint_auth_method: "client_secret_basic" }, { grant_types: ["client_credentials"] }, { grant_types: ["authorization_code", "password"] },
     { response_types: ["token"] }, { jwks_uri: "https://private.example/keys" }, { jwks: { keys: [] } }, { request_uris: ["https://private.example/request"] },
-    { sector_identifier_uri: "https://private.example/sector" }, { initiate_login_uri: "https://private.example/login" }, { application_type: "native" },
+    { sector_identifier_uri: "https://private.example/sector" }, { initiate_login_uri: "https://private.example/login" }, { application_type: "unsupported" },
+    { application_type: "native", redirect_uris: ["custom-scheme:/callback"] }, { application_type: "native", redirect_uris: ["http://untrusted.example/callback"] },
+    { application_type: "native", redirect_uris: ["http://localhost/callback"] }, { application_type: "native", redirect_uris: ["http://2130706433/callback"] },
     { redirect_uris: ["http://untrusted.example/callback"] }, { redirect_uris: ["http://127.0.0.1.evil.example/callback"] },
     { redirect_uris: ["http://2130706433/callback"] }, { redirect_uris: ["https://user:password@example.test/callback"] },
     { redirect_uris: ["https://example.test/callback#fragment"] }, { scope: "records:read admin:all" }
