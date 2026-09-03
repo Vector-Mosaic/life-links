@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { currentRemoteAgentPrincipal, remoteAgentScopeAllows } from "./remote-agent-principal.js";
 
 import {
   CHANGE_HISTORY_LIMIT, resolveLifeLinkChangeScope, lifeLinkChangePreviewItem, stableChangeFingerprint,
@@ -190,9 +191,10 @@ export class WorkspaceAgentAccessError extends Error {
 }
 
 export function assertWorkspaceAgentConnection(
-  user: Pick<StoredUser, "agentConnectedAt" | "agentToolCatalogId"> | null | undefined,
+  user: Pick<StoredUser, "agentConnectedAt" | "agentToolCatalogId"> & { id?: string } | null | undefined,
   actor: CalendarActor
 ): void {
+  if (actor === "agent" && remoteAgentScopeAllows(user?.id)) return;
   if (actor === "agent" && (!user?.agentConnectedAt ||
       (user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID && user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V4_ID))) {
     throw new WorkspaceAgentAccessError("workspace_agent_connection_required");
@@ -200,6 +202,8 @@ export function assertWorkspaceAgentConnection(
 }
 
 export function assertAgentRoutineArchive(patch: UpdateRoutineCommand["patch"], actor: CalendarActor): void {
+  const remote = currentRemoteAgentPrincipal();
+  if (actor === "agent" && remote && remoteAgentScopeAllows(remote.ownerId, "routines", true)) return;
   if (actor === "agent" && (Object.keys(patch).length !== 1 || typeof patch.archivedAt !== "string" || !patch.archivedAt)) {
     throw new WorkspaceAgentAccessError("routine_agent_archive_only");
   }
@@ -212,9 +216,10 @@ export function assertHumanCalendarActor(actor: CalendarActor): void {
 }
 
 export function assertCalendarAgentConnection(
-  user: Pick<StoredUser, "agentConnectedAt" | "agentToolCatalogId"> | null | undefined,
+  user: Pick<StoredUser, "agentConnectedAt" | "agentToolCatalogId"> & { id?: string } | null | undefined,
   actor: CalendarActor
 ): void {
+  if (actor === "agent" && remoteAgentScopeAllows(user?.id, "calendar")) return;
   if (actor === "agent" && (!user?.agentConnectedAt ||
       (user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V2_ID && user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V3_ID &&
        user.agentToolCatalogId !== LIFE_LINKS_AGENT_TOOL_CATALOG_V4_ID))) {

@@ -17,6 +17,8 @@ const passwordPath = path.resolve(testDirectory, "../src/password.ts");
 const serverPath = path.resolve(testDirectory, "../src/server.ts");
 const calendarConnectionRouterPath = path.resolve(testDirectory, "../src/calendar-connections.ts");
 const calendarNotificationRouterPath = path.resolve(testDirectory, "../src/calendar-provider-subscriptions.ts");
+const remoteAuthRouterPath = path.resolve(testDirectory, "../src/remote-agent-auth.ts");
+const remoteMcpRouterPath = path.resolve(testDirectory, "../src/remote-mcp.ts");
 const storePath = path.resolve(testDirectory, "../src/store.ts");
 const webClientPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/api.ts");
 const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/workspace/controller.ts");
@@ -297,6 +299,40 @@ function expressRouteToOpenApi(route: string): string {
   return route.replace(/:([A-Za-z][A-Za-z0-9_]*)/g, "{$1}");
 }
 
+function remoteApplicationOperations(serverSource: string): string[] {
+  expect(serverSource).toContain("const { auth, state } = remoteAgent");
+  expect(serverSource).toContain("app.use(auth.router)");
+  expect(serverSource).toContain("app.use(remote.router)");
+  expect(serverSource).toContain("createRemoteMcpRouter(");
+  expect(serverSource.indexOf("app.use(auth.router)")).toBeLessThan(serverSource.indexOf("app.use(express.json("));
+  expect(serverSource.indexOf("app.use(remote.router)")).toBeLessThan(serverSource.indexOf("app.use(express.json("));
+  const source = readSource(remoteAuthRouterPath);
+  const file = ts.createSourceFile(remoteAuthRouterPath, source, ts.ScriptTarget.Latest, true);
+  const operations: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.expression.getText(file) === "this.router"
+      && HTTP_METHODS.includes(node.expression.name.text as HttpMethod)) {
+      const argument = node.arguments[0];
+      expect(argument, "remote application routes must be explicit").toBeDefined();
+      const aliases = ts.isArrayLiteralExpression(argument) ? [...argument.elements] : [argument];
+      for (const alias of aliases) {
+        expect(ts.isStringLiteralLike(alias), "remote route aliases must remain exact literals").toBe(true);
+        if (ts.isStringLiteralLike(alias)) operations.push(`${node.expression.name.text.toUpperCase()} ${expressRouteToOpenApi(alias.text)}`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  // oidc-provider owns its standard protocol subtree; issuer discovery and the
+  // OAuth security scheme describe it rather than duplicating its route grammar.
+  expect(source).toContain('this.router.use("/oauth",this.provider.callback())');
+  const mcpSource = readSource(remoteMcpRouterPath);
+  expect(mcpSource).toContain('router.all("/mcp"');
+  expect(mcpSource).toContain('!["GET", "POST", "DELETE"].includes(request.method)');
+  return [...operations, "GET /mcp", "POST /mcp", "DELETE /mcp"];
+}
+
 function implementedApplicationOperations(serverSource: string): string[] {
   const literalRegistrations = [
     ...serverSource.matchAll(/app\.(get|post|patch|put|delete)\(\s*"([^"]+)"/g)
@@ -327,6 +363,7 @@ function implementedApplicationOperations(serverSource: string): string[] {
   return [
     ...literalRegistrations,
     ...connectionRegistrations,
+    ...remoteApplicationOperations(serverSource),
     "GET /qr/{qrId}"
   ].sort();
 }
@@ -518,7 +555,7 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(113);
+    expect(published).toHaveLength(123);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
@@ -729,6 +766,18 @@ describe("Life Links OpenAPI v1", () => {
     const mutatingOperations = [...operations.entries()].filter(([key]) => /^(POST|PATCH|PUT|DELETE) /.test(key));
     for (const [key, operation] of mutatingOperations) {
       const parameters = (operation.parameters ?? []) as JsonObject[];
+      if (key === "POST /mcp" || key === "DELETE /mcp") {
+        expect(operation.security).toEqual([{ RemoteOAuth: [] }]);
+        expect(parameters).toContainEqual(expect.objectContaining({ name: "Origin", required: false }));
+        expect(objectValue(operation.responses, `${key} responses`)).toHaveProperty("403");
+        continue;
+      }
+      if (key === "POST /agent-authorize/{uid}" || key === "POST /agent-connections/revoke") {
+        expect(parameters).toContainEqual(expect.objectContaining({ name: "Origin", required: true }));
+        expect(String(operation.description)).toContain("CSRF");
+        expect(objectValue(operation.responses, `${key} responses`)).toHaveProperty("400");
+        continue;
+      }
       if (key === "POST /api/calendar-notifications/microsoft") {
         expect(operation.security).toEqual([]);
         expect(parameters).not.toContainEqual({ $ref: "#/components/parameters/BrowserOrigin" });
@@ -759,6 +808,36 @@ describe("Life Links OpenAPI v1", () => {
         });
       }
     }
+  });
+
+  it("separates delegated MCP transport, OAuth discovery and owner connection management", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    const components = objectValue(document.components, "components");
+    const schemes = objectValue(components.securitySchemes, "security schemes");
+    const remote = objectValue(schemes.RemoteOAuth, "remote OAuth");
+    const flow = objectValue(objectValue(remote.flows, "remote OAuth flows").authorizationCode, "authorization code");
+    expect(flow).toMatchObject({ authorizationUrl: "/oauth/auth", tokenUrl: "/oauth/token", refreshUrl: "/oauth/token" });
+    expect(Object.keys(objectValue(flow.scopes, "delegated scopes")).sort()).toEqual([
+      "calendar:read", "calendar:write", "collections:read", "collections:write",
+      "records:read", "records:write", "routines:read", "routines:write"
+    ]);
+    expect(String(remote.description)).toContain("S256 PKCE");
+    expect(String(remote.description)).toContain("/oauth/.well-known/openid-configuration");
+    for (const key of ["GET /mcp", "POST /mcp", "DELETE /mcp"]) {
+      const operation = operations.get(key)!;
+      expect(operation.security).toEqual([{ RemoteOAuth: [] }]);
+      expect(String(operation.description)).toContain("curated MCP contract");
+      expect(String(operation.description)).toContain("X-Life-Links-Actor cannot substitute");
+      expect(operation.parameters).toContainEqual(expect.objectContaining({ name: "Mcp-Session-Id" }));
+    }
+    expect(operations.get("GET /agent-connections")?.security).toEqual([{ CookieSession: [] }]);
+    expect(operations.get("POST /agent-connections/revoke")?.security).toEqual([{ CookieSession: [] }]);
+    expect(operations.get("GET /.well-known/oauth-protected-resource")?.security).toEqual([]);
+    expect(operations.get("GET /.well-known/oauth-protected-resource/mcp")?.security).toEqual([]);
+    expect(operations.get("GET /.well-known/oauth-authorization-server/oauth")?.security).toEqual([]);
+    expect(responseFor(document, operations.get("POST /mcp")!, "202")).not.toHaveProperty("content");
+    expect(document.security).toEqual([{ CookieSession: [] }, { BearerSession: [] }]);
   });
 
   it("publishes a one-time durable agent connection separate from application sessions", () => {

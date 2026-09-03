@@ -33,7 +33,9 @@ RUN curl --fail --location --proto '=https' --tlsv1.2 \
       -o /opt/life-links/models/ggml-base.bin \
     && echo '60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe  /opt/life-links/models/ggml-base.bin' | sha256sum -c -
 
-FROM --platform=linux/amd64 node@sha256:5cfa999422613d3b34f766cbb814d964cbfcb76aaf3607e805da21cccb352bac AS build
+# OAuth's supported application runtime is Node 22.23.2 Bookworm slim.
+# Native compilation above retains its separately qualified source-material base.
+FROM --platform=linux/amd64 node@sha256:4d676821dff059fd00d277ee4261ef34ea712317fed0737c03941481b5760c96 AS build
 RUN corepack enable && corepack prepare pnpm@10.14.0 --activate
 WORKDIR /app
 RUN node -e "if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Life Links canvas material requires linux/amd64')"
@@ -41,7 +43,7 @@ COPY . .
 RUN node packages/canvas-linux-x64-gnu/native-build/verify-package.mjs packages/canvas-linux-x64-gnu
 RUN pnpm install --frozen-lockfile && pnpm --filter @life-links/api build
 
-FROM --platform=linux/amd64 node@sha256:5cfa999422613d3b34f766cbb814d964cbfcb76aaf3607e805da21cccb352bac AS app
+FROM --platform=linux/amd64 node@sha256:4d676821dff059fd00d277ee4261ef34ea712317fed0737c03941481b5760c96 AS app
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq && apt-get install -y --no-install-recommends \
     libreoffice-core=4:7.4.7-1+deb12u14 libreoffice-writer=4:7.4.7-1+deb12u14 libreoffice-calc=4:7.4.7-1+deb12u14 \

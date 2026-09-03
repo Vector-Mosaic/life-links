@@ -7,6 +7,7 @@ import {
   type CalendarActor,
   type CalendarProviderBindingView,
   type CalendarRecord,
+  type CalendarProviderEventProjection,
   type ProviderEventContent,
   type ProviderCalendarEventWritableContent
 } from "@life-links/core";
@@ -95,19 +96,13 @@ export async function handleProviderCalendarEventRequest(input: {
       // A missing projection may be an exact successful-delete replay. The
       // gateway's durable command identity and provider readback remain decisive.
       if (current) {
-        if (current.content.providerSeriesId !== null || current.content.providerRecurrence?.kind !== "single") {
-          throw invalid("unsupported_provider_recurrence_scope");
-        }
-        const effects = current.content.outboundEffects;
-        if (!effects || effects.attendeeCount !== 0 || effects.hasOnlineMeeting) {
-          throw invalid("unsupported_provider_outbound_effects");
-        }
+        assertProviderEventWritable(current);
       }
     }
     const result = await gateway.executeCommand(kind === "create"
-      ? { ...base, kind, content: writableContent(source.content) }
+      ? { ...base, kind, content: normalizeProviderWritableContent(source.content) }
       : kind === "update"
-        ? { ...base, kind, providerEventId: eventId!, expectedProviderRevision: revision!, content: writableContent(source.content) }
+        ? { ...base, kind, providerEventId: eventId!, expectedProviderRevision: revision!, content: normalizeProviderWritableContent(source.content) }
         : { ...base, kind, providerEventId: eventId!, expectedProviderRevision: revision! },
     { authorizeAgent });
     logger.info("life_links.calendar.provider_event_applied", {
@@ -162,7 +157,7 @@ export async function listProviderCalendarBindings(input: {
   return result;
 }
 
-function writableContent(value: unknown): ProviderEventContent {
+export function normalizeProviderWritableContent(value: unknown): ProviderEventContent {
   exactKeys(value, ["title", "description", "location", "span", "status"]);
   const content = value as unknown as ProviderCalendarEventWritableContent;
   exactKeys(content.span, content.span?.kind === "timed"
@@ -171,6 +166,16 @@ function writableContent(value: unknown): ProviderEventContent {
   return { ...content, providerSeriesId: null,
     providerRecurrence: { kind: "single", originalStartUtc: null },
     outboundEffects: { attendeeCount: 0, hasOnlineMeeting: false } };
+}
+
+export function assertProviderEventWritable(current: CalendarProviderEventProjection): void {
+  if (current.content.providerSeriesId !== null || current.content.providerRecurrence?.kind !== "single") {
+    throw invalid("unsupported_provider_recurrence_scope");
+  }
+  const effects = current.content.outboundEffects;
+  if (!effects || effects.attendeeCount !== 0 || effects.hasOnlineMeeting) {
+    throw invalid("unsupported_provider_outbound_effects");
+  }
 }
 
 function record(value: unknown): value is Record<string, unknown> {

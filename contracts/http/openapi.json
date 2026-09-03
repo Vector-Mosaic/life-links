@@ -4,7 +4,7 @@
   "info": {
     "title": "Life Links Application HTTP API",
     "version": "1.0.0",
-    "description": "Published v1 contract for the implemented Life Links HTTP surface. It covers operational release identity, web application and retained bearer API workflows, the canonical owner reads and revision-safe writes reused by page-bound WebMCP tools, and the stable QR browser entry point. Generic SPA fallback routes remain implementation details outside this contract."
+    "description": "Committed v1 source contract for Life Links application HTTP: operational identity, web/native owner workflows, canonical operations reused by page WebMCP, stable QR entry, application-owned remote OAuth discovery/owner management and MCP HTTP transport. The oidc-provider discovery document owns its standard protocol subtree; the MCP specification and curated MCP contract own JSON-RPC and semantic tools, not duplicate CRUD schemas here. Generic SPA fallback routes remain implementation details. This source artifact does not establish deployment or actual-host qualification."
   },
   "servers": [
     {
@@ -21,6 +21,10 @@
     }
   ],
   "tags": [
+    {
+      "name": "remote-agent",
+      "description": "Application-owned delegated OAuth discovery/owner interactions and MCP HTTP transport. Protocol-library internals and semantic MCP catalogs retain their own authority; source contract is not actual-host qualification."
+    },
     {
       "name": "operations"
     },
@@ -62,6 +66,948 @@
     }
   ],
   "paths": {
+    "/.well-known/oauth-protected-resource": {
+      "get": {
+        "operationId": "getRemoteMcpResourceMetadata",
+        "summary": "Discover the Life Links MCP protected resource",
+        "tags": [
+          "remote-agent"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "RFC 9728 resource metadata; configuration-derived resource/issuer and supported delegated scopes, never credentials.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteProtectedResourceMetadata"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/oauth-protected-resource/mcp": {
+      "get": {
+        "operationId": "getRemoteMcpScopedResourceMetadata",
+        "summary": "Discover the Life Links MCP protected resource",
+        "tags": [
+          "remote-agent"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "RFC 9728 resource metadata; configuration-derived resource/issuer and supported delegated scopes, never credentials.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RemoteProtectedResourceMetadata"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/oauth-authorization-server/oauth": {
+      "get": {
+        "operationId": "discoverRemoteAgentAuthorizationServer",
+        "summary": "Discover the library-owned OAuth issuer",
+        "tags": [
+          "remote-agent"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to /oauth/.well-known/openid-configuration. The oidc-provider metadata owns the exact OAuth authorization, token, registration, revocation and related protocol endpoints.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Location": {
+                "schema": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent-authorize/{uid}": {
+      "get": {
+        "operationId": "showRemoteAgentAuthorization",
+        "summary": "Show the exact owner/client login or consent interaction",
+        "tags": [
+          "remote-agent"
+        ],
+        "security": [],
+        "description": "Requires the matching valid provider-managed interaction cookie and UID. Uses canonical Life Links account login or the current owner session; OAuth/client scopes are separate from page-tool grants. This is an owner browser interaction, not an agent self-authorization API.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Exact provider-managed interaction identifier; requires its matching interaction cookie."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner authorization/management HTML; no-store and no-referrer.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid, stale, foreign or rejected interaction/form.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Configured OAuth/login rate limit reached.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "const": "rate_limited"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "submitRemoteAgentAuthorization",
+        "summary": "Complete or cancel the bound owner/client interaction",
+        "tags": [
+          "remote-agent"
+        ],
+        "security": [],
+        "description": "Requires exact interaction cookie/UID, configured Origin and interaction-bound CSRF. Reuses canonical account lookup/login. Credentials belong only in this owner form, never an agent tool. The oidc-provider interaction owns redirect/consent completion; no existing page grant is upgraded.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "uid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Exact provider-managed interaction identifier; requires its matching interaction cookie."
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            },
+            "description": "Must exactly match the configured Life Links origin; no Referer or native-bearer bypass for owner authorization forms."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "csrf",
+                  "action"
+                ],
+                "properties": {
+                  "csrf": {
+                    "type": "string",
+                    "writeOnly": true
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "approve",
+                      "cancel"
+                    ]
+                  },
+                  "email": {
+                    "type": "string",
+                    "maxLength": 254,
+                    "writeOnly": true
+                  },
+                  "password": {
+                    "type": "string",
+                    "maxLength": 1024,
+                    "writeOnly": true
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Owner authorization/management HTML; no-store and no-referrer.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "302": {
+            "description": "Continue the provider-managed OAuth interaction or redirect with its result.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "303": {
+            "description": "Continue the provider-managed OAuth interaction.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid, stale, foreign or rejected interaction/form.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Owner sign-in was not accepted.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Form body exceeds the bounded parser limit.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Configured OAuth/login rate limit reached.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "const": "rate_limited"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent-connections": {
+      "get": {
+        "operationId": "showRemoteAgentConnections",
+        "summary": "Show the signed-in owner's remote client grants",
+        "tags": [
+          "remote-agent"
+        ],
+        "security": [
+          {
+            "CookieSession": []
+          }
+        ],
+        "description": "Owner-only management of delegated clients, separate from browser WebMCP and Calendar-provider connections. Preserves canonical records. Human-session authentication is not remote MCP bearer authority.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner authorization/management HTML; no-store and no-referrer.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid, stale, foreign or rejected interaction/form.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in to the canonical owner workspace first.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Configured OAuth/login rate limit reached.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "const": "rate_limited"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/agent-connections/revoke": {
+      "post": {
+        "operationId": "revokeRemoteAgentConnection",
+        "summary": "Disconnect one exact owner/client grant",
+        "tags": [
+          "remote-agent"
+        ],
+        "security": [
+          {
+            "CookieSession": []
+          }
+        ],
+        "description": "Requires current owner cookie, exact owner-bound grantId, configured Origin and CSRF. Invalidates that client's delegated access/refresh authority while preserving owner records and separate page grants; not global provider-consent revocation.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            },
+            "description": "Must exactly match the configured Life Links origin; no Referer or native-bearer bypass for owner authorization forms."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "grantId",
+                  "csrf"
+                ],
+                "properties": {
+                  "grantId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "csrf": {
+                    "type": "string",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "303": {
+            "description": "Return to remote connection management after revocation.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "const": "/agent-connections"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid, stale, foreign or rejected interaction/form.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Form body exceeds the bounded parser limit.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Configured OAuth/login rate limit reached.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              },
+              "Retry-After": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "const": "rate_limited"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/mcp": {
+      "get": {
+        "operationId": "openRemoteMcpStream",
+        "summary": "Open the delegated MCP session stream",
+        "tags": [
+          "remote-agent"
+        ],
+        "security": [
+          {
+            "RemoteOAuth": []
+          }
+        ],
+        "description": "MCP Streamable HTTP transport, not application CRUD. The protocol SDK owns JSON-RPC validation, initialization, sessions, streaming and tool/resource messages; the curated MCP contract owns semantic capabilities. Only a live delegated OAuth bearer is admitted. Human cookies/native session tokens and X-Life-Links-Actor cannot substitute. Every call and replay rechecks owner/client/grant/scopes and resource access. Unsupported methods receive 405. Actual-host and deployed qualification remain separately evidenced.",
+        "externalDocs": {
+          "url": "https://modelcontextprotocol.io/specification/2025-11-25/basic/transports",
+          "description": "MCP Streamable HTTP framing; not an independently duplicated JSON-RPC schema."
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            },
+            "description": "Native MCP clients may omit Origin. If supplied it must exactly match the configured origin."
+          },
+          {
+            "name": "Mcp-Session-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "SDK-issued session ID after initialization. Bound to the same live owner/client/grant; not authorization."
+          },
+          {
+            "name": "MCP-Protocol-Version",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Version negotiated with the protocol SDK, required by the MCP transport after initialization."
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/RemoteMcpOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "401": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "403": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "406": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "413": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "429": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "500": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          }
+        }
+      },
+      "post": {
+        "operationId": "sendRemoteMcpMessage",
+        "summary": "Initialize or send a delegated MCP message",
+        "tags": [
+          "remote-agent"
+        ],
+        "security": [
+          {
+            "RemoteOAuth": []
+          }
+        ],
+        "description": "MCP Streamable HTTP transport, not application CRUD. The protocol SDK owns JSON-RPC validation, initialization, sessions, streaming and tool/resource messages; the curated MCP contract owns semantic capabilities. Only a live delegated OAuth bearer is admitted. Human cookies/native session tokens and X-Life-Links-Actor cannot substitute. Every call and replay rechecks owner/client/grant/scopes and resource access. Unsupported methods receive 405. Actual-host and deployed qualification remain separately evidenced.",
+        "externalDocs": {
+          "url": "https://modelcontextprotocol.io/specification/2025-11-25/basic/transports",
+          "description": "MCP Streamable HTTP framing; not an independently duplicated JSON-RPC schema."
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            },
+            "description": "Native MCP clients may omit Origin. If supplied it must exactly match the configured origin."
+          },
+          {
+            "name": "Mcp-Session-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "SDK-issued session ID after initialization. Bound to the same live owner/client/grant; not authorization."
+          },
+          {
+            "name": "MCP-Protocol-Version",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Version negotiated with the protocol SDK, required by the MCP transport after initialization."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "MCP SDK-validated JSON-RPC message, bounded to 1 MiB; initialize before other calls. Semantic tool inputs are in the curated MCP contract.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/RemoteMcpOk"
+          },
+          "202": {
+            "description": "Protocol notification/response accepted without a response body.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "401": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "403": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "406": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "413": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "429": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "500": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "closeRemoteMcpSession",
+        "summary": "Close the MCP transport session without revoking its OAuth grant",
+        "tags": [
+          "remote-agent"
+        ],
+        "security": [
+          {
+            "RemoteOAuth": []
+          }
+        ],
+        "description": "MCP Streamable HTTP transport, not application CRUD. The protocol SDK owns JSON-RPC validation, initialization, sessions, streaming and tool/resource messages; the curated MCP contract owns semantic capabilities. Only a live delegated OAuth bearer is admitted. Human cookies/native session tokens and X-Life-Links-Actor cannot substitute. Every call and replay rechecks owner/client/grant/scopes and resource access. Unsupported methods receive 405. Actual-host and deployed qualification remain separately evidenced.",
+        "externalDocs": {
+          "url": "https://modelcontextprotocol.io/specification/2025-11-25/basic/transports",
+          "description": "MCP Streamable HTTP framing; not an independently duplicated JSON-RPC schema."
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "Origin",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            },
+            "description": "Native MCP clients may omit Origin. If supplied it must exactly match the configured origin."
+          },
+          {
+            "name": "Mcp-Session-Id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "SDK-issued session ID after initialization. Bound to the same live owner/client/grant; not authorization."
+          },
+          {
+            "name": "MCP-Protocol-Version",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Version negotiated with the protocol SDK, required by the MCP transport after initialization."
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/RemoteMcpOk"
+          },
+          "400": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "401": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "403": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "404": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "406": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "413": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "429": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "500": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          },
+          "503": {
+            "$ref": "#/components/responses/RemoteMcpFailure"
+          }
+        }
+      }
+    },
     "/api/records/search": {
       "get": {
         "operationId": "searchOwnerRecords",
@@ -3011,6 +3957,27 @@
   },
   "components": {
     "securitySchemes": {
+      "RemoteOAuth": {
+        "type": "oauth2",
+        "description": "Opaque per-owner/per-client delegated credential for the exact configured /mcp resource. S256 PKCE, resource validation, renewal and revocation are owned by oidc-provider. The issuer discovery document at /oauth/.well-known/openid-configuration publishes the library-owned protocol endpoints, including /oauth/reg and /oauth/token/revocation; this OpenAPI document does not duplicate their standard protocol grammar.",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "/oauth/auth",
+            "tokenUrl": "/oauth/token",
+            "refreshUrl": "/oauth/token",
+            "scopes": {
+              "records:read": "Read permitted physical records, search and supported attachments.",
+              "records:write": "Maintain admitted physical records through canonical commands.",
+              "collections:read": "Read private purpose organization.",
+              "collections:write": "Maintain private purpose organization through canonical commands.",
+              "routines:read": "Read Routine definitions, planning and recorded history.",
+              "routines:write": "Author and execute Routines through canonical commands.",
+              "calendar:read": "Read calendars also permitted by live per-calendar agent access.",
+              "calendar:write": "Maintain events also permitted by per-calendar access and provider capabilities."
+            }
+          }
+        }
+      },
       "CookieSession": {
         "type": "apiKey",
         "in": "cookie",
@@ -3207,6 +4174,52 @@
       }
     },
     "schemas": {
+      "RemoteProtectedResourceMetadata": {
+        "type": "object",
+        "required": [
+          "resource",
+          "authorization_servers",
+          "scopes_supported",
+          "resource_name",
+          "resource_documentation"
+        ],
+        "properties": {
+          "resource": {
+            "type": "string",
+            "format": "uri"
+          },
+          "authorization_servers": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uri"
+            }
+          },
+          "scopes_supported": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "records:read",
+                "records:write",
+                "collections:read",
+                "collections:write",
+                "routines:read",
+                "routines:write",
+                "calendar:read",
+                "calendar:write"
+              ]
+            }
+          },
+          "resource_name": {
+            "const": "Life Links"
+          },
+          "resource_documentation": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      },
       "RecordSearchCategory":{"type":"string","enum":["life_links","collections","routines","history","calendar","attachments"]},
       "RecordSearchReference":{"oneOf":[
         {"type":"object","additionalProperties":false,"required":["kind","lifeLinkId"],"properties":{"kind":{"const":"life_link"},"lifeLinkId":{"type":"string"}}},
@@ -6393,6 +7406,65 @@
       "RoutineErrorResponse": { "type":"object", "additionalProperties":false, "required":["error"], "properties":{"error":{"type":"object","additionalProperties":false,"required":["code","message","retryable"],"properties":{"code":{"$ref":"#/components/schemas/RoutineErrorCode"},"message":{"type":"string","minLength":1,"maxLength":240},"retryable":{"type":"boolean"},"reason":{"type":"string","minLength":1,"maxLength":120}}}} }
     },
     "responses": {
+      "RemoteMcpOk": {
+        "description": "SDK-owned MCP JSON-RPC response, event stream, or session-close acknowledgement. The negotiated protocol owns payload grammar.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "schema": {
+              "const": "no-store"
+            }
+          },
+          "Mcp-Session-Id": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "Newly initialized SDK session identity; absent when not issued."
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "text/event-stream": {
+            "schema": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "RemoteMcpFailure": {
+        "description": "Bounded protocol/transport refusal. Authentication returns WWW-Authenticate resource metadata; foreign/expired sessions are unavailable. No canonical domain response is implied.",
+        "headers": {
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Cache-Control": {
+            "schema": {
+              "const": "no-store"
+            }
+          },
+          "WWW-Authenticate": {
+            "schema": {
+              "type": "string"
+            },
+            "description": "Present on authentication refusal; points to protected-resource metadata."
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      },
       "CalendarClockOk": {
         "description": "Authoritative server time and local Calendar date in the requested IANA time zone.",
         "headers": { "X-Request-Id": { "$ref": "#/components/headers/RequestId" } },

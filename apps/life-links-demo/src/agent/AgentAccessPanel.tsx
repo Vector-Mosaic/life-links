@@ -9,6 +9,7 @@ export function AgentAccessPanel({
   busy,
   registrationStatus,
   registrationError,
+  publicBaseUrl,
   onConnect,
   onDisconnect
 }: {
@@ -18,11 +19,14 @@ export function AgentAccessPanel({
   busy: boolean;
   registrationStatus: AgentAccessRegistrationStatus;
   registrationError: string;
+  publicBaseUrl: string;
   onConnect(): void;
   onDisconnect(): void;
 }) {
   const accessReady = supported && registrationStatus === "ready";
   const upgradeAvailable = connected && !catalogCurrent;
+  const remoteEndpoint = new URL("/mcp", publicBaseUrl).href;
+  const remoteConnectionsUrl = new URL("/agent-connections", publicBaseUrl).href;
   return (
     <section className="panel agent-access-panel" aria-labelledby="agent-access-title">
       <header className="agent-access-heading">
@@ -81,8 +85,19 @@ export function AgentAccessPanel({
           Deletions require one exact confirmation in the app. Routine removal retains history and resumable Runs.
         </p>
         <p className="agent-access-scope-item connection">
-          <strong>One connection:</strong> saved to your account until you explicitly disconnect it.
+          <strong>Browser connection:</strong> saved to your account until you explicitly disconnect it.
+          Browser tools require this Life Links page to stay open. The buttons above control only this browser-tool connection.
         </p>
+      </div>
+      <div className="agent-access-scope-item connection">
+        <p><strong>Remote agent connection</strong></p>
+        <p>Connect from a compatible agent using this endpoint. After you authorize that client,
+          it can use Life Links with this page closed. Its access is managed separately from browser tools.</p>
+        <label>
+          Remote MCP endpoint
+          <input type="url" value={remoteEndpoint} readOnly aria-label="Remote MCP endpoint" />
+        </label>
+        <a href={remoteConnectionsUrl}>Manage remote connections</a>
       </div>
     </section>
   );

@@ -39,6 +39,7 @@ describe("search-v4 page tool", () => {
       // Inspect the component's actual element result, without a DOM renderer
       // or hooks; App's caller expression above binds this to the live defect.
       visit(AgentAccessPanel({ supported: true, connected: true, busy: false,
+        publicBaseUrl: "https://example.test",
         catalogCurrent: catalog === LIFE_LINKS_SEARCH_TOOL_CATALOG_ID, registrationStatus: "ready",
         registrationError: "", onConnect, onDisconnect }));
       const upgrade = buttons.find((button) => button.props.children === "Update Agent Access");
@@ -48,6 +49,32 @@ describe("search-v4 page tool", () => {
       if (upgrade) { upgrade.props.onClick!(); expect(onConnect).toHaveBeenCalledOnce(); }
     }
   });
+
+  it.each(["https://lifelinks.vmosaic.com", "https://configured.example.test/nested", "http://localhost:3002"])(
+    "discovers remote connections at the configured origin %s without changing page grants", (publicBaseUrl) => {
+      const onConnect = vi.fn(); const onDisconnect = vi.fn();
+      const elements: ReactElement<Record<string, unknown> & { children?: ReactNode }>[] = [];
+      const copy: string[] = [];
+      const visit = (node: ReactNode) => Children.forEach(node, (child) => {
+        if (typeof child === "string") copy.push(child);
+        if (!isValidElement<Record<string, unknown> & { children?: ReactNode }>(child)) return;
+        elements.push(child); visit(child.props.children);
+      });
+      visit(AgentAccessPanel({ supported: false, connected: true, catalogCurrent: true, busy: false,
+        registrationStatus: "inactive", registrationError: "", publicBaseUrl, onConnect, onDisconnect }));
+      const endpoint = elements.find((element) => element.type === "input" && element.props["aria-label"] === "Remote MCP endpoint");
+      expect(endpoint?.props).toMatchObject({ value: `${new URL(publicBaseUrl).origin}/mcp`, readOnly: true });
+      const management = elements.find((element) => element.type === "a" && element.props.children === "Manage remote connections");
+      expect(management?.props.href).toBe(`${new URL(publicBaseUrl).origin}/agent-connections`);
+      expect(copy.join(" ")).toContain("with this page closed");
+      expect(copy.join(" ")).toContain("Browser tools require this Life Links page to stay open");
+      expect(onConnect).not.toHaveBeenCalled(); expect(onDisconnect).not.toHaveBeenCalled();
+      const disconnect = elements.find((element) => element.type === "button" && element.props.children === "Disconnect Agent");
+      (disconnect?.props.onClick as () => void)();
+      expect(onDisconnect).toHaveBeenCalledOnce(); expect(onConnect).not.toHaveBeenCalled();
+      expect(readFileSync(new URL("../App.tsx", import.meta.url), "utf8")).toContain("publicBaseUrl={qrBaseUrl}");
+    }
+  );
 
   it("adds only one descriptor while preserving every frozen v3 descriptor and bounded host registration", () => {
     const definitions = createLifeLinksAgentToolCatalog(new Proxy({} as LifeLinksAgentToolController,

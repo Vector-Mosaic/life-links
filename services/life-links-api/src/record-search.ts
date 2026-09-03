@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { currentRemoteAgentPrincipal, remoteAgentScopeAllows } from "./remote-agent-principal.js";
 import {
   deriveLifeLinkPhysicalLocator,
   DEFAULT_RECORD_SEARCH_LIMIT, MAX_RECORD_SEARCH_LIMIT, MAX_RECORD_SEARCH_QUERY_LENGTH,
@@ -43,7 +44,9 @@ export class RecordSearchService {
       await options.authorize?.();
       if (actor === "agent") {
         const user = await this.store.getUserById(ownerId);
-        if (!user?.agentConnectedAt || user.agentToolCatalogId !== "life-links-search-v4") {
+        const capability = category === "calendar" ? "calendar" : category === "routines" || category === "history" ? "routines" : category === "collections" ? "collections" : "records";
+        const remote = currentRemoteAgentPrincipal() && user && remoteAgentScopeAllows(user.id, capability);
+        if (!remote && (!user?.agentConnectedAt || user.agentToolCatalogId !== "life-links-search-v4")) {
           throw new RecordSearchError(403, "search_agent_connection_required");
         }
       }

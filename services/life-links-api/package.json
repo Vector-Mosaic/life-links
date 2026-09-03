@@ -4,11 +4,13 @@
   "license": "MIT",
   "version": "0.0.0",
   "type": "module",
+  "engines": { "node": ">=22.23.2" },
   "scripts": {
     "build": "pnpm --filter @life-links/core build && pnpm --filter @life-links/demo build && tsc -b --force",
     "typecheck": "pnpm --filter @life-links/core build && tsc -b --force",
-    "test": "pnpm --filter @life-links/core build && vitest run tests/server.test.ts tests/openapi-contract.test.ts tests/store-contract.test.ts tests/competition-reset-policy.test.ts tests/record-search.test.ts tests/calendar-connections.test.ts tests/calendar-authorization.test.ts tests/calendar-google-auth.test.ts tests/calendar-provider-runtime.test.ts tests/calendar-provider-events.test.ts tests/calendar-provider-subscriptions.test.ts tests/calendar-provider-gateway.test.ts tests/calendar-provider-google.test.ts tests/calendar-provider-microsoft.test.ts tests/attachment-content.test.ts tests/attachment-image.test.ts tests/attachment-office.test.ts tests/attachment-temporal.test.ts tests/attachment-speech.test.ts tests/attachment-native-runtime.test.ts --testTimeout=30000",
+    "test": "pnpm --filter @life-links/core build && vitest run tests/server.test.ts tests/openapi-contract.test.ts tests/store-contract.test.ts tests/competition-reset-policy.test.ts tests/record-search.test.ts tests/remote-agent-state.test.ts tests/remote-agent-auth.test.ts tests/remote-agent-operations.test.ts tests/remote-mcp.test.ts tests/calendar-connections.test.ts tests/calendar-authorization.test.ts tests/calendar-google-auth.test.ts tests/calendar-provider-runtime.test.ts tests/calendar-provider-events.test.ts tests/calendar-provider-subscriptions.test.ts tests/calendar-provider-gateway.test.ts tests/calendar-provider-google.test.ts tests/calendar-provider-microsoft.test.ts tests/attachment-content.test.ts tests/attachment-image.test.ts tests/attachment-office.test.ts tests/attachment-temporal.test.ts tests/attachment-speech.test.ts tests/attachment-native-runtime.test.ts --testTimeout=30000",
     "test:contract": "vitest run tests/openapi-contract.test.ts",
+    "test:remote": "vitest run tests/remote-agent-state.test.ts tests/remote-agent-auth.test.ts tests/remote-agent-operations.test.ts tests/remote-mcp.test.ts --maxWorkers=1 --no-file-parallelism",
     "test:postgres": "pnpm --filter @life-links/core build && vitest run tests/postgres.integration.test.ts --testTimeout=30000",
     "dev": "pnpm run build && node dist/main.js",
     "start": "node dist/main.js",
@@ -20,6 +22,7 @@
   "dependencies": {
     "@azure/msal-node": "6.0.0",
     "@life-links/core": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@napi-rs/canvas": "0.1.100",
     "cookie": "^1.0.2",
     "exceljs": "4.4.0",
@@ -27,12 +30,14 @@
     "google-auth-library": "10.9.1",
     "jszip": "^3.10.1",
     "multer": "^2.1.1",
+    "oidc-provider": "9.12.0",
     "pdfjs-dist": "5.4.624",
     "pg": "^8.13.1",
     "qrcode": "^1.5.4",
     "saxes": "6.0.0",
     "sharp": "0.35.4",
-    "yauzl": "3.4.0"
+    "yauzl": "3.4.0",
+    "zod": "3.25.76"
   },
   "optionalDependencies": {
     "@napi-rs/canvas-linux-x64-gnu": "workspace:*"
@@ -41,6 +46,7 @@
     "@types/express": "^5.0.3",
     "@types/multer": "^2.1.0",
     "@types/node": "^24.3.0",
+    "@types/oidc-provider": "9.12.0",
     "@types/pg": "^8.11.10",
     "@types/qrcode": "^1.5.5",
     "@types/supertest": "^6.0.3",

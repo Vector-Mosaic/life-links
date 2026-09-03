@@ -200,6 +200,7 @@ function LifeLinksApp() {
         findScannerPanel={<ScannerPanel mode="find" baseUrl={qrBaseUrl} sampleLinks={[]} targetId={findTargetId} onDecoded={(value) => void handleFindScan(value)} />}
         agentPanel={<>
           <AgentAccessPanel supported={webMcpSupported} connected={agentConnection.connected} busy={busy}
+            publicBaseUrl={qrBaseUrl}
             catalogCurrent={agentConnection.toolCatalogId === LIFE_LINKS_SEARCH_TOOL_CATALOG_ID}
             registrationStatus={agentRegistrationStatus} registrationError={agentRegistrationError}
             onConnect={() => void connectAgent()} onDisconnect={() => void disconnectAgent()} />

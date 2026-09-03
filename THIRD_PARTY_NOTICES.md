@@ -2,6 +2,15 @@
 
 ## Current source-candidate notice boundary
 
+The [remote MCP/OAuth appendix](#remote-mcp-and-delegated-oauth-dependency-additions)
+records the current candidate's 43 newly reachable production package versions
+and exact standalone lock digest. The 35 installed-license notices are
+supplemented by seven integrity-verified primary npm archives and the precisely
+identified upstream omitted-license correction for `koa-compose@4.1.0`.
+All added-version notice text is now accounted for. Candidate frozen production
+inventory reconciliation remains pending; retained inventories below are not
+silently relabeled as proof for the new dependency graph.
+
 The retained JavaScript inventory and Outlook additions below keep their exact
 recorded scope. The admitted Google addition pins `google-auth-library@10.9.1`.
 The [Google dependency appendix](#google-authentication-dependency-additions)
@@ -1187,3 +1196,260 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ```
+
+## Remote MCP and delegated OAuth dependency additions
+
+This appendix covers only the newly reachable production dependency graph of
+the page-independent MCP/OAuth addition, including
+`@modelcontextprotocol/sdk@1.30.0`, `oidc-provider@9.12.0` and `zod@3.25.76`.
+The prior standalone lock SHA-256 is
+`24a3ef81522f1a8170af4a47856a71fd1e6fc84b1c99592c1fd01fe3766fc925`;
+the current candidate lock SHA-256 is
+`8bd8c7e5bae46422d470236dad17820beffb3b43d135cf43287891699d1c3216`.
+
+Following production and optional dependencies from all workspace importers
+through the lock's snapshots gives 336 prior and 379 current distinct package
+versions: 43 newly reachable versions, no removed versions, and no unresolved
+dependency edges. Development-only dependencies, including the new
+`@types/oidc-provider` closure, are excluded. These are locked graph counts,
+including platform-optional packages, not an assertion about the count installed
+on a particular host. A package already present only in the development graph
+is included when newly reachable from production.
+
+Exact locally installed distributions supplied complete license text for 35
+added versions: 31 MIT, three ISC, and one BSD-2-Clause. The SDK and Zod versions
+were read from the API-local installation rather than substituting the
+different root-level versions. Seven further exact versions were inspected
+through integrity-verified primary npm archives, and the `koa-compose@4.1.0`
+license-file omission was reconciled with the explicit upstream correction
+below. The 43-version delta is 38 MIT, three ISC, one BSD-2-Clause and one
+BSD-3-Clause. No separate top-level NOTICE file was found in the 36 inspected
+installed distributions; no NOTICE file was present in the eight subsequently
+inspected exact npm archives.
+
+This is a source-candidate notice update, not completed frozen production
+inventory reconciliation. The existing cloud license-inventory procedure will
+supply the exact installed candidate inventory for comparison with this delta.
+Earlier JavaScript, native, and image-bound Debian evidence keeps its recorded
+scope; this appendix makes no new Node-image/Debian closure or legal-clearance
+claim.
+
+### Remote addition MIT package notices
+
+The complete [common MIT terms](#common-mit-terms) apply to these 31 packages
+with the following upstream notices. Their license bodies match those terms
+after whitespace and quote-style normalization. License filenames are relative
+to each exact package distribution; incomplete copyright lines are retained
+as supplied, not supplemented with inferred authors.
+
+| Exact package version | Upstream notice source | Copyright notice |
+| --- | --- | --- |
+| `@modelcontextprotocol/sdk@1.30.0` | `LICENSE` | Copyright (c) 2024 Anthropic, PBC |
+| `accepts@1.3.8` | `LICENSE` | Copyright (c) 2014 Jonathan Ong &lt;me@jongleberry.com&gt;<br>Copyright (c) 2015 Douglas Christopher Wilson &lt;doug@somethingdoug.com&gt; |
+| `ajv-formats@3.0.1` | `LICENSE` | Copyright (c) 2020 Evgeny Poberezkin |
+| `content-disposition@1.0.1` | `LICENSE` | Copyright (c) 2014-2017 Douglas Christopher Wilson |
+| `cookies@0.9.1` | `LICENSE` | Copyright (c) 2014 Jed Schmidt, http://jed.is/<br>Copyright (c) 2015-2016 Douglas Christopher Wilson &lt;doug@somethingdoug.com&gt; |
+| `cors@2.8.6` | `LICENSE` | Copyright (c) 2013 Troy Goode &lt;troygoode@gmail.com&gt; |
+| `cross-spawn@7.0.6` | `LICENSE` | Copyright (c) 2018 Made With MOXY Lda &lt;hello@moxy.studio&gt; |
+| `deep-equal@1.0.1` | `LICENSE` | The bundled license supplies no named copyright line; its complete MIT terms apply. |
+| `delegates@1.0.0` | `License` | Copyright (c) 2015 TJ Holowaychuk &lt;tj@vision-media.ca&gt; |
+| `depd@1.1.2` | `LICENSE` | Copyright (c) 2014-2017 Douglas Christopher Wilson |
+| `destroy@1.2.0` | `LICENSE` | Copyright (c) 2014 Jonathan Ong me@jongleberry.com<br>Copyright (c) 2015-2022 Douglas Christopher Wilson doug@somethingdoug.com |
+| `eventsource@3.0.7` | `LICENSE` | Copyright (c) EventSource GitHub organisation |
+| `fast-deep-equal@3.1.3` | `LICENSE` | Copyright (c) 2017 Evgeny Poberezkin |
+| `fresh@0.5.2` | `LICENSE` | Copyright (c) 2012 TJ Holowaychuk &lt;tj@vision-media.ca&gt;<br>Copyright (c) 2016-2017 Douglas Christopher Wilson &lt;doug@somethingdoug.com&gt; |
+| `http-assert@1.5.0` | `LICENSE` | Copyright (c) 2014 |
+| `http-errors@1.8.1` | `LICENSE` | Copyright (c) 2014 Jonathan Ong me@jongleberry.com<br>Copyright (c) 2016 Douglas Christopher Wilson doug@somethingdoug.com |
+| `jose@6.2.10` | `LICENSE.md` | Copyright (c) 2018 Filip Skokan |
+| `json-schema-traverse@1.0.0` | `LICENSE` | Copyright (c) 2017 Evgeny Poberezkin |
+| `keygrip@1.1.0` | `LICENSE` | Copyright (c) 2011-2014 Jed Schmidt &lt;where@jed.is&gt; (http://jedschmidt.com) |
+| `koa@3.2.1` | `LICENSE` | Copyright (c) 2019 Koa contributors |
+| `negotiator@0.6.3` | `LICENSE` | Copyright (c) 2012-2014 Federico Romero<br>Copyright (c) 2012-2014 Isaac Z. Schlueter<br>Copyright (c) 2014-2015 Douglas Christopher Wilson |
+| `object-assign@4.1.1` | `license` | Copyright (c) Sindre Sorhus &lt;sindresorhus@gmail.com&gt; (sindresorhus.com) |
+| `oidc-provider@9.12.0` | `LICENSE.md` | Copyright (c) 2015 Filip Skokan |
+| `path-key@3.1.1` | `license` | Copyright (c) Sindre Sorhus &lt;sindresorhus@gmail.com&gt; (sindresorhus.com) |
+| `pkce-challenge@5.0.1` | `LICENSE` | Copyright (c) 2019 |
+| `require-from-string@2.0.2` | `license` | Copyright (c) Vsevolod Strukchinsky &lt;floatdrop@gmail.com&gt; (github.com/floatdrop) |
+| `shebang-command@2.0.0` | `license` | Copyright (c) Kevin Mårtensson &lt;kevinmartensson@gmail.com&gt; (github.com/kevva) |
+| `shebang-regex@3.0.0` | `license` | Copyright (c) Sindre Sorhus &lt;sindresorhus@gmail.com&gt; (sindresorhus.com) |
+| `statuses@1.5.0` | `LICENSE` | Copyright (c) 2014 Jonathan Ong &lt;me@jongleberry.com&gt;<br>Copyright (c) 2016 Douglas Christopher Wilson &lt;doug@somethingdoug.com&gt; |
+| `tsscmp@1.0.6` | `LICENSE` | Copyright (c) 2016 |
+| `zod@3.25.76` | `LICENSE` | Copyright (c) 2025 Colin McDonnell |
+
+### Remote addition ISC package notices
+
+The complete [common ISC terms](#common-isc-terms) apply to all three packages
+below with their package-specific notices. Their license bodies match the
+reproduced terms after whitespace normalization.
+
+| Exact package version | Upstream notice source | Copyright notice |
+| --- | --- | --- |
+| `isexe@2.0.0` | `LICENSE` | Copyright (c) Isaac Z. Schlueter and Contributors |
+| `which@2.0.2` | `LICENSE` | Copyright (c) Isaac Z. Schlueter and Contributors |
+| `zod-to-json-schema@3.25.2` | `LICENSE` | Copyright (c) 2020, Stefan Terdell |
+
+### json-schema-typed 8.0.2 - BSD-2-Clause
+
+The complete upstream `json-schema-typed@8.0.2` `LICENSE.md`, including its
+JSON Schema attribution, is reproduced below:
+
+```text
+BSD 2-Clause License
+
+Original source code is copyright (c) 2019-2025 Remy Rylan
+<https://github.com/RemyRylan>
+
+All JSON Schema documentation and descriptions are copyright (c):
+
+2009 [draft-0] IETF Trust <https://www.ietf.org/>, Kris Zyp <kris@sitepen.com>,
+and SitePen (USA) <https://www.sitepen.com/>.
+
+2009 [draft-1] IETF Trust <https://www.ietf.org/>, Kris Zyp <kris@sitepen.com>,
+and SitePen (USA) <https://www.sitepen.com/>.
+
+2010 [draft-2] IETF Trust <https://www.ietf.org/>, Kris Zyp <kris@sitepen.com>,
+and SitePen (USA) <https://www.sitepen.com/>.
+
+2010 [draft-3] IETF Trust <https://www.ietf.org/>, Kris Zyp <kris@sitepen.com>,
+Gary Court <gary.court@gmail.com>, and SitePen (USA) <https://www.sitepen.com/>.
+
+2013 [draft-4] IETF Trust <https://www.ietf.org/>), Francis Galiegue
+<fgaliegue@gmail.com>, Kris Zyp <kris@sitepen.com>, Gary Court
+<gary.court@gmail.com>, and SitePen (USA) <https://www.sitepen.com/>.
+
+2018 [draft-7] IETF Trust <https://www.ietf.org/>, Austin Wright <aaa@bzfx.net>,
+Henry Andrews <henry@cloudflare.com>, Geraint Luff <luffgd@gmail.com>, and
+Cloudflare, Inc. <https://www.cloudflare.com/>.
+
+2019 [draft-2019-09] IETF Trust <https://www.ietf.org/>, Austin Wright
+<aaa@bzfx.net>, Henry Andrews <andrews_henry@yahoo.com>, Ben Hutton
+<bh7@sanger.ac.uk>, and Greg Dennis <gregsdennis@yahoo.com>.
+
+2020 [draft-2020-12] IETF Trust <https://www.ietf.org/>, Austin Wright
+<aaa@bzfx.net>, Henry Andrews <andrews_henry@yahoo.com>, Ben Hutton
+<ben@jsonschema.dev>, and Greg Dennis <gregsdennis@yahoo.com>.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### Exact upstream archive reconciliation
+
+The seven versions absent from the local installed paths were obtained from
+their exact primary npm registry tarballs, without installation or build. Each
+archive's SHA-512 matches both the current standalone lock and npm version
+metadata; each extracted `package/package.json` matches its exact name/version.
+Only notice and metadata entries were read from the archives. The eighth
+archive confirms the `koa-compose@4.1.0` packaging omission addressed below.
+No separate NOTICE file was present in these eight exact tarballs.
+
+| Exact primary package archive | Archive SHA-256 |
+| --- | --- |
+| [`@hono/node-server@2.1.1`](https://registry.npmjs.org/@hono/node-server/-/node-server-2.1.1.tgz) | `f65675c6fc745a4f15a2abd316883e715ab53afbc4b4fbb2ff57ed280360b9b6` |
+| [`ajv@8.20.0`](https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz) | `b2f0b3a893bbb8cc5efb6814f08b1499e19e31d5dd73683f5893382f48f6e7b3` |
+| [`eventsource-parser@3.1.1`](https://registry.npmjs.org/eventsource-parser/-/eventsource-parser-3.1.1.tgz) | `44a0a0ca6cecea76ac47de3e73414ceb32dbbfb8f3b6408906d81170c68e36ed` |
+| [`express-rate-limit@8.7.0`](https://registry.npmjs.org/express-rate-limit/-/express-rate-limit-8.7.0.tgz) | `1e3ed770c901156477986dfc189fb0b5bd8d8a8e6481393954ed4f6265d139b0` |
+| [`fast-uri@3.1.7`](https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.7.tgz) | `3fa380284be4ecbf471c1dbb8c5da6f517c95f54279f88c2037985d03fdc6d92` |
+| [`hono@4.13.5`](https://registry.npmjs.org/hono/-/hono-4.13.5.tgz) | `ab39c2ca637717ce1ed2575e8a2596e40d2fd8061227ab92803ee3a530ebe5c6` |
+| [`ip-address@10.7.0`](https://registry.npmjs.org/ip-address/-/ip-address-10.7.0.tgz) | `25a406ee4388fa3d47380ad57b816087fa82a681cc710cccbfe9162cffa8a57a` |
+| [`koa-compose@4.1.0`](https://registry.npmjs.org/koa-compose/-/koa-compose-4.1.0.tgz) | `878ca5a547ac938f33fb153ff3304150b9c621c366bad174ddb5ef13a09f06b1` |
+
+The following six additional MIT notices use the complete
+[common MIT terms](#common-mit-terms); all six license bodies match those terms
+after whitespace normalization.
+
+| Exact package version | Archive notice source | Copyright notice |
+| --- | --- | --- |
+| `@hono/node-server@2.1.1` | `package/LICENSE` | Copyright (c) 2022 - present, Yusuke Wada and Hono contributors |
+| `ajv@8.20.0` | `package/LICENSE` | Copyright (c) 2015-2021 Evgeny Poberezkin |
+| `eventsource-parser@3.1.1` | `package/LICENSE` | Copyright (c) 2026 Espen Hovlandsdal &lt;espen@hovlandsdal.com&gt; |
+| `express-rate-limit@8.7.0` | `package/license` | Copyright 2023 Nathan Friedly, Vedant K |
+| `hono@4.13.5` | `package/LICENSE` | Copyright (c) 2021 - present, Yusuke Wada and Hono contributors |
+| `ip-address@10.7.0` | `package/LICENSE` | Copyright (C) 2011 by Beau Gunderson |
+
+### fast-uri 3.1.7 - BSD-3-Clause
+
+The complete `fast-uri@3.1.7` `package/LICENSE` from the verified archive is:
+
+```text
+Copyright (c) 2011-2021, Gary Court until https://github.com/garycourt/uri-js/commit/a1acf730b4bba3f1097c9f52e7d9d3aba8cdcaae
+Copyright (c) 2021-present The Fastify team <https://github.com/fastify/fastify#team>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+    * The names of any contributors may not be used to endorse or promote
+      products derived from this software without specific prior written
+      permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDERS AND CONTRIBUTORS BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+                                  *   *   *
+
+The complete list of contributors can be found at:
+- https://github.com/garycourt/uri-js/graphs/contributors
+```
+
+### koa-compose 4.1.0 - upstream omitted-license correction
+
+The exact npm archive and upstream
+[4.1.0 release](https://github.com/koajs/compose/tree/06e82e65a368ac12cd6405beaf19fd5d208a1477)
+declare MIT but do not include the README-linked `LICENSE`. The published
+version's npm `gitHead` and annotated release tag both resolve to
+`06e82e65a368ac12cd6405beaf19fd5d208a1477`.
+
+The maintainer subsequently added the missing license in
+[commit 903480c36957776f8561a33a840cdd0a06ad611f](https://github.com/koajs/compose/commit/903480c36957776f8561a33a840cdd0a06ad611f),
+which changes only `LICENSE` and closes the
+[upstream omission report](https://github.com/koajs/compose/issues/110).
+That later source tree labels its package 4.2.0; its distributed `index.js`
+differs from the 4.1.0 archive only by removal of one trailing semicolon.
+This attribution is retained as the maintainer's later license-file correction,
+not represented as a file shipped inside the 4.1.0 archive.
+
+The complete [common MIT terms](#common-mit-terms) match that upstream
+[LICENSE](https://raw.githubusercontent.com/koajs/compose/903480c36957776f8561a33a840cdd0a06ad611f/LICENSE)
+after whitespace normalization and apply here with its exact notice:
+
+```text
+Copyright (c) 2013 TJ Holowaychuk tj@apex.sh
+```
+
+The retained upstream license file SHA-256 is
+`44a7ca64cb59fbe6481a7260e4317ff0177127a6e50e6077a9bfa60f89f905a2`.
+This closes the missing-text provenance item without asserting that the
+original archive contained a license file or granting legal clearance.

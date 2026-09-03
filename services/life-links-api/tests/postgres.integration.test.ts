@@ -45,6 +45,8 @@ import { CalendarProviderGateway, calendarProviderCredentialHandle } from "../sr
 import { PostgresCalendarProviderStateStore } from "../src/calendar-provider-postgres.js";
 import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
 import { CalendarSecretCipher, PostgresCalendarSecretStore } from "../src/calendar-secret-store.js";
+import { PersistentRemoteApprovals, RemoteAgentState } from "../src/remote-agent-state.js";
+import type { RemoteAgentPrincipal } from "../src/remote-agent-principal.js";
 
 const databaseUrl = process.env.LIFE_LINKS_TEST_DATABASE_URL;
 const allowSchemaMutation = process.env.LIFE_LINKS_ALLOW_TEST_DB_SCHEMA === "1";
@@ -158,6 +160,299 @@ describe("Life Links Postgres integration", () => {
     expect(await first.locked(expired.id, async (row) => ({ row, value: row }))).toBeNull();
     await second.locked(identity.id, async () => ({ row: null, value: null }));
     expect(await first.locked(identity.id, async (row) => ({ row, value: row }))).toBeNull();
+  });
+
+  it("bounds concurrent remote Client registrations and retains only the exact owner-consented client beyond twenty-four hours", async () => {
+    const secret = "synthetic-remote-postgres-key";
+    const baseline = await postgresPool.query("SELECT id_hash FROM remote_agent_protocol_state WHERE kind='Client'");
+    const baselineIds = new Set(baseline.rows.map((row) => String(row.id_hash)));
+    const first = new RemoteAgentState(secret, postgresPool, { registeredClients: baseline.rows.length + 2 });
+    const second = new RemoteAgentState(secret, postgresPool, { registeredClients: baseline.rows.length + 2 });
+    const clientIds = Array.from({ length: 4 }, () => `synthetic-client-${randomUUID()}`);
+    const [acceptedId, ...candidates] = clientIds;
+    const grantId = `synthetic-client-grant-${randomUUID()}`;
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const accepted = { client_id: acceptedId, client_name: "Owner-consented synthetic client", redirect_uris: ["https://example.invalid/callback"] };
+      await first.put("Client", acceptedId, accepted);
+      const inserted = (await postgresPool.query("SELECT id_hash,expires_at FROM remote_agent_protocol_state WHERE kind='Client'"))
+        .rows.filter((row) => !baselineIds.has(String(row.id_hash)));
+      expect(inserted).toHaveLength(1);
+      const acceptedHash = String(inserted[0].id_hash);
+      expect(Number(inserted[0].expires_at)).toBe(now + 24 * 3_600_000);
+      await first.put("Grant", grantId, { accountId: DEMO_OWNER_ID, clientId: acceptedId }, 90 * 86_400);
+      expect(Number((await postgresPool.query("SELECT expires_at FROM remote_agent_protocol_state WHERE kind='Client' AND id_hash=$1", [acceptedHash])).rows[0].expires_at))
+        .toBe(now + 90 * 86_400_000);
+      const outcomes = await Promise.allSettled(candidates.map((clientId, index) => (index % 2 ? first : second).put("Client", clientId,
+        { client_id: clientId, client_name: "Unconsented synthetic registration" })));
+      expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+      expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(2);
+      const winnerId = candidates[outcomes.findIndex((outcome) => outcome.status === "fulfilled")];
+      const clients = await postgresPool.query("SELECT id_hash,expires_at FROM remote_agent_protocol_state WHERE kind='Client'");
+      expect(clients.rows).toHaveLength(baseline.rows.length + 2);
+      const unconsented = clients.rows.find((row) => !baselineIds.has(String(row.id_hash)) && row.id_hash !== acceptedHash)!;
+      expect(Number(unconsented.expires_at)).toBe(now + 24 * 3_600_000);
+      // Updating an admitted registration must not reintroduce its anonymous TTL.
+      await second.put("Client", acceptedId, { ...accepted, client_name: "Renamed consented client" });
+      expect(Number((await postgresPool.query("SELECT expires_at FROM remote_agent_protocol_state WHERE kind='Client' AND id_hash=$1", [acceptedHash])).rows[0].expires_at))
+        .toBe(now + 90 * 86_400_000);
+      clock.mockReturnValue(now + 24 * 3_600_000 - 1);
+      expect(await second.get("Client", winnerId)).toBeDefined();
+      clock.mockReturnValue(now + 24 * 3_600_000);
+      expect(await second.get("Client", winnerId)).toBeUndefined();
+      const pruned = await second.pruneExpired();
+      expect(pruned).toBeGreaterThanOrEqual(1);
+      expect(pruned).toBeLessThanOrEqual(500);
+      expect((await postgresPool.query("SELECT 1 FROM remote_agent_protocol_state WHERE kind='Client' AND id_hash=$1", [unconsented.id_hash])).rowCount).toBe(0);
+      const restarted = new RemoteAgentState(secret, postgresPool, { registeredClients: baseline.rows.length + 2 });
+      const ClientAdapter = restarted.adapter();
+      expect(await new ClientAdapter("Client").find(acceptedId)).toEqual({ ...accepted, client_name: "Renamed consented client" });
+      expect(await restarted.get("Grant", grantId)).toMatchObject({ accountId: DEMO_OWNER_ID, clientId: acceptedId });
+      await restarted.put("Client", winnerId, { client_id: winnerId });
+      expect(await restarted.get("Client", winnerId)).toEqual({ client_id: winnerId });
+      await restarted.revokeGrant(grantId);
+      clock.mockReturnValue(now + 90 * 86_400_000);
+      await restarted.pruneExpired();
+      expect(await restarted.get("Client", acceptedId)).toBeUndefined();
+      expect((await postgresPool.query("SELECT 1 FROM remote_agent_protocol_state WHERE kind='Client' AND id_hash=$1", [acceptedHash])).rowCount).toBe(0);
+      await expect(restarted.put("Grant", grantId, { accountId: DEMO_OWNER_ID, clientId: acceptedId }, 3_600)).rejects.toThrow();
+      expect(await restarted.get("Grant", grantId)).toBeUndefined();
+    } finally {
+      clock.mockRestore();
+      await first.revokeGrant(grantId);
+      for (const clientId of clientIds) await first.remove("Client", clientId);
+    }
+  });
+
+  it("prunes at most five hundred expired remote artifacts per pass without removing accepted registrations", async () => {
+    const state = new RemoteAgentState("synthetic-remote-postgres-key", postgresPool);
+    const suffix = randomUUID();
+    const clientId = `synthetic-retained-client-${suffix}`;
+    const grantId = `synthetic-prune-grant-${suffix}`;
+    const ownerId = `synthetic-prune-owner-${suffix}`;
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      await state.put("Client", clientId, { client_id: clientId });
+      await state.put("Grant", grantId, { accountId: ownerId, clientId }, 90 * 86_400);
+      // 501 canonical encrypted rows falsify an unbounded single-pass deletion.
+      for (let index = 0; index < 501; index++) {
+        await state.put("AuthorizationCode", `synthetic-expiring-${suffix}-${index}`, { accountId: ownerId, grantId, index }, 60);
+      }
+      clock.mockReturnValue(now + 61_000);
+      expect(await state.pruneExpired()).toBe(500);
+      expect((await postgresPool.query("SELECT count(*)::int AS count FROM remote_agent_protocol_state WHERE kind='AuthorizationCode' AND owner_id=$1", [ownerId])).rows[0].count).toBe(1);
+      expect(await state.pruneExpired()).toBe(1);
+      expect(await state.pruneExpired()).toBe(0);
+      expect(await state.get("Client", clientId)).toEqual({ client_id: clientId });
+      expect(await state.get("Grant", grantId)).toMatchObject({ accountId: ownerId, clientId });
+    } finally {
+      clock.mockRestore();
+      await state.revokeGrant(grantId);
+      await state.remove("Client", clientId);
+    }
+  });
+
+  it("retains encrypted remote credentials across restart and atomically consumes a one-use code", async () => {
+    const secret = "synthetic-remote-postgres-key";
+    const first = new RemoteAgentState(secret, postgresPool);
+    const restarted = new RemoteAgentState(secret, postgresPool);
+    const suffix = randomUUID();
+    const ownerId = `synthetic-remote-owner-${suffix}`;
+    const grantId = `synthetic-remote-grant-${suffix}`;
+    const clientId = `synthetic-private-client-${suffix}`;
+    const code = `synthetic-private-code-${suffix}`;
+    const payload = { accountId: ownerId, grantId, jti: code, uid: `synthetic-private-uid-${suffix}`,
+      userCode: `synthetic-private-user-code-${suffix}`, refreshToken: `synthetic-private-refresh-${suffix}` };
+    try {
+      await first.put("Client", clientId, { client_id: clientId });
+      await first.put("Grant", grantId, { accountId: ownerId, clientId }, 3_600);
+      await first.put("AuthorizationCode", code, payload, 120);
+      const stored = await postgresPool.query("SELECT * FROM remote_agent_protocol_state WHERE owner_id=$1", [ownerId]);
+      const encoded = JSON.stringify(stored.rows);
+      for (const privateValue of [code, grantId, payload.uid, payload.userCode, payload.refreshToken]) {
+        expect(encoded).not.toContain(privateValue);
+      }
+      expect(stored.rows).toHaveLength(2);
+      expect(await restarted.get("AuthorizationCode", code)).toEqual(payload);
+      expect(await restarted.findBy("AuthorizationCode", "uid", payload.uid)).toEqual(payload);
+      expect(await restarted.findBy("AuthorizationCode", "userCode", payload.userCode)).toEqual(payload);
+      const outcomes = await Promise.allSettled([
+        first.consume("AuthorizationCode", code), restarted.consume("AuthorizationCode", code)
+      ]);
+      expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+      expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+      expect(await restarted.get("AuthorizationCode", code)).toMatchObject({ ...payload, consumed: expect.any(Number) });
+      await expect(new RemoteAgentState("different-synthetic-key", postgresPool).get("AuthorizationCode", code)).resolves.toBeUndefined();
+      await restarted.revokeGrant(grantId);
+      expect(await first.get("AuthorizationCode", code)).toBeUndefined();
+      expect(await first.get("Grant", grantId)).toBeUndefined();
+    } finally {
+      await first.revokeGrant(grantId);
+      await first.remove("Client", clientId);
+    }
+  });
+
+  it("holds the remote grant lease through an admitted operation before owner revocation completes", async () => {
+    const first = new RemoteAgentState("synthetic-remote-postgres-key", postgresPool);
+    const second = new RemoteAgentState("synthetic-remote-postgres-key", postgresPool);
+    const grantId = `synthetic-inflight-grant-${randomUUID()}`;
+    const clientId = `synthetic-inflight-client-${randomUUID()}`;
+    await first.put("Client", clientId, { client_id: clientId });
+    await first.put("Grant", grantId, { accountId: DEMO_OWNER_ID, clientId }, 3_600);
+    let releaseOperation!: () => void;
+    const operationRelease = new Promise<void>((resolve) => { releaseOperation = resolve; });
+    let enterOperation!: () => void;
+    const operationEntered = new Promise<void>((resolve) => { enterOperation = resolve; });
+    const order: string[] = [];
+    const operation = first.locked("Grant", grantId, async () => {
+      enterOperation();
+      await operationRelease;
+      expect(await first.get("Grant", grantId)).toBeDefined();
+      order.push("operation finished");
+    }, true);
+    let revocation: Promise<void> | undefined;
+    try {
+      await operationEntered;
+      revocation = second.revokeGrant(grantId).then(() => { order.push("revoked"); });
+      await vi.waitFor(async () => {
+        const waiting = await postgresPool.query(`SELECT 1 FROM pg_stat_activity
+          WHERE datname=current_database() AND (query=$1 OR query LIKE '%remote_agent_protocol_state%FOR UPDATE%') AND wait_event_type='Lock'`,
+        ["DELETE FROM remote_agent_protocol_state WHERE grant_hash=$1 OR (kind='Grant' AND id_hash=$1)"]);
+        expect(waiting.rowCount).toBeGreaterThan(0);
+      }, { timeout: 3_000, interval: 10 });
+      expect(order).toEqual([]);
+      releaseOperation();
+      await Promise.all([operation, revocation]);
+      expect(order).toEqual(["operation finished", "revoked"]);
+      await expect(first.locked("Grant", grantId, async () => "must not run", true))
+        .rejects.toThrow("remote_agent_connection_revoked");
+    } finally {
+      releaseOperation();
+      await operation;
+      if (revocation) await revocation;
+      await first.revokeGrant(grantId);
+      await first.remove("Client", clientId);
+    }
+  });
+
+  it("does not deadlock an admitted remote Approval update against grant revocation", async () => {
+    const state = new RemoteAgentState("synthetic-remote-postgres-key", postgresPool);
+    const revoker = new RemoteAgentState("synthetic-remote-postgres-key", postgresPool);
+    const approvals = new PersistentRemoteApprovals(state);
+    const principal: RemoteAgentPrincipal = { ownerId: DEMO_OWNER_ID, clientId: `synthetic-revoke-client-${randomUUID()}`,
+      grantId: `synthetic-revoke-order-${randomUUID()}`, scopes: ["records:read", "records:write"], expiresAt: Date.now() + 3_600_000 };
+    // Heap order cannot be authority: a receipt may physically precede its Grant.
+    await state.put("Client", principal.clientId, { client_id: principal.clientId });
+    const preview = await approvals.prepare(principal, { operation: "remove", payload: { commandId: randomUUID() },
+      effects: { removed: ["synthetic-item"] } });
+    await approvals.locked(principal, preview.id, () => approvals.approve(principal, preview.id, true));
+    await state.put("Grant", principal.grantId, { accountId: principal.ownerId, clientId: principal.clientId }, 3_600);
+    let releaseReceipt!: () => void;
+    const receiptRelease = new Promise<void>((resolve) => { releaseReceipt = resolve; });
+    let enterOperation!: () => void;
+    const operationEntered = new Promise<void>((resolve) => { enterOperation = resolve; });
+    const order: string[] = [];
+    const operation = state.locked("Grant", principal.grantId, () => approvals.locked(principal, preview.id, async () => {
+      enterOperation();
+      await receiptRelease;
+      await approvals.complete(principal, preview.id, { removedIds: ["synthetic-item"] });
+      order.push("receipt saved");
+    }), true).then(() => ({ ok: true }), (error: unknown) => ({ error }));
+    let revocation: Promise<{ ok: boolean } | { error: unknown }> | undefined;
+    try {
+      await operationEntered;
+      revocation = revoker.revokeGrant(principal.grantId).then(() => { order.push("revoked"); return { ok: true }; },
+        (error: unknown) => ({ error }));
+      await vi.waitFor(async () => {
+        const waiting = await postgresPool.query(`SELECT 1 FROM pg_stat_activity
+          WHERE datname=current_database() AND (query=$1 OR query LIKE '%remote_agent_protocol_state%FOR UPDATE%') AND wait_event_type='Lock'`,
+        ["DELETE FROM remote_agent_protocol_state WHERE grant_hash=$1 OR (kind='Grant' AND id_hash=$1)"]);
+        expect(waiting.rowCount).toBeGreaterThan(0);
+      }, { timeout: 3_000, interval: 10 });
+      releaseReceipt();
+      expect(await operation).toEqual({ ok: true });
+      expect(await revocation).toEqual({ ok: true });
+      expect(order).toEqual(["receipt saved", "revoked"]);
+      await expect(approvals.get(principal, preview.id)).rejects.toThrow("remote_approval_unavailable");
+      expect(await state.get("Grant", principal.grantId)).toBeUndefined();
+    } finally {
+      releaseReceipt();
+      await operation;
+      if (revocation) await revocation;
+      await revoker.revokeGrant(principal.grantId);
+      await state.remove("Client", principal.clientId);
+    }
+  });
+
+  it("allows owner revocation during remote confirmation and refuses dispatch when the lease resumes", async () => {
+    const state = new RemoteAgentState("synthetic-remote-postgres-key", postgresPool);
+    const revoker = new RemoteAgentState("synthetic-remote-postgres-key", postgresPool);
+    const approvals = new PersistentRemoteApprovals(state);
+    const principal: RemoteAgentPrincipal = { ownerId: DEMO_OWNER_ID, clientId: `synthetic-prompt-client-${randomUUID()}`,
+      grantId: `synthetic-prompt-grant-${randomUUID()}`, scopes: ["records:read", "records:write"], expiresAt: Date.now() + 3_600_000 };
+    await state.put("Client", principal.clientId, { client_id: principal.clientId });
+    await state.put("Grant", principal.grantId, { accountId: principal.ownerId, clientId: principal.clientId }, 3_600);
+    const preview = await approvals.prepare(principal, { operation: "remove", payload: { recordId: "synthetic-item" },
+      effects: { removed: ["synthetic-item"] } });
+    let dispatched = false;
+    try {
+      await expect(state.locked("Grant", principal.grantId, () => approvals.locked(principal, preview.id, async () => {
+        await state.withoutGrantLease(async () => {
+          await revoker.revokeGrant(principal.grantId);
+          expect(await revoker.get("Grant", principal.grantId)).toBeUndefined();
+          return true;
+        });
+        dispatched = true;
+      }), true)).rejects.toThrow("remote_agent_connection_revoked");
+      expect(dispatched).toBe(false);
+      await expect(approvals.get(principal, preview.id)).rejects.toThrow("remote_approval_unavailable");
+    } finally {
+      await revoker.revokeGrant(principal.grantId);
+      await state.remove("Client", principal.clientId);
+    }
+  });
+
+  it("recovers an approved remote command after fifteen minutes and serializes the retained receipt", async () => {
+    const secret = "synthetic-remote-postgres-key";
+    const state = new RemoteAgentState(secret, postgresPool);
+    const approvals = new PersistentRemoteApprovals(state);
+    const principal: RemoteAgentPrincipal = { ownerId: DEMO_OWNER_ID, clientId: "synthetic-client",
+      grantId: `synthetic-receipt-grant-${randomUUID()}`, scopes: ["records:read", "records:write"], expiresAt: Date.now() + 3_600_000 };
+    const input = { operation: "remove", payload: { commandId: randomUUID(), recordId: "synthetic-item" },
+      effects: { removed: ["synthetic-item"], historyPreserved: true } };
+    const preview = await approvals.prepare(principal, input);
+    const unconfirmed = await approvals.prepare(principal, { ...input, operation: "unconfirmed" });
+    await approvals.locked(principal, preview.id, () => approvals.approve(principal, preview.id, true));
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now + 16 * 60_000);
+    try {
+      const recovered = new PersistentRemoteApprovals(new RemoteAgentState(secret, postgresPool));
+      expect(await recovered.get(principal, preview.id)).toMatchObject({ status: "approved", payload: input.payload, effects: input.effects });
+      await expect(recovered.get(principal, unconfirmed.id)).rejects.toThrow("remote_approval_expired");
+      await expect(recovered.get({ ...principal, ownerId: DEMO_GUEST_ID }, preview.id)).rejects.toThrow("remote_approval_unavailable");
+      await expect(recovered.get({ ...principal, clientId: "other-client" }, preview.id)).rejects.toThrow("remote_approval_unavailable");
+      await expect(recovered.prepare(principal, { ...input, id: preview.id, payload: { ...input.payload, recordId: "different-item" } }))
+        .rejects.toThrow("remote_approval_conflict");
+      let dispatchCount = 0;
+      const retry = (service: PersistentRemoteApprovals) => service.locked(principal, preview.id, async () => {
+        const current = await service.get(principal, preview.id);
+        if (current.status === "applied") return current.result;
+        dispatchCount++;
+        const result = { commandId: input.payload.commandId, removedIds: [input.payload.recordId] };
+        await service.complete(principal, preview.id, result);
+        return result;
+      });
+      const outcomes = await Promise.all([retry(approvals), retry(recovered)]);
+      expect(dispatchCount).toBe(1);
+      expect(outcomes[0]).toEqual(outcomes[1]);
+      const restarted = new PersistentRemoteApprovals(new RemoteAgentState(secret, postgresPool));
+      expect(await restarted.get(principal, preview.id)).toMatchObject({ status: "applied", result: outcomes[0] });
+    } finally {
+      clock.mockRestore();
+      await state.revokeGrant(principal.grantId);
+    }
   });
 
   it("persists provider management with one canonical grant, stale-write protection and local-only disconnect", async () => {
@@ -423,7 +718,7 @@ describe("Life Links Postgres integration", () => {
       `SELECT count(*)::int AS count FROM ${quoteIdentifier(schemaName)}.schema_migrations`
     );
     expect(users.rows[0].count).toBe(2);
-    expect(migrations.rows[0].count).toBe(18);
+    expect(migrations.rows[0].count).toBe(19);
     const agentConnectionColumn = await adminPool.query(
       `SELECT is_nullable, data_type
        FROM information_schema.columns
@@ -1339,7 +1634,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(18);
+      expect(receiptCount.rows[0].count).toBe(19);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1390,7 +1685,7 @@ describe("Life Links Postgres integration", () => {
       const newlyCreated = await fixture.store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
         ownerId, title: "New default", createdAt, steps: [{ id: `routine-step-${randomUUID()}`, activityId, activityTitle: "Prepare", position: 0 }] });
       expect(newlyCreated.currentRevision.revision.ordering).toBe("unordered");
-      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(18);
+      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(19);
     } finally {
       await fixture.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1453,7 +1748,8 @@ describe("Life Links Postgres integration", () => {
         "015_collection_changes.sql",
         "016_workspace_agent_catalog.sql",
         "017_record_search_attachment_text.sql",
-        "018_routine_ordering.sql"
+        "018_routine_ordering.sql",
+        "019_remote_agent_protocol_state.sql"
       ]);
     } finally {
       await concurrent.store.close();

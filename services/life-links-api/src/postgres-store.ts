@@ -2328,14 +2328,15 @@ async function assertPostgresWorkspaceAgentConnection(queryable: Queryable, user
   assertWorkspaceAgentConnection(await readPostgresAgentConnection(queryable, userId), actor);
 }
 
-async function readPostgresAgentConnection(queryable: Queryable, userId: string): Promise<Pick<StoredUser, "agentConnectedAt" | "agentToolCatalogId"> | null> {
+async function readPostgresAgentConnection(queryable: Queryable, userId: string): Promise<Pick<StoredUser, "id" | "agentConnectedAt" | "agentToolCatalogId"> | null> {
   // Hold the user row through the transaction so disconnect/catalog revocation
   // cannot race a previously authorized write or partially hydrated read.
   const result = await queryable.query(
-    "SELECT agent_connected_at,agent_tool_catalog_id FROM users WHERE id=$1 FOR SHARE", [userId]
+    "SELECT id,agent_connected_at,agent_tool_catalog_id FROM users WHERE id=$1 FOR SHARE", [userId]
   );
   const row = result.rows[0];
   return row ? {
+    id: row.id,
     agentConnectedAt: nullableIso(row.agent_connected_at),
     agentToolCatalogId: row.agent_tool_catalog_id as AgentToolCatalogId | null
   } : null;

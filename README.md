@@ -199,7 +199,7 @@ host implements the page registration API.
 
 ## Run locally
 
-Use Node.js **20.19.0 or newer** and the pinned pnpm 10.14.0 workspace. The
+Use Node.js **22.23.2 or a later supported LTS** and the pinned pnpm 10.14.0 workspace. The
 Google OAuth implementation pins `google-auth-library` **10.9.1** and preserves
 that Node runtime floor.
 

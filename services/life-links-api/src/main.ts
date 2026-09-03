@@ -15,6 +15,8 @@ import { GoogleOAuthCalendarAuth } from "./calendar-google-auth.js";
 import { CalendarProviderRuntime } from "./calendar-provider-runtime.js";
 import { CalendarProviderSubscriptionService, PostgresCalendarProviderSubscriptionStore,
   InMemoryCalendarProviderSubscriptionStore, type CalendarProviderSubscriptionStore } from "./calendar-provider-subscriptions.js";
+import { RemoteAgentState } from "./remote-agent-state.js";
+import { RemoteAgentAuth } from "./remote-agent-auth.js";
 
 async function main() {
   const config = readConfig();
@@ -23,6 +25,7 @@ async function main() {
   let calendarProviderState: CalendarProviderStateStore;
   let calendarSecrets: CalendarSecretStore;
   let calendarSubscriptions: CalendarProviderSubscriptionStore;
+  let remoteAgentState: RemoteAgentState;
 
   if (config.storeMode === "postgres") {
     const postgres = createPostgresStore(config.databaseUrl);
@@ -30,6 +33,7 @@ async function main() {
     calendarProviderState = new PostgresCalendarProviderStateStore(postgres.pool);
     calendarSecrets = new PostgresCalendarSecretStore(postgres.pool);
     calendarSubscriptions = new PostgresCalendarProviderSubscriptionStore(postgres.pool);
+    remoteAgentState = new RemoteAgentState(config.sessionSecret, postgres.pool);
     if (config.autoMigrate) {
       await runMigrations(postgres.pool, config.migrationDir, logger);
     }
@@ -38,6 +42,7 @@ async function main() {
     calendarProviderState = new InMemoryCalendarProviderStateStore();
     calendarSecrets = new InMemoryCalendarSecretStore();
     calendarSubscriptions = new InMemoryCalendarProviderSubscriptionStore();
+    remoteAgentState = new RemoteAgentState(config.sessionSecret);
     logger.warn("life_links.store.memory_enabled", {
       message: "DATABASE_URL is not set; using in-memory data for local development only."
     });
@@ -90,7 +95,8 @@ async function main() {
   const calendarRuntime = calendarAuthorizationService ? new CalendarProviderRuntime(calendarProviderGateway, calendarAuthorizationService,
     logger, 60_000, calendarSubscriptionService, adapters.map((adapter) => adapter.providerKey)) : undefined;
   const server = startLifeLinksServer({ store, config, logger, calendarProviderGateway, calendarAuthorizationService,
-    calendarSubscriptionService, wakeCalendarRuntime: () => calendarRuntime?.wake() });
+    calendarSubscriptionService, wakeCalendarRuntime: () => calendarRuntime?.wake(),
+    remoteAgent: { state: remoteAgentState, auth: await RemoteAgentAuth.create(remoteAgentState, store, config, logger) } });
   calendarRuntime?.start();
   logger.info("life_links.server.started", {
     host: config.host,
@@ -99,14 +105,24 @@ async function main() {
     qrBaseUrl: config.qrBaseUrl
   });
 
-  const stop = async () => {
-    server.close();
-    await calendarRuntime?.stop();
-    await store.close();
-    process.exit(0);
+  let stopping: Promise<void> | undefined;
+  const stop = () => {
+    stopping ??= (async () => {
+      // Abort remote operations and close their SSE streams before HTTP drain;
+      // otherwise Server.close waits indefinitely while the pool closes early.
+      const remoteClosing = server.closeRemoteAgent();
+      const httpClosing = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      await Promise.all([remoteClosing, httpClosing, calendarRuntime?.stop()]);
+      await store.close();
+    })();
+    return stopping;
   };
-  process.on("SIGINT", () => void stop());
-  process.on("SIGTERM", () => void stop());
+  const onSignal = () => { void stop().then(() => process.exit(0), () => {
+    logger.fatal("life_links.server.shutdown_failed", { msg: "Life Links shutdown could not complete." });
+    process.exit(1);
+  }); };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
 }
 
 main().catch((error) => {

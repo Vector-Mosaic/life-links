@@ -18,7 +18,7 @@ export interface CalendarSecretStore {
 
 export class CalendarSecretCipher {
   readonly #key: Buffer;
-  constructor(keyBase64: string) {
+  constructor(keyBase64: string, private readonly namespace = "life-links-calendar-v1") {
     this.#key = Buffer.from(keyBase64, "base64");
     if (this.#key.length !== 32 || this.#key.toString("base64") !== keyBase64) {
       throw new Error("Calendar credential encryption requires an exact base64 256-bit key.");
@@ -44,7 +44,7 @@ export class CalendarSecretCipher {
     }
   }
   #aad(row: Pick<CalendarSecretRow, "id" | "ownerId" | "purpose">) {
-    return Buffer.from(JSON.stringify(["life-links-calendar-v1", row.id, row.ownerId, row.purpose]));
+    return Buffer.from(JSON.stringify([this.namespace, row.id, row.ownerId, row.purpose]));
   }
 }
 

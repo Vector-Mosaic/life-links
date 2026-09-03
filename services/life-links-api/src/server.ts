@@ -77,7 +77,6 @@ import {
   normalizeSetLifeLinkQrBindingCommand,
   normalizeActivityId,
   normalizeActivityPatch,
-  normalizeRoutineBindingId,
   normalizeRoutineGroupId,
   normalizeRoutineGroupPatch,
   normalizeRoutineId,
@@ -134,6 +133,12 @@ import { createCalendarProviderNotificationRouter, type CalendarProviderSubscrip
 import { handleProviderCalendarEventRequest, listProviderCalendarBindings } from "./calendar-provider-events.js";
 import { RecordSearchError, RecordSearchService } from "./record-search.js";
 import { RECORD_SEARCH_CATEGORIES, type RecordSearchCategory } from "@life-links/core";
+import { AGENT_GUIDE_SECTIONS, REMOTE_AGENT_INSTRUCTIONS } from "@life-links/core";
+import { routineDefinitionWithStableIds } from "./routine-command-preparation.js";
+import type { RemoteAgentAuth } from "./remote-agent-auth.js";
+import { PersistentRemoteApprovals, type RemoteAgentState } from "./remote-agent-state.js";
+import { createRemoteAgentOperations } from "./remote-agent-operations.js";
+import { createRemoteMcpRouter } from "./remote-mcp.js";
 
 const SESSION_COOKIE = "life_links_session";
 const MEDIA_UPLOAD_FIELD = "file";
@@ -200,10 +205,11 @@ export type LifeLinksAppDeps = {
   calendarAuthorizationService?: CalendarAuthorizationService;
   calendarSubscriptionService?: CalendarProviderSubscriptionService;
   wakeCalendarRuntime?: () => void;
+  remoteAgent?: { auth: RemoteAgentAuth; state: RemoteAgentState };
 };
 
 export function createLifeLinksApp({ store, config, logger, calendarProviderGateway, calendarAuthorizationService,
-  calendarSubscriptionService, wakeCalendarRuntime }: LifeLinksAppDeps): Express {
+  calendarSubscriptionService, wakeCalendarRuntime, remoteAgent }: LifeLinksAppDeps): Express {
   const app = express();
   const attachmentReader = new AttachmentContentReader(undefined, config.attachmentRuntime, {
     get: (file, revision) => store.getAttachmentText(file, revision),
@@ -223,7 +229,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
         msg: "HTTP request completed",
         ...requestLogFields(appRequest),
         method: request.method,
-        path: request.path,
+        path: remoteAgentLogPath(request.path),
         status: response.statusCode,
         duration_ms: Number((process.hrtime.bigint() - start) / 1_000_000n),
         ...routeLogFields(request.path)
@@ -231,6 +237,27 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     });
     next();
   });
+  // OAuth and MCP own their protocol parsers and authentication. A human cookie
+  // or page actor header cannot substitute for a delegated remote credential.
+  if (remoteAgent) {
+    const { auth, state } = remoteAgent;
+    const remote = createRemoteMcpRouter({
+      authenticate: request => auth.authenticate(request),
+      withPrincipal: (principal, action) => auth.withPrincipal(principal, action),
+      withoutGrantLease: action => state.withoutGrantLease(action),
+      reauthorize: principal => auth.authorize(principal),
+      authorize: (principal, access) => auth.authorize(principal, access),
+      approvals: new PersistentRemoteApprovals(state),
+      operations: createRemoteAgentOperations({ store, recordSearch, attachmentReader, calendarProviderGateway }),
+      instructions: REMOTE_AGENT_INSTRUCTIONS,
+      guide: AGENT_GUIDE_SECTIONS.map(section => `## ${section.title}\n\n${section.content}`).join("\n\n"),
+      publicOrigin: config.qrBaseUrl,
+      resourceMetadataUrl: `${config.qrBaseUrl}/.well-known/oauth-protected-resource/mcp`
+    });
+    app.use(auth.router);
+    app.use(remote.router);
+    app.locals.closeRemoteAgent = () => remote.close();
+  }
   // Graph notifications authenticate their opaque subscription identity and
   // client-state hash, not an owner cookie or browser Origin. This exact route
   // terminates before the owner-origin guard and has its own bounded parser.
@@ -2255,9 +2282,24 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   return app;
 }
 
-export function startLifeLinksServer(deps: LifeLinksAppDeps): http.Server {
+export function startLifeLinksServer(deps: LifeLinksAppDeps): http.Server & { closeRemoteAgent(): Promise<void> } {
   const app = createLifeLinksApp(deps);
-  return app.listen(deps.config.port, deps.config.host);
+  let remoteClosing: Promise<void> | undefined;
+  const closeRemoteAgent = () => remoteClosing ??= (async () => { await app.locals.closeRemoteAgent?.(); })();
+  const server = Object.assign(app.listen(deps.config.port, deps.config.host), { closeRemoteAgent });
+  // Callers can stop long-lived MCP streams before awaiting HTTP drain. Keep
+  // cleanup for ordinary Server.close() callers that have no active streams.
+  server.on("close", () => { void closeRemoteAgent().catch(() => {
+    deps.logger.warn("life_links.remote_mcp.shutdown_failed", { reason: "remote_shutdown_failed" });
+  }); });
+  return server;
+}
+
+function remoteAgentLogPath(value: string): string {
+  // Interaction IDs and dynamic-registration access paths are credentials.
+  if (value.startsWith("/agent-authorize/")) return "/agent-authorize/:interaction";
+  if (value.startsWith("/oauth/")) return `/oauth/${value.split("/")[2]}`;
+  return value;
 }
 
 function securityHeaders(config: LifeLinksConfig) {
@@ -2699,41 +2741,6 @@ function readRoutineMaterializationWindow(
     return undefined;
   }
   return { startDate, endDate };
-}
-
-function routineDefinitionWithStableIds(input: Record<string, unknown>, revisionId: string): Record<string, unknown> {
-  if (!Array.isArray(input.steps) || (input.bindings !== undefined && !Array.isArray(input.bindings))) {
-    throw new LifeLinkDomainError("invalid_routine", "Routine definition Steps and bindings are invalid.", {
-      reason: "invalid_definition"
-    });
-  }
-  const steps = input.steps.map((value, index) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new LifeLinkDomainError("invalid_routine", "Routine Step is invalid.", { reason: "invalid_step" });
-    }
-    const step = value as Record<string, unknown>;
-    return { ...step, id: normalizeRoutineStepId(step.id ?? stableRoutineNestedId("routine-step-", revisionId, "step", index)) };
-  });
-  const bindings = (input.bindings as unknown[] | undefined)?.map((value, index) => {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new LifeLinkDomainError("invalid_routine", "Routine context binding is invalid.", { reason: "invalid_binding" });
-    }
-    const binding = value as Record<string, unknown>;
-    return {
-      ...binding,
-      id: normalizeRoutineBindingId(binding.id ?? stableRoutineNestedId("routine-binding-", revisionId, "binding", index))
-    };
-  });
-  const { id: _id, revisionId: _revisionId, expectedCurrentRevisionId: _expectedRevision, ...definition } = input;
-  return { ...definition, steps, ...(bindings === undefined ? {} : { bindings }) };
-}
-
-function stableRoutineNestedId(prefix: "routine-step-" | "routine-binding-", revisionId: string, kind: string, index: number): string {
-  const hex = createHash("sha256").update(`${revisionId}\u0000${kind}\u0000${index}`).digest("hex").slice(0, 32).split("");
-  hex[12] = "5";
-  hex[16] = ((Number.parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
-  const uuid = `${hex.slice(0, 8).join("")}-${hex.slice(8, 12).join("")}-${hex.slice(12, 16).join("")}-${hex.slice(16, 20).join("")}-${hex.slice(20).join("")}`;
-  return `${prefix}${uuid}`;
 }
 
 function routineExpectedTimestamp(value: unknown): string {
