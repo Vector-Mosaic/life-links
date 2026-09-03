@@ -1,6 +1,6 @@
 {
-  "canonical_source_byte_count": 41148778,
-  "canonical_source_tree_sha256": "77ca79b37511d40d78c34b5e4b9cd729a6e62b1fbad49889ad49010fc5d820fb",
+  "canonical_source_byte_count": 41162171,
+  "canonical_source_tree_sha256": "bf8a800f612989fbff42e200e55ec1c39507a721311939c3da86b62fb45cd0f8",
   "excluded_globs": [
     "**/node_modules/**",
     "**/dist/**",
@@ -291,13 +291,13 @@
       "selected_variant_id": null
     },
     {
-      "canonical_byte_count": 446608,
-      "canonical_sha256": "5698d5c31755939ceaf91b9493b281b1e851a8572297567046b5cff34b37a86d",
+      "canonical_byte_count": 447559,
+      "canonical_sha256": "8b8af3d61812fa17f3ffc2603e408e568bbacbfcdf35d4021ee60d3bab3b361b",
       "destination": "contracts/http/openapi.json",
       "id": "public-openapi-metadata",
       "kind": "exact_text_replacements",
-      "projected_byte_count": 446413,
-      "projected_sha256": "e364ea3d02990ba418125f002c2062decf3f4c32a6885304a7bc4012a7a331fa",
+      "projected_byte_count": 447364,
+      "projected_sha256": "8897d355c36c6a5db092a4e4540be5e4f9c6ca428ded8bd3f795df84cac4b69c",
       "replacements": [
         {
           "after_byte_count": 0,
@@ -334,7 +334,7 @@
   "profile_id": "life-links-webmcp-challenge",
   "profile_path": "systems/life_links/config/publication/webmcp_challenge_public_release.profile.json",
   "profile_sha256": "3fd4eb3c4c10597835db9970e1e4f82a2200b4fa53a8931105e6060f8b90fddd",
-  "projection_commit": "fcd77a2357678ebe840493069180a2156ff1f681",
+  "projection_commit": "aaae713e70ae8e361aa1609ddb93bb5b1511419e",
   "scaffold_destinations": [
     ".dockerignore",
     ".env.example",
@@ -424,8 +424,8 @@
     }
   ],
   "schema_version": "life_links.source_projection.v2",
-  "source_byte_count": 41147961,
-  "source_commit": "fcd77a2357678ebe840493069180a2156ff1f681",
+  "source_byte_count": 41161354,
+  "source_commit": "aaae713e70ae8e361aa1609ddb93bb5b1511419e",
   "source_file_count": 481,
   "source_mappings": [
     {
@@ -453,5 +453,5 @@
       "source": "systems/life_links/contracts/mcp"
     }
   ],
-  "source_tree_sha256": "c75e5d62c12d2d14cd08c2ec4bfac0dd1a879698960ff23ec5cacddbd982d738"
+  "source_tree_sha256": "41eecf7d0a5ac7514337f72a9cae4586d4f31b76617d2fcb5ed18764e8630f53"
 }

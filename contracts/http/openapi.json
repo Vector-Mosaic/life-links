@@ -747,7 +747,7 @@
             "RemoteOAuth": []
           }
         ],
-        "description": "MCP Streamable HTTP transport, not application CRUD. The protocol SDK owns JSON-RPC validation, initialization, sessions, streaming and tool/resource messages; the curated MCP contract owns semantic capabilities. Only a live delegated OAuth bearer is admitted. Human cookies/native session tokens and X-Life-Links-Actor cannot substitute. Every call and replay rechecks owner/client/grant/scopes and resource access. Unsupported methods receive 405. Actual-host and deployed qualification remain separately evidenced.",
+        "description": "MCP Streamable HTTP transport, not application CRUD. The protocol SDK owns JSON-RPC validation, initialization, streaming and tool/resource messages; the adapter bounds session retention and the curated MCP contract owns semantic capabilities. Under capacity pressure, only the same owner/client/grant's oldest quiescent used session can be retired; active operations, outstanding POST responses and unfinished handshakes are protected. Retired IDs receive 404 and require fresh initialization; unavailable capacity receives 429. Only a live delegated OAuth bearer is admitted. Human cookies/native session tokens and X-Life-Links-Actor cannot substitute. Every call and replay rechecks owner/client/grant/scopes and resource access. Unsupported methods receive 405. Actual-host and deployed qualification remain separately evidenced.",
         "externalDocs": {
           "url": "https://modelcontextprotocol.io/specification/2025-11-25/basic/transports",
           "description": "MCP Streamable HTTP framing; not an independently duplicated JSON-RPC schema."
@@ -829,7 +829,7 @@
             "RemoteOAuth": []
           }
         ],
-        "description": "MCP Streamable HTTP transport, not application CRUD. The protocol SDK owns JSON-RPC validation, initialization, sessions, streaming and tool/resource messages; the curated MCP contract owns semantic capabilities. Only a live delegated OAuth bearer is admitted. Human cookies/native session tokens and X-Life-Links-Actor cannot substitute. Every call and replay rechecks owner/client/grant/scopes and resource access. Unsupported methods receive 405. Actual-host and deployed qualification remain separately evidenced.",
+        "description": "MCP Streamable HTTP transport, not application CRUD. The protocol SDK owns JSON-RPC validation, initialization, streaming and tool/resource messages; the adapter bounds session retention and the curated MCP contract owns semantic capabilities. Under capacity pressure, only the same owner/client/grant's oldest quiescent used session can be retired; active operations, outstanding POST responses and unfinished handshakes are protected. Retired IDs receive 404 and require fresh initialization; unavailable capacity receives 429. Only a live delegated OAuth bearer is admitted. Human cookies/native session tokens and X-Life-Links-Actor cannot substitute. Every call and replay rechecks owner/client/grant/scopes and resource access. Unsupported methods receive 405. Actual-host and deployed qualification remain separately evidenced.",
         "externalDocs": {
           "url": "https://modelcontextprotocol.io/specification/2025-11-25/basic/transports",
           "description": "MCP Streamable HTTP framing; not an independently duplicated JSON-RPC schema."
@@ -936,7 +936,7 @@
             "RemoteOAuth": []
           }
         ],
-        "description": "MCP Streamable HTTP transport, not application CRUD. The protocol SDK owns JSON-RPC validation, initialization, sessions, streaming and tool/resource messages; the curated MCP contract owns semantic capabilities. Only a live delegated OAuth bearer is admitted. Human cookies/native session tokens and X-Life-Links-Actor cannot substitute. Every call and replay rechecks owner/client/grant/scopes and resource access. Unsupported methods receive 405. Actual-host and deployed qualification remain separately evidenced.",
+        "description": "MCP Streamable HTTP transport, not application CRUD. The protocol SDK owns JSON-RPC validation, initialization, streaming and tool/resource messages; the adapter bounds session retention and the curated MCP contract owns semantic capabilities. Under capacity pressure, only the same owner/client/grant's oldest quiescent used session can be retired; active operations, outstanding POST responses and unfinished handshakes are protected. Retired IDs receive 404 and require fresh initialization; unavailable capacity receives 429. Only a live delegated OAuth bearer is admitted. Human cookies/native session tokens and X-Life-Links-Actor cannot substitute. Every call and replay rechecks owner/client/grant/scopes and resource access. Unsupported methods receive 405. Actual-host and deployed qualification remain separately evidenced.",
         "externalDocs": {
           "url": "https://modelcontextprotocol.io/specification/2025-11-25/basic/transports",
           "description": "MCP Streamable HTTP framing; not an independently duplicated JSON-RPC schema."

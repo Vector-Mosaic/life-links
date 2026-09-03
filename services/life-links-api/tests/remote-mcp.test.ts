@@ -2,6 +2,7 @@ import { createServer, type Server } from "node:http";
 import express from "express";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ElicitRequestSchema, type CallToolResult, type ClientCapabilities, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -14,6 +15,13 @@ const effects = { operation: "delete", revision: "revision-one", records: [{ id:
 const text = (value: Record<string, unknown>): CallToolResult => ({ content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value });
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { while (cleanup.length) await cleanup.pop()!(); });
+
+const initialize = (url: string, requestId = 1, token = "synthetic-token") => fetch(url, {
+  method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+  body: JSON.stringify({ jsonrpc: "2.0", id: requestId, method: "initialize", params: {
+    protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "synthetic-session-pressure", version: "1" }
+  } })
+});
 
 async function fixture(input: Partial<RemoteMcpRouterOptions> = {}) {
   let active = true;
@@ -143,6 +151,138 @@ describe("remote MCP Streamable HTTP boundary", () => {
     const second = await test.connect();
     const b = await second.client.callTool({ name: "save_record", arguments: { commandId: "same-command" } });
     expect(b).toEqual(a); expect(test.writes()).toBe(1);
+  });
+
+  it("reclaims old quiescent sessions for more than eight fresh chats without DELETE or TTL expiry, preserving command replay", async () => {
+    let clock = Date.now();
+    const test = await fixture({ now: () => clock });
+    let previous: Awaited<ReturnType<typeof test.connect>> | undefined;
+    let oldestId = "";
+    for (let index = 0; index < 12; index++) {
+      // Leave every old client's idle GET stream open and never send DELETE.
+      // A completed stream must not reserve a slot or require host cleanup.
+      clock++;
+      const current = await test.connect();
+      oldestId ||= current.transport.sessionId!;
+      expect((await current.client.callTool({ name: "get_life_links_guide" })).isError).not.toBe(true);
+      expect((await current.client.callTool({ name: "save_record", arguments: { commandId: "same-command-across-chats" } })).structuredContent)
+        .toEqual({ ok: true, writes: 1 });
+      previous = current;
+    }
+    expect(test.writes()).toBe(1);
+    const expired = await fetch(test.url, { method: "GET", headers: { Authorization: "Bearer synthetic-token", Accept: "text/event-stream", "Mcp-Session-Id": oldestId } });
+    expect(expired.status).toBe(404); await expired.text();
+    expect((await previous!.client.callTool({ name: "read_records" })).structuredContent).toMatchObject({ ownerId: principal.ownerId });
+  });
+
+  it("does not reclaim a running operation under pressure and admits a fresh chat when it finishes", async () => {
+    let entered!: () => void; const started = new Promise<void>(resolve => { entered = resolve; });
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    const operation: RemoteAgentOperation = { name: "held_operation", description: "Synthetic running operation", inputSchema: {}, readOnly: true, destructive: false,
+      execute: async (_args, context) => { entered(); await gate; context.signal!.throwIfAborted(); return text({ finished: true }); } };
+    const test = await fixture({ operations: [operation], limits: { sessionsPerGrant: 1 } });
+    const first = await test.connect();
+    const pending = first.client.callTool({ name: "held_operation" });
+    try {
+      await started;
+      const refused = await initialize(test.url); expect(refused.status).toBe(429); await refused.text();
+      release(); expect((await pending).structuredContent).toEqual({ finished: true });
+      const next = await test.connect();
+      expect((await next.client.callTool({ name: "get_life_links_guide" })).isError).not.toBe(true);
+    } finally { release(); await pending.catch(() => undefined); }
+  });
+
+  it("keeps pending host confirmation alive under pressure and replays its durable result in the next chat", async () => {
+    let entered!: () => void; const prompted = new Promise<void>(resolve => { entered = resolve; });
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    const answer = vi.fn(async (): Promise<ElicitResult> => { entered(); await gate; return { action: "accept", content: { approve: true } }; });
+    const test = await fixture({ limits: { sessionsPerGrant: 1 } });
+    const first = await test.connect({ capabilities: { elicitation: { form: {} } }, answer });
+    const pending = first.client.callTool({ name: "delete_records", arguments: { previewId: "preview-one" } });
+    try {
+      await prompted;
+      const refused = await initialize(test.url); expect(refused.status).toBe(429); await refused.text();
+      expect(test.writes()).toBe(0);
+      release(); const saved = await pending; expect(saved.structuredContent).toEqual({ ok: true, writes: 1 });
+      const next = await test.connect();
+      expect(await next.client.callTool({ name: "delete_records", arguments: { previewId: "preview-one" } })).toEqual(saved);
+      expect(test.writes()).toBe(1); expect(answer).toHaveBeenCalledTimes(1);
+    } finally { release(); await pending.catch(() => undefined); }
+  });
+
+  it.each(["foreign-token", "other-client-token", "new-grant-token"])("never reclaims a different owner/client/grant at the global cap (%s)", async token => {
+    const test = await fixture({ limits: { sessions: 1 } });
+    const existing = await test.connect({ token });
+    expect((await existing.client.callTool({ name: "get_life_links_guide" })).isError).not.toBe(true);
+    const refused = await initialize(test.url); expect(refused.status).toBe(429); await refused.text();
+    expect((await existing.client.callTool({ name: "get_life_links_guide" })).isError).not.toBe(true);
+  });
+
+  it("reserves simultaneous initialization capacity without recycling unfinished handshakes", async () => {
+    const test = await fixture({ limits: { sessions: 2, sessionsPerGrant: 2 } });
+    const responses = await Promise.all(Array.from({ length: 6 }, (_, index) => initialize(test.url, index + 1)));
+    expect(responses.filter(response => response.status === 200)).toHaveLength(2);
+    expect(responses.filter(response => response.status === 429)).toHaveLength(4);
+    await Promise.all(responses.map(response => response.text()));
+    const later = await initialize(test.url, 99); expect(later.status).toBe(429); await later.text();
+  });
+
+  it("protects an in-flight POST during async schema validation before the operation starts, including idle expiry", async () => {
+    let entered!: () => void; const validating = new Promise<void>(resolve => { entered = resolve; });
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    let clock = Date.now();
+    const execute = vi.fn(async () => text({ finished: true }));
+    const operation: RemoteAgentOperation = { name: "validated_operation", description: "Synthetic async validation", readOnly: true, destructive: false,
+      inputSchema: { value: z.string().refine(async () => { entered(); await gate; return true; }) }, execute };
+    const test = await fixture({ operations: [operation], now: () => clock, limits: { sessionsPerGrant: 1, idleMs: 10 } });
+    const first = await test.connect();
+    const pending = first.client.callTool({ name: "validated_operation", arguments: { value: "synthetic" } });
+    try {
+      await validating; expect(execute).not.toHaveBeenCalled(); clock += 11;
+      const refused = await initialize(test.url); expect(refused.status).toBe(429); await refused.text();
+      release(); expect((await pending).structuredContent).toEqual({ finished: true });
+      expect(execute).toHaveBeenCalledTimes(1);
+      const next = await test.connect();
+      expect((await next.client.callTool({ name: "get_life_links_guide" })).isError).not.toBe(true);
+    } finally { release(); await pending.catch(() => undefined); }
+  });
+
+  it("reserves a selected POST before unrelated expired-session cleanup can yield to competing initialization", async () => {
+    let clock = Date.now();
+    let releaseOperation!: () => void; const operationGate = new Promise<void>(resolve => { releaseOperation = resolve; });
+    const operation: RemoteAgentOperation = { name: "held_read", description: "Synthetic selected-session read", inputSchema: {}, readOnly: true, destructive: false,
+      execute: async (_args, context) => { await operationGate; context.signal!.throwIfAborted(); return text({ finished: true }); } };
+    const test = await fixture({ operations: [operation], now: () => clock, limits: { sessions: 2, sessionsPerGrant: 1, idleMs: 10 } });
+    const expired = await test.connect({ token: "foreign-token" });
+    await expired.client.callTool({ name: "get_life_links_guide" });
+    clock += 5;
+    const selected = await test.connect();
+    await selected.client.callTool({ name: "get_life_links_guide" });
+
+    let closeEntered!: () => void; const closing = new Promise<void>(resolve => { closeEntered = resolve; });
+    let releaseClose!: () => void; const closeGate = new Promise<void>(resolve => { releaseClose = resolve; });
+    const originalClose = McpServer.prototype.close;
+    const close = vi.spyOn(McpServer.prototype, "close").mockImplementationOnce(async function (this: McpServer) {
+      closeEntered(); await closeGate; await originalClose.call(this);
+    });
+    clock += 6; // Only the foreign session expired: 11 ms old versus 6 ms.
+    const pending = selected.client.callTool({ name: "held_read" });
+    // Attach a rejection handler before the adversarial interleaving so a
+    // regression reports the assertion instead of an unhandled rejection.
+    void pending.catch(() => undefined);
+    try {
+      await closing;
+      const competing = await initialize(test.url);
+      await competing.text();
+      expect(competing.status).toBe(429);
+      releaseClose(); releaseOperation();
+      expect((await pending).structuredContent).toEqual({ finished: true });
+      expect((await selected.client.callTool({ name: "get_life_links_guide" })).isError).not.toBe(true);
+    } finally {
+      releaseClose(); releaseOperation();
+      await pending.catch(() => undefined);
+      close.mockRestore();
+    }
   });
 
   it.each([{}, { elicitation: { url: {} } }])("refuses destructive work when host form elicitation is unavailable (%j)", async (capabilities) => {

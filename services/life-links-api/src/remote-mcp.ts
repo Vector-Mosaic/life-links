@@ -44,7 +44,7 @@ type RequestContext = { principal: RemoteAgentPrincipal; disconnected: AbortSign
 type Session = {
   ownerId: string; clientId: string; grantId: string;
   server: McpServer; transport: StreamableHTTPServerTransport;
-  closed: AbortController; lastUsedAt: number; active: number;
+  closed: AbortController; lastUsedAt: number; active: number; requests: number; usedAfterInitialize: boolean;
 };
 const GUIDE_URI = "lifelinks://guide/usage";
 const NAME = /^[a-z][a-z0-9_]{0,63}$/;
@@ -114,11 +114,14 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions): { router
     let session: Session;
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: randomUUID,
-      onsessioninitialized: (id) => { initializing.delete(session); sessions.set(id, session); },
+      onsessioninitialized: (id) => {
+        initializing.delete(session);
+        if (!stopped && !session.closed.signal.aborted) sessions.set(id, session);
+      },
       onsessionclosed: (id) => { sessions.delete(id); session.closed.abort(); }
     });
     session = { ownerId: principal.ownerId, clientId: principal.clientId, grantId: principal.grantId,
-      server, transport, closed: new AbortController(), lastUsedAt: now(), active: 0 };
+      server, transport, closed: new AbortController(), lastUsedAt: now(), active: 0, requests: 0, usedAfterInitialize: false };
     initializing.add(session);
 
     const run = async <T>(extra: Extra, action: (principal: RemoteAgentPrincipal, signal: AbortSignal) => Promise<T>): Promise<T> => {
@@ -238,20 +241,59 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions): { router
     const suppliedId = request.get("Mcp-Session-Id");
     let session = suppliedId ? sessions.get(suppliedId) : undefined;
     if (suppliedId && (!session || !samePrincipal(session, principal))) { httpError(response, 404, "Session unavailable; initialize again"); return; }
-    for (const candidate of sessions.values()) if (candidate.active === 0 && candidate.lastUsedAt + limits.idleMs <= now()) await closeSession(candidate);
-    if (session?.closed.signal.aborted) { httpError(response, 404, "Session unavailable; initialize again"); return; }
+    if (session && request.method === "POST" && typeof request.body?.method === "string" && !isInitializeRequest(request.body)) {
+      session.usedAfterInitialize = true;
+    }
+    const expiredClosures: Promise<void>[] = [];
+    for (const candidate of sessions.values()) {
+      if (candidate.active === 0 && candidate.requests === 0 && candidate.lastUsedAt + limits.idleMs <= now()) expiredClosures.push(closeSession(candidate));
+    }
+    const expiredCleanup = Promise.all(expiredClosures);
+    if (session?.closed.signal.aborted) { await expiredCleanup; httpError(response, 404, "Session unavailable; initialize again"); return; }
     if (!session) {
-      if (request.method !== "POST" || !isInitializeRequest(request.body)) { httpError(response, 400, "Initialize a remote session first"); return; }
+      if (request.method !== "POST" || !isInitializeRequest(request.body)) { await expiredCleanup; httpError(response, 400, "Initialize a remote session first"); return; }
       const allSessions = [...sessions.values(), ...initializing];
       const sameGrantCount = allSessions.filter((value) => samePrincipal(value, principal!)).length;
-      if (allSessions.length >= limits.sessions || sameGrantCount >= limits.sessionsPerGrant) { httpError(response, 429, "Session limit reached"); return; }
-      session = await createSession(principal);
+      let retiring: Promise<void> = Promise.resolve();
+      if (allSessions.length >= limits.sessions || sameGrantCount >= limits.sessionsPerGrant) {
+        // Some hosts open a fresh session per operation and never send DELETE.
+        // Reclaim only this exact delegation's oldest quiescent session. Session
+        // IDs are disposable transport state, not credentials or saved records;
+        // an old ID receives the existing 404/reinitialize response.
+        const candidate = [...sessions.values()]
+          .filter(value => samePrincipal(value, principal!) && value.usedAfterInitialize && value.active === 0 && value.requests === 0 && !value.closed.signal.aborted)
+          .sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
+        if (!candidate) { await expiredCleanup; httpError(response, 429, "Session limit reached"); return; }
+        retiring = closeSession(candidate);
+      }
+      // Both removal and the initializing reservation happen synchronously,
+      // before awaiting SDK cleanup/connect. Concurrent initializations cannot
+      // over-admit, evict one another's handshake, or steal another grant's slot.
+      [session] = await Promise.all([createSession(principal), retiring, expiredCleanup]);
+      if (stopped || session.closed.signal.aborted) {
+        await closeSession(session); httpError(response, 503, "Remote connection unavailable"); return;
+      }
     }
     session.lastUsedAt = now();
+    const holdsRequest = request.method === "POST";
+    if (holdsRequest) session.requests++;
+    let released = false;
+    const releaseRequest = () => {
+      if (released) return;
+      released = true;
+      if (holdsRequest) session!.requests--;
+      session!.lastUsedAt = now();
+      response.off("finish", releaseRequest); response.off("close", releaseRequest);
+    };
+    response.once("finish", releaseRequest);
+    response.once("close", releaseRequest);
     const disconnected = new AbortController();
     const abortOnClose = () => { if (!response.writableEnded) disconnected.abort(); };
     response.once("close", abortOnClose);
     try {
+      // Reserve an existing POST before awaiting unrelated expired-session
+      // cleanup, so a concurrent initialization cannot reclaim its session.
+      await expiredCleanup;
       // MCP permits omitted arguments for a no-argument/all-optional tool. The
       // SDK's strict object parser expects {}, so normalize only that omission.
       const body = request.body?.method === "tools/call" && request.body.params?.arguments === undefined
@@ -259,6 +301,13 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions): { router
       await context.run({ principal, disconnected: disconnected.signal }, () => session!.transport.handleRequest(request, response, body));
     } catch {
       httpError(response, 500, "Remote request failed");
+    } finally {
+      // An SSE POST can return before schema validation enters run(). Keep its
+      // reservation until the response ends; active separately protects work
+      // and elicitation after a disconnect. A GET stream cannot dispatch an
+      // operation and may stay open indefinitely; it does not pin a quiescent
+      // session. The SDK closes that stream when the session is reclaimed.
+      if (!holdsRequest || response.writableEnded || response.destroyed) releaseRequest();
     }
     if (!session.transport.sessionId) await closeSession(session);
     // The SDK may return while an SSE response remains open. The close listener
