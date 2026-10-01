@@ -56,6 +56,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/life-links-demo/package.json apps/life-links-demo/package.json
 COPY packages/canvas-linux-x64-gnu/package.json packages/canvas-linux-x64-gnu/package.json
 COPY packages/life-links-core/package.json packages/life-links-core/package.json
+COPY packages/provider-sign-in/package.json packages/provider-sign-in/package.json
 COPY services/life-links-api/package.json services/life-links-api/package.json
 RUN pnpm install --prod --frozen-lockfile
 COPY --from=build /app/apps/life-links-demo/dist apps/life-links-demo/dist
@@ -65,7 +66,9 @@ RUN node packages/canvas-linux-x64-gnu/native-build/smoke-wrapper.mjs smoke \
       --require-from services/life-links-api/package.json \
       --expected-native packages/canvas-linux-x64-gnu/skia.linux-x64-gnu.node
 COPY --from=build /app/packages/life-links-core/dist packages/life-links-core/dist
+COPY --from=build /app/packages/provider-sign-in/dist packages/provider-sign-in/dist
 COPY --from=build /app/services/life-links-api/dist services/life-links-api/dist
+RUN cd services/life-links-api && node --input-type=module -e "await import('@vmosaic/provider-sign-in')"
 COPY services/life-links-api/migrations services/life-links-api/migrations
 ENV NODE_ENV=production HOST=0.0.0.0 LANG=C.UTF-8
 USER node
