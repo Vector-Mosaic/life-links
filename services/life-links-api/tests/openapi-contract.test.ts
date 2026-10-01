@@ -15,6 +15,7 @@ const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const contractPath = path.resolve(testDirectory, "../../../contracts/http/openapi.json");
 const passwordPath = path.resolve(testDirectory, "../src/password.ts");
 const serverPath = path.resolve(testDirectory, "../src/server.ts");
+const providerSignInRouterPath = path.resolve(testDirectory, "../src/provider-sign-in.ts");
 const calendarConnectionRouterPath = path.resolve(testDirectory, "../src/calendar-connections.ts");
 const calendarNotificationRouterPath = path.resolve(testDirectory, "../src/calendar-provider-subscriptions.ts");
 const remoteAuthRouterPath = path.resolve(testDirectory, "../src/remote-agent-auth.ts");
@@ -24,8 +25,17 @@ const webClientPath = path.resolve(testDirectory, "../../../apps/life-links-demo
 const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/workspace/controller.ts");
 
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
+  "GET /api/account-invitations",
+  "POST /api/account-invitations",
+  "DELETE /api/account-invitations/{invitationId}",
   "GET /api/auth/registration",
   "POST /api/auth/register",
+  "GET /api/auth/providers",
+  "GET /api/account-sign-in-methods",
+  "POST /api/auth/providers/{provider}/start",
+  "POST /api/auth/provider-signup/details",
+  "POST /api/auth/provider-signup/complete",
+  "POST /api/auth/provider-link/complete",
   "GET /api/records/search",
   "POST /api/calendar-providers/microsoft/authorize",
   "POST /api/calendar-providers/google/authorize",
@@ -363,9 +373,23 @@ function implementedApplicationOperations(serverSource: string): string[] {
   expect(notifications.map((match) => `${match[1].toUpperCase()} ${match[2]}`))
     .toEqual(["POST /api/calendar-notifications/microsoft"]);
   expect(literalRegistrations).toContain("POST /api/calendar-notifications/microsoft");
+  expect(serverSource).toContain('import { createProviderSignInRouters } from "./provider-sign-in.js"');
+  expect(serverSource).toContain("const providerSignIn = createProviderSignInRouters(");
+  expect(serverSource).toContain("app.use(providerSignIn.callbacks)");
+  expect(serverSource).toContain("app.use(providerSignIn.routes)");
+  expect(serverSource.indexOf("app.use(providerSignIn.callbacks)"))
+    .toBeLessThan(serverSource.indexOf("app.use(originGuard(config, logger))"));
+  expect(serverSource.indexOf("app.use(providerSignIn.routes)"))
+    .toBeGreaterThan(serverSource.indexOf("app.use(originGuard(config, logger))"));
+  const providerSource = readSource(providerSignInRouterPath);
+  const providerRegistrations = [...providerSource.matchAll(/(?:routes|callbacks)\.(get|post|patch|put|delete)\(\s*"([^"]+)"/g)]
+    .map((match) => `${match[1].toUpperCase()} ${expressRouteToOpenApi(match[2])}`);
+  expect([...providerSource.matchAll(/(?:routes|callbacks)\.(get|post|patch|put|delete|head|options)\(/g)])
+    .toHaveLength(providerRegistrations.length);
   return [
     ...literalRegistrations,
     ...connectionRegistrations,
+    ...providerRegistrations,
     ...remoteApplicationOperations(serverSource),
     "GET /qr/{qrId}"
   ].sort();
@@ -558,7 +582,7 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(126);
+    expect(published).toHaveLength(137);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
@@ -789,6 +813,16 @@ describe("Life Links OpenAPI v1", () => {
         expect(String(operation.description)).toContain("clientState hash");
         continue;
       }
+      if (key === "POST /api/auth/providers/{provider}/callback") {
+        expect(operation.security).toEqual([]);
+        expect(parameters).not.toContainEqual({ $ref: "#/components/parameters/BrowserOrigin" });
+        expect(parameters).toContainEqual(expect.objectContaining({
+          name: "life_links_sign_in_browser", in: "cookie", required: true
+        }));
+        expect(String(operation.description)).toContain("CSRF");
+        expect(String(operation.description)).toContain("one-use state");
+        continue;
+      }
       expect(parameters, `${key} must describe browser Origin enforcement`).toContainEqual({
         $ref: "#/components/parameters/BrowserOrigin"
       });
@@ -813,6 +847,58 @@ describe("Life Links OpenAPI v1", () => {
         });
       }
     }
+  });
+
+  it("keeps provider sign-in browser-bound and exact identity linking separate from invitation admission", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    expect(objectValue(schemas.SignInProviderId, "provider id").enum)
+      .toEqual(["google", "microsoft", "apple", "facebook", "github", "chatgpt"]);
+    const provider = objectValue(schemas.SignInProvider, "provider metadata");
+    expect(provider.additionalProperties).toBe(false);
+    expect(Object.keys(objectValue(provider.properties, "provider metadata fields"))).toEqual(["id", "label"]);
+    const completion = objectValue(schemas.ProviderCompletionResponse, "completion");
+    expect(completion.additionalProperties).toBe(false);
+    expect(Object.keys(objectValue(completion.properties, "completion fields"))).toEqual(["returnTo"]);
+    const startSchema = objectValue(schemas.ProviderSignInStartRequest, "start request");
+    expect(startSchema.additionalProperties).toBe(false);
+    expect(startSchema.required).toEqual(["intent"]);
+    expect(startSchema.allOf).toContainEqual({
+      if: { properties: { intent: { const: "register" } } },
+      then: { required: ["invitationCode"] }
+    });
+    for (const operationId of ["getSignInProviders", "startProviderSignIn", "getProviderSignupDetails", "completeProviderSignup"]) {
+      expect(operationById(operations, operationId).security, operationId).toEqual([]);
+    }
+    expect(operationById(operations, "getAccountSignInMethods").security).toBeUndefined();
+    const link = operationById(operations, "completeProviderLink");
+    expect(link.security).toEqual([{ CookieSession: [] }]);
+    expect(String(link.description)).toContain("same still-live canonical CookieSession");
+    expect(objectValue(schemas.ProviderLinkCompleteRequest, "link request").required).toEqual(["linkToken"]);
+    const token = objectValue(schemas.ProviderContinuationToken, "continuation proof");
+    expect(token).toMatchObject({ writeOnly: true, minLength: 43, maxLength: 128 });
+    const details = operationById(operations, "getProviderSignupDetails");
+    expect(String(details.description)).toContain("without consuming it");
+    const signup = operationById(operations, "completeProviderSignup");
+    expect(String(signup.description)).toContain("Never merges");
+    expect(objectValue(signup.responses, "signup responses")).toHaveProperty("201");
+    for (const method of ["GET", "POST"]) {
+      const callback = operations.get(`${method} /api/auth/providers/{provider}/callback`)!;
+      expect(callback.security).toEqual([]);
+      expect((callback.parameters as JsonObject[])).toContainEqual(expect.objectContaining({
+        name: "life_links_sign_in_browser", in: "cookie", required: true
+      }));
+      expect(String(callback.description)).toContain("never email matching");
+      expect(String(callback.description)).toContain("CSRF");
+      expect(responseFor(document, callback, "303").headers).toHaveProperty("Location");
+    }
+    const form = operations.get("POST /api/auth/providers/{provider}/callback")!;
+    expect(objectValue(objectValue(form.requestBody, "form body").content, "form content"))
+      .toHaveProperty("application/x-www-form-urlencoded");
+    expect(objectValue(schemas.ProviderCallbackForm, "callback form")).toMatchObject({
+      maxProperties: 12, required: ["state"], additionalProperties: { type: "string", maxLength: 32768 }
+    });
   });
 
   it("separates delegated MCP transport, OAuth discovery and owner connection management", () => {

@@ -14,7 +14,7 @@ export type WorkspaceDialog =
   | { kind: "section"; id?: string; title?: string }
   | { kind: "move" | "delete"; lifeLinkIds: string[] }
   | { kind: "members" | "assign" | "qr"; lifeLinkId: string }
-  | { kind: "settings" | "help" | "agent" | "factory" }
+  | { kind: "settings" | "help" | "agent" | "factory" | "invite" }
   | null;
 
 export function RecordPicker({ controller, snapshot, movingIds = [], onChoose, chooseFolders = false }: {

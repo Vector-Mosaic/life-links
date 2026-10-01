@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
-import { Boxes, Box, Search, ScanLine, Pin, PinOff, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, ChevronRight, ChevronDown, FolderPlus, PackagePlus, Settings, HelpCircle, LogOut, Folder, Package, Pencil, Rows3, ListPlus, ChevronLeft, Menu, Download, QrCode, Trash2, Move, Undo2, Repeat2, CalendarDays } from "lucide-react";
+import { Boxes, Box, Search, ScanLine, Pin, PinOff, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Plus, ChevronRight, ChevronDown, FolderPlus, PackagePlus, Settings, HelpCircle, LogOut, LogIn, Folder, Package, Pencil, Rows3, ListPlus, ChevronLeft, Menu, Download, QrCode, Trash2, Move, Undo2, Repeat2, CalendarDays } from "lucide-react";
 import { ATTACHMENT_FILE_ACCEPT, MAX_BATCH_COUNT, deriveLifeLinkPhysicalLocator, formatRecordedLifeLinkPath, type LifeLinkRecord } from "@life-links/core";
 import { LifeLinksWorkspaceController } from "../workspace/controller";
 import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
@@ -17,18 +17,21 @@ import { AgentCalendarDeletionDialog, CalendarDialogHost, type CalendarDialogSta
 import { AgentWorkspaceChangeDialog } from "./AgentWorkspaceChangeDialog";
 import { RecordSearchPanel } from "./RecordSearchPanel";
 import type { RemoteAgentAuthorizationView } from "../agent/AgentAccessPanel";
+import { InvitePeopleDialog } from "./InvitePeopleDialog";
+import { SignInMethodsDialog } from "./SignInMethodsDialog";
 
 // Keep this aligned with the phone-layout media query in styles.css.
 const PHONE_LAYOUT_QUERY = "(max-width: 700px) and (hover: none), (max-width: 700px) and (pointer: coarse)";
 
-export function OwnerWorkspace({ controller, snapshot, remoteAuthorization, onOpenAgentConnections, agentPanel, scannerPanel, findScannerPanel, onLogout, headingRef }: {
+export function OwnerWorkspace({ controller, snapshot, remoteAuthorization, onOpenAgentConnections, agentPanel, scannerPanel, findScannerPanel, onLogout, headingRef, signInError, onDismissSignInError }: {
   controller: LifeLinksWorkspaceController; snapshot: LifeLinksWorkspaceSnapshot; agentPanel?: ReactNode; onLogout?(): void;
   remoteAuthorization: RemoteAgentAuthorizationView; onOpenAgentConnections?(): void;
   scannerPanel?: ReactNode; findScannerPanel?: ReactNode;
   headingRef?: RefObject<HTMLHeadingElement | null>;
+  signInError?: string; onDismissSignInError?(): void;
 }) {
   const { currentUser, busy, workspaceMode, selectedCollection, selectedLifeLinkDetail, hierarchyParentDetail, detailsOpen } = snapshot;
-  const [dialog, setDialog] = useState<WorkspaceDialog>(null);
+  const [dialog, setDialog] = useState<WorkspaceDialog | { kind: "sign-in-methods" }>(null);
   const [routineDialog, setRoutineDialog] = useState<RoutineDialogState>(null);
   const [calendarDialog, setCalendarDialog] = useState<CalendarDialogState>(null);
   const routineDetailKind = snapshot.presentation.routineDetails.kind;
@@ -312,6 +315,8 @@ export function OwnerWorkspace({ controller, snapshot, remoteAuthorization, onOp
           <button className={`ll-nav-item ${scanMode ? "active" : ""}`} title={!navOpen ? "Scan a QR" : undefined} onClick={() => navigate(() => { controller.setDetailsOpen(false); controller.setActiveView("scan"); })}><ScanLine size={22} /><span>Scan a QR</span></button>
         </nav>
         <div className="ll-account"><ActionMenu key={snapshot.routePathname} label="Account" className="ll-account-button" above onOpenChange={setAccountMenuOpen} heading={<><strong>{currentUser?.displayName}</strong><span>{currentUser?.email}</span></>} items={[
+          { label: "Invite people", icon: <Plus size={18} />, onClick: () => setDialog({ kind: "invite" }) },
+          { label: "Sign-in methods", icon: <LogIn size={18} />, onClick: () => setDialog({ kind: "sign-in-methods" }) },
           { separator: true }, { label: "Settings", icon: <Settings size={18} />, onClick: () => setDialog({ kind: "settings" }) }, { separator: true },
           { label: "Help", icon: <HelpCircle size={18} />, onClick: () => setDialog({ kind: "help" }) },
           { label: "Logout", icon: <LogOut size={18} />, onClick: () => { if (onLogout) onLogout(); else void controller.logout(); } }
@@ -321,6 +326,7 @@ export function OwnerWorkspace({ controller, snapshot, remoteAuthorization, onOp
         <div className="ll-panel-heading ll-panel-heading-left"><button className="ll-icon-button" title={`${middleCollapsed ? "Expand" : "Collapse"} ${panelName}`} aria-label={`${middleCollapsed ? "Expand" : "Collapse"} ${panelName}`} onClick={() => setMiddleCollapsed(!middleCollapsed)}>{middleCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}</button>{!middleCollapsed && <><span>{panelName}</span>{dataMode && !collectionsMode && !routinesMode && !calendarMode && undoControl()}</>}</div>
         {!middleCollapsed && <div className="ll-panel-scroll" ref={scrollRef} onScroll={(event) => controller.setWorkspaceScroll("middle", event.currentTarget.scrollTop, snapshot.routePathname)}>
           {snapshot.error && <div className="ll-error" role="alert">{snapshot.error}<button className="ll-text-button" onClick={() => void controller.refreshOwnerLibrary()}>Retry</button></div>}
+          {signInError && <div className="ll-error" role="alert">{signInError}{onDismissSignInError && <button className="ll-text-button" onClick={onDismissSignInError}>Dismiss</button>}</div>}
           {changeError && <p className="ll-inline-warning" role="alert">{changeError}</p>}
           {!routinesMode && !calendarMode && <PathBreadcrumbs label="Current layer" truncated={!collectionsMode && hierarchyParentDetail?.ancestry.truncated} items={!dataMode ? [] : collectionsMode ? selectedCollection ? [
              { id: "__collections", title: "My Collections", onSelect: () => void controller.openCollections() }
@@ -413,7 +419,7 @@ export function OwnerWorkspace({ controller, snapshot, remoteAuthorization, onOp
       </aside>
     </div>
     <input type="file" aria-label="Add attachments" accept={ATTACHMENT_FILE_ACCEPT} multiple hidden ref={mediaInput} onChange={(event) => { if (event.target.files?.length && mediaTarget.current) void controller.uploadCanonicalMedia(mediaTarget.current, event.target.files); event.target.value = ""; }} />
-    {dialog && ["create", "collection", "section", "members"].includes(dialog.kind) && <FormDialog key={JSON.stringify(dialog)} dialog={dialog} controller={controller} snapshot={snapshot} onClose={close} />}
+    {(dialog?.kind === "create" || dialog?.kind === "collection" || dialog?.kind === "section" || dialog?.kind === "members") && <FormDialog key={JSON.stringify(dialog)} dialog={dialog} controller={controller} snapshot={snapshot} onClose={close} />}
     {(dialog?.kind === "move" || dialog?.kind === "delete") && <LifeLinkChangeDialog key={JSON.stringify(dialog)} operation={dialog.kind} lifeLinkIds={dialog.lifeLinkIds} controller={controller} snapshot={snapshot} onClose={close} onApplied={() => { close(); finishEditing(); }} />}
     {collectionChange && <CollectionChangeDialog input={collectionChange} controller={controller} snapshot={snapshot} onClose={() => setCollectionChange(null)} onApplied={() => { setCollectionChange(null); finishCollectionEditing(); }} />}
     {!dialog && !routineDialog && !calendarDialog && !collectionChange && snapshot.agentChangeConfirmation && <ChangePreviewDialog preview={snapshot.agentChangeConfirmation} busy={false} onConfirm={() => controller.confirmAgentChange(true)} onCancel={() => controller.confirmAgentChange(false)} />}
@@ -424,6 +430,8 @@ export function OwnerWorkspace({ controller, snapshot, remoteAuthorization, onOp
     {dialog?.kind === "assign" && <SectionAssignmentDialog controller={controller} snapshot={snapshot} lifeLinkId={dialog.lifeLinkId} onClose={close} />}
     {dialog?.kind === "qr" && <QrDialog controller={controller} snapshot={snapshot} lifeLinkId={dialog.lifeLinkId} onClose={close} />}
     {dialog?.kind === "agent" && <Dialog title="Agent connections" onClose={close}>{agentPanel}</Dialog>}
+    {dialog?.kind === "invite" && <InvitePeopleDialog key={currentUser?.id} onClose={close} />}
+    {dialog?.kind === "sign-in-methods" && <SignInMethodsDialog key={currentUser?.id} onClose={close} />}
     {dialog?.kind === "settings" && <Dialog title="Settings" onClose={close}><div className="ll-form"><label>Appearance<select value={snapshot.theme} onChange={(event) => controller.setTheme(event.target.value as "light" | "dark")}><option value="light">Light</option><option value="dark">Dark</option></select></label></div></Dialog>}
     {dialog?.kind === "help" && <Dialog title="Help" onClose={close}><div className="ll-help"><h3>My Life Links</h3><p>Folders describe where things belong. Open a folder to see its contents; select an item for its details.</p><h3>My Collections</h3><p>Bring items together for a purpose without moving them. Sections organize a Collection, and an item can belong to several sections or Collections.</p><h3>My Routines</h3><p>Plan repeatable actions, record what actually happened, and keep completed Sessions as history. Planned targets, actual results, and next-time proposals stay separate.</p><h3>My Calendar</h3><p>See Life Links events and planned Routine occurrences together. Native events remain Calendar-owned; Routine occurrences continue to open and update through My Routines.</p><h3>QR codes</h3><p>Attach a QR to an item or container. Choose exactly which fields its public page shows in Details → QR code.</p></div></Dialog>}
     {routineDialog && <RoutineDialogHost dialog={routineDialog} controller={controller} snapshot={snapshot} onClose={() => setRoutineDialog(null)} onSessionCompleted={() => { setRoutineDetailKind("session"); setRoutineDialog(null); controller.setDetailsOpen(true); }} />}

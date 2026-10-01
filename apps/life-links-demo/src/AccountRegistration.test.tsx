@@ -4,9 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountCreationLink, AccountRegistration } from "./AccountRegistration";
 import { LifeLinksIntroduction, PublicInformation, privacyParagraphs, termsParagraphs } from "./PublicInformation";
-import { getRegistration, type ApiUser } from "./api";
+import { completeProviderSignup, getProviderSignupDetails, getRegistration, getSignInProviders, type ApiUser } from "./api";
+import { captureInvitationLink, clearPendingInvitation, readPendingInvitation, accountInvitationLink } from "./invitationLink";
+import { captureProviderSignInLink, clearPendingProviderSignup, clearProviderSignInError, readPendingProviderSignup } from "./providerSignInLink";
 
-vi.mock("./api", () => ({ getRegistration: vi.fn() }));
+vi.mock("./api", async importOriginal => ({ ...await importOriginal<typeof import("./api")>(),
+  getRegistration: vi.fn(), getSignInProviders: vi.fn(), getProviderSignupDetails: vi.fn(), completeProviderSignup: vi.fn() }));
 
 describe("private account registration", () => {
   let container: HTMLDivElement;
@@ -16,8 +19,13 @@ describe("private account registration", () => {
   let onComplete: ReturnType<typeof vi.fn>;
   const values = { displayName: "Private Judge", email: "judge@example.test", password: "my private password", confirmPassword: "my private password", invitationCode: "invitation_".padEnd(40, "x") };
   beforeEach(() => {
+    clearPendingInvitation();
+    clearPendingProviderSignup(); clearProviderSignInError();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.mocked(getRegistration).mockReset().mockResolvedValue({ enabled: true });
+    vi.mocked(getSignInProviders).mockReset().mockResolvedValue({ providers: [] });
+    vi.mocked(getProviderSignupDetails).mockReset().mockResolvedValue({ displayName: null, email: "provider@example.test" });
+    vi.mocked(completeProviderSignup).mockReset().mockResolvedValue({ returnTo: "/collections" });
     container = document.createElement("div"); document.body.append(container); root = createRoot(container);
     onRegister = vi.fn().mockResolvedValue(true); onLogout = vi.fn().mockResolvedValue(undefined); onComplete = vi.fn();
   });
@@ -38,6 +46,97 @@ describe("private account registration", () => {
   async function submit() {
     await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
   }
+
+  it("uses a scrubbed invitation fragment without a code field, storage, or repeated consumption", async () => {
+    const history = { state: null, replaceState: vi.fn() };
+    const location = { pathname: "/register", search: "?returnTo=%2Fcollections", hash: `#invite=${values.invitationCode}` };
+    const storage = vi.spyOn(Storage.prototype, "setItem");
+    captureInvitationLink(location, history);
+    expect(history.replaceState).toHaveBeenCalledWith(null, "", "/register?returnTo=%2Fcollections");
+    expect(accountInvitationLink(values.invitationCode, "https://lifelinks.example.test"))
+      .toBe(`https://lifelinks.example.test/register#invite=${values.invitationCode}`);
+    expect(readPendingInvitation()).toBe(values.invitationCode);
+    expect(readPendingInvitation()).toBe(values.invitationCode);
+    await render();
+    expect(container.querySelector('input[name="invitationCode"]')).toBeNull();
+    await act(async () => {
+      for (const name of ["displayName", "email", "password", "confirmPassword"] as const) {
+        const input = container.querySelector<HTMLInputElement>(`input[name="${name}"]`)!;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, values[name]);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    });
+    await submit();
+    expect(onRegister).toHaveBeenCalledWith(expect.objectContaining({ invitationCode: values.invitationCode }));
+    expect(readPendingInvitation()).toBe("");
+    expect(storage).not.toHaveBeenCalled();
+  });
+
+  it("scrubs malformed invitation fragments and refuses to capture them on other routes", () => {
+    const history = { state: null, replaceState: vi.fn() };
+    captureInvitationLink({ pathname: "/register", search: "", hash: "#invite=bad&extra=private" }, history);
+    expect(readPendingInvitation()).toBe("");
+    expect(history.replaceState).toHaveBeenCalledWith(null, "", "/register");
+    history.replaceState.mockClear();
+    captureInvitationLink({ pathname: "/collections", search: "", hash: `#invite=${values.invitationCode}` }, history);
+    expect(readPendingInvitation()).toBe("");
+    expect(history.replaceState).not.toHaveBeenCalled();
+  });
+
+  it("finishes a provider signup with only its missing name, then clears proof and invitation without storing credentials", async () => {
+    const token = "synthetic_signup_".padEnd(43, "x");
+    const history = { state: null, replaceState: vi.fn() };
+    captureInvitationLink({ pathname: "/register", search: "", hash: `#invite=${values.invitationCode}` }, history);
+    captureProviderSignInLink({ pathname: "/register", search: "", hash: `#signup=${token}` }, history);
+    const storage = vi.spyOn(Storage.prototype, "setItem");
+    await render();
+    expect(getRegistration).not.toHaveBeenCalled();
+    expect(getSignInProviders).not.toHaveBeenCalled();
+    expect(getProviderSignupDetails).toHaveBeenCalledExactlyOnceWith(token);
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    expect(container.querySelector('input[name="email"]')).toBeNull();
+    expect(container.textContent).toContain("provider@example.test");
+    await act(async () => {
+      const input = container.querySelector<HTMLInputElement>('input[name="displayName"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, " New member ");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await submit();
+    expect(completeProviderSignup).toHaveBeenCalledExactlyOnceWith({ signupToken: token, displayName: "New member",
+      email: "provider@example.test", timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" });
+    expect(onRegister).not.toHaveBeenCalled();
+    expect(onComplete).toHaveBeenCalledExactlyOnceWith("/collections");
+    expect(readPendingProviderSignup()).toBe(""); expect(readPendingInvitation()).toBe("");
+    expect(storage).not.toHaveBeenCalled();
+  });
+
+  it("collects a missing provider email and validates the server return route", async () => {
+    const token = "synthetic_signup_".padEnd(43, "x");
+    captureProviderSignInLink({ pathname: "/register", search: "", hash: `#signup=${token}` }, { state: null, replaceState: vi.fn() });
+    vi.mocked(getProviderSignupDetails).mockResolvedValue({ displayName: "Provider Name", email: null });
+    vi.mocked(completeProviderSignup).mockResolvedValue({ returnTo: "https://external.example.test" });
+    await render();
+    expect(container.querySelector('input[name="displayName"]')).toBeNull();
+    await act(async () => {
+      const input = container.querySelector<HTMLInputElement>('input[name="email"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, " member@example.test ");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await submit();
+    expect(completeProviderSignup).toHaveBeenCalledWith(expect.objectContaining({ email: "member@example.test", displayName: "Provider Name" }));
+    expect(onComplete).toHaveBeenCalledWith("/life-links");
+  });
+
+  it("requires explicit sign-out before continuing a different provider signup", async () => {
+    captureProviderSignInLink({ pathname: "/register", search: "", hash: `#signup=${"x".repeat(43)}` }, { state: null, replaceState: vi.fn() });
+    const currentUser = { id: "existing", email: "existing@example.test", displayName: "Existing", createdAt: "2026-10-01T00:00:00Z" };
+    await render("/register", currentUser);
+    expect(getProviderSignupDetails).not.toHaveBeenCalled();
+    expect(container.querySelector("form")).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(onLogout).toHaveBeenCalledOnce();
+    expect(completeProviderSignup).not.toHaveBeenCalled();
+  });
 
   it("separates personal test data from the shared demo and explains explicit agent/calendar linking", async () => {
     await render();

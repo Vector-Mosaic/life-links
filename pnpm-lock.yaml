@@ -49,6 +49,9 @@ importers:
       '@tiptap/suggestion':
         specifier: ^3.22.5
         version: 3.30.5(@floating-ui/dom@1.8.0)(@tiptap/core@3.30.5(@tiptap/pm@3.30.5))(@tiptap/pm@3.30.5)
+      '@vmosaic/provider-sign-in':
+        specifier: workspace:*
+        version: link:../../packages/provider-sign-in
       html5-qrcode:
         specifier: ^2.3.8
         version: 2.3.8
@@ -110,6 +113,28 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.3)(jsdom@26.1.0)
 
+  packages/provider-sign-in:
+    dependencies:
+      '@azure/msal-node':
+        specifier: 6.0.0
+        version: 6.0.0
+      google-auth-library:
+        specifier: 10.9.1
+        version: 10.9.1
+      jose:
+        specifier: 6.2.10
+        version: 6.2.10
+    devDependencies:
+      '@types/node':
+        specifier: ^24.3.0
+        version: 24.13.3
+      typescript:
+        specifier: ~5.8.3
+        version: 5.8.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@24.13.3)(jsdom@26.1.0)
+
   services/life-links-api:
     dependencies:
       '@azure/msal-node':
@@ -124,6 +149,9 @@ importers:
       '@napi-rs/canvas':
         specifier: 0.1.100
         version: 0.1.100
+      '@vmosaic/provider-sign-in':
+        specifier: workspace:*
+        version: link:../../packages/provider-sign-in
       cookie:
         specifier: ^1.0.2
         version: 1.1.1

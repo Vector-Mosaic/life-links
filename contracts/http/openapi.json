@@ -66,6 +66,947 @@
     }
   ],
   "paths": {
+    "/api/auth/providers": {
+      "get": {
+        "operationId": "getSignInProviders",
+        "summary": "List configured provider sign-in choices",
+        "description": "Returns only explicitly configured adapters; no client IDs, credentials, account bindings or Calendar consent. Google, Microsoft, Apple, Facebook, GitHub and approved ChatGPT adapters are supported by the shared Provider Sign-In system. Product configuration and provider approval remain separate from source support.",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Configured provider choices.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInProviderListResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/account-sign-in-methods": {
+      "get": {
+        "operationId": "getAccountSignInMethods",
+        "summary": "List your configured provider sign-in methods",
+        "description": "Returns configured adapter choices and whether each has an exact binding owned by the authenticated current owner. Does not return provider subject, email, issuer, client ID, credentials or another owner. Matching email never links accounts.",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Owner-scoped sign-in method metadata.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountSignInMethodsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "authentication_required.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/api/auth/providers/{provider}/start": {
+      "post": {
+        "operationId": "startProviderSignIn",
+        "summary": "Start browser provider login, invited signup or explicit account linking",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Login requires an existing exact provider binding. Register checks a valid invitation and rechecks admission after verified callback. Link requires the current CookieSession and records that exact session/owner; bearer authentication cannot initiate linking. A ten-minute one-use state, nonce, PKCE verifier and intent are encrypted server-side and bound to a fresh HttpOnly browser cookie. Apple form_post requires secure cookies. Starting another transaction replaces the browser binding. Sign-in creates no Calendar connection or agent grant. LifeLinks responses never put provider access/refresh/ID tokens, client secrets or canonical session tokens in JSON or redirect URLs, or expose them to browser JavaScript. The canonical session cookie remains HttpOnly.",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SignInProviderId"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Redirect the browser to authorizationUrl; transaction browser cookie is set.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Set-Cookie": {
+                "description": "HttpOnly browser binding or canonical session cookie, set or cleared by this transition. No cookie value is returned in JSON.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderAuthorizationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_sign_in_request: malformed request, invalid destination/time zone or unavailable transaction setup.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "authentication_required: linking requires a canonical browser cookie session.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden or invitation_required.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "provider_unavailable: adapter is not configured.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "sign_out_required: registration cannot run under an existing authenticated owner.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The sign-in transition budget permits ten start or completion attempts per client IP per fifteen minutes, including when general limits are disabled (sign_in_rate_limited). General API limits may instead return rate_limited with retryAfterSeconds and Retry-After.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RateLimitResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "sign_in_unavailable: sanitized temporary sign-in failure; no provider or storage details are exposed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderSignInStartRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/providers/{provider}/callback": {
+      "get": {
+        "operationId": "receiveProviderSignInCallback",
+        "summary": "Receive a provider query callback",
+        "description": "Provider OAuth callback mounted before the ordinary browser Origin and general rate-limit guards. CSRF admission instead requires a matching one-use state and HttpOnly transaction browser binding; the attempt is consumed before provider code exchange. The shared adapter verifies the provider protocol identity, including applicable issuer/audience/signature/nonce/PKCE checks. Login resolves the exact provider/issuer/clientId/subject binding, never email matching. Invited signup rechecks admission and creates a private owner only when allowed; missing profile fields redirect to /register#signup=PROOF. Explicit linking requires the same original live canonical cookie session; an Apple form_post without that cookie redirects to /#link=PROOF for same-origin completion; the recorded returnTo remains encrypted server-side and is returned by completion. Success redirects to the recorded same-origin returnTo; failures redirect with a closed #signin_error code and no diagnostic details. Fragments are captured and scrubbed before React mounts. No provider credentials, identity claims or raw callback values enter logs. LifeLinks responses never put provider access/refresh/ID tokens, client secrets or canonical session tokens in JSON or redirect URLs, or expose them to browser JavaScript. The canonical session cookie remains HttpOnly. Other provider string fields are accepted up to 32768 characters each; duplicate array/object query values are refused.",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SignInProviderId"
+            }
+          },
+          {
+            "name": "life_links_sign_in_browser",
+            "in": "cookie",
+            "required": true,
+            "description": "HttpOnly transaction browser binding set by start; same browser only. SameSite=Lax for query callbacks and SameSite=None; Secure for Apple form_post. This is not the canonical owner session.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$",
+              "writeOnly": true
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 43,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]{43,128}$",
+              "writeOnly": true
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 32768,
+              "writeOnly": true
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 32768
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "303 browser transition: recorded returnTo on login/link success, /register#signup=PROOF for missing profile fields, /#link=PROOF for form_post linking, or returnTo#signin_error=signin_failed|invitation_required|signup_failed|link_failed on failure.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference",
+                  "pattern": "^/(?!/)"
+                }
+              },
+              "Set-Cookie": {
+                "description": "HttpOnly browser binding or canonical session cookie, set or cleared by this transition. No cookie value is returned in JSON.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "sign_in_unavailable: sanitized temporary sign-in failure.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      },
+      "post": {
+        "operationId": "receiveProviderSignInFormPostCallback",
+        "summary": "Receive an Apple provider form_post callback",
+        "description": "Provider OAuth callback mounted before the ordinary browser Origin and general rate-limit guards. CSRF admission instead requires a matching one-use state and HttpOnly transaction browser binding; the attempt is consumed before provider code exchange. The shared adapter verifies the provider protocol identity, including applicable issuer/audience/signature/nonce/PKCE checks. Login resolves the exact provider/issuer/clientId/subject binding, never email matching. Invited signup rechecks admission and creates a private owner only when allowed; missing profile fields redirect to /register#signup=PROOF. Explicit linking requires the same original live canonical cookie session; an Apple form_post without that cookie redirects to /#link=PROOF for same-origin completion; the recorded returnTo remains encrypted server-side and is returned by completion. Success redirects to the recorded same-origin returnTo; failures redirect with a closed #signin_error code and no diagnostic details. Fragments are captured and scrubbed before React mounts. No provider credentials, identity claims or raw callback values enter logs. LifeLinks responses never put provider access/refresh/ID tokens, client secrets or canonical session tokens in JSON or redirect URLs, or expose them to browser JavaScript. The canonical session cookie remains HttpOnly. Accepts application/x-www-form-urlencoded with a 40 KiB body limit and at most twelve parameters. Ordinary browser Origin enforcement is deliberately replaced by browser-bound OAuth state.",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "provider",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SignInProviderId"
+            }
+          },
+          {
+            "name": "life_links_sign_in_browser",
+            "in": "cookie",
+            "required": true,
+            "description": "HttpOnly transaction browser binding set by start; same browser only. SameSite=Lax for query callbacks and SameSite=None; Secure for Apple form_post. This is not the canonical owner session.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$",
+              "writeOnly": true
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "303 browser transition: recorded returnTo on login/link success, /register#signup=PROOF for missing profile fields, /#link=PROOF for form_post linking, or returnTo#signin_error=signin_failed|invitation_required|signup_failed|link_failed on failure.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string",
+                  "format": "uri-reference",
+                  "pattern": "^/(?!/)"
+                }
+              },
+              "Set-Cookie": {
+                "description": "HttpOnly browser binding or canonical session cookie, set or cleared by this transition. No cookie value is returned in JSON.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed or oversized encoded callback body; sanitized failure without raw provider fields.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "sign_in_unavailable: sanitized temporary sign-in failure.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderCallbackForm"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/provider-signup/details": {
+      "post": {
+        "operationId": "getProviderSignupDetails",
+        "summary": "Read missing profile details for an invited provider signup",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the original transaction browser cookie and a valid ten-minute signup proof. Reads the encrypted verified-callback continuation without consuming it. Returns only usable email/display name metadata; no exact binding or provider tokens. Null fields require input in the signup form.",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          },
+          {
+            "name": "life_links_sign_in_browser",
+            "in": "cookie",
+            "required": true,
+            "description": "HttpOnly transaction browser binding set by start; same browser only. SameSite=Lax for query callbacks and SameSite=None; Secure for Apple form_post. This is not the canonical owner session.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$",
+              "writeOnly": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Profile fields available for signup completion.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderSignupDetailsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_sign_in_request: invalid, expired or wrong-browser signup proof.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "description": "sign_in_unavailable: sanitized temporary sign-in failure.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderSignupDetailsRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/provider-signup/complete": {
+      "post": {
+        "operationId": "completeProviderSignup",
+        "summary": "Create an invited private owner from a verified provider continuation",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires no authenticated current owner, the original browser-binding cookie and a valid signup proof. Validates profile fields, atomically consumes the one-use proof, rechecks the exact invitation and atomically commits a new private owner, its normal native My Calendar with no agent access, invitation receipt and exact provider binding. Creates a provider-only owner with no password hash. Never merges with an existing owner by email or changes existing credentials. A canonical HttpOnly cookie session is then issued. After an uncertain response, use the same provider sign-in rather than automatically resubmitting the consumed proof. LifeLinks responses never put provider access/refresh/ID tokens, client secrets or canonical session tokens in JSON or redirect URLs, or expose them to browser JavaScript. The canonical session cookie remains HttpOnly.",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          },
+          {
+            "name": "life_links_sign_in_browser",
+            "in": "cookie",
+            "required": true,
+            "description": "HttpOnly transaction browser binding set by start; same browser only. SameSite=Lax for query callbacks and SameSite=None; Secure for Apple form_post. This is not the canonical owner session.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$",
+              "writeOnly": true
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Private provider-linked owner admitted and canonical cookie session issued.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Set-Cookie": {
+                "description": "HttpOnly browser binding or canonical session cookie, set or cleared by this transition. No cookie value is returned in JSON.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderCompletionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_sign_in_request: malformed fields, authenticated owner or invalid, expired or wrong-browser proof.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden or invitation_required: invitation is unavailable at completion.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "signup_failed: generic admission conflict; existing owner and credentials are unchanged.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The sign-in transition budget permits ten start or completion attempts per client IP per fifteen minutes, including when general limits are disabled (sign_in_rate_limited). General API limits may instead return rate_limited with retryAfterSeconds and Retry-After.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RateLimitResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "sign_in_unavailable: sanitized temporary sign-in failure. If admission committed before the response failed, sign in using the same provider.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderSignupCompleteRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/provider-link/complete": {
+      "post": {
+        "operationId": "completeProviderLink",
+        "summary": "Complete the original owner's provider link after form_post",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Apple form_post can omit the normal SameSite=Lax canonical session, so the callback redirects with a short-lived link proof for same-origin completion. Requires the original transaction browser cookie, the same still-live canonical CookieSession and exact original owner/session binding. Consumes the proof once; switching owners, revoked sessions or a provider identity belonging to another owner cannot link. Does not create an owner, replace credentials, issue a new session, connect a Calendar or grant an agent permission. LifeLinks responses never put provider access/refresh/ID tokens, client secrets or canonical session tokens in JSON or redirect URLs, or expose them to browser JavaScript. The canonical session cookie remains HttpOnly.",
+        "tags": [
+          "session"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          },
+          {
+            "name": "life_links_sign_in_browser",
+            "in": "cookie",
+            "required": true,
+            "description": "HttpOnly transaction browser binding set by start; same browser only. SameSite=Lax for query callbacks and SameSite=None; Secure for Apple form_post. This is not the canonical owner session.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$",
+              "writeOnly": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verified provider identity linked to the original current owner.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Set-Cookie": {
+                "description": "HttpOnly browser binding or canonical session cookie, set or cleared by this transition. No cookie value is returned in JSON.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderCompletionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_sign_in_request: missing/wrong canonical session, expired/wrong-browser proof or binding conflict.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The sign-in transition budget permits ten start or completion attempts per client IP per fifteen minutes, including when general limits are disabled (sign_in_rate_limited). General API limits may instead return rate_limited with retryAfterSeconds and Retry-After.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RateLimitResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "sign_in_unavailable: sanitized temporary sign-in failure.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "CookieSession": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderLinkCompleteRequest"
+              }
+            }
+          }
+        }
+      }
+    },
     "/.well-known/oauth-protected-resource": {
       "get": {
         "operationId": "getRemoteMcpResourceMetadata",
@@ -1462,11 +2403,13 @@
         }
       }
     },
+    "/api/account-invitations": {"get":{"operationId":"listLifeLinksAccountInvitations","summary":"List your recent invitations","description":"Owner-scoped, no-store metadata for up to 50 recent invitations. Never returns invitation secrets, fingerprints, owner IDs or recipient identities.","tags":["session"],"parameters":[{"$ref":"#/components/parameters/XRequestId"}],"responses":{"200":{"description":"Invitation metadata.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"},"Cache-Control":{"schema":{"const":"private, no-store"}}},"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["enabled","invitations"],"properties":{"enabled":{"type":"boolean"},"invitations":{"type":"array","maxItems":50,"items":{"type":"object","additionalProperties":false,"required":["id","createdAt","expiresAt","revokedAt","redeemedAt"],"properties":{"id":{"type":"string"},"createdAt":{"type":"string","format":"date-time"},"expiresAt":{"type":"string","format":"date-time"},"revokedAt":{"type":["string","null"],"format":"date-time"},"redeemedAt":{"type":["string","null"],"format":"date-time"}}}}}}}}},"401":{"description":"authentication_required","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},"503":{"description":"invitations_unavailable","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}}}},"post":{"operationId":"createLifeLinksAccountInvitation","summary":"Create a one-use private account invitation","description":"Every authenticated human owner may create a seven-day link, with at most ten pending links. Requires an allowed browser Origin or Referer even when global origin checking is disabled. Accepts an empty object. Returns invitationCode once; stores only its SHA-256 fingerprint. On an uncertain result, refresh the list and cancel the unused invitation instead of automatically retrying. The browser constructs /register#invite=CODE and immediately removes the fragment at signup. Never put CODE in a query or log.","tags":["session"],"parameters":[{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false}}}},"responses":{"201":{"description":"New invitation metadata and once-returned secret.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"},"Cache-Control":{"schema":{"const":"private, no-store"}}},"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["invitation","invitationCode"],"properties":{"invitation":{"type":"object","additionalProperties":false,"required":["id","createdAt","expiresAt","revokedAt","redeemedAt"],"properties":{"id":{"type":"string"},"createdAt":{"type":"string","format":"date-time"},"expiresAt":{"type":"string","format":"date-time"},"revokedAt":{"type":["string","null"],"format":"date-time"},"redeemedAt":{"type":["string","null"],"format":"date-time"}}},"invitationCode":{"type":"string","pattern":"^[A-Za-z0-9_-]{43}$"}}}}}},"400":{"description":"invalid_invitation","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},"401":{"description":"authentication_required","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},"403":{"description":"origin_forbidden or invitations_unavailable","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},"409":{"description":"invitation_limit_reached","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},"429":{"$ref":"#/components/responses/RateLimited"},"503":{"description":"invitations_unavailable","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}}}}},
+    "/api/account-invitations/{invitationId}": {"delete":{"operationId":"cancelLifeLinksAccountInvitation","summary":"Cancel your invitation","description":"Owner-scoped idempotent cancellation, serialized with redemption. Allowed browser Origin or Referer is mandatory. Cancellation never revokes a redeemed account, records, sessions or agent grants. Unknown or another owner's invitation returns 404.","tags":["session"],"parameters":[{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"},{"name":"invitationId","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"204":{"description":"Cancelled or already closed.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"},"Cache-Control":{"schema":{"const":"private, no-store"}}}},"401":{"description":"authentication_required","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},"403":{"description":"origin_forbidden","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},"404":{"description":"invitation_not_found","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},"429":{"$ref":"#/components/responses/RateLimited"},"503":{"description":"invitations_unavailable","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}}}}},
     "/api/auth/registration": {
       "get": {
         "operationId": "getLifeLinksRegistrationAvailability",
         "summary": "Check private invitation registration availability",
-        "description": "Returns only enabled. Disabled configuration, elapsed invitation expiry, or exhausted persistent capacity returns false. Never exposes an invitation, fingerprint, capacity, or account identity.",
+        "description": "Returns only enabled: true when member invitations are enabled or an operator invitation has unexpired capacity. Enabled does not validate a particular link; registration checks that exact invitation. Never exposes an invitation, fingerprint, capacity, or account identity.",
         "tags": ["session"], "security": [],
         "parameters": [{"$ref":"#/components/parameters/XRequestId"}],
         "responses": {
@@ -4246,6 +5189,309 @@
       }
     },
     "schemas": {
+      "SignInProviderId": {
+        "type": "string",
+        "enum": [
+          "google",
+          "microsoft",
+          "apple",
+          "facebook",
+          "github",
+          "chatgpt"
+        ],
+        "description": "Supported adapter identifier. Availability requires explicit product configuration; the enum does not mean every provider is enabled or approved. ChatGPT requires approved partner credentials."
+      },
+      "SignInProvider": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/SignInProviderId"
+          },
+          "label": {
+            "type": "string",
+            "description": "Configured adapter display name."
+          }
+        }
+      },
+      "SignInProviderListResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+              "$ref": "#/components/schemas/SignInProvider"
+            }
+          }
+        },
+        "description": "Only configured sign-in adapters. An empty list preserves password sign-in."
+      },
+      "AccountSignInMethodsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "maxItems": 6,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "label",
+                "linked"
+              ],
+              "properties": {
+                "id": {
+                  "$ref": "#/components/schemas/SignInProviderId"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "linked": {
+                  "type": "boolean",
+                  "description": "At least one exact provider identity binding for this configured provider belongs to the current owner."
+                }
+              }
+            }
+          }
+        }
+      },
+      "ProviderReturnTo": {
+        "type": "string",
+        "maxLength": 2048,
+        "pattern": "^/(?!/)[^\\\\#\\u0000-\\u001f\\u007f]*$",
+        "default": "/",
+        "description": "Same-origin absolute path with optional query; fragments, backslashes, control characters, scheme/host redirects and protocol-relative URLs are refused. The server records the validated destination."
+      },
+      "ProviderContinuationToken": {
+        "type": "string",
+        "minLength": 43,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9_-]{43,128}$",
+        "writeOnly": true,
+        "description": "Opaque short-lived proof from the server redirect fragment, captured and scrubbed before React mounts. Send only in this JSON body with the original browser-binding cookie; never put it in a query, logs or persistent browser storage."
+      },
+      "ProviderSignInStartRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "intent"
+        ],
+        "properties": {
+          "intent": {
+            "type": "string",
+            "enum": [
+              "login",
+              "register",
+              "link"
+            ]
+          },
+          "returnTo": {
+            "$ref": "#/components/schemas/ProviderReturnTo"
+          },
+          "invitationCode": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]{32,128}$",
+            "writeOnly": true,
+            "description": "Private invitation supplied only in this JSON body. Retained encrypted for admission and never included in the provider authorization URL or callback."
+          },
+          "timeZone": {
+            "type": "string",
+            "maxLength": 100,
+            "default": "UTC",
+            "description": "Canonical IANA time zone for the initial native My Calendar. Browser callers send their resolved zone."
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "intent": {
+                  "const": "register"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "invitationCode"
+              ]
+            }
+          }
+        ],
+        "description": "Register requires a valid unspent invitation and no authenticated current owner. Link requires the current canonical cookie session. Login resolves only an already-linked exact provider identity."
+      },
+      "ProviderAuthorizationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "authorizationUrl"
+        ],
+        "properties": {
+          "authorizationUrl": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://",
+            "readOnly": true,
+            "description": "HTTPS provider authorization destination containing one-use state and provider protocol fields. Invitation and original canonical session are retained server-side, never placed in this URL. Use the shared browser URL validator before navigation."
+          }
+        }
+      },
+      "ProviderSignupDetailsRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "signupToken"
+        ],
+        "properties": {
+          "signupToken": {
+            "$ref": "#/components/schemas/ProviderContinuationToken"
+          }
+        }
+      },
+      "ProviderSignupDetailsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "email",
+          "displayName"
+        ],
+        "properties": {
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "email",
+            "maxLength": 254,
+            "readOnly": true,
+            "description": "Usable provider-supplied profile email, or null. Not an account-linking key or recovery authority."
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100,
+            "readOnly": true
+          }
+        }
+      },
+      "ProviderSignupCompleteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "signupToken",
+          "email",
+          "displayName"
+        ],
+        "properties": {
+          "signupToken": {
+            "$ref": "#/components/schemas/ProviderContinuationToken"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "minLength": 3,
+            "maxLength": 254,
+            "description": "Trimmed and normalized to lowercase; not verified ownership of the mailbox."
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "Trimmed display name; control characters refused."
+          },
+          "timeZone": {
+            "type": "string",
+            "maxLength": 100,
+            "default": "UTC",
+            "description": "Canonical IANA time zone for the initial native My Calendar. Browser callers send their resolved zone."
+          }
+        },
+        "description": "Complete missing profile details after a verified provider callback. Password and provider credentials are not accepted."
+      },
+      "ProviderLinkCompleteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "linkToken"
+        ],
+        "properties": {
+          "linkToken": {
+            "$ref": "#/components/schemas/ProviderContinuationToken"
+          }
+        },
+        "description": "Complete an Apple form_post link continuation on our origin under the same canonical cookie session that initiated linking."
+      },
+      "ProviderCompletionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "returnTo"
+        ],
+        "properties": {
+          "returnTo": {
+            "$ref": "#/components/schemas/ProviderReturnTo"
+          }
+        },
+        "description": "Validated browser destination. No provider credentials, identity binding or bearer/session token is returned."
+      },
+      "ProviderCallbackForm": {
+        "type": "object",
+        "maxProperties": 12,
+        "required": [
+          "state"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]{43,128}$",
+            "writeOnly": true
+          },
+          "code": {
+            "type": "string",
+            "maxLength": 32768,
+            "writeOnly": true
+          },
+          "error": {
+            "type": "string",
+            "maxLength": 32768
+          },
+          "id_token": {
+            "type": "string",
+            "maxLength": 32768,
+            "writeOnly": true
+          },
+          "user": {
+            "type": "string",
+            "maxLength": 32768,
+            "writeOnly": true,
+            "description": "Optional provider profile JSON string. Treated as untrusted profile metadata, not a stable identity or authority."
+          }
+        },
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 32768
+        },
+        "description": "Provider-owned form_post protocol fields; duplicate/array/object values are refused. Bound to the original one-use state and transaction browser cookie. Maximum encoded body is 40 KiB."
+      },
       "RemoteProtectedResourceMetadata": {
         "type": "object",
         "required": [

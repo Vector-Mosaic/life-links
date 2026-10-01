@@ -79,6 +79,7 @@ import type {
 import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, MAX_LIFE_LINK_TOOL_OUTPUT_BYTES } from "@life-links/core";
 import { validateAttachmentImageResult } from "./attachmentImage";
 import { validateAttachmentTranscript } from "./attachmentTranscript";
+import type { ProviderId } from "@vmosaic/provider-sign-in/client";
 
 export async function previewCollectionChange(input: CollectionChangeInput, signal?: AbortSignal, actor?: CalendarActor): Promise<CollectionChangePreview> {
   const { preview } = await apiFetch<{ preview: CollectionChangePreview }>("/api/collections/changes/preview", { method: "POST", body: JSON.stringify(input), signal, headers: calendarActorHeaders(actor) });
@@ -303,6 +304,59 @@ export async function login(email: string, password: string) {
   });
 }
 
+export type SignInProviderId = ProviderId;
+
+export interface SignInProvider {
+  id: SignInProviderId;
+  label: string;
+}
+
+export interface ProviderSignInInput {
+  intent: "login" | "register" | "link";
+  returnTo?: string;
+  invitationCode?: string;
+  timeZone?: string;
+}
+
+export function getSignInProviders(signal?: AbortSignal) {
+  return apiFetch<{ providers: SignInProvider[] }>("/api/auth/providers", { signal });
+}
+
+export function startProviderSignIn(provider: SignInProviderId, input: ProviderSignInInput) {
+  return apiFetch<{ authorizationUrl: string }>(`/api/auth/providers/${encodeURIComponent(provider)}/start`, {
+    method: "POST", body: JSON.stringify(input)
+  });
+}
+
+export function getProviderSignupDetails(signupToken: string) {
+  return apiFetch<{ email: string | null; displayName: string | null }>("/api/auth/provider-signup/details", {
+    method: "POST", body: JSON.stringify({ signupToken })
+  });
+}
+
+export interface ProviderSignupInput {
+  signupToken: string;
+  displayName: string;
+  email: string;
+  timeZone?: string;
+}
+
+export function completeProviderSignup(input: ProviderSignupInput) {
+  return apiFetch<{ returnTo: string }>("/api/auth/provider-signup/complete", {
+    method: "POST", body: JSON.stringify(input)
+  });
+}
+
+export function completeProviderLink(linkToken: string) {
+  return apiFetch<{ returnTo: string }>("/api/auth/provider-link/complete", {
+    method: "POST", body: JSON.stringify({ linkToken })
+  });
+}
+
+export function getAccountSignInMethods(signal?: AbortSignal) {
+  return apiFetch<{ providers: Array<SignInProvider & { linked: boolean }> }>("/api/account-sign-in-methods", { signal });
+}
+
 export interface AccountRegistrationInput {
   displayName: string;
   email: string;
@@ -313,6 +367,28 @@ export interface AccountRegistrationInput {
 
 export async function getRegistration() {
   return apiFetch<{ enabled: boolean }>("/api/auth/registration");
+}
+
+export interface AccountInvitation {
+  id: string;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  redeemedAt: string | null;
+}
+
+export async function listAccountInvitations() {
+  return apiFetch<{ enabled: boolean; invitations: AccountInvitation[] }>("/api/account-invitations");
+}
+
+export async function createAccountInvitation() {
+  return apiFetch<{ invitation: AccountInvitation; invitationCode: string }>("/api/account-invitations", {
+    method: "POST", body: JSON.stringify({})
+  });
+}
+
+export async function cancelAccountInvitation(invitationId: string) {
+  return apiFetch<void>(`/api/account-invitations/${encodeURIComponent(invitationId)}`, { method: "DELETE" });
 }
 
 export async function registerAccount(input: AccountRegistrationInput) {

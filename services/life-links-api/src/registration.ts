@@ -1,13 +1,47 @@
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createCanonicalCalendar, normalizeCalendarIanaTimeZone } from "@life-links/core";
 import type { StoredUser } from "./store.js";
+import type { VerifiedProviderIdentity } from "./provider-sign-in-state.js";
 
 /** Admission only: neither this fingerprint nor the invitation authenticates an existing owner. */
 export type RegistrationInvitation = {
   fingerprint: string;
   maxAccounts: number;
   expiresAt: string;
+  memberInvitationId?: string;
 };
+export type MemberInvitation = {
+  id: string;
+  ownerId: string;
+  fingerprint: string;
+  createdAt: string;
+  expiresAt: string;
+  revokedAt: string | null;
+  redeemedAt: string | null;
+};
+export type MemberInvitationView = Omit<MemberInvitation, "ownerId" | "fingerprint">;
+export const MAX_PENDING_INVITATIONS = 10;
+
+export function prepareMemberInvitation(ownerId: string) {
+  const code = randomBytes(32).toString("base64url");
+  const invitation: MemberInvitation = { id: randomUUID(), ownerId, fingerprint: invitationFingerprint(code),
+    createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60_000).toISOString(),
+    revokedAt: null, redeemedAt: null };
+  return { code, invitation };
+}
+
+export function memberInvitationActive(invitation: MemberInvitation): boolean {
+  return !invitation.revokedAt && !invitation.redeemedAt && Date.parse(invitation.expiresAt) > Date.now();
+}
+
+export function memberInvitationView(invitation: MemberInvitation): MemberInvitationView {
+  const { id, createdAt, expiresAt, revokedAt, redeemedAt } = invitation;
+  return { id, createdAt, expiresAt, revokedAt, redeemedAt };
+}
+
+export function memberRegistrationInvitation(invitation: MemberInvitation): RegistrationInvitation {
+  return { memberInvitationId: invitation.id, fingerprint: invitation.fingerprint, maxAccounts: 1, expiresAt: invitation.expiresAt };
+}
 export type RegisterOwnerInput = {
   displayName: string;
   email: string;
@@ -15,6 +49,10 @@ export type RegisterOwnerInput = {
   timeZone: string;
   invitation: RegistrationInvitation;
 };
+export type RegisterProviderOwnerInput = Omit<RegisterOwnerInput, "passwordHash"> & {
+  identity: VerifiedProviderIdentity;
+};
+type PrepareRegisteredOwnerInput = Omit<RegisterOwnerInput, "passwordHash"> & { passwordHash: string | null };
 export class RegistrationAdmissionError extends Error {
   constructor(readonly code: "registration_unavailable" | "registration_failed") {
     super(code);
@@ -61,6 +99,14 @@ export function assertRegistrationInvitation(invitation: RegistrationInvitation)
 }
 
 export function prepareRegisteredOwner(input: RegisterOwnerInput) {
+  return prepareOwner(input);
+}
+
+export function prepareRegisteredProviderOwner(input: RegisterProviderOwnerInput) {
+  return prepareOwner({ ...input, passwordHash: null });
+}
+
+function prepareOwner(input: PrepareRegisteredOwnerInput) {
   assertRegistrationInvitation(input.invitation);
   const now = new Date().toISOString();
   const user: StoredUser = { id: randomUUID(), displayName: input.displayName, email: input.email.toLowerCase(),

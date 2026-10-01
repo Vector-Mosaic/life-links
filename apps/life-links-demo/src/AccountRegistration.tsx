@@ -1,13 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import { getRegistration, type AccountRegistrationInput, type ApiUser } from "./api";
+import { ApiError, completeProviderSignup, getProviderSignupDetails, getRegistration, type AccountRegistrationInput, type ApiUser } from "./api";
 import { LifeLinksGlyph } from "./owner/FieldLedgerPrimitives";
 import { PublicInformationLinks } from "./PublicInformation";
 import { accountRegistrationPath, accountRegistrationReturnPath } from "./workspace/routes";
+import { clearPendingInvitation, readPendingInvitation } from "./invitationLink";
+import { ProviderSignIn } from "./ProviderSignIn";
+import { clearPendingProviderSignup, readPendingProviderSignup, providerSignInErrorMessage, validateProviderReturnTo } from "./providerSignInLink";
+
+function browserTimeZone(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }
+}
 
 export function AccountCreationLink({ returnTo }: { returnTo: string }) {
   return <div className="account-entry-help">
-    <p>Have private test-account invitation instructions?</p>
-    <a href={accountRegistrationPath(returnTo)}>Create a private test account</a>
+    <p>Have an invitation to LifeLinks?</p>
+    <a href={accountRegistrationPath(returnTo)}>Create your account</a>
     <p>The shared demo contains examples. Use a separate private account for your own information, agent, or calendar.</p>
   </div>;
 }
@@ -22,24 +29,27 @@ export function AccountRegistration({ pathname, currentUser, busy, error, onRegi
   onComplete(path: string): void;
 }) {
   const returnTo = accountRegistrationReturnPath(pathname);
+  const [signupToken] = useState(readPendingProviderSignup);
   const [availability, setAvailability] = useState<"loading" | "enabled" | "disabled" | "error">("loading");
   const [checkRevision, setCheckRevision] = useState(0);
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [invitationCode, setInvitationCode] = useState("");
+  const [invitationCode, setInvitationCode] = useState(readPendingInvitation);
+  const [fromInvitationLink] = useState(() => Boolean(readPendingInvitation()));
   const [formError, setFormError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const pending = useRef(false);
   useEffect(() => {
+    if (signupToken) return;
     let active = true;
     setAvailability("loading");
     void getRegistration().then((result) => {
       if (active) setAvailability(result.enabled ? "enabled" : "disabled");
     }).catch(() => { if (active) setAvailability("error"); });
     return () => { active = false; };
-  }, [checkRevision]);
+  }, [checkRevision, signupToken]);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -47,7 +57,7 @@ export function AccountRegistration({ pathname, currentUser, busy, error, onRegi
     if (!displayName.trim() || displayName.trim().length > 100 || /[\u0000-\u001f\u007f]/.test(displayName) ||
         !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) || email.trim().length > 254 ||
         password.length < 12 || password.length > 128 || !/^[A-Za-z0-9_-]{32,128}$/.test(invitationCode.trim())) {
-      setFormError("Enter your name, a valid email, a 12–128 character password, and the invitation code from your private instructions.");
+      setFormError("Enter your name, a valid email, a 12–128 character password, and a valid invitation.");
       return;
     }
     if (password !== confirmPassword) {
@@ -57,12 +67,12 @@ export function AccountRegistration({ pathname, currentUser, busy, error, onRegi
     pending.current = true;
     setSubmitting(true);
     setFormError("");
-    let timeZone = "UTC";
-    try { timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { /* Server accepts UTC. */ }
+    const timeZone = browserTimeZone();
     try {
       const created = await onRegister({ displayName: displayName.trim(), email: email.trim(), password, invitationCode: invitationCode.trim(), timeZone });
       if (created) {
         setPassword(""); setConfirmPassword(""); setInvitationCode("");
+        clearPendingInvitation();
         // Server-owned OAuth consent must be fetched from the server, not pushed
         // into the SPA. The same navigation restores QR and ordinary app routes.
         onComplete(returnTo);
@@ -78,27 +88,30 @@ export function AccountRegistration({ pathname, currentUser, busy, error, onRegi
   return <main className="login-shell registration-shell">
     <h1 className="ll-brand ll-login-brand">LifeLinks <LifeLinksGlyph /></h1>
     <section className="login-panel registration-panel" aria-labelledby="registration-title">
-      <h2 id="registration-title">Create a private test account</h2>
+      <h2 id="registration-title">{signupToken ? "Finish creating your account" : "You're invited to LifeLinks"}</h2>
       <p>A separate workspace for your own information. It starts empty, with a built-in My Calendar—not a copy of the shared demo.</p>
       {currentUser && !submitting ? <div className="account-entry-help">
         <p>Currently signed in as <strong>{currentUser.email}</strong>.</p>
         <p>To create a separate account, sign out first. Continuing uses the account shown above.</p>
         <button type="button" className="secondary-button" disabled={busy} onClick={() => void onLogout()}>Sign out to create a private account</button>
         <a href={returnTo}>Continue with this account</a>
-      </div> : <>
+      </div> : signupToken ? <ProviderSignupContinuation signupToken={signupToken} busy={busy} error={error} onComplete={onComplete} /> : <>
         {availability === "loading" && <p role="status">Checking invitation availability…</p>}
         {availability === "disabled" && <p role="status">New account invitations are currently unavailable. Existing accounts can still sign in.</p>}
         {availability === "error" && <div role="alert"><p>We couldn't check invitation availability. Existing accounts can still sign in.</p>
           <button type="button" className="secondary-button" onClick={() => setCheckRevision((value) => value + 1)}>Check again</button></div>}
         {availability === "enabled" && <form className="registration-form" onSubmit={(event) => void submit(event)}>
           {(formError || error) && <div className="error-banner" role="alert">{formError || error}</div>}
+          <ProviderSignIn intent="register" returnTo={returnTo} invitationCode={invitationCode} timeZone={browserTimeZone()} disabled={submitting || busy} />
           <label><span>Display name</span><input name="displayName" required maxLength={100} autoComplete="name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} disabled={submitting || busy} /></label>
           <label><span>Email</span><input name="email" type="email" required maxLength={254} autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} disabled={submitting || busy} /></label>
           <label><span>Password</span><input name="password" type="password" required minLength={12} maxLength={128} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} disabled={submitting || busy} /></label>
-          <p className="account-entry-help">Use 12–128 characters. Keep your password safe; email verification and password recovery are not available in this test release.</p>
+          <p className="account-entry-help">Use 12–128 characters. Keep your password safe; email verification and password recovery are not available yet.</p>
           <label><span>Confirm password</span><input name="confirmPassword" type="password" required minLength={12} maxLength={128} autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} disabled={submitting || busy} /></label>
-          <label><span>Invitation code</span><input name="invitationCode" type="password" required minLength={32} maxLength={128} autoComplete="off" spellCheck={false} value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} disabled={submitting || busy} /></label>
-          <p className="account-entry-help">Use the code in your private invitation instructions. Do not put it in a link or public submission.</p>
+          {fromInvitationLink ? <p className="account-entry-help">Your invitation is included. Each link can create one account.</p> : <>
+            <label><span>Invitation code</span><input name="invitationCode" type="password" required minLength={32} maxLength={128} autoComplete="off" spellCheck={false} value={invitationCode} onChange={(event) => setInvitationCode(event.target.value)} disabled={submitting || busy} /></label>
+            <p className="account-entry-help">Open the link someone shared with you, or enter your privately supplied invitation code.</p>
+          </>}
           <button type="submit" className="primary-button" disabled={submitting || busy}>{submitting || busy ? "Creating your account…" : "Create private account"}</button>
         </form>}
         <a href={returnTo}>Already have an account? Sign in</a>
@@ -115,4 +128,58 @@ export function AccountRegistration({ pathname, currentUser, busy, error, onRegi
       <PublicInformationLinks />
     </section>
   </main>;
+}
+
+function ProviderSignupContinuation({ signupToken, busy, error, onComplete }: {
+  signupToken: string; busy: boolean; error: string; onComplete(path: string): void;
+}) {
+  const [profile, setProfile] = useState<{ displayName: string | null; email: string | null } | null>(null);
+  const [displayName, setDisplayName] = useState("");
+  const [email, setEmail] = useState("");
+  const [readError, setReadError] = useState("");
+  const [formError, setFormError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const pending = useRef(false);
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    let active = true;
+    void getProviderSignupDetails(signupToken).then(result => {
+      if (!active) return;
+      setProfile(result); setDisplayName(result.displayName ?? ""); setEmail(result.email ?? "");
+    }).catch(() => { if (active) setReadError("We couldn't load this signup. Open your invitation again, or sign in if your account was already created."); });
+    return () => { active = false; mounted.current = false; };
+  }, [signupToken]);
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (pending.current || busy || !profile) return;
+    const name = displayName.trim(); const contact = email.trim();
+    if (!name || name.length > 100 || /[\u0000-\u001f\u007f]/.test(name) || contact.length > 254 ||
+        !/^[^\s@\u0000-\u001f\u007f]+@[^\s@\u0000-\u001f\u007f]+\.[^\s@\u0000-\u001f\u007f]+$/.test(contact)) {
+      setFormError("Enter your name and a valid email to finish creating your account."); return;
+    }
+    pending.current = true; setSubmitting(true); setFormError("");
+    try {
+      const result = await completeProviderSignup({ signupToken, displayName: name, email: contact, timeZone: browserTimeZone() });
+      if (!mounted.current) return;
+      clearPendingProviderSignup(); clearPendingInvitation();
+      onComplete(validateProviderReturnTo(result.returnTo));
+    } catch (cause) {
+      if (mounted.current) setFormError(cause instanceof ApiError && providerSignInErrorMessage(cause.code) ||
+        "We couldn't confirm account creation. Try signing in before submitting again.");
+    } finally { pending.current = false; if (mounted.current) setSubmitting(false); }
+  }
+
+  if (readError) return <p className="error-banner" role="alert">{readError}</p>;
+  if (!profile) return <p role="status">Loading your signup details…</p>;
+  return <form className="registration-form" onSubmit={event => void submit(event)}>
+    <p className="account-entry-help">Just a few details to finish your private LifeLinks account.</p>
+    {(formError || error) && <p className="error-banner" role="alert">{formError || error}</p>}
+    {profile.displayName ? <p className="provider-sign-in-profile"><strong>Name</strong><span>{profile.displayName}</span></p> :
+      <label><span>Display name</span><input name="displayName" required maxLength={100} autoComplete="name" value={displayName} onChange={event => setDisplayName(event.target.value)} disabled={submitting || busy} /></label>}
+    {profile.email ? <p className="provider-sign-in-profile"><strong>Email</strong><span>{profile.email}</span></p> :
+      <label><span>Email</span><input name="email" type="email" required maxLength={254} autoComplete="email" value={email} onChange={event => setEmail(event.target.value)} disabled={submitting || busy} /></label>}
+    <button type="submit" className="primary-button" disabled={submitting || busy}>{submitting || busy ? "Creating your account…" : "Create private account"}</button>
+  </form>;
 }

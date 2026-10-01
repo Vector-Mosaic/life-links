@@ -5,10 +5,25 @@
     "allowJs": true,
     "outDir": "dist",
     "rootDir": "src",
-    "lib": ["ES2022", "DOM"],
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.tsbuildinfo"
   },
-  "references": [{ "path": "../../packages/life-links-core" }],
-  "include": ["src/**/*.ts", "src/**/*.js"],
-  "exclude": ["dist"]
+  "references": [
+    {
+      "path": "../../packages/life-links-core"
+    },
+    {
+      "path": "../../packages/provider-sign-in"
+    }
+  ],
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.js"
+  ],
+  "exclude": [
+    "dist"
+  ]
 }

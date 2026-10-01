@@ -46,6 +46,7 @@ import { routineStoreContract } from "./routine-store-contract.js";
 import { calendarStoreContract } from "./calendar-store-contract.js";
 import { attachmentTextStoreContract } from "./attachment-text-store-contract.js";
 import { registrationStoreContract } from "./registration-store-contract.js";
+import { providerSignInStoreContract } from "./provider-sign-in-store-contract.js";
 import { CalendarProviderGateway, calendarProviderCredentialHandle } from "../src/calendar-provider-gateway.js";
 import { PostgresCalendarProviderStateStore } from "../src/calendar-provider-postgres.js";
 import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
@@ -94,6 +95,7 @@ describe("Life Links Postgres integration", () => {
   routineStoreContract(() => store);
   calendarStoreContract(() => store);
   registrationStoreContract(() => store);
+  providerSignInStoreContract(() => store);
 
   it("preserves durable invitation capacity across store instances and rolls back failed owner admission", async () => {
     const second = createPostgresStore(requireTestDatabaseUrl(), schemaName);
@@ -915,7 +917,7 @@ describe("Life Links Postgres integration", () => {
       const users = await isolated.pool.query("SELECT count(*)::int AS count FROM users");
       const migrations = await isolated.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
       expect(users.rows[0].count).toBe(2);
-      expect(migrations.rows[0].count).toBe(20);
+      expect(migrations.rows[0].count).toBe(22);
       const agentConnectionColumn = await adminPool.query(
         `SELECT is_nullable, data_type
          FROM information_schema.columns
@@ -1835,7 +1837,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(20);
+      expect(receiptCount.rows[0].count).toBe(22);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1886,7 +1888,7 @@ describe("Life Links Postgres integration", () => {
       const newlyCreated = await fixture.store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
         ownerId, title: "New default", createdAt, steps: [{ id: `routine-step-${randomUUID()}`, activityId, activityTitle: "Prepare", position: 0 }] });
       expect(newlyCreated.currentRevision.revision.ordering).toBe("unordered");
-      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(20);
+      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(22);
     } finally {
       await fixture.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1951,7 +1953,9 @@ describe("Life Links Postgres integration", () => {
         "017_record_search_attachment_text.sql",
         "018_routine_ordering.sql",
         "019_remote_agent_protocol_state.sql",
-        "020_invitation_registration.sql"
+        "020_invitation_registration.sql",
+        "021_member_invitations.sql",
+        "022_provider_sign_in.sql"
       ]);
     } finally {
       await concurrent.store.close();

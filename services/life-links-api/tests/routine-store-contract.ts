@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEMO_GUEST_ID, DEMO_OWNER_ID, type RoutineValue } from "@life-links/core";
 
 import type { LifeLinksStore } from "../src/store.js";
@@ -171,9 +171,13 @@ export function routineStoreContract(getStore: () => LifeLinksStore): void {
       expect(history?.session.contextSnapshot[0]).toMatchObject({ targetType: "collection", targetId: collection.id, targetTitle: collection.title });
     });
 
-    it("preserves a snapshotted immutable Session while future definitions and corrections advance", async () => {
-      const store = getStore();
+    it("preserves a snapshotted immutable Session while future definitions and corrections advance", async ({ onTestFinished }) => {
+      onTestFinished(() => { vi.useRealTimers(); });
       const createdAt = "2026-09-01T12:00:00.000Z";
+      // These fixed occurrences must still be future plans when the schedules change.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(createdAt);
+      const store = getStore();
       const lifeLink = await store.createLifeLink({ id: id("life-link"), ownerId: DEMO_OWNER_ID, title: "Training shoes", createdAt });
       let collection = await store.createCollection({ id: id("collection"), ownerId: DEMO_OWNER_ID, title: "Morning kit", createdAt });
       collection = (await store.addCollectionMember(DEMO_OWNER_ID, {
@@ -382,9 +386,13 @@ export function routineStoreContract(getStore: () => LifeLinksStore): void {
         startedAt: "2026-09-21T13:00:00.000Z" })).rejects.toMatchObject({ code: "routine_conflict" });
     });
 
-    it("archives only schedules whose current pin still uses the Activity after a definition save", async () => {
-      const store = getStore();
+    it("archives only schedules whose current pin still uses the Activity after a definition save", async ({ onTestFinished }) => {
+      onTestFinished(() => { vi.useRealTimers(); });
       const createdAt = "2026-09-01T12:00:00.000Z";
+      // Archiving affects these occurrences while they are still future plans.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(createdAt);
+      const store = getStore();
       const firstActivity = await store.createActivity({ id: id("activity"), ownerId: DEMO_OWNER_ID,
         title: "First activity", createdAt });
       const secondActivity = await store.createActivity({ id: id("activity"), ownerId: DEMO_OWNER_ID,

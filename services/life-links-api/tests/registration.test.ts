@@ -5,6 +5,7 @@ import { createLogger, type LogEvent } from "../src/logger.js";
 import { createLifeLinksApp } from "../src/server.js";
 import { InMemoryLifeLinksStore } from "../src/store.js";
 import { verifyPassword } from "../src/password.js";
+import { invitationFingerprint } from "../src/registration.js";
 
 const origin = "https://registration.example.test";
 const invitationCode = "synthetic_test_invitation_not_a_secret_123456";
@@ -14,7 +15,7 @@ const registrationEnv = {
   QR_BASE_URL: origin, COOKIE_SECURE: "false", RATE_LIMIT_ENABLED: "false", ORIGIN_CHECK_ENABLED: "false",
   ORIGIN_CHECK_ALLOW_MISSING: "true", LIFE_LINKS_REGISTRATION_ENABLED: "true",
   LIFE_LINKS_REGISTRATION_INVITATION_CODE: invitationCode, LIFE_LINKS_REGISTRATION_MAX_ACCOUNTS: "10",
-  LIFE_LINKS_REGISTRATION_EXPIRES_AT: "2099-09-04T04:00:00.000Z"
+  LIFE_LINKS_REGISTRATION_EXPIRES_AT: "2099-09-04T04:00:00.000Z", LIFE_LINKS_MEMBER_INVITATIONS_ENABLED: "false"
 };
 const validInput = { displayName: "Private Judge", email: "judge@example.test", password, invitationCode, timeZone: "America/New_York" };
 function setup(env: NodeJS.ProcessEnv = {}) {
@@ -28,6 +29,53 @@ function setup(env: NodeJS.ProcessEnv = {}) {
 }
 
 afterEach(() => vi.restoreAllMocks());
+
+describe("member-issued invitation HTTP", () => {
+  it("requires sign-in, lets every new member invite, and keeps link secrets and recipients out of listings and logs", async () => {
+    const ctx = setup({ LIFE_LINKS_MEMBER_INVITATIONS_ENABLED: "true" });
+    expect((await request(ctx.app).post("/api/account-invitations").set("Origin", origin).send({})).status).toBe(401);
+    expect((await ctx.register()).status).toBe(201);
+    expect((await ctx.agent.post("/api/account-invitations").send({})).status).toBe(403);
+    expect((await ctx.agent.post("/api/account-invitations").set("Origin", origin).send({ ownerId: "other" })).status).toBe(400);
+    const created = await ctx.agent.post("/api/account-invitations").set("Origin", origin).send({});
+    expect(created.status).toBe(201);
+    expect(created.headers["cache-control"]).toBe("private, no-store");
+    const code = created.body.invitationCode;
+    expect(code).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(created.body.invitation).not.toHaveProperty("ownerId");
+    const saved = await ctx.store.getMemberInvitation(invitationFingerprint(code));
+    expect(saved?.fingerprint).toBe(invitationFingerprint(code));
+    const other = request.agent(ctx.app);
+    const joined = await other.post("/api/auth/register").set("Origin", origin).send({ ...validInput, email: "new-member@example.test", invitationCode: code });
+    expect(joined.status).toBe(201);
+    expect(joined.body.agentConnection.connected).toBe(false);
+    expect((await other.get("/api/life-links")).body.lifeLinks).toEqual([]);
+    expect((await other.get("/api/account-invitations")).body.invitations).toEqual([]);
+    expect((await other.delete(`/api/account-invitations/${created.body.invitation.id}`).set("Origin", origin)).status).toBe(404);
+    expect((await other.post("/api/account-invitations").set("Origin", origin).send({})).status).toBe(201);
+    expect((await request(ctx.app).post("/api/auth/register").set("Origin", origin)
+      .send({ ...validInput, email: "another@example.test", invitationCode: code })).status).toBe(403);
+    const listing = await ctx.agent.get("/api/account-invitations");
+    expect(listing.body.invitations[0].redeemedAt).not.toBeNull();
+    expect(JSON.stringify(listing.body)).not.toContain(code);
+    expect(JSON.stringify(listing.body)).not.toContain("new-member@example.test");
+    expect(JSON.stringify(ctx.events)).not.toContain(code);
+  });
+
+  it("supports cancellation without disabling existing owners, and can close member invitations independently", async () => {
+    const ctx = setup({ LIFE_LINKS_MEMBER_INVITATIONS_ENABLED: "true" });
+    await ctx.register();
+    const created = await ctx.agent.post("/api/account-invitations").set("Origin", origin).send({});
+    expect((await ctx.agent.delete(`/api/account-invitations/${created.body.invitation.id}`).set("Origin", origin)).status).toBe(204);
+    expect((await request(ctx.app).post("/api/auth/register").set("Origin", origin)
+      .send({ ...validInput, email: "cancelled@example.test", invitationCode: created.body.invitationCode })).status).toBe(403);
+    expect((await ctx.agent.get("/api/me")).body.user.email).toBe(validInput.email);
+    ctx.config.memberInvitationsEnabled = false;
+    expect((await ctx.agent.post("/api/account-invitations").set("Origin", origin).send({})).status).toBe(403);
+    ctx.config.registration = undefined;
+    expect((await ctx.agent.get("/api/auth/registration")).body).toEqual({ enabled: false });
+  });
+});
 
 describe("private invitation registration", () => {
   it("defaults to disabled and fails closed for malformed enabled configuration without exposing values", () => {

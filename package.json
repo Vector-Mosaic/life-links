@@ -26,11 +26,11 @@
   "scripts": {
     "build": "pnpm --filter @life-links/api build",
     "dev": "pnpm --filter @life-links/api dev",
-    "test": "pnpm --filter @life-links/core test && pnpm --filter @life-links/demo test && pnpm --filter @life-links/api test",
+    "test": "pnpm --filter @vmosaic/provider-sign-in test && pnpm --filter @life-links/core test && pnpm --filter @life-links/demo test && pnpm --filter @life-links/api test",
     "test:postgres": "pnpm --filter @life-links/api test:postgres",
     "test:e2e:webmcp:local": "pnpm --filter @life-links/demo test:e2e:webmcp:local",
     "test:e2e:webmcp:real": "pnpm --filter @life-links/demo test:e2e:webmcp:real",
     "test:e2e:challenge": "pnpm --filter @life-links/demo test:e2e:challenge",
-    "typecheck": "pnpm --filter @life-links/core typecheck && pnpm --filter @life-links/demo exec tsc --noEmit && pnpm --filter @life-links/api typecheck"
+    "typecheck": "pnpm --filter @vmosaic/provider-sign-in typecheck && pnpm --filter @life-links/core typecheck && pnpm --filter @life-links/demo exec tsc --noEmit && pnpm --filter @life-links/api typecheck"
   }
 }

@@ -166,11 +166,15 @@ import {
 
 import { hashPassword, verifyPassword } from "./password.js";
 import type { AttachmentTextExtraction } from "./attachment-content.js";
-import { assertRegistrationInvitation, prepareRegisteredOwner, RegistrationAdmissionError,
-  type RegisterOwnerInput, type RegistrationInvitation } from "./registration.js";
+import { assertRegistrationInvitation, prepareRegisteredOwner, prepareRegisteredProviderOwner, RegistrationAdmissionError,
+  MAX_PENDING_INVITATIONS, memberInvitationActive, memberInvitationView,
+  type MemberInvitation, type MemberInvitationView, type RegisterOwnerInput, type RegisterProviderOwnerInput, type RegistrationInvitation } from "./registration.js";
+import { assertProviderSignInAttempt, identityBinding, providerIdentityKey, validSignInFingerprint,
+  MAX_PROVIDER_SIGN_IN_ATTEMPTS, PROVIDER_SIGN_IN_EXPIRY_CLEANUP_LIMIT, ProviderSignInStateError,
+  type ProviderIdentityBinding, type VerifiedProviderIdentity, type ProviderSignInAttempt } from "./provider-sign-in-state.js";
 
 export type StoredUser = UserRecord & {
-  passwordHash: string;
+  passwordHash: string | null;
   agentConnectedAt: string | null;
   agentToolCatalogId: AgentToolCatalogId | null;
 };
@@ -393,7 +397,18 @@ export type LifeLinksStore = {
   undoChange(userId: string, input: UndoChangeInput): Promise<LifeLinkChangeResult>;
   getUserByEmail(email: string): Promise<StoredUser | null>;
   registrationAvailable(invitation: RegistrationInvitation): Promise<boolean>;
+  createMemberInvitation(invitation: MemberInvitation): Promise<MemberInvitationView>;
+  listMemberInvitations(ownerId: string): Promise<MemberInvitationView[]>;
+  getMemberInvitation(fingerprint: string): Promise<MemberInvitation | null>;
+  revokeMemberInvitation(ownerId: string, invitationId: string): Promise<boolean>;
   registerOwner(input: RegisterOwnerInput): Promise<StoredUser>;
+  registerProviderOwner(input: RegisterProviderOwnerInput): Promise<StoredUser>;
+  getProviderUser(identity: ProviderIdentityBinding): Promise<StoredUser | null>;
+  listProviderIdentities(ownerId: string): Promise<ProviderIdentityBinding[]>;
+  linkProviderIdentity(ownerId: string, identity: VerifiedProviderIdentity): Promise<void>;
+  saveProviderSignInAttempt(attempt: ProviderSignInAttempt): Promise<void>;
+  getProviderSignInAttempt(stateHash: string, browserHash: string): Promise<ProviderSignInAttempt | null>;
+  consumeProviderSignInAttempt(stateHash: string, browserHash: string): Promise<ProviderSignInAttempt | null>;
   getUserById(userId: string): Promise<StoredUser | null>;
   connectAgent(userId: string, toolCatalogId?: AgentToolCatalogId): Promise<StoredUser | null>;
   disconnectAgent(userId: string): Promise<StoredUser | null>;
@@ -555,6 +570,9 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   private users = new Map<string, StoredUser>();
   private userIdsByEmail = new Map<string, string>();
   private registrationCounts = new Map<string, number>();
+  private memberInvitations = new Map<string, MemberInvitation>();
+  private providerIdentities = new Map<string, { ownerId: string; identity: ProviderIdentityBinding }>();
+  private providerSignInAttempts = new Map<string, ProviderSignInAttempt>();
   private sessions = new Map<string, SessionRecord>();
   private lifeLinks = new Map<string, StoredLifeLink>();
   private collections = new Map<string, CollectionRecord>();
@@ -781,20 +799,122 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
 
   async registrationAvailable(invitation: RegistrationInvitation): Promise<boolean> {
     assertRegistrationInvitation(invitation);
+    if (invitation.memberInvitationId) {
+      const saved = this.memberInvitations.get(invitation.memberInvitationId);
+      if (!saved || saved.fingerprint !== invitation.fingerprint || !memberInvitationActive(saved)) return false;
+    }
     return Date.parse(invitation.expiresAt) > Date.now()
       && (this.registrationCounts.get(invitation.fingerprint) ?? 0) < invitation.maxAccounts;
   }
 
   async registerOwner(input: RegisterOwnerInput): Promise<StoredUser> {
-    const { user, calendar } = prepareRegisteredOwner(input);
+    return this.registerPreparedOwner(input.invitation, prepareRegisteredOwner(input));
+  }
+
+  async registerProviderOwner(input: RegisterProviderOwnerInput): Promise<StoredUser> {
+    providerIdentityKey(input.identity);
+    return this.registerPreparedOwner(input.invitation, prepareRegisteredProviderOwner(input), input.identity);
+  }
+
+  private async registerPreparedOwner(invitation: RegistrationInvitation,
+    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding): Promise<StoredUser> {
+    const { user, calendar } = prepared;
     return this.withLocks(["\u0000account-registration"], async () => {
-      if (!(await this.registrationAvailable(input.invitation))) throw new RegistrationAdmissionError("registration_unavailable");
+      const identityKey = identity ? providerIdentityKey(identity) : null;
+      if (identityKey && this.providerIdentities.has(identityKey)) throw new ProviderSignInStateError("provider_identity_conflict");
+      if (!(await this.registrationAvailable(invitation))) throw new RegistrationAdmissionError("registration_unavailable");
       if (this.userIdsByEmail.has(user.email.toLowerCase())) throw new RegistrationAdmissionError("registration_failed");
       this.users.set(user.id, user);
       this.userIdsByEmail.set(user.email.toLowerCase(), user.id);
       this.calendars.set(calendar.id, calendar);
-      this.registrationCounts.set(input.invitation.fingerprint, (this.registrationCounts.get(input.invitation.fingerprint) ?? 0) + 1);
+      if (identity && identityKey) this.providerIdentities.set(identityKey, { ownerId: user.id, identity: { ...identityBinding(identity) } });
+      this.registrationCounts.set(invitation.fingerprint, (this.registrationCounts.get(invitation.fingerprint) ?? 0) + 1);
+      if (invitation.memberInvitationId) {
+        const saved = this.memberInvitations.get(invitation.memberInvitationId)!;
+        this.memberInvitations.set(saved.id, { ...saved, redeemedAt: user.createdAt });
+      }
       return user;
+    });
+  }
+
+  async getProviderUser(identity: ProviderIdentityBinding): Promise<StoredUser | null> {
+    const binding = this.providerIdentities.get(providerIdentityKey(identity));
+    return binding ? this.users.get(binding.ownerId) ?? null : null;
+  }
+
+  async listProviderIdentities(ownerId: string): Promise<ProviderIdentityBinding[]> {
+    return [...this.providerIdentities.values()].filter(binding => binding.ownerId === ownerId)
+      .map(binding => ({ ...binding.identity })).sort((a, b) => providerIdentityKey(a).localeCompare(providerIdentityKey(b)));
+  }
+
+  async linkProviderIdentity(ownerId: string, identity: VerifiedProviderIdentity): Promise<void> {
+    const key = providerIdentityKey(identity);
+    return this.withLocks(["\u0000account-registration"], async () => {
+      if (!this.users.has(ownerId)) throw new ProviderSignInStateError("provider_sign_in_unavailable");
+      const existing = this.providerIdentities.get(key);
+      if (existing && existing.ownerId !== ownerId) throw new ProviderSignInStateError("provider_identity_conflict");
+      if (!existing) this.providerIdentities.set(key, { ownerId, identity: identityBinding(identity) });
+    });
+  }
+
+  async saveProviderSignInAttempt(attempt: ProviderSignInAttempt): Promise<void> {
+    assertProviderSignInAttempt(attempt);
+    return this.withLocks(["\u0000provider-sign-in-attempts"], async () => {
+      let removed = 0;
+      for (const [key, saved] of this.providerSignInAttempts) {
+        if (removed >= PROVIDER_SIGN_IN_EXPIRY_CLEANUP_LIMIT) break;
+        if (Date.parse(saved.expiresAt) <= Date.now()) { this.providerSignInAttempts.delete(key); removed += 1; }
+      }
+      if (this.providerSignInAttempts.has(attempt.stateHash) ||
+          [...this.providerSignInAttempts.values()].filter(saved => Date.parse(saved.expiresAt) > Date.now()).length >= MAX_PROVIDER_SIGN_IN_ATTEMPTS) {
+        throw new ProviderSignInStateError("provider_sign_in_unavailable");
+      }
+      this.providerSignInAttempts.set(attempt.stateHash, { ...attempt });
+    });
+  }
+
+  async getProviderSignInAttempt(stateHash: string, browserHash: string): Promise<ProviderSignInAttempt | null> {
+    if (!validSignInFingerprint(stateHash) || !validSignInFingerprint(browserHash)) return null;
+    const saved = this.providerSignInAttempts.get(stateHash);
+    return saved && saved.browserHash === browserHash && Date.parse(saved.expiresAt) > Date.now() ? { ...saved } : null;
+  }
+
+  async consumeProviderSignInAttempt(stateHash: string, browserHash: string): Promise<ProviderSignInAttempt | null> {
+    return this.withLocks(["\u0000provider-sign-in-attempts"], async () => {
+      const saved = await this.getProviderSignInAttempt(stateHash, browserHash);
+      if (saved) this.providerSignInAttempts.delete(stateHash);
+      return saved;
+    });
+  }
+
+  async createMemberInvitation(invitation: MemberInvitation): Promise<MemberInvitationView> {
+    return this.withLocks(["\u0000account-registration"], async () => {
+      if (!this.users.has(invitation.ownerId) ||
+          [...this.memberInvitations.values()].filter(value => value.ownerId === invitation.ownerId && memberInvitationActive(value)).length >= MAX_PENDING_INVITATIONS) {
+        throw new RegistrationAdmissionError("registration_unavailable");
+      }
+      this.memberInvitations.set(invitation.id, { ...invitation });
+      return memberInvitationView(invitation);
+    });
+  }
+
+  async listMemberInvitations(ownerId: string): Promise<MemberInvitationView[]> {
+    return [...this.memberInvitations.values()].filter(value => value.ownerId === ownerId)
+      .sort((a, b) => Number(memberInvitationActive(b)) - Number(memberInvitationActive(a)) ||
+        b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)).slice(0, 50).map(memberInvitationView);
+  }
+
+  async getMemberInvitation(fingerprint: string): Promise<MemberInvitation | null> {
+    const invitation = [...this.memberInvitations.values()].find(value => value.fingerprint === fingerprint);
+    return invitation ? { ...invitation } : null;
+  }
+
+  async revokeMemberInvitation(ownerId: string, invitationId: string): Promise<boolean> {
+    return this.withLocks(["\u0000account-registration"], async () => {
+      const saved = this.memberInvitations.get(invitationId);
+      if (!saved || saved.ownerId !== ownerId) return false;
+      if (!saved.revokedAt && !saved.redeemedAt) this.memberInvitations.set(saved.id, { ...saved, revokedAt: new Date().toISOString() });
+      return true;
     });
   }
 

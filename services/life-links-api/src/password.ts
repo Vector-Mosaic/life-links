@@ -11,7 +11,8 @@ export async function hashPassword(password: string, salt = randomBytes(16).toSt
   return `scrypt$${salt}$${key.toString("hex")}`;
 }
 
-export async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
+export async function verifyPassword(password: string, storedHash: string | null): Promise<boolean> {
+  if (!storedHash) return false;
   const [scheme, salt, hashHex] = storedHash.split("$");
   if (scheme !== "scrypt" || !salt || !hashHex) {
     return false;

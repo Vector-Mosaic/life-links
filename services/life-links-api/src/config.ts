@@ -5,12 +5,16 @@ import { DEFAULT_QR_BASE_URL } from "@life-links/core";
 import { attachmentRuntime, type AttachmentNativeRuntime } from "./attachment-native-runtime.js";
 import type { MicrosoftCalendarAuthConfig } from "./calendar-microsoft-auth.js";
 import type { GoogleCalendarAuthConfig } from "./calendar-google-auth.js";
+import type { ProviderSignInConfig } from "@vmosaic/provider-sign-in";
+import { readProviderSignInConfig } from "./provider-sign-in-config.js";
 import { invitationFingerprint, validInvitationCode, type RegistrationInvitation } from "./registration.js";
 
 export type StoreMode = "postgres" | "memory";
 export type SeedProfile = "legacy-demo" | "competition";
 
 export type LifeLinksConfig = {
+  providerSignIn?: ProviderSignInConfig[];
+  memberInvitationsEnabled?: boolean;
   registration?: RegistrationInvitation;
   attachmentRuntime?: AttachmentNativeRuntime;
   host: string;
@@ -90,6 +94,8 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
   }
 
   return {
+    providerSignIn: readProviderSignInConfig(env, qrBaseUrl),
+    memberInvitationsEnabled: env.LIFE_LINKS_MEMBER_INVITATIONS_ENABLED !== "false",
     registration: readRegistrationConfig(env),
     microsoftCalendar: readMicrosoftCalendarConfig(env, storeMode),
     googleCalendar: readGoogleCalendarConfig(env, storeMode),

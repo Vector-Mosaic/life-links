@@ -29,6 +29,7 @@ import { routineStoreContract } from "./routine-store-contract.js";
 import { calendarStoreContract } from "./calendar-store-contract.js";
 import { attachmentTextStoreContract } from "./attachment-text-store-contract.js";
 import { registrationStoreContract } from "./registration-store-contract.js";
+import { providerSignInStoreContract } from "./provider-sign-in-store-contract.js";
 
 describe("canonical Life Links store contract", () => {
   let store: InMemoryLifeLinksStore;
@@ -39,6 +40,7 @@ describe("canonical Life Links store contract", () => {
   calendarStoreContract(() => store);
   attachmentTextStoreContract(() => store);
   registrationStoreContract(() => store);
+  providerSignInStoreContract(() => store);
 
   beforeEach(async () => {
     store = new InMemoryLifeLinksStore();
@@ -493,7 +495,7 @@ describe("canonical Life Links store contract", () => {
 
   it.each([
     { kind: "image" as const, mimeType: "image/png", fileName: "photo.png", data: Buffer.from("photo") },
-    { kind: "document" as const, mimeType: "text/plain", fileName: "gear-notes.txt", data: Buffer.from("Gear\tNotes\r\nSleeping bag\tCafé – warm\r\n", "utf8") }
+    { kind: "document" as const, mimeType: "text/plain", fileName: "gear-notes.txt", data: Buffer.from("Gear\tNotes\r\nSleeping bag\tCafÃ© â€“ warm\r\n", "utf8") }
   ])("uses canonical $kind attachment ownership, exact bytes and reversible changes while preserving QR projections", async (input) => {
     const target = await store.createLifeLink({
       id: "media-target",

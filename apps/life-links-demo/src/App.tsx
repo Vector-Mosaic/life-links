@@ -41,11 +41,37 @@ import { AccountCreationLink, AccountRegistration } from "./AccountRegistration"
 import { LifeLinksIntroduction, PublicInformation } from "./PublicInformation";
 import { LifeLinksWorkspaceProvider, useLifeLinksWorkspace } from "./workspace/LifeLinksWorkspaceProvider";
 import { classifyLifeLinksRoute, isRegistrationPath, publicInformationPageFromPath } from "./workspace/routes";
-import { getRemoteAgentConnections } from "./api";
+import { completeProviderLink, getRemoteAgentConnections } from "./api";
+import { ProviderSignIn } from "./ProviderSignIn";
+import { clearPendingProviderLink, clearProviderSignInError, providerSignInErrorMessage, readPendingProviderLink, readProviderSignInError, validateProviderReturnTo } from "./providerSignInLink";
 
 type Html5QrcodeScanner = InstanceType<typeof import("html5-qrcode").Html5Qrcode>;
 
 type CameraMode = "open" | "find";
+
+const replaceProviderReturnPath = (path: string) => window.location.replace(path);
+
+export function useProviderLinkContinuation(loading: boolean, onError: (message: string) => void,
+  onNavigate: (path: string) => void = replaceProviderReturnPath): void {
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  useEffect(() => {
+    if (loading) return;
+    const linkToken = readPendingProviderLink();
+    if (!linkToken) return;
+    // This resumes an explicit link after a cross-site callback. The server
+    // checks the original owner/session against this page's normal cookie.
+    clearPendingProviderLink();
+    void completeProviderLink(linkToken).then(result => {
+      if (mounted.current) onNavigate(validateProviderReturnTo(result.returnTo));
+    }).catch(() => {
+      if (mounted.current) onError("We couldn't confirm that sign-in method was linked. Open Sign-in methods to check before trying again.");
+    });
+  }, [loading, onError, onNavigate]);
+}
 
 export default function App() {
   return (
@@ -63,6 +89,8 @@ function LifeLinksApp() {
     canonicalEditingId, selectedLifeLinkDetail
   } = snapshot; const [agentActivities, setAgentActivities] = useState<AgentActivityEntry[]>([]);
   const agentActivityEligibleRef = useRef(false);
+  const [providerSignInError, setProviderSignInError] = useState(() => providerSignInErrorMessage(readProviderSignInError()));
+  useProviderLinkContinuation(loading, setProviderSignInError);
   const ownerWorkspaceHeadingRef = useRef<HTMLHeadingElement>(null);
   const currentOwnerIdRef = useRef<string | null>(currentUser?.id ?? null);
   const remoteAuthorizationRequestRef = useRef(0);
@@ -181,7 +209,8 @@ function LifeLinksApp() {
   }, [activeQrId, links, publicQrState, route.surface]);
   const privateQrId = publicQrState?.state === "private" ? publicQrState.qrId : null;
   const notFoundQrId = publicQrState?.state === "not_found" ? publicQrState.qrId : null;
-  const handleLogin = (email: string, password: string) => controller.login(email, password);
+  const dismissProviderSignInError = () => { clearProviderSignInError(); setProviderSignInError(""); };
+  const handleLogin = (email: string, password: string) => { dismissProviderSignInError(); return controller.login(email, password); };
   const handleLogout = () => {
     agentActivityEligibleRef.current = false;
     setAgentActivities([]);
@@ -212,7 +241,7 @@ function LifeLinksApp() {
   }
 
   if (isRegistrationPath(routePathname)) {
-    return <AccountRegistration pathname={routePathname} currentUser={currentUser} busy={busy} error={error}
+    return <AccountRegistration pathname={routePathname} currentUser={currentUser} busy={busy} error={error || providerSignInError}
       onRegister={(input) => controller.registerAccount(input)} onLogout={handleLogout}
       onComplete={(path) => window.location.assign(path)} />;
   }
@@ -223,7 +252,7 @@ function LifeLinksApp() {
         link={activeLink}
         privateQrId={privateQrId}
         notFoundQrId={notFoundQrId}
-        error={error}
+        error={error || providerSignInError}
         busy={busy}
         signedIn={Boolean(currentUser)}
         onClaim={claimActiveLink}
@@ -234,7 +263,7 @@ function LifeLinksApp() {
   }
 
   if (!currentUser) {
-    return <LoginScreen error={error} busy={busy} onLogin={handleLogin} />;
+    return <LoginScreen error={error || providerSignInError} busy={busy} onLogin={handleLogin} />;
   }
 
   return (
@@ -246,6 +275,8 @@ function LifeLinksApp() {
         onOpenAgentConnections={() => void refreshRemoteAgentConnections()}
         headingRef={ownerWorkspaceHeadingRef}
         onLogout={() => void handleLogout()}
+        signInError={providerSignInError}
+        onDismissSignInError={dismissProviderSignInError}
         scannerPanel={<ScannerPanel mode="open" baseUrl={qrBaseUrl} sampleLinks={[]} targetId={null} onDecoded={(value) => void handleOpenScan(value)} />}
         findScannerPanel={<ScannerPanel mode="find" baseUrl={qrBaseUrl} sampleLinks={[]} targetId={findTargetId} onDecoded={(value) => void handleFindScan(value)} />}
         agentPanel={<>
@@ -404,7 +435,7 @@ function PublicQrShell({
             </button>
           </section>
         ) : (
-          <LoginForm error="" busy={busy} onLogin={onLogin} compact />
+          <LoginForm error={error} busy={busy} onLogin={onLogin} compact />
         )}
       </aside>
 
@@ -443,6 +474,7 @@ function LoginForm({
         <h3>Sign in to Life Links</h3>
       </div>
       {error && <div className="error-banner">{error}</div>}
+      <ProviderSignIn intent="login" returnTo={window.location.pathname} disabled={busy} />
       <label>
         <span>Email</span>
         <input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" maxLength={254} />

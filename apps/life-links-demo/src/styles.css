@@ -4228,3 +4228,14 @@ textarea {
     animation-iteration-count: 1 !important;
   }
 }
+/* Private account invitations share the ordinary workspace dialog/form surfaces. */
+.ll-invitation-list { list-style: none; padding: 0; margin: 0; }
+.ll-invitation-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--ll-line); }
+.ll-invitation-list small { display: block; margin-top: 4px; }
+.ll-invitations section { min-width: 0; }
+
+.provider-sign-in-buttons { display: grid; gap: 10px; }
+.provider-sign-in { min-width: 0; }
+.provider-sign-in-profile { display: grid; gap: 4px; overflow-wrap: anywhere; margin: 0; }
+.ll-sign-in-method-list { list-style: none; padding: 0; margin: 0; }
+.ll-sign-in-method-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--ll-line); }

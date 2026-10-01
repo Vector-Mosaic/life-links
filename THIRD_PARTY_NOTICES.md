@@ -2,14 +2,30 @@
 
 ## Current source-candidate notice boundary
 
+The Provider Sign-In addition imports the already admitted MSAL, Google auth
+and jose versions through a new first-party workspace package. Its standalone
+lock SHA-256 is
+`a59c73e92ee26b405a5d83e228950ccdb4cb156c7711692252da1db3bbf3255a`.
+All external package and snapshot records are unchanged from the preceding lock;
+only workspace importers are added or updated. The selected SDK versions were
+already reachable in production. No new third-party package notice is added.
+Cloud run `36867511141` installed the exact candidate
+`c461b28d8ebd20a1d244b236a91878e6b64c9c6a` with the frozen standalone lock.
+Its production inventory contains 325 package names and 346 exact versions and
+has SHA-256
+`899f426db24016f3b99b2b374ea8d5656506c28544dcec2894bc784b406bf80d`,
+identical to the previously qualified remote MCP inventory. The JavaScript
+inventory is reconciled; earlier native and image-bound evidence retains its
+recorded scope.
+
 The [remote MCP/OAuth appendix](#remote-mcp-and-delegated-oauth-dependency-additions)
-records the current candidate's 43 newly reachable production package versions
+records the remote MCP candidate's 43 newly reachable production package versions
 and exact standalone lock digest. The 35 installed-license notices are
 supplemented by seven integrity-verified primary npm archives and the precisely
 identified upstream omitted-license correction for `koa-compose@4.1.0`.
-All added-version notice text is now accounted for. Candidate frozen production
-inventory reconciliation remains pending; retained inventories below are not
-silently relabeled as proof for the new dependency graph.
+All added-version notice text is accounted for, and the frozen production
+inventory comparison above confirms the same exact external package versions.
+The earlier inventory records below retain their original source identities.
 
 The retained JavaScript inventory and Outlook additions below keep their exact
 recorded scope. The admitted Google addition pins `google-auth-library@10.9.1`.
@@ -1204,7 +1220,7 @@ the page-independent MCP/OAuth addition, including
 `@modelcontextprotocol/sdk@1.30.0`, `oidc-provider@9.12.0` and `zod@3.25.76`.
 The prior standalone lock SHA-256 is
 `24a3ef81522f1a8170af4a47856a71fd1e6fc84b1c99592c1fd01fe3766fc925`;
-the current candidate lock SHA-256 is
+that remote MCP candidate lock SHA-256 is
 `8bd8c7e5bae46422d470236dad17820beffb3b43d135cf43287891699d1c3216`.
 
 Following production and optional dependencies from all workspace importers
@@ -1227,9 +1243,8 @@ BSD-3-Clause. No separate top-level NOTICE file was found in the 36 inspected
 installed distributions; no NOTICE file was present in the eight subsequently
 inspected exact npm archives.
 
-This is a source-candidate notice update, not completed frozen production
-inventory reconciliation. The existing cloud license-inventory procedure will
-supply the exact installed candidate inventory for comparison with this delta.
+The frozen production inventory from cloud run `36867511141` reconciles this
+JavaScript delta, as recorded in the current source-candidate boundary above.
 Earlier JavaScript, native, and image-bound Debian evidence keeps its recorded
 scope; this appendix makes no new Node-image/Debian closure or legal-clearance
 claim.

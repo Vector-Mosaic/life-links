@@ -1,0 +1,34 @@
+{
+  "name": "@vmosaic/provider-sign-in",
+  "private": true,
+  "license": "MIT",
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b --force",
+    "typecheck": "tsc -b --force",
+    "test": "vitest run tests"
+  },
+  "dependencies": {
+    "@azure/msal-node": "6.0.0",
+    "google-auth-library": "10.9.1",
+    "jose": "6.2.10"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "~5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

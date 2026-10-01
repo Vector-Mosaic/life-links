@@ -218,8 +218,12 @@ import {
   sameCompetitionFixtureCounts
 } from "./store.js";
 import type { AttachmentTextExtraction } from "./attachment-content.js";
-import { assertRegistrationInvitation, prepareRegisteredOwner, RegistrationAdmissionError,
-  type RegisterOwnerInput, type RegistrationInvitation } from "./registration.js";
+import { assertRegistrationInvitation, prepareRegisteredOwner, prepareRegisteredProviderOwner, RegistrationAdmissionError,
+  MAX_PENDING_INVITATIONS, memberInvitationView,
+  type MemberInvitation, type MemberInvitationView, type RegisterOwnerInput, type RegisterProviderOwnerInput, type RegistrationInvitation } from "./registration.js";
+import { assertProviderSignInAttempt, providerIdentityKey, validSignInFingerprint,
+  MAX_PROVIDER_SIGN_IN_ATTEMPTS, PROVIDER_SIGN_IN_EXPIRY_CLEANUP_LIMIT, ProviderSignInStateError,
+  type ProviderIdentityBinding, type VerifiedProviderIdentity, type ProviderSignInAttempt } from "./provider-sign-in-state.js";
 
 type Queryable = Pick<Pool, "query">;
 type StoredLifeLink = Omit<LifeLinkRecord, "qrId" | "media">;
@@ -234,6 +238,13 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
 
   async registrationAvailable(invitation: RegistrationInvitation): Promise<boolean> {
     assertRegistrationInvitation(invitation);
+    if (invitation.memberInvitationId) {
+      const saved = await this.pool.query(
+        `SELECT id FROM member_invitations WHERE id=$1 AND fingerprint=$2 AND revoked_at IS NULL
+         AND redeemed_at IS NULL AND clock_timestamp() < expires_at`,
+        [invitation.memberInvitationId, invitation.fingerprint]);
+      if (!saved.rowCount) return false;
+    }
     const result = await this.pool.query(
       `SELECT count(*)::int < $2 AND clock_timestamp() < $3::timestamptz AS available
        FROM account_registrations WHERE invitation_fingerprint=$1`,
@@ -243,20 +254,51 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
   }
 
   async registerOwner(input: RegisterOwnerInput): Promise<StoredUser> {
-    const { user, calendar } = prepareRegisteredOwner(input);
+    return this.registerPreparedOwner(input.invitation, prepareRegisteredOwner(input));
+  }
+
+  async registerProviderOwner(input: RegisterProviderOwnerInput): Promise<StoredUser> {
+    providerIdentityKey(input.identity);
+    return this.registerPreparedOwner(input.invitation, prepareRegisteredProviderOwner(input), input.identity);
+  }
+
+  private async registerPreparedOwner(invitation: RegistrationInvitation,
+    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding): Promise<StoredUser> {
+    const { user, calendar } = prepared;
+    const keys = [`registration-invitation:${invitation.fingerprint}`];
+    if (identity) keys.push(`provider-sign-in-identity:${providerIdentityKey(identity)}`);
     try {
-      return await this.withTransaction([`registration-invitation:${input.invitation.fingerprint}`], async client => {
+      return await this.withTransaction(keys, async client => {
+        if (identity) {
+          const saved = await client.query(
+            `SELECT owner_id FROM provider_sign_in_identities WHERE provider=$1 AND issuer=$2 AND client_id=$3 AND subject=$4`,
+            [identity.provider, identity.issuer, identity.clientId, identity.subject]);
+          if (saved.rowCount) throw new ProviderSignInStateError("provider_identity_conflict");
+        }
+        if (invitation.memberInvitationId) {
+          const saved = await client.query(
+            `SELECT id FROM member_invitations WHERE id=$1 AND fingerprint=$2 AND revoked_at IS NULL
+             AND redeemed_at IS NULL AND clock_timestamp() < expires_at FOR UPDATE`,
+            [invitation.memberInvitationId, invitation.fingerprint]);
+          if (!saved.rowCount) throw new RegistrationAdmissionError("registration_unavailable");
+        }
         const admission = await client.query(
           `SELECT count(*)::int < $2 AND clock_timestamp() < $3::timestamptz AS available
            FROM account_registrations WHERE invitation_fingerprint=$1`,
-          [input.invitation.fingerprint, input.invitation.maxAccounts, input.invitation.expiresAt]
+          [invitation.fingerprint, invitation.maxAccounts, invitation.expiresAt]
         );
         if (admission.rows[0]?.available !== true) throw new RegistrationAdmissionError("registration_unavailable");
         await client.query("INSERT INTO users(id,email,display_name,password_hash,created_at) VALUES($1,$2,$3,$4,$5)",
           [user.id, user.email, user.displayName, user.passwordHash, user.createdAt]);
         await insertPostgresCalendar(client, calendar);
+        if (identity) await client.query(
+          `INSERT INTO provider_sign_in_identities(provider,issuer,client_id,subject,owner_id,created_at) VALUES($1,$2,$3,$4,$5,$6)`,
+          [identity.provider, identity.issuer, identity.clientId, identity.subject, user.id, user.createdAt]);
         await client.query("INSERT INTO account_registrations(user_id,invitation_fingerprint,created_at) VALUES($1,$2,$3)",
-          [user.id, input.invitation.fingerprint, user.createdAt]);
+          [user.id, invitation.fingerprint, user.createdAt]);
+        if (invitation.memberInvitationId) {
+          await client.query("UPDATE member_invitations SET redeemed_at=$2 WHERE id=$1", [invitation.memberInvitationId, user.createdAt]);
+        }
         return user;
       }, null);
     } catch (error) {
@@ -264,6 +306,112 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       if ((error as { code?: string })?.code === "23505") throw new RegistrationAdmissionError("registration_failed");
       throw error;
     }
+  }
+
+  async getProviderUser(identity: ProviderIdentityBinding): Promise<StoredUser | null> {
+    providerIdentityKey(identity);
+    const result = await this.pool.query(
+      `SELECT u.* FROM provider_sign_in_identities p JOIN users u ON u.id=p.owner_id
+       WHERE p.provider=$1 AND p.issuer=$2 AND p.client_id=$3 AND p.subject=$4`,
+      [identity.provider, identity.issuer, identity.clientId, identity.subject]);
+    return result.rows[0] ? mapUser(result.rows[0]) : null;
+  }
+
+  async listProviderIdentities(ownerId: string): Promise<ProviderIdentityBinding[]> {
+    const result = await this.pool.query(
+      `SELECT provider,issuer,client_id,subject FROM provider_sign_in_identities WHERE owner_id=$1
+       ORDER BY provider,issuer,client_id,subject`, [ownerId]);
+    return result.rows.map(row => ({ provider: String(row.provider), issuer: String(row.issuer),
+      clientId: String(row.client_id), subject: String(row.subject) }));
+  }
+
+  async linkProviderIdentity(ownerId: string, identity: VerifiedProviderIdentity): Promise<void> {
+    const key = providerIdentityKey(identity);
+    await this.withTransaction([`provider-sign-in-identity:${key}`], async client => {
+      const owner = await client.query("SELECT id FROM users WHERE id=$1", [ownerId]);
+      if (!owner.rowCount) throw new ProviderSignInStateError("provider_sign_in_unavailable");
+      const result = await client.query(
+        `INSERT INTO provider_sign_in_identities(provider,issuer,client_id,subject,owner_id,created_at) VALUES($1,$2,$3,$4,$5,$6)
+         ON CONFLICT(provider,issuer,client_id,subject) DO UPDATE SET owner_id=EXCLUDED.owner_id
+         WHERE provider_sign_in_identities.owner_id=EXCLUDED.owner_id RETURNING owner_id`,
+        [identity.provider, identity.issuer, identity.clientId, identity.subject, ownerId, new Date().toISOString()]);
+      if (!result.rowCount) throw new ProviderSignInStateError("provider_identity_conflict");
+    }, null);
+  }
+
+  async saveProviderSignInAttempt(attempt: ProviderSignInAttempt): Promise<void> {
+    assertProviderSignInAttempt(attempt);
+    try {
+      await this.withTransaction(["provider-sign-in-attempts"], async client => {
+        await client.query(
+          `DELETE FROM provider_sign_in_attempts WHERE state_hash IN
+           (SELECT state_hash FROM provider_sign_in_attempts WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT $1)`,
+          [PROVIDER_SIGN_IN_EXPIRY_CLEANUP_LIMIT]);
+        const active = await client.query("SELECT count(*)::int AS count FROM provider_sign_in_attempts WHERE expires_at > clock_timestamp()");
+        if (active.rows[0].count >= MAX_PROVIDER_SIGN_IN_ATTEMPTS) throw new ProviderSignInStateError("provider_sign_in_unavailable");
+        await client.query(
+          `INSERT INTO provider_sign_in_attempts(state_hash,browser_hash,provider,encrypted_payload,expires_at) VALUES($1,$2,$3,$4,$5)`,
+          [attempt.stateHash, attempt.browserHash, attempt.provider, attempt.encryptedPayload, attempt.expiresAt]);
+      }, null);
+    } catch (error) {
+      if ((error as { code?: string })?.code === "23505") throw new ProviderSignInStateError("provider_sign_in_unavailable");
+      throw error;
+    }
+  }
+
+  async getProviderSignInAttempt(stateHash: string, browserHash: string): Promise<ProviderSignInAttempt | null> {
+    if (!validSignInFingerprint(stateHash) || !validSignInFingerprint(browserHash)) return null;
+    const result = await this.pool.query(
+      `SELECT * FROM provider_sign_in_attempts WHERE state_hash=$1 AND browser_hash=$2 AND expires_at > clock_timestamp()`,
+      [stateHash, browserHash]);
+    return result.rows[0] ? mapProviderSignInAttempt(result.rows[0]) : null;
+  }
+
+  async consumeProviderSignInAttempt(stateHash: string, browserHash: string): Promise<ProviderSignInAttempt | null> {
+    if (!validSignInFingerprint(stateHash) || !validSignInFingerprint(browserHash)) return null;
+    const result = await this.pool.query(
+      `DELETE FROM provider_sign_in_attempts WHERE state_hash=$1 AND browser_hash=$2 AND expires_at > clock_timestamp() RETURNING *`,
+      [stateHash, browserHash]);
+    return result.rows[0] ? mapProviderSignInAttempt(result.rows[0]) : null;
+  }
+
+  async createMemberInvitation(invitation: MemberInvitation): Promise<MemberInvitationView> {
+    return this.withTransaction([`member-invitations:${invitation.ownerId}`], async client => {
+      const pending = await client.query(
+        `SELECT count(*)::int AS count FROM member_invitations WHERE owner_id=$1
+         AND revoked_at IS NULL AND redeemed_at IS NULL AND clock_timestamp() < expires_at`, [invitation.ownerId]);
+      if (pending.rows[0].count >= MAX_PENDING_INVITATIONS) throw new RegistrationAdmissionError("registration_unavailable");
+      await client.query(
+        `INSERT INTO member_invitations(id,owner_id,fingerprint,created_at,expires_at) VALUES($1,$2,$3,$4,$5)`,
+        [invitation.id, invitation.ownerId, invitation.fingerprint, invitation.createdAt, invitation.expiresAt]);
+      return memberInvitationView(invitation);
+    }, null);
+  }
+
+  async listMemberInvitations(ownerId: string): Promise<MemberInvitationView[]> {
+    const result = await this.pool.query(
+      `SELECT id,created_at,expires_at,revoked_at,redeemed_at FROM member_invitations WHERE owner_id=$1
+       ORDER BY (revoked_at IS NULL AND redeemed_at IS NULL AND clock_timestamp() < expires_at) DESC,created_at DESC,id DESC LIMIT 50`, [ownerId]);
+    return result.rows.map(row => ({ id: row.id, createdAt: new Date(row.created_at).toISOString(),
+      expiresAt: new Date(row.expires_at).toISOString(), revokedAt: row.revoked_at ? new Date(row.revoked_at).toISOString() : null,
+      redeemedAt: row.redeemed_at ? new Date(row.redeemed_at).toISOString() : null }));
+  }
+
+  async getMemberInvitation(fingerprint: string): Promise<MemberInvitation | null> {
+    const result = await this.pool.query("SELECT * FROM member_invitations WHERE fingerprint=$1", [fingerprint]);
+    const row = result.rows[0];
+    return row ? { id: row.id, ownerId: row.owner_id, fingerprint: row.fingerprint,
+      createdAt: new Date(row.created_at).toISOString(), expiresAt: new Date(row.expires_at).toISOString(),
+      revokedAt: row.revoked_at ? new Date(row.revoked_at).toISOString() : null,
+      redeemedAt: row.redeemed_at ? new Date(row.redeemed_at).toISOString() : null } : null;
+  }
+
+  async revokeMemberInvitation(ownerId: string, invitationId: string): Promise<boolean> {
+    // UPDATE takes the same row lock as admission: whichever commits first owns the result.
+    const result = await this.pool.query(
+      `UPDATE member_invitations SET revoked_at=CASE WHEN redeemed_at IS NULL THEN COALESCE(revoked_at,clock_timestamp()) ELSE revoked_at END
+       WHERE id=$1 AND owner_id=$2 RETURNING id`, [invitationId, ownerId]);
+    return Boolean(result.rowCount);
   }
 
   async getUserById(userId: string): Promise<StoredUser | null> {
@@ -337,7 +485,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         id: String(row.user_id_value),
         email: String(row.email),
         displayName: String(row.display_name),
-        passwordHash: String(row.password_hash),
+        passwordHash: row.password_hash === null ? null : String(row.password_hash),
         agentConnectedAt: nullableIso(row.user_agent_connected_at),
         agentToolCatalogId: row.user_agent_tool_catalog_id === null ? null : String(row.user_agent_tool_catalog_id) as AgentToolCatalogId,
         createdAt: toIso(row.user_created_at)
@@ -3508,12 +3656,17 @@ function assertCollectionFresh(collection: CollectionRecord, expectedUpdatedAt: 
   }
 }
 
+function mapProviderSignInAttempt(row: Record<string, unknown>): ProviderSignInAttempt {
+  return { stateHash: String(row.state_hash), browserHash: String(row.browser_hash), provider: String(row.provider),
+    encryptedPayload: String(row.encrypted_payload), expiresAt: toIso(row.expires_at) };
+}
+
 function mapUser(row: Record<string, unknown>): StoredUser {
   return {
     id: String(row.id),
     email: String(row.email),
     displayName: String(row.display_name),
-    passwordHash: String(row.password_hash),
+    passwordHash: row.password_hash === null ? null : String(row.password_hash),
     agentConnectedAt: nullableIso(row.agent_connected_at),
     agentToolCatalogId: row.agent_tool_catalog_id === null ? null : String(row.agent_tool_catalog_id) as AgentToolCatalogId,
     createdAt: toIso(row.created_at)
