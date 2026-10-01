@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AccountCreationLink, AccountRegistration } from "./AccountRegistration";
-import { LifeLinksIntroduction, PublicInformation, privacyParagraphs, termsParagraphs } from "./PublicInformation";
+import { PublicInformation, privacyParagraphs, termsParagraphs } from "./PublicInformation";
 import { completeProviderSignup, getProviderSignupDetails, getRegistration, getSignInProviders, type ApiUser } from "./api";
 import { captureInvitationLink, clearPendingInvitation, readPendingInvitation, accountInvitationLink } from "./invitationLink";
 import { captureProviderSignInLink, clearPendingProviderSignup, clearProviderSignInError, readPendingProviderSignup } from "./providerSignInLink";
@@ -234,10 +234,7 @@ describe("private account registration", () => {
     expect(onRegister).not.toHaveBeenCalled();
   });
 
-  it("offers a factual homepage introduction and whole-app About without implying QR or open-page requirements for remote MCP", async () => {
-    await act(async () => root.render(<LifeLinksIntroduction />));
-    expect(container.textContent).toContain("QR labels are optional");
-    expect(container.querySelector('a[href="/privacy"]')).not.toBeNull();
+  it("offers whole-app About without implying QR or open-page requirements for remote MCP", async () => {
     await act(async () => root.render(<PublicInformation page="about" />));
     for (const feature of ["My Life Links", "My Collections", "My Routines", "My Calendar", "Search records", "remote MCP connection can work with that page closed", "Vector Mosaic"]) expect(container.textContent).toContain(feature);
     expect(container.textContent).toContain("New private accounts do not copy demo content");

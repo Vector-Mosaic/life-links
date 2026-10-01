@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "Google Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./assets/google-sans-500.woff2") format("woff2");
+}
+
 :root {
   --ll-canvas: #111512;
   --ll-paper: #1b211d;
@@ -600,11 +608,54 @@ label[data-tooltip]:focus-within .tooltip-bubble::before {
   align-self: start;
 }
 
+.login-panel:not(.compact) {
+  width: min(440px, 100%);
+  padding: clamp(22px, 4vw, 32px);
+  gap: 18px;
+  border-radius: 24px;
+}
+
+.login-panel:not(.compact) .panel-title h3 {
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.login-panel:not(.compact) input,
+.login-panel:not(.compact) > .primary-button {
+  min-height: 50px;
+  border-radius: 999px;
+}
+
+.login-panel:not(.compact) input {
+  padding-inline: 18px;
+}
+
+.login-panel:not(.compact) > .primary-button {
+  font-weight: 600;
+}
+
+.login-shell > .public-information-links {
+  justify-content: center;
+  gap: 20px;
+  font-size: 0.8125rem;
+}
+
+.login-shell > .public-information-links a {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.login-shell > .public-information-links a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
 .registration-shell {
   align-content: start;
 }
 
-.registration-panel {
+.login-panel.registration-panel {
   width: min(600px, 100%);
 }
 
@@ -647,17 +698,6 @@ label[data-tooltip]:focus-within .tooltip-bubble::before {
   margin-top: 10px;
 }
 
-.life-links-introduction {
-  width: min(560px, 100%);
-  text-align: center;
-  line-height: 1.6;
-}
-
-.life-links-introduction h2 {
-  font-size: clamp(1.35rem, 3vw, 1.8rem);
-  margin: 0;
-}
-
 .public-information-shell {
   min-height: 100vh;
   padding: clamp(20px, 4vw, 48px);
@@ -683,12 +723,7 @@ label[data-tooltip]:focus-within .tooltip-bubble::before {
   gap: 16px;
 }
 
-.life-links-introduction .public-information-links {
-  justify-content: center;
-}
-
-.public-information-shell a,
-.life-links-introduction a {
+.public-information-shell a {
   color: var(--accent);
   text-underline-offset: 4px;
 }
@@ -3604,8 +3639,8 @@ textarea {
 .ll-topbar { height: 64px; flex: 0 0 64px; padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--ll-line); background: var(--ll-raised); gap: 12px; }
 .ll-brand { display: inline-flex; align-items: center; gap: 9px; font-size: 19px; font-weight: 650; letter-spacing: -.04em; }
 .ll-brand > svg { width: 20px; height: 20px; }
-.ll-login-brand { margin: 0; color: var(--ll-ink); font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; font-size: 28px; line-height: 1.3; }
-.ll-login-brand > svg { width: 24px; height: 24px; }
+.ll-login-brand { margin: 0; gap: 14px; color: var(--ll-ink); font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif; font-size: clamp(40px, 5vw, 56px); line-height: 1.2; }
+.ll-login-brand > svg { width: .78em; height: .78em; }
 .ll-agent-status { border: 1px solid var(--ll-line); background: var(--ll-canvas); border-radius: 24px; min-height: 40px; padding: 6px 12px; display: flex; align-items: center; gap: 10px; }
 .ll-agent-status:hover { background: var(--ll-line-soft); }
 .ll-agent-status-heading { font-weight: 650; }
@@ -4236,6 +4271,12 @@ textarea {
 
 .provider-sign-in-buttons { display: grid; gap: 10px; }
 .provider-sign-in { min-width: 0; }
+.provider-sign-in-button { min-height: 52px; padding: 14px 20px; gap: 12px; border-radius: 999px; font-size: 1rem; font-weight: 500; line-height: 1.25; }
+.provider-sign-in-button[data-provider="google"] { color: #1f1f1f; background: #fff; border-color: #747775; font-family: "Google Sans", ui-sans-serif, system-ui, sans-serif; }
+.provider-sign-in-button[data-provider="google"]:hover { background: #f8faf8; border-color: var(--accent); }
+.provider-sign-in-logo { display: block; flex: 0 0 20px; width: 20px; height: 20px; object-fit: contain; }
+.provider-sign-in-divider { display: flex; align-items: center; gap: 16px; margin-top: 20px; color: var(--muted); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .08em; }
+.provider-sign-in-divider::before, .provider-sign-in-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .provider-sign-in-profile { display: grid; gap: 4px; overflow-wrap: anywhere; margin: 0; }
 .ll-sign-in-method-list { list-style: none; padding: 0; margin: 0; }
 .ll-sign-in-method-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--ll-line); }

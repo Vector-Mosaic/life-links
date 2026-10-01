@@ -38,7 +38,7 @@ import { AttachmentList } from "./owner/AttachmentList";
 import { RichBodyRenderer } from "./richBody";
 import { Tooltip } from "./ui/Tooltip";
 import { AccountCreationLink, AccountRegistration } from "./AccountRegistration";
-import { LifeLinksIntroduction, PublicInformation } from "./PublicInformation";
+import { PublicInformation, PublicInformationLinks } from "./PublicInformation";
 import { LifeLinksWorkspaceProvider, useLifeLinksWorkspace } from "./workspace/LifeLinksWorkspaceProvider";
 import { classifyLifeLinksRoute, isRegistrationPath, publicInformationPageFromPath } from "./workspace/routes";
 import { completeProviderLink, getRemoteAgentConnections } from "./api";
@@ -307,8 +307,8 @@ function LoginScreen({ error, busy, onLogin }: { error: string; busy: boolean; o
   return (
     <div className="login-shell">
       <h1 className="ll-brand ll-login-brand">LifeLinks <LifeLinksGlyph /></h1>
-      <LifeLinksIntroduction />
       <LoginForm error={error} busy={busy} onLogin={onLogin} />
+      <PublicInformationLinks />
     </div>
   );
 }

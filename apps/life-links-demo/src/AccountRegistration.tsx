@@ -15,7 +15,6 @@ export function AccountCreationLink({ returnTo }: { returnTo: string }) {
   return <div className="account-entry-help">
     <p>Have an invitation to LifeLinks?</p>
     <a href={accountRegistrationPath(returnTo)}>Create your account</a>
-    <p>The shared demo contains examples. Use a separate private account for your own information, agent, or calendar.</p>
   </div>;
 }
 

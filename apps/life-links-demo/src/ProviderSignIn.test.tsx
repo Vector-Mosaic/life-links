@@ -26,7 +26,7 @@ describe("provider sign-in entry", () => {
 
   it("renders configured options and starts only after an explicit click", async () => {
     await render({ returnTo: "/agent-authorize/opaque_request", invitationCode: "unused" });
-    expect(container.textContent).toBe("Continue with Google");
+    expect(container.querySelector("button")!.textContent).toBe("Continue with Google");
     expect(container.querySelector("button")!.type).toBe("button");
     expect(startProviderSignIn).not.toHaveBeenCalled();
     await click();
@@ -81,7 +81,7 @@ describe("provider sign-in entry", () => {
     await render();
     await act(async () => { container.querySelector<HTMLButtonElement>("button")!.click(); container.querySelector<HTMLButtonElement>("button")!.click(); });
     expect(startProviderSignIn).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toBe("Opening Google…");
+    expect(container.querySelector("button")!.textContent).toBe("Opening Google…");
     await act(async () => resolve({ authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth" }));
     expect(navigate).toHaveBeenCalledTimes(1);
   });

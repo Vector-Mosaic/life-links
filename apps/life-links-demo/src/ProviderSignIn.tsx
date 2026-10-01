@@ -3,6 +3,8 @@ import { providerButtonLabel } from "@vmosaic/provider-sign-in/client";
 import { ApiError, getSignInProviders, startProviderSignIn, type SignInProvider, type SignInProviderId } from "./api";
 import { providerAuthorizationUrl, providerSignInErrorMessage, validateProviderReturnTo } from "./providerSignInLink";
 
+const googleLogo = new URL("./assets/google-g.png", import.meta.url).href;
+
 export interface ProviderSignInProps {
   intent: "login" | "register";
   returnTo: string;
@@ -66,12 +68,15 @@ export function ProviderSignIn({ intent, returnTo, invitationCode, timeZone, dis
   if (providers.length === 0) return null;
   return <div className="provider-sign-in" aria-label="Other sign-in methods">
       <div className="provider-sign-in-buttons">
-        {providers.map(provider => <button key={provider.id} type="button" className="secondary-button"
+        {providers.map(provider => <button key={provider.id} type="button" className="secondary-button provider-sign-in-button"
+          data-provider={provider.id}
           disabled={disabled || starting !== null || needsInvitation} onClick={() => void start(provider)}>
-          {starting === provider.id ? `Opening ${provider.label}…` : providerButtonLabel(provider.id)}
+          {provider.id === "google" && <img className="provider-sign-in-logo" src={googleLogo} alt="" aria-hidden="true" width={20} height={20} />}
+          <span>{starting === provider.id ? `Opening ${provider.label}…` : providerButtonLabel(provider.id)}</span>
         </button>)}
       </div>
       {needsInvitation && <p className="account-entry-help">Enter your invitation code or open your invitation link to continue.</p>}
     {error && <p className="error-banner" role="alert">{error}</p>}
+    <div className="provider-sign-in-divider" aria-hidden="true"><span>or</span></div>
   </div>;
 }

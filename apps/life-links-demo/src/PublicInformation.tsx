@@ -26,15 +26,6 @@ export function PublicInformationLinks() {
   </nav>;
 }
 
-export function LifeLinksIntroduction() {
-  return <section className="life-links-introduction" aria-labelledby="life-links-introduction-title">
-    <h2 id="life-links-introduction-title">Your everyday context, connected.</h2>
-    <p>Organize places and possessions, Collections, Routines and calendars. Keep useful notes and files in one place, and let an agent you authorize help you read and update them.</p>
-    <p>QR labels are optional. Your information stays useful between conversations.</p>
-    <PublicInformationLinks />
-  </section>;
-}
-
 export function PublicInformation({ page }: { page: PublicInformationPage }) {
   const title = page === "privacy" ? "Privacy notice" : page === "terms" ? "Evaluation terms" : "About LifeLinks";
   return <main className="public-information-shell">
