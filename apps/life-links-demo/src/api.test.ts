@@ -7,6 +7,8 @@ import {
   createCollectionSection, createLifeLink, disconnectAgent, getCollection, listCollections,
   getActiveRoutineRun, getCalendar, getCalendarClock, getCalendarEvent, listCalendarEvents, listCalendars, listRoutineGroups, listRoutines,
   listCollectionMembers, listLifeLinkCollectionMemberships, login, getRegistration, getRemoteAgentConnections, registerAccount, moveLifeLink, removeCollectionMember,
+  startEmailVerification, resendEmailVerification, verifyEmailVerification,
+  startPhoneVerification, resendPhoneVerification, verifyPhoneVerification, completePhoneSignup, getAccountSignInMethods, completeProviderSignup,
   removeCollectionSection, replaceCollectionSectionAssignments, setLifeLinkQrBinding,
   updateCollection, updateCollectionSection, updateLifeLink, getLifeLinkAttachmentContent, getLifeLinkAttachmentImage,
   listRoutineOccurrences, materializeRoutineOccurrences, putRoutineRunStepResult,
@@ -20,18 +22,88 @@ import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, ATTACHMENT_IMAGE_MAX_BYTES } from "@
 import { attachmentImageFixture, attachmentPdfImageFixture, attachmentSelectedImageFixture, attachmentTranscriptFixture } from "./attachmentImage.testFixtures";
 
 describe("Life Links API error normalization", () => {
-  it("uses the human cookie session boundary for invitation registration without leaking credentials into the URL", async () => {
+  it("uses the human cookie session boundary for verified registration without leaking credentials into the URL", async () => {
     const session = { user: { id: "private-owner" }, agentConnection: { connected: false }, qrBaseUrl: "https://example.test" };
-    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ enabled: true })))
+    const availability = { enabled: true, emailVerificationEnabled: true, phoneVerificationEnabled: false };
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(availability)))
       .mockResolvedValueOnce(new Response(JSON.stringify(session), { status: 201 }));
     vi.stubGlobal("fetch", fetchMock);
-    const input = { displayName: "Private Judge", email: "private@example.test", password: "a test password", invitationCode: "i".repeat(32), timeZone: "America/New_York" };
-    expect(await getRegistration()).toEqual({ enabled: true });
+    const input = { displayName: "Private Owner", attemptToken: "synthetic_verified_attempt", password: "a test password", timeZone: "America/New_York" };
+    expect(await getRegistration()).toEqual(availability);
     expect(await registerAccount(input)).toEqual(session);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/auth/registration");
     expect(fetchMock.mock.calls[1][0]).toBe("/api/auth/register");
     expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: "POST", credentials: "include", body: JSON.stringify(input) });
     expect(new Headers(fetchMock.mock.calls[1][1].headers).has("X-Life-Links-Actor")).toBe(false);
+  });
+
+  it("carries email verification attempts and codes only in cookie-bound POST bodies", async () => {
+    const attempt = { attemptToken: "synthetic_email_attempt", expiresAt: "2026-10-01T13:10:00.000Z", resendAfterSeconds: 60 };
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(attempt)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(attempt)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: "verified" })));
+    vi.stubGlobal("fetch", fetchMock);
+    const input = { email: "synthetic@example.test", invitationCode: "synthetic_optional_invitation", returnTo: "/calendar" };
+    expect(await startEmailVerification(input)).toEqual(attempt);
+    expect(await resendEmailVerification(attempt.attemptToken)).toEqual(attempt);
+    expect(await verifyEmailVerification(attempt.attemptToken, "123456")).toEqual({ status: "verified" });
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([path]) => path)).toEqual(["/api/auth/email/start", "/api/auth/email/resend", "/api/auth/email/verify"]);
+    expect(calls.map(([, init]) => JSON.parse(init.body as string))).toEqual([input, { attemptToken: attempt.attemptToken }, { attemptToken: attempt.attemptToken, code: "123456" }]);
+    expect(calls.every(([, init]) => init.method === "POST" && init.credentials === "include" && new Headers(init.headers).get("Content-Type") === "application/json" && !new Headers(init.headers).has("X-Life-Links-Actor"))).toBe(true);
+    expect(calls.every(([path]) => !path.includes(attempt.attemptToken) && !path.includes(input.email) && !path.includes("123456"))).toBe(true);
+  });
+
+  it.each(["login", "register", "link"] as const)("starts phone verification with the explicit %s intent", async intent => {
+    const attempt = { attemptToken: "synthetic_phone_attempt", expiresAt: "2026-10-01T13:10:00.000Z", resendAfterSeconds: 60 };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(attempt)));
+    vi.stubGlobal("fetch", fetchMock);
+    const input = { phoneNumber: "+12025550123", intent, smsConsent: true, smsConsentVersion: "life-links-sms-verification-v1",
+      returnTo: "/life-links", ...(intent === "register" ? { invitationCode: "synthetic_optional_invitation" } : {}) } as const;
+    expect(await startPhoneVerification(input)).toEqual(attempt);
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe("/api/auth/phone/start");
+    expect(calls[0][1]).toMatchObject({ method: "POST", credentials: "include", body: JSON.stringify(input) });
+    expect(JSON.parse(calls[0][1].body as string)).toMatchObject({ smsConsent: true, smsConsentVersion: "life-links-sms-verification-v1" });
+    expect(new Headers(calls[0][1].headers).has("X-Life-Links-Actor")).toBe(false);
+  });
+
+  it("preserves each phone verification outcome and the exact continuation attempt", async () => {
+    const attempt = { attemptToken: "synthetic_phone_attempt", expiresAt: "2026-10-01T13:10:00.000Z", resendAfterSeconds: 60 };
+    const outcomes = [{ status: "signed_in", returnTo: "/calendar" }, { status: "profile_required", returnTo: "/routines" }, { status: "linked", returnTo: "/life-links" }];
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(attempt)));
+    for (const outcome of outcomes) fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(outcome)));
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ returnTo: "/routines" })));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await resendPhoneVerification(attempt.attemptToken)).toEqual(attempt);
+    for (const outcome of outcomes) expect(await verifyPhoneVerification(attempt.attemptToken, "123456")).toEqual(outcome);
+    const complete = { attemptToken: attempt.attemptToken, displayName: "Phone Owner", timeZone: "America/New_York" };
+    expect(await completePhoneSignup(complete)).toEqual({ returnTo: "/routines" });
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls.map(([path]) => path)).toEqual(["/api/auth/phone/resend", "/api/auth/phone/verify", "/api/auth/phone/verify", "/api/auth/phone/verify", "/api/auth/phone/complete"]);
+    expect(JSON.parse(calls[0][1].body as string)).toEqual({ attemptToken: attempt.attemptToken });
+    expect(calls.slice(1, 4).every(([, init]) => JSON.stringify(JSON.parse(init.body as string)) === JSON.stringify({ attemptToken: attempt.attemptToken, code: "123456" }))).toBe(true);
+    expect(JSON.parse(calls[4][1].body as string)).toEqual(complete);
+    expect(calls.every(([, init]) => init.method === "POST" && init.credentials === "include" && !new Headers(init.headers).has("X-Life-Links-Actor"))).toBe(true);
+    expect(calls.every(([path]) => !path.includes(attempt.attemptToken) && !path.includes("123456"))).toBe(true);
+  });
+
+  it("reads only the masked account phone summary and permits provider signup without an email", async () => {
+    const methods = { providers: [], phone: { enabled: true, linked: true, maskedNumber: "+1******0123" } };
+    const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(methods)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ returnTo: "/life-links" })));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await getAccountSignInMethods()).toEqual(methods);
+    const complete = { signupToken: "synthetic_provider_signup", displayName: "Provider Owner", timeZone: "UTC" };
+    expect(await completeProviderSignup(complete)).toEqual({ returnTo: "/life-links" });
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
+    expect(calls[0][0]).toBe("/api/account-sign-in-methods");
+    expect(calls[0][1].credentials).toBe("include");
+    expect(new Headers(calls[0][1].headers).has("X-Life-Links-Actor")).toBe(false);
+    expect(calls[1][0]).toBe("/api/auth/provider-signup/complete");
+    expect(JSON.parse(calls[1][1].body as string)).toEqual(complete);
+    expect(JSON.parse(calls[1][1].body as string)).not.toHaveProperty("email");
   });
 
   it("reads the signed-in owner's remote MCP authorization summary without an agent actor header", async () => {

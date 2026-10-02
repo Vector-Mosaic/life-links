@@ -30,6 +30,7 @@ import { calendarStoreContract } from "./calendar-store-contract.js";
 import { attachmentTextStoreContract } from "./attachment-text-store-contract.js";
 import { registrationStoreContract } from "./registration-store-contract.js";
 import { providerSignInStoreContract } from "./provider-sign-in-store-contract.js";
+import { contactVerificationStoreContract } from "./contact-verification-store-contract.js";
 
 describe("canonical Life Links store contract", () => {
   let store: InMemoryLifeLinksStore;
@@ -41,6 +42,7 @@ describe("canonical Life Links store contract", () => {
   attachmentTextStoreContract(() => store);
   registrationStoreContract(() => store);
   providerSignInStoreContract(() => store);
+  contactVerificationStoreContract(() => store);
 
   beforeEach(async () => {
     store = new InMemoryLifeLinksStore();

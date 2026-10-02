@@ -4274,6 +4274,12 @@ textarea {
 .provider-sign-in-button { min-height: 52px; padding: 14px 20px; gap: 12px; border-radius: 999px; font-size: 1rem; font-weight: 500; line-height: 1.25; }
 .provider-sign-in-button[data-provider="google"] { color: #1f1f1f; background: #fff; border-color: #747775; font-family: "Google Sans", ui-sans-serif, system-ui, sans-serif; }
 .provider-sign-in-button[data-provider="google"]:hover { background: #f8faf8; border-color: var(--accent); }
+.provider-sign-in-button[data-provider="apple"] { color: #fff; background: #000; border-color: #000; }
+.provider-sign-in-button[data-provider="apple"]:hover { color: #fff; background: #202020; border-color: #202020; }
+.provider-sign-in-button[data-provider="phone"] { color: var(--ink); background: #fff; border-color: #747775; }
+.registration-options, .verification-entry { display: grid; gap: 16px; }
+.verification-code-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.verification-entry input[autocomplete="one-time-code"] { font-variant-numeric: tabular-nums; letter-spacing: .15em; }
 .provider-sign-in-logo { display: block; flex: 0 0 20px; width: 20px; height: 20px; object-fit: contain; }
 .provider-sign-in-divider { display: flex; align-items: center; gap: 16px; margin-top: 20px; color: var(--muted); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .08em; }
 .provider-sign-in-divider::before, .provider-sign-in-divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }

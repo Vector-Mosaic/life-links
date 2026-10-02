@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ApiError, getAccountSignInMethods, startProviderSignIn, type SignInProviderId } from "../api";
 import { providerAuthorizationUrl, providerSignInErrorMessage, validateProviderReturnTo } from "../providerSignInLink";
 import { Dialog } from "./FieldLedgerPrimitives";
+import { PhoneSignIn } from "../PhoneSignIn";
 
 export function SignInMethodsDialog({ onClose, onNavigate = url => window.location.assign(url) }: {
   onClose(): void; onNavigate?(url: string): void;
@@ -11,6 +12,8 @@ export function SignInMethodsDialog({ onClose, onNavigate = url => window.locati
   const [checkRevision, setCheckRevision] = useState(0);
   const [error, setError] = useState("");
   const [starting, setStarting] = useState<SignInProviderId | null>(null);
+  const [phone, setPhone] = useState({ enabled: false, linked: false, maskedNumber: null as string | null });
+  const [phoneBusy, setPhoneBusy] = useState(false);
   const mounted = useRef(false);
   const pending = useRef(false);
   useEffect(() => {
@@ -22,14 +25,14 @@ export function SignInMethodsDialog({ onClose, onNavigate = url => window.locati
     const abort = new AbortController();
     setLoading(true); setError("");
     void getAccountSignInMethods(abort.signal).then(result => {
-      if (active) setProviders(result.providers);
+      if (active) { setProviders(result.providers); setPhone(result.phone); }
     }).catch(() => { if (active) setError("We couldn't load your sign-in methods. Your current sign-in method still works."); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; abort.abort(); };
   }, [checkRevision]);
 
   async function link(provider: { id: SignInProviderId; linked: boolean }) {
-    if (pending.current || loading || provider.linked) return;
+    if (pending.current || phoneBusy || loading || provider.linked) return;
     pending.current = true; setStarting(provider.id); setError("");
     try {
       const result = await startProviderSignIn(provider.id, { intent: "link", returnTo: validateProviderReturnTo(window.location.pathname) });
@@ -50,11 +53,14 @@ export function SignInMethodsDialog({ onClose, onNavigate = url => window.locati
       {loading ? <p role="status">Loading sign-in methods…</p> : providers.length ?
         <ul className="ll-sign-in-method-list">{providers.map(provider => <li key={provider.id}>
           <strong>{provider.label}</strong>
-          {provider.linked ? <span className="ll-muted">Linked</span> : <button type="button" className="ll-button" disabled={starting !== null}
+          {provider.linked ? <span className="ll-muted">Linked</span> : <button type="button" className="ll-button" disabled={starting !== null || phoneBusy}
             onClick={() => void link(provider)}>{starting === provider.id ? `Opening ${provider.label}…` : `Link ${provider.label}`}</button>}
-        </li>)}</ul> : !error && <p>No additional sign-in methods are available yet.</p>}
+        </li>)}</ul> : !error && !phone.enabled && !phone.linked && <p>No additional sign-in methods are available yet.</p>}
+      {!loading && phone.linked && <p className="provider-sign-in-profile"><strong>Phone number</strong><span>Linked{phone.maskedNumber ? ` · ${phone.maskedNumber}` : ""}</span></p>}
+      {!loading && !phone.linked && phone.enabled && <PhoneSignIn intent="link" returnTo={window.location.pathname} enabled={phone.enabled}
+        disabled={starting !== null} onBusyChange={setPhoneBusy} onLinked={() => setCheckRevision(value => value + 1)} />}
       {error && <p className="ll-inline-warning" role="alert">{error}</p>}
-      {!loading && <button type="button" className="ll-text-button" disabled={starting !== null} onClick={() => setCheckRevision(value => value + 1)}>Refresh sign-in methods</button>}
+      {!loading && <button type="button" className="ll-text-button" disabled={starting !== null || phoneBusy} onClick={() => setCheckRevision(value => value + 1)}>Refresh sign-in methods</button>}
     </div>
   </Dialog>;
 }

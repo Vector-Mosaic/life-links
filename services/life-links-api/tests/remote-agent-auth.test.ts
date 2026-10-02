@@ -6,6 +6,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import { DEMO_GUEST_ID, DEMO_PASSWORD } from "@life-links/core";
+import type { EmailVerificationRequest, EmailVerificationSender } from "@vmosaic/provider-sign-in/email";
 import { RemoteAgentAuth } from "../src/remote-agent-auth.js";
 import { RemoteAgentState } from "../src/remote-agent-state.js";
 import { InMemoryLifeLinksStore } from "../src/store.js";
@@ -37,16 +38,27 @@ const csrf = (body: string) => {
   return value;
 };
 
-async function fixture(env: NodeJS.ProcessEnv = {}, integrated = false) {
+async function fixture(env: NodeJS.ProcessEnv = {}, integrated = false, emailVerificationEnabled = false) {
   const config = readConfig({ NODE_ENV: "test", LIFE_LINKS_STORE: "memory", SESSION_SECRET: "synthetic-remote-auth-session-secret",
     QR_BASE_URL: BASE, COOKIE_SECURE: "false", TRUST_PROXY: "false", RATE_LIMIT_ENABLED: "false", ...env });
+  // Synthetic delivery injection exercises the real proof-bound admission flow;
+  // runtime transport prerequisites are covered by the configuration suite.
+  if (emailVerificationEnabled) config.contactVerification = { email: {
+    sender: { gatewayBaseUrl: "https://communications.example.test", bearerToken: "synthetic-private-application-mail-token",
+      senderMailbox: "agents@example.test", appDisplayName: "LifeLinks" },
+    maxSendsPerDay: 100, maxSendsPerMonth: 3000,
+  } };
+  const deliveries: EmailVerificationRequest[] = [];
+  const send = vi.fn<EmailVerificationSender["send"]>(async input => {
+    deliveries.push({ ...input }); return { provider: "agent_communications", accepted: true, messageId: "synthetic-message-id", operationId: input.operationId };
+  });
   const store = new InMemoryLifeLinksStore(); await store.seedDemo(DEMO_PASSWORD, BASE);
   const owner = (await store.getUserById("demo-owner"))!;
   const logs: LogEvent[] = [];
   const state = new RemoteAgentState(config.sessionSecret);
   const logger = createLogger("remote_auth_test", { sink: (event) => logs.push(event) });
   const auth = await RemoteAgentAuth.create(state, store, config, logger);
-  const app = integrated ? createLifeLinksApp({ store, config, logger, remoteAgent: { auth, state } }) : express();
+  const app = integrated ? createLifeLinksApp({ store, config, logger, remoteAgent: { auth, state }, emailVerificationSender: { send } }) : express();
   if (!integrated) app.use(auth.router);
   const browser = request.agent(app);
   const register = async (metadata: Record<string, unknown> = {}) => request(app).post("/oauth/reg").send({ redirect_uris: [CALLBACK],
@@ -106,7 +118,24 @@ async function fixture(env: NodeJS.ProcessEnv = {}, integrated = false) {
   const exchange = (clientId: string, code: string, verifier: string, callback = CALLBACK) => request(app).post("/oauth/token").type("form").send({
     grant_type: "authorization_code", client_id: clientId, code, code_verifier: verifier, redirect_uri: callback, resource: auth.resource });
   const authenticate = (token: string) => auth.authenticate({ get: (name: string) => name.toLowerCase() === "authorization" ? `Bearer ${token}` : undefined } as Request);
-  return { app, auth, state, store, owner, browser, logs, logger, register, begin, submit, followInternal, loginConsent, exchange, authenticate, config };
+  const registerVerifiedOwner = async (input: { displayName: string; email: string; invitationCode?: string; returnTo?: string }, client = browser) => {
+    const started = await client.post("/api/auth/email/start").set("Origin", BASE).send({ email: input.email,
+      ...(input.invitationCode ? { invitationCode: input.invitationCode } : {}), ...(input.returnTo ? { returnTo: input.returnTo } : {}) });
+    expect(started.status).toBe(202);
+    expect(await store.getUserByEmail(input.email)).toBeNull();
+    const delivery = deliveries.at(-1)!;
+    expect(delivery.email).toBe(input.email);
+    const verified = await client.post("/api/auth/email/verify").set("Origin", BASE)
+      .send({ attemptToken: started.body.attemptToken, code: delivery.code });
+    expect(verified.status).toBe(200); expect(verified.body).toEqual({ status: "verified" });
+    expect(await store.getUserByEmail(input.email)).toBeNull();
+    const account = await client.post("/api/auth/register").set("Origin", BASE).send({ attemptToken: started.body.attemptToken,
+      displayName: input.displayName, password: "synthetic-private-password", timeZone: "UTC" });
+    expect(account.status).toBe(201); expect(account.body.user.email).toBe(input.email);
+    expect((await store.getUserById(account.body.user.id))?.emailVerifiedAt).toEqual(expect.any(String));
+    return account;
+  };
+  return { app, auth, state, store, owner, browser, logs, logger, register, begin, submit, followInternal, loginConsent, exchange, authenticate, config, registerVerifiedOwner };
 }
 
 describe("Life Links remote OAuth authorization", () => {
@@ -168,16 +197,14 @@ describe("Life Links remote OAuth authorization", () => {
   });
 
   it.each([false, true])("requires explicit login and consent for a newly signed-in private browser owner (existing client %s)", async sameClient => {
-    const test = await fixture(JUDGE_REGISTRATION_ENV, true);
+    const test = await fixture({}, true, true);
     try {
       const initialClient = await test.register();
       const demoFlow = await test.loginConsent(initialClient.body.client_id);
       const demoTokens = await test.exchange(initialClient.body.client_id, demoFlow.code, demoFlow.verifier);
       expect(demoTokens.status).toBe(200);
       expect((await test.authenticate(demoTokens.body.access_token)).ownerId).toBe(test.owner.id);
-      const privateAccount = await test.browser.post("/api/auth/register").set("Origin", BASE).send({
-        displayName: "Private judge", email: "private-judge@example.test", password: "synthetic-private-password", invitationCode: JUDGE_INVITATION });
-      expect(privateAccount.status).toBe(201);
+      const privateAccount = await test.registerVerifiedOwner({ displayName: "Private owner", email: "private-judge@example.test" });
       const clientId = sameClient ? initialClient.body.client_id : (await test.register({ client_name: "Second synthetic agent" })).body.client_id;
       const next = await test.begin(clientId);
       expect(next.response.status).toBe(200);
@@ -202,8 +229,8 @@ describe("Life Links remote OAuth authorization", () => {
     } finally { await test.app.locals.closeRemoteAgent(); }
   });
 
-  it("offers available private signup from OAuth login and resumes the exact interaction with the created owner", async () => {
-    const test = await fixture(JUDGE_REGISTRATION_ENV, true);
+  it("offers public verified signup from OAuth login and resumes the exact interaction with the created owner", async () => {
+    const test = await fixture({}, true, true);
     try {
       const registration = await test.register();
       const started = await test.begin(registration.body.client_id);
@@ -213,9 +240,9 @@ describe("Life Links remote OAuth authorization", () => {
       const returnTo = new URL(signupHref!, BASE).searchParams.get("returnTo")!;
       expect(returnTo).toMatch(/^\/agent-authorize\/[A-Za-z0-9_-]+$/);
       expect(started.response.text).toContain(`action="${returnTo}"`);
-      const account = await test.browser.post("/api/auth/register").set("Origin", BASE).send({
-        displayName: "Invited judge", email: "invited-judge@example.test", password: "synthetic-private-password", invitationCode: JUDGE_INVITATION });
-      expect(account.status).toBe(201);
+      expect(started.response.text).not.toContain("judge invitation");
+      const account = await test.registerVerifiedOwner({ displayName: "Verified owner", email: "invited-judge@example.test", returnTo });
+      expect(await test.state.listOwned("Grant", account.body.user.id)).toHaveLength(0);
       const resumed = await test.browser.get(returnTo).set("Host", new URL(BASE).host);
       expect(resumed.status).toBe(200); expect(resumed.text).toContain("Continue as invited-judge@example.test");
       const consent = await test.submit(resumed, {});
@@ -229,20 +256,30 @@ describe("Life Links remote OAuth authorization", () => {
 
   it.each([
     { LIFE_LINKS_REGISTRATION_ENABLED: "false" }, { LIFE_LINKS_REGISTRATION_EXPIRES_AT: "2020-01-01T00:00:00.000Z" }
-  ])("omits the OAuth signup entry when admission is unavailable %j", async env => {
-    const test = await fixture({ ...JUDGE_REGISTRATION_ENV, ...env }, true);
+  ])("offers public OAuth signup when optional invitations are unavailable %j", async env => {
+    const test = await fixture({ ...JUDGE_REGISTRATION_ENV, ...env }, true, true);
     try {
       const registered = await test.register();
       const { response } = await test.begin(registered.body.client_id);
-      expect(response.status).toBe(200); expect(response.text).not.toContain("/register?returnTo=");
+      expect(response.status).toBe(200); expect(response.text).toContain("/register?returnTo=");
     } finally { await test.app.locals.closeRemoteAgent(); }
   });
 
-  it("omits the OAuth signup entry after the invitation capacity is spent", async () => {
-    const test = await fixture({ ...JUDGE_REGISTRATION_ENV, LIFE_LINKS_REGISTRATION_MAX_ACCOUNTS: "1" }, true);
+  it("offers public OAuth signup after optional invitation capacity is spent", async () => {
+    const test = await fixture({ ...JUDGE_REGISTRATION_ENV, LIFE_LINKS_REGISTRATION_MAX_ACCOUNTS: "1" }, true, true);
     try {
-      expect((await request(test.app).post("/api/auth/register").set("Origin", BASE).send({
-        displayName: "Last invited judge", email: "last-judge@example.test", password: "synthetic-private-password", invitationCode: JUDGE_INVITATION })).status).toBe(201);
+      await test.registerVerifiedOwner({ displayName: "Invited owner", email: "last-judge@example.test", invitationCode: JUDGE_INVITATION }, request.agent(test.app));
+      expect(await test.store.registrationAvailable(test.config.registration!)).toBe(false);
+      const registered = await test.register();
+      const { response } = await test.begin(registered.body.client_id);
+      expect(response.status).toBe(200); expect(response.text).toContain('name="password"');
+      expect(response.text).toContain("/register?returnTo=");
+    } finally { await test.app.locals.closeRemoteAgent(); }
+  });
+
+  it("omits the OAuth signup entry without any configured verification method", async () => {
+    const test = await fixture(JUDGE_REGISTRATION_ENV, true);
+    try {
       const registered = await test.register();
       const { response } = await test.begin(registered.body.client_id);
       expect(response.status).toBe(200); expect(response.text).toContain('name="password"');

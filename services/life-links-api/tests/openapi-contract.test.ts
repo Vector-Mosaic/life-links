@@ -16,6 +16,7 @@ const contractPath = path.resolve(testDirectory, "../../../contracts/http/openap
 const passwordPath = path.resolve(testDirectory, "../src/password.ts");
 const serverPath = path.resolve(testDirectory, "../src/server.ts");
 const providerSignInRouterPath = path.resolve(testDirectory, "../src/provider-sign-in.ts");
+const contactVerificationRouterPath = path.resolve(testDirectory, "../src/contact-verification.ts");
 const calendarConnectionRouterPath = path.resolve(testDirectory, "../src/calendar-connections.ts");
 const calendarNotificationRouterPath = path.resolve(testDirectory, "../src/calendar-provider-subscriptions.ts");
 const remoteAuthRouterPath = path.resolve(testDirectory, "../src/remote-agent-auth.ts");
@@ -30,6 +31,13 @@ const EXPECTED_WEB_CLIENT_OPERATIONS = [
   "DELETE /api/account-invitations/{invitationId}",
   "GET /api/auth/registration",
   "POST /api/auth/register",
+  "POST /api/auth/email/start",
+  "POST /api/auth/email/resend",
+  "POST /api/auth/email/verify",
+  "POST /api/auth/phone/start",
+  "POST /api/auth/phone/resend",
+  "POST /api/auth/phone/verify",
+  "POST /api/auth/phone/complete",
   "GET /api/auth/providers",
   "GET /api/account-sign-in-methods",
   "POST /api/auth/providers/{provider}/start",
@@ -386,10 +394,23 @@ function implementedApplicationOperations(serverSource: string): string[] {
     .map((match) => `${match[1].toUpperCase()} ${expressRouteToOpenApi(match[2])}`);
   expect([...providerSource.matchAll(/(?:routes|callbacks)\.(get|post|patch|put|delete|head|options)\(/g)])
     .toHaveLength(providerRegistrations.length);
+  expect(serverSource).toContain('import { createContactVerificationRouter } from "./contact-verification.js"');
+  expect(serverSource).toContain("const contactVerification = createContactVerificationRouter(");
+  expect(serverSource).toContain("app.use(contactVerification)");
+  expect(serverSource.indexOf("app.use(contactVerification)"))
+    .toBeGreaterThan(serverSource.indexOf("app.use(originGuard(config, logger))"));
+  const verificationSource = readSource(contactVerificationRouterPath);
+  const verificationRegistrations = [...verificationSource.matchAll(/routes\.(get|post|patch|put|delete)\(\s*"([^"]+)"/g)]
+    .map((match) => `${match[1].toUpperCase()} ${expressRouteToOpenApi(match[2])}`);
+  expect([...verificationSource.matchAll(/routes\.(get|post|patch|put|delete|head|options)\(/g)])
+    .toHaveLength(verificationRegistrations.length);
+  expect(verificationRegistrations).toHaveLength(8);
+  expect(literalRegistrations).not.toContain("POST /api/auth/register");
   return [
     ...literalRegistrations,
     ...connectionRegistrations,
     ...providerRegistrations,
+    ...verificationRegistrations,
     ...remoteApplicationOperations(serverSource),
     "GET /qr/{qrId}"
   ].sort();
@@ -582,7 +603,7 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(137);
+    expect(published).toHaveLength(144);
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
@@ -849,7 +870,7 @@ describe("Life Links OpenAPI v1", () => {
     }
   });
 
-  it("keeps provider sign-in browser-bound and exact identity linking separate from invitation admission", () => {
+  it("keeps public provider signup browser-bound and exact identity linking separate from profile email", () => {
     const document = parseStrictJson(readSource(contractPath));
     const operations = contractOperations(document);
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
@@ -864,10 +885,12 @@ describe("Life Links OpenAPI v1", () => {
     const startSchema = objectValue(schemas.ProviderSignInStartRequest, "start request");
     expect(startSchema.additionalProperties).toBe(false);
     expect(startSchema.required).toEqual(["intent"]);
-    expect(startSchema.allOf).toContainEqual({
-      if: { properties: { intent: { const: "register" } } },
-      then: { required: ["invitationCode"] }
-    });
+    expect(startSchema).not.toHaveProperty("allOf");
+    expect(String(startSchema.description)).toContain("optional");
+    const signupRequest = objectValue(schemas.ProviderSignupCompleteRequest, "provider signup request");
+    expect(signupRequest.required).toEqual(["signupToken", "displayName"]);
+    expect(objectValue(signupRequest.properties, "provider signup fields")).not.toHaveProperty("email");
+    expect(signupRequest.additionalProperties).toBe(false);
     for (const operationId of ["getSignInProviders", "startProviderSignIn", "getProviderSignupDetails", "completeProviderSignup"]) {
       expect(operationById(operations, operationId).security, operationId).toEqual([]);
     }
@@ -882,6 +905,7 @@ describe("Life Links OpenAPI v1", () => {
     expect(String(details.description)).toContain("without consuming it");
     const signup = operationById(operations, "completeProviderSignup");
     expect(String(signup.description)).toContain("Never merges");
+    expect(String(signup.description)).toContain("emailVerified");
     expect(objectValue(signup.responses, "signup responses")).toHaveProperty("201");
     for (const method of ["GET", "POST"]) {
       const callback = operations.get(`${method} /api/auth/providers/{provider}/callback`)!;
@@ -899,6 +923,84 @@ describe("Life Links OpenAPI v1", () => {
     expect(objectValue(schemas.ProviderCallbackForm, "callback form")).toMatchObject({
       maxProperties: 12, required: ["state"], additionalProperties: { type: "string", maxLength: 32768 }
     });
+  });
+
+  it("requires contact proof and SMS consent before public private-account transitions", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    const availability = objectValue(schemas.RegistrationAvailabilityResponse, "registration availability");
+    expect(availability.required).toEqual(["enabled", "emailVerificationEnabled", "phoneVerificationEnabled"]);
+    expect(objectValue(availability.properties, "availability flags").enabled).toEqual({ const: true });
+    const registration = objectValue(schemas.RegistrationRequest, "verified native registration");
+    expect(registration.required).toEqual(["attemptToken", "displayName", "password"]);
+    expect(registration.additionalProperties).toBe(false);
+    const registrationFields = objectValue(registration.properties, "registration fields");
+    expect(registrationFields).not.toHaveProperty("email");
+    expect(registrationFields).not.toHaveProperty("invitationCode");
+    const phoneStart = objectValue(schemas.PhoneVerificationStartRequest, "phone start");
+    expect(phoneStart.required).toEqual(["phoneNumber", "intent", "smsConsent", "smsConsentVersion"]);
+    expect(phoneStart.additionalProperties).toBe(false);
+    const phoneStartFields = objectValue(phoneStart.properties, "phone start fields");
+    expect(phoneStartFields.smsConsent).toEqual(expect.objectContaining({ const: true }));
+    expect(phoneStartFields.smsConsentVersion).toEqual({ const: "life-links-sms-verification-v1" });
+    const code = objectValue(objectValue(schemas.ContactVerificationCodeRequest, "code request").properties, "code fields");
+    expect(code.code).toMatchObject({ pattern: "^[0-9]{6}$", minLength: 6, maxLength: 6, writeOnly: true });
+    expect(objectValue(schemas.ContactVerificationAttemptToken, "attempt token"))
+      .toMatchObject({ pattern: "^[A-Za-z0-9_-]{43}$", minLength: 43, maxLength: 43 });
+    const phoneComplete = objectValue(schemas.PhoneSignupCompleteRequest, "phone completion");
+    expect(phoneComplete.required).toEqual(["attemptToken", "displayName"]);
+    expect(phoneComplete.additionalProperties).toBe(false);
+    const user = objectValue(schemas.User, "user");
+    expect(user.required).toContain("email");
+    expect(objectValue(user.properties, "user fields").email).toMatchObject({ type: ["string", "null"] });
+    const methods = objectValue(schemas.AccountSignInMethodsResponse, "account methods");
+    expect(methods.required).toEqual(["providers", "phone"]);
+    const phoneMethod = objectValue(objectValue(methods.properties, "method fields").phone, "phone method");
+    expect(phoneMethod.required).toEqual(["enabled", "linked", "maskedNumber"]);
+    expect(Object.keys(objectValue(phoneMethod.properties, "phone metadata"))).toEqual(["enabled", "linked", "maskedNumber"]);
+    expect(objectValue(objectValue(phoneMethod.properties, "phone metadata").maskedNumber, "masked phone"))
+      .toMatchObject({ type: ["string", "null"], maxLength: 32 });
+    for (const [route, status, responseSchema] of [
+      ["/api/auth/email/start", "202", "ContactVerificationAttemptResponse"],
+      ["/api/auth/email/resend", "202", "ContactVerificationAttemptResponse"],
+      ["/api/auth/email/verify", "200", "EmailVerificationResponse"],
+      ["/api/auth/phone/start", "202", "ContactVerificationAttemptResponse"],
+      ["/api/auth/phone/resend", "202", "ContactVerificationAttemptResponse"],
+      ["/api/auth/phone/verify", "200", "PhoneVerificationResponse"],
+      ["/api/auth/phone/complete", "201", "ProviderCompletionResponse"]
+    ]) {
+      const operation = operations.get(`POST ${route}`)!;
+      expect(operation.security, route).toEqual([]);
+      const content = objectValue(responseFor(document, operation, status).content, `${route} response content`);
+      expect(objectValue(content["application/json"], `${route} JSON response`).schema)
+        .toEqual({ $ref: `#/components/schemas/${responseSchema}` });
+      if (!route.endsWith("/start")) {
+        expect(operation.parameters).toContainEqual({ $ref: "#/components/parameters/ContactVerificationBrowser" });
+      }
+      const limited = responseFor(document, operation, "429");
+      expect(String(limited.description)).toContain("without retryAfterSeconds or Retry-After");
+      expect(objectValue(objectValue(limited.content, "limited content")["application/json"], "limited JSON").schema)
+        .toEqual({ oneOf: [{ $ref: "#/components/schemas/ContactVerificationErrorResponse" }, { $ref: "#/components/schemas/RateLimitResponse" }] });
+    }
+    expect(operations.get("POST /api/auth/register")?.parameters)
+      .toContainEqual({ $ref: "#/components/parameters/ContactVerificationBrowser" });
+    expect(String(operationById(operations, "startLifeLinksEmailVerification").description)).toContain("unknown email-send outcome");
+    const emailResendOperation = operationById(operations, "resendLifeLinksEmailVerification");
+    expect(String(emailResendOperation.description)).toContain("original keyed Agent Communications sender context");
+    expect(String(emailResendOperation.description)).toContain("pending/unknown does not dispatch again");
+    expect(String(emailResendOperation.description)).toContain("durable never-attempted admitted stage");
+    expect(String(emailResendOperation.description)).toContain("original arrived code remains locally verifiable");
+    const phoneStartOperation = operationById(operations, "startLifeLinksPhoneVerification");
+    expect(String(phoneStartOperation.description)).toContain("explicitly allowed parsed US/Canada regions");
+    expect(String(responseFor(document, phoneStartOperation, "202").description)).toContain("unknown first SMS-send outcome");
+    const phoneResendOperation = operationById(operations, "resendLifeLinksPhoneVerification");
+    expect(String(phoneResendOperation.description)).toContain("without resetting the original expiry or check count");
+    expect(String(responseFor(document, phoneResendOperation, "503").description)).toContain("no network call, code replacement or new operation");
+    expect(String(operationById(operations, "verifyLifeLinksPhone").description)).toContain("checked locally");
+    expect(String(objectValue(phoneStartFields.phoneNumber, "phone destination").description)).toContain("a +1 prefix alone is insufficient");
+    expect(objectValue(objectValue(schemas.PhoneVerificationResponse, "phone result").properties, "phone result fields").status)
+      .toEqual({ type: "string", enum: ["signed_in", "linked", "profile_required"] });
   });
 
   it("separates delegated MCP transport, OAuth discovery and owner connection management", () => {

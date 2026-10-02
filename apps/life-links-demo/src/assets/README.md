@@ -5,6 +5,10 @@ guide](https://developers.google.com/identity/branding-guidelines), downloaded
 from `https://developers.google.com/static/identity/images/g-logo.png`.
 Keep the mark's colors and proportions, with a light button background.
 
+`apple.svg` uses the Apple mark from [Bootstrap Icons](https://github.com/twbs/icons/blob/main/icons/apple.svg),
+with a white fill for the black Apple sign-in button. Its proportions are retained.
+The source license is distributed as `public/BootstrapIcons-LICENSE.txt`.
+
 `google-sans-500.woff2` is the Google Fonts Latin subset of Google Sans Medium,
 used only for the Google sign-in label. It is bundled locally rather than adding
 an external font request to sign-in. The SIL Open Font License is distributed as

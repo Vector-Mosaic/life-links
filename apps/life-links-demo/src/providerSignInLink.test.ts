@@ -119,7 +119,7 @@ describe("provider API transport", () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ providers: [], authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth", returnTo: "/life-links" })));
     vi.stubGlobal("fetch", fetchMock);
     const start = { intent: "register" as const, returnTo: "/calendar", invitationCode: "i".repeat(43), timeZone: "America/New_York" };
-    const complete = { signupToken: "s".repeat(43), email: "owner@example.test", displayName: "Private Owner", timeZone: "America/New_York" };
+    const complete = { signupToken: "s".repeat(43), displayName: "Private Owner", timeZone: "America/New_York" };
     await getSignInProviders(); await startProviderSignIn("google", start);
     await getProviderSignupDetails(complete.signupToken); await completeProviderSignup(complete); await getAccountSignInMethods();
     await completeProviderLink("l".repeat(43));

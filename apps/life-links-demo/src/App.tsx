@@ -43,6 +43,7 @@ import { LifeLinksWorkspaceProvider, useLifeLinksWorkspace } from "./workspace/L
 import { classifyLifeLinksRoute, isRegistrationPath, publicInformationPageFromPath } from "./workspace/routes";
 import { completeProviderLink, getRemoteAgentConnections } from "./api";
 import { ProviderSignIn } from "./ProviderSignIn";
+import { PhoneSignIn } from "./PhoneSignIn";
 import { clearPendingProviderLink, clearProviderSignInError, providerSignInErrorMessage, readPendingProviderLink, readProviderSignInError, validateProviderReturnTo } from "./providerSignInLink";
 
 type Html5QrcodeScanner = InstanceType<typeof import("html5-qrcode").Html5Qrcode>;
@@ -460,12 +461,16 @@ function LoginForm({
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [phoneBusy, setPhoneBusy] = useState(false);
+  const [providerBusy, setProviderBusy] = useState(false);
+  const signingIn = busy || phoneBusy || providerBusy;
 
   return (
     <form
       className={compact ? "login-panel compact" : "login-panel"}
       onSubmit={(event) => {
         event.preventDefault();
+        if (signingIn) return;
         onLogin(email, password);
       }}
     >
@@ -474,10 +479,11 @@ function LoginForm({
         <h3>Sign in to Life Links</h3>
       </div>
       {error && <div className="error-banner">{error}</div>}
-      <ProviderSignIn intent="login" returnTo={window.location.pathname} disabled={busy} />
+      <ProviderSignIn intent="login" returnTo={window.location.pathname} disabled={busy || phoneBusy} onBusyChange={setProviderBusy} />
+      <PhoneSignIn intent="login" returnTo={window.location.pathname} disabled={busy || providerBusy} onBusyChange={setPhoneBusy} />
       <label>
         <span>Email</span>
-        <input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" maxLength={254} />
+        <input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" maxLength={254} disabled={signingIn} />
       </label>
       <label>
         <span>Password</span>
@@ -487,9 +493,10 @@ function LoginForm({
           onChange={(event) => setPassword(event.target.value)}
           autoComplete="current-password"
           maxLength={1024}
+          disabled={signingIn}
         />
       </label>
-      <button className="primary-button" type="submit" disabled={busy} data-tooltip="Sign in with your Life Links email and password.">
+      <button className="primary-button" type="submit" disabled={signingIn} data-tooltip="Sign in with your Life Links email and password.">
         <LogIn size={18} />
         <span>{busy ? "Signing in" : "Sign in"}</span>
         <Tooltip text="Sign in with your Life Links email and password." />

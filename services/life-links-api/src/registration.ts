@@ -47,12 +47,15 @@ export type RegisterOwnerInput = {
   email: string;
   passwordHash: string;
   timeZone: string;
-  invitation: RegistrationInvitation;
+  invitation?: RegistrationInvitation;
 };
-export type RegisterProviderOwnerInput = Omit<RegisterOwnerInput, "passwordHash"> & {
+export type RegisterProviderOwnerInput = Omit<RegisterOwnerInput, "passwordHash" | "email"> & {
+  email: string | null;
   identity: VerifiedProviderIdentity;
 };
-type PrepareRegisteredOwnerInput = Omit<RegisterOwnerInput, "passwordHash"> & { passwordHash: string | null };
+export type PrepareRegisteredOwnerInput = Omit<RegisterOwnerInput, "passwordHash" | "email"> & {
+  passwordHash: string | null; email: string | null;
+};
 export class RegistrationAdmissionError extends Error {
   constructor(readonly code: "registration_unavailable" | "registration_failed") {
     super(code);
@@ -106,11 +109,15 @@ export function prepareRegisteredProviderOwner(input: RegisterProviderOwnerInput
   return prepareOwner({ ...input, passwordHash: null });
 }
 
+export function prepareRegisteredVerifiedOwner(input: PrepareRegisteredOwnerInput) {
+  return prepareOwner(input);
+}
+
 function prepareOwner(input: PrepareRegisteredOwnerInput) {
-  assertRegistrationInvitation(input.invitation);
+  if (input.invitation) assertRegistrationInvitation(input.invitation);
   const now = new Date().toISOString();
-  const user: StoredUser = { id: randomUUID(), displayName: input.displayName, email: input.email.toLowerCase(),
-    passwordHash: input.passwordHash, createdAt: now, agentConnectedAt: null, agentToolCatalogId: null };
+  const user: StoredUser = { id: randomUUID(), displayName: input.displayName, email: input.email?.trim().toLowerCase() ?? null,
+    passwordHash: input.passwordHash, emailVerifiedAt: null, createdAt: now, agentConnectedAt: null, agentToolCatalogId: null };
   const calendar = createCanonicalCalendar({ id: `calendar-${randomUUID()}`, ownerId: user.id,
     title: "My Calendar", color: "#7FC9B3", timeZone: input.timeZone, isDefault: true,
     agentAccess: "none", createdAt: now });

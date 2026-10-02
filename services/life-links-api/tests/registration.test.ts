@@ -1,235 +1,237 @@
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readConfig } from "../src/config.js";
-import { createLogger, type LogEvent } from "../src/logger.js";
-import { createLifeLinksApp } from "../src/server.js";
-import { InMemoryLifeLinksStore } from "../src/store.js";
-import { verifyPassword } from "../src/password.js";
+import { EmailVerificationDeliveryError } from "@vmosaic/provider-sign-in/email";
 import { invitationFingerprint } from "../src/registration.js";
-
-const origin = "https://registration.example.test";
-const invitationCode = "synthetic_test_invitation_not_a_secret_123456";
-const password = "synthetic-private-password";
-const registrationEnv = {
-  NODE_ENV: "test", AUTO_SEED: "false", LIFE_LINKS_STORE: "memory", SESSION_SECRET: "synthetic-session-secret",
-  QR_BASE_URL: origin, COOKIE_SECURE: "false", RATE_LIMIT_ENABLED: "false", ORIGIN_CHECK_ENABLED: "false",
-  ORIGIN_CHECK_ALLOW_MISSING: "true", LIFE_LINKS_REGISTRATION_ENABLED: "true",
-  LIFE_LINKS_REGISTRATION_INVITATION_CODE: invitationCode, LIFE_LINKS_REGISTRATION_MAX_ACCOUNTS: "10",
-  LIFE_LINKS_REGISTRATION_EXPIRES_AT: "2099-09-04T04:00:00.000Z", LIFE_LINKS_MEMBER_INVITATIONS_ENABLED: "false"
-};
-const validInput = { displayName: "Private Judge", email: "judge@example.test", password, invitationCode, timeZone: "America/New_York" };
-function setup(env: NodeJS.ProcessEnv = {}) {
-  const store = new InMemoryLifeLinksStore();
-  const events: LogEvent[] = [];
-  const config = readConfig({ ...registrationEnv, ...env });
-  const app = createLifeLinksApp({ store, config,
-    logger: createLogger("registration_test", { sink: event => events.push(event) }) });
-  const agent = request.agent(app);
-  return { store, events, config, app, agent, register: (input: unknown = validInput) => agent.post("/api/auth/register").set("Origin", origin).send(input) };
-}
+import { verifyPassword } from "../src/password.js";
+import { origin, password, verificationFixture } from "./contact-verification-fixture.js";
 
 afterEach(() => vi.restoreAllMocks());
 
-describe("member-issued invitation HTTP", () => {
-  it("requires sign-in, lets every new member invite, and keeps link secrets and recipients out of listings and logs", async () => {
-    const ctx = setup({ LIFE_LINKS_MEMBER_INVITATIONS_ENABLED: "true" });
-    expect((await request(ctx.app).post("/api/account-invitations").set("Origin", origin).send({})).status).toBe(401);
-    expect((await ctx.register()).status).toBe(201);
-    expect((await ctx.agent.post("/api/account-invitations").send({})).status).toBe(403);
-    expect((await ctx.agent.post("/api/account-invitations").set("Origin", origin).send({ ownerId: "other" })).status).toBe(400);
-    const created = await ctx.agent.post("/api/account-invitations").set("Origin", origin).send({});
-    expect(created.status).toBe(201);
-    expect(created.headers["cache-control"]).toBe("private, no-store");
-    const code = created.body.invitationCode;
-    expect(code).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(created.body.invitation).not.toHaveProperty("ownerId");
-    const saved = await ctx.store.getMemberInvitation(invitationFingerprint(code));
-    expect(saved?.fingerprint).toBe(invitationFingerprint(code));
-    const other = request.agent(ctx.app);
-    const joined = await other.post("/api/auth/register").set("Origin", origin).send({ ...validInput, email: "new-member@example.test", invitationCode: code });
-    expect(joined.status).toBe(201);
-    expect(joined.body.agentConnection.connected).toBe(false);
-    expect((await other.get("/api/life-links")).body.lifeLinks).toEqual([]);
-    expect((await other.get("/api/account-invitations")).body.invitations).toEqual([]);
-    expect((await other.delete(`/api/account-invitations/${created.body.invitation.id}`).set("Origin", origin)).status).toBe(404);
-    expect((await other.post("/api/account-invitations").set("Origin", origin).send({})).status).toBe(201);
-    expect((await request(ctx.app).post("/api/auth/register").set("Origin", origin)
-      .send({ ...validInput, email: "another@example.test", invitationCode: code })).status).toBe(403);
-    const listing = await ctx.agent.get("/api/account-invitations");
-    expect(listing.body.invitations[0].redeemedAt).not.toBeNull();
-    expect(JSON.stringify(listing.body)).not.toContain(code);
-    expect(JSON.stringify(listing.body)).not.toContain("new-member@example.test");
-    expect(JSON.stringify(ctx.events)).not.toContain(code);
+describe("public verified email registration", () => {
+  it("advertises actual channels independently of invitations and sends nothing during discovery", async () => {
+    const ctx = verificationFixture({ phone: false }); ctx.config.memberInvitationsEnabled = false;
+    const response = await ctx.agent.get("/api/auth/registration");
+    expect(response.body).toEqual({ enabled: true, emailVerificationEnabled: true, phoneVerificationEnabled: false });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(ctx.send).not.toHaveBeenCalled(); expect(ctx.smsSend).not.toHaveBeenCalled();
+    const disabled = verificationFixture({ email: false, phone: false });
+    expect((await disabled.emailStart()).body).toEqual({ error: "verification_unavailable" });
+    expect(disabled.send).not.toHaveBeenCalled();
   });
 
-  it("supports cancellation without disabling existing owners, and can close member invitations independently", async () => {
-    const ctx = setup({ LIFE_LINKS_MEMBER_INVITATIONS_ENABLED: "true" });
-    await ctx.register();
-    const created = await ctx.agent.post("/api/account-invitations").set("Origin", origin).send({});
-    expect((await ctx.agent.delete(`/api/account-invitations/${created.body.invitation.id}`).set("Origin", origin)).status).toBe(204);
-    expect((await request(ctx.app).post("/api/auth/register").set("Origin", origin)
-      .send({ ...validInput, email: "cancelled@example.test", invitationCode: created.body.invitationCode })).status).toBe(403);
-    expect((await ctx.agent.get("/api/me")).body.user.email).toBe(validInput.email);
-    ctx.config.memberInvitationsEnabled = false;
-    expect((await ctx.agent.post("/api/account-invitations").set("Origin", origin).send({})).status).toBe(403);
-    ctx.config.registration = undefined;
-    expect((await ctx.agent.get("/api/auth/registration")).body).toEqual({ enabled: false });
-  });
-});
-
-describe("private invitation registration", () => {
-  it("defaults to disabled and fails closed for malformed enabled configuration without exposing values", () => {
-    expect(readConfig({ ...registrationEnv, LIFE_LINKS_REGISTRATION_ENABLED: "false" }).registration).toBeUndefined();
-    for (const env of [
-      { LIFE_LINKS_REGISTRATION_INVITATION_CODE: "short" }, { LIFE_LINKS_REGISTRATION_MAX_ACCOUNTS: "0" },
-      { LIFE_LINKS_REGISTRATION_MAX_ACCOUNTS: "501" }, { LIFE_LINKS_REGISTRATION_MAX_ACCOUNTS: "1.5" },
-      { LIFE_LINKS_REGISTRATION_EXPIRES_AT: "forever" }, { LIFE_LINKS_REGISTRATION_EXPIRES_AT: "2099-02-31T00:00:00.000Z" }
-    ]) expect(() => readConfig({ ...registrationEnv, ...env })).toThrow("Invitation registration requires");
-    expect(JSON.stringify(readConfig(registrationEnv))).not.toContain(invitationCode);
-  });
-
-  it("creates a new cookie owner, empty workspace, and native default without agent grants", async () => {
-    const ctx = setup();
-    expect((await ctx.agent.get("/api/auth/registration")).body).toEqual({ enabled: true });
-    const response = await ctx.register({ ...validInput, displayName: "  Private Judge  ", email: "Judge@Example.Test" });
-    expect(response.status).toBe(201);
-    expect(response.headers["set-cookie"][0]).toContain("HttpOnly");
-    expect(response.headers["cache-control"]).toBe("private, no-store");
-    expect(response.body).toEqual({ user: { id: expect.any(String), displayName: "Private Judge", email: "judge@example.test", createdAt: expect.any(String) },
-      agentConnection: { connected: false, connectedAt: null, toolCatalogId: null }, qrBaseUrl: origin });
-    expect((await ctx.agent.get("/api/me")).body.user).toEqual(response.body.user);
+  it("creates no owner or session before mailbox proof, then admits an isolated verified owner", async () => {
+    const ctx = verificationFixture(), saved = vi.spyOn(ctx.store, "createContactVerificationAttempt");
+    const started = await ctx.emailStart(ctx.agent, "  New-Owner@Example.Test  ");
+    expect(started.status).toBe(202); expect(started.body.resendAfterSeconds).toBe(60);
+    expect(started.headers["set-cookie"][0]).toContain("HttpOnly");
+    expect(started.headers["cache-control"]).toBe("private, no-store");
+    expect(ctx.deliveries[0].email).toBe("new-owner@example.test");
+    expect(await ctx.store.getUserByEmail("new-owner@example.test")).toBeNull();
+    expect((await ctx.agent.get("/api/me")).body.user).toBeNull();
+    expect((await ctx.register(started.body.attemptToken)).body).toEqual({ error: "invalid_verification" });
+    expect((await ctx.emailVerify(started.body.attemptToken)).body).toEqual({ status: "verified" });
+    expect(await ctx.store.getUserByEmail("new-owner@example.test")).toBeNull();
+    const created = await ctx.register(started.body.attemptToken, { displayName: "  Private Owner  " });
+    expect(created.status).toBe(201); expect(created.body.user).toMatchObject({ email: "new-owner@example.test", displayName: "Private Owner" });
+    expect(created.body).not.toHaveProperty("sessionToken"); expect(created.body.agentConnection.connected).toBe(false);
+    expect((await ctx.agent.get("/api/me")).body.user.id).toBe(created.body.user.id);
     expect((await ctx.agent.get("/api/life-links")).body.lifeLinks).toEqual([]);
-    const stored = await ctx.store.getUserByEmail(validInput.email);
-    expect(stored).not.toBeNull();
-    expect(await verifyPassword(password, stored!.passwordHash)).toBe(true);
-    expect((await ctx.store.listCalendars(stored!.id)).items).toMatchObject([{ title: "My Calendar", timeZone: "America/New_York", isDefault: true, agentAccess: "none" }]);
-    expect(JSON.stringify(ctx.events)).not.toMatch(/judge@example.test|synthetic-private-password|synthetic_test_invitation/);
+    const owner = (await ctx.store.getUserByEmail("new-owner@example.test"))!;
+    expect(owner.emailVerifiedAt).toEqual(expect.any(String)); expect(await verifyPassword(password, owner.passwordHash)).toBe(true);
+    expect((await ctx.store.listCalendars(owner.id)).items).toMatchObject([{ title: "My Calendar", timeZone: "America/New_York", isDefault: true, agentAccess: "none" }]);
+    const sessionHash = vi.spyOn(ctx.store, "getSessionByTokenHash"); await ctx.agent.get("/api/me");
+    expect((await sessionHash.mock.results.at(-1)!.value)?.user.emailVerifiedAt).toBe(owner.emailVerifiedAt);
+    for (const value of ["new-owner@example.test", ctx.deliveries[0].code, started.body.attemptToken, password]) {
+      expect(JSON.stringify(ctx.events)).not.toContain(value); expect(JSON.stringify(saved.mock.calls)).not.toContain(value);
+    }
   });
 
-  it("requires an allowed browser origin even when relaxed global guards or bearer credentials apply", async () => {
-    const ctx = setup();
-    for (const headers of [{}, { Origin: "null" }, { Origin: "https://foreign.example.test" },
-      { Origin: "https://foreign.example.test", Referer: `${origin}/register` }]) {
-      const response = await ctx.agent.post("/api/auth/register").set(headers).send(validInput);
-      expect(response.status).toBe(403);
-      expect(response.body).toEqual({ error: "origin_forbidden" });
-    }
-    const admitted = await ctx.agent.post("/api/auth/register").set("Referer", `${origin}/register`).send(validInput);
-    expect(admitted.status).toBe(201);
-    const login = await ctx.agent.post("/api/auth/login").send({ email: validInput.email, password, client: "native" });
-    expect(login.status).toBe(200);
-    expect((await ctx.agent.post("/api/auth/register").set("Authorization", `Bearer ${login.body.sessionToken}`)
-      .send({ ...validInput, email: "other@example.test" })).body).toEqual({ error: "origin_forbidden" });
+  it("binds proof to its browser/address, refuses editable email, and consumes concurrent creation once", async () => {
+    const ctx = verificationFixture(), started = await ctx.emailStart(), token = started.body.attemptToken, stranger = request.agent(ctx.app);
+    expect((await ctx.emailVerify(token, ctx.deliveries[0].code, stranger)).status).toBe(400); await ctx.emailVerify(token);
+    expect((await ctx.register(token, { email: "replacement@example.test" })).status).toBe(400);
+    expect((await ctx.register(token, {}, stranger)).status).toBe(400);
+    const results = await Promise.all([ctx.register(token), ctx.register(token)]);
+    expect(results.map(result => result.status).sort()).toEqual([201, 400]);
+    await ctx.agent.post("/api/auth/logout").set("Origin", origin).send({});
+    expect((await ctx.register(token)).body).toEqual({ error: "invalid_verification" });
+    expect(await ctx.store.getUserByEmail("replacement@example.test")).toBeNull();
+  });
+
+  it("preserves existing owners and credentials on case-insensitive email collision", async () => {
+    const ctx = verificationFixture(), existing = await ctx.existingOwner();
+    await ctx.agent.post("/api/auth/logout").set("Origin", origin).send({});
+    const started = await ctx.emailStart(ctx.agent, existing.email!.toUpperCase()); await ctx.emailVerify(started.body.attemptToken);
+    const response = await ctx.register(started.body.attemptToken, { password: "never-replace-this-password" });
+    expect(response.status).toBe(409); expect(response.body).toEqual({ error: "signup_failed" });
+    expect(await ctx.store.getUserById(existing.id)).toEqual(existing);
+    expect((await ctx.agent.post("/api/auth/login").set("Origin", origin).send({ email: existing.email, password })).status).toBe(200);
+  });
+
+  it("bounds code guesses, resend timing and expiry without creating an account", async () => {
+    const ctx = verificationFixture(), started = await ctx.emailStart(), token = started.body.attemptToken;
+    expect((await ctx.agent.post("/api/auth/email/resend").set("Origin", origin).send({ attemptToken: token })).body).toEqual({ error: "verification_rate_limited" });
+    const wrong = ctx.deliveries[0].code === "000000" ? "111111" : "000000";
+    for (let index = 0; index < 5; index++) expect((await ctx.emailVerify(token, wrong)).status).toBe(400);
+    expect((await ctx.emailVerify(token)).status).toBe(400);
+    expect(ctx.send).toHaveBeenCalledTimes(1); expect(await ctx.store.getUserByEmail("new-owner@example.test")).toBeNull();
+    const second = verificationFixture(), fresh = await second.emailStart(); await second.emailVerify(fresh.body.attemptToken);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 601_000);
+    expect((await second.register(fresh.body.attemptToken)).body).toEqual({ error: "invalid_verification" });
+  });
+
+  it("manually reconciles unknown email delivery using the same operation and payload without spending a second delivery budget", async () => {
+    const ctx = verificationFixture();
+    ctx.config.contactVerification!.email!.maxSendsPerDay = 1;
+    ctx.send.mockImplementationOnce(async input => { ctx.deliveries.push({ ...input }); throw new EmailVerificationDeliveryError("unknown", "delivery_outcome_unknown"); });
+    const started = await ctx.emailStart(), first = { ...ctx.deliveries[0] };
+    expect(started.status).toBe(202); expect(ctx.send).toHaveBeenCalledTimes(1);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    expect((await ctx.agent.post("/api/auth/email/resend").set("Origin", origin).send({ attemptToken: started.body.attemptToken })).status).toBe(202);
+    expect(ctx.send).toHaveBeenCalledTimes(2); expect(ctx.deliveries[1]).toEqual(first);
+    expect((await ctx.emailVerify(started.body.attemptToken)).status).toBe(200);
+  });
+
+  it("keeps an arrived email code usable after an unknown gateway deadline without another send", async () => {
+    const ctx = verificationFixture();
+    ctx.send.mockImplementationOnce(async input => { ctx.deliveries.push({ ...input }); throw new EmailVerificationDeliveryError("unknown", "delivery_outcome_unknown"); });
+    const started = await ctx.emailStart();
+    expect(started.status).toBe(202); expect(await ctx.store.getUserByEmail("new-owner@example.test")).toBeNull();
+    expect((await ctx.emailStart()).status).toBe(503); expect(ctx.send).toHaveBeenCalledTimes(1);
+    expect((await ctx.register(started.body.attemptToken)).status).toBe(400);
+    expect((await ctx.emailVerify(started.body.attemptToken)).body).toEqual({ status: "verified" });
+    expect((await ctx.register(started.body.attemptToken)).status).toBe(201);
+    expect(ctx.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed on a definite gateway rejection and permits a separately budgeted fresh request", async () => {
+    const ctx = verificationFixture();
+    ctx.send.mockRejectedValueOnce(new EmailVerificationDeliveryError("rejected", "delivery_rejected"));
+    const rejected = await ctx.emailStart();
+    expect(rejected.status).toBe(503); expect(rejected.body).toEqual({ error: "verification_unavailable" });
+    expect(rejected.body).not.toHaveProperty("attemptToken");
+    expect(await ctx.store.getUserByEmail("new-owner@example.test")).toBeNull();
+    const fresh = await ctx.emailStart(); expect(fresh.status).toBe(202); expect(ctx.send).toHaveBeenCalledTimes(2);
+    expect((await ctx.emailVerify(fresh.body.attemptToken)).body).toEqual({ status: "verified" });
   });
 
   it.each([
-    { displayName: " " }, { displayName: "x".repeat(101) }, { displayName: "Judge\u0000" },
-    { email: "bad-email" }, { email: `${"x".repeat(250)}@example.test` }, { password: "short" },
-    { password: "x".repeat(129) }, { invitationCode: "short" }, { timeZone: "Invalid/Place" },
-    { client: "native" }, { email: 42 }, { invitationCode: {} }
-  ])("refuses invalid bounded registration input %#", async patch => {
-    const ctx = setup();
-    const response = await ctx.register({ ...validInput, ...patch });
-    expect(response.status).toBe(400);
-    expect(response.body).toEqual({ error: "invalid_registration" });
-    expect(await ctx.store.getUserByEmail(validInput.email)).toBeNull();
+    { gatewayBaseUrl: "https://changed-communications.example.test" },
+    { bearerToken: "synthetic-replacement-application-mail-token" },
+    { senderMailbox: "changed-agents@example.test" },
+    { appDisplayName: "Changed LifeLinks" },
+  ])("refuses uncertain-operation reconciliation under changed sender or caller context %j", async emailSenderConfig => {
+    const ctx = verificationFixture();
+    ctx.send.mockImplementationOnce(async input => { ctx.deliveries.push({ ...input }); throw new EmailVerificationDeliveryError("unknown", "delivery_outcome_unknown"); });
+    const started = await ctx.emailStart(), original = ctx.deliveries[0];
+    const replacement = verificationFixture({ store: ctx.store, emailSenderConfig });
+    const cookie = started.headers["set-cookie"].map((value: string) => value.split(";")[0]);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    const refused = await request(replacement.app).post("/api/auth/email/resend").set("Origin", origin).set("Cookie", cookie)
+      .send({ attemptToken: started.body.attemptToken });
+    expect(refused.status).toBe(503); expect(refused.body).toEqual({ error: "send_outcome_unknown" });
+    expect(replacement.send).not.toHaveBeenCalled(); expect(ctx.send).toHaveBeenCalledTimes(1);
+    const verified = await request(replacement.app).post("/api/auth/email/verify").set("Origin", origin).set("Cookie", cookie)
+      .send({ attemptToken: started.body.attemptToken, code: original.code });
+    expect(verified.body).toEqual({ status: "verified" });
+    expect(await ctx.store.getUserByEmail("new-owner@example.test")).toBeNull();
+    for (const value of Object.values(emailSenderConfig)) expect(JSON.stringify(replacement.events)).not.toContain(value);
   });
 
-  it("returns only availability and refuses disabled, expired, invalid, or exhausted invitations", async () => {
-    for (const env of [{ LIFE_LINKS_REGISTRATION_ENABLED: "false" }, { LIFE_LINKS_REGISTRATION_EXPIRES_AT: "2020-01-01T00:00:00.000Z" }]) {
-      const ctx = setup(env);
-      expect((await ctx.agent.get("/api/auth/registration")).body).toEqual({ enabled: false });
-      expect((await ctx.register()).body).toEqual({ error: "registration_unavailable" });
+  it("serializes same-operation email reconciliation and refuses code checks while it is pending", async () => {
+    const ctx = verificationFixture();
+    ctx.send.mockImplementationOnce(async input => { ctx.deliveries.push({ ...input }); throw new EmailVerificationDeliveryError("unknown", "delivery_outcome_unknown"); });
+    const started = await ctx.emailStart(), original = ctx.deliveries[0];
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    let entered!: () => void, release!: () => void;
+    const pending = new Promise<void>(resolve => { entered = resolve; }), completion = new Promise<void>(resolve => { release = resolve; });
+    ctx.send.mockImplementationOnce(async input => {
+      ctx.deliveries.push({ ...input }); entered(); await completion;
+      return { provider: "agent_communications", accepted: true, messageId: "synthetic-message-id", operationId: input.operationId };
+    });
+    const resend = () => ctx.agent.post("/api/auth/email/resend").set("Origin", origin).send({ attemptToken: started.body.attemptToken });
+    const sending = resend().then(response => response);
+    try {
+      await pending;
+      expect((await resend()).status).toBe(429);
+      expect((await ctx.emailVerify(started.body.attemptToken)).status).toBe(400);
+      expect(ctx.send).toHaveBeenCalledTimes(2); expect(ctx.deliveries[1]).toEqual(original);
+    } finally { release(); }
+    const reconciled = await sending;
+    expect(reconciled.status).toBe(202); expect(reconciled.body.expiresAt).toBe(started.body.expiresAt);
+    expect((await ctx.emailVerify(started.body.attemptToken)).body).toEqual({ status: "verified" });
+  });
+
+  it("resends only on request with the original expiry and reserves a global transport budget before sending", async () => {
+    const ctx = verificationFixture(), started = await ctx.emailStart(), first = ctx.deliveries[0];
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    const resent = await ctx.agent.post("/api/auth/email/resend").set("Origin", origin).send({ attemptToken: started.body.attemptToken });
+    expect(resent.status).toBe(202); expect(resent.body.expiresAt).toBe(started.body.expiresAt);
+    expect(ctx.deliveries[1].operationId).not.toBe(first.operationId);
+    expect((await ctx.emailVerify(started.body.attemptToken)).status).toBe(200);
+    const bounded = verificationFixture(); bounded.config.contactVerification!.email!.maxSendsPerDay = 1;
+    expect((await bounded.emailStart()).status).toBe(202);
+    expect((await bounded.emailStart(bounded.agent, "different@example.test")).body).toEqual({ error: "verification_rate_limited" });
+    expect(bounded.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires explicit sign-out before new admission and keeps the existing owner unchanged", async () => {
+    const ctx = verificationFixture(), owner = await ctx.existingOwner();
+    expect((await ctx.emailStart()).body).toEqual({ error: "sign_out_required" });
+    expect((await ctx.phoneStart()).body).toEqual({ error: "sign_out_required" });
+    expect(ctx.send).not.toHaveBeenCalled(); expect(ctx.smsSend).not.toHaveBeenCalled();
+    expect(await ctx.store.getUserById(owner.id)).toEqual(owner);
+  });
+
+  it("recovers a committed account after session failure through password login without recreating it", async () => {
+    const ctx = verificationFixture(), started = await ctx.emailStart(); await ctx.emailVerify(started.body.attemptToken);
+    const session = vi.spyOn(ctx.store, "createSession").mockRejectedValueOnce(new Error("private driver diagnostics"));
+    const failed = await ctx.register(started.body.attemptToken);
+    expect(failed.status).toBe(503); expect(failed.body).toEqual({ error: "verification_unavailable" }); session.mockRestore();
+    expect((await ctx.agent.post("/api/auth/login").set("Origin", origin).send({ email: "new-owner@example.test", password })).status).toBe(200);
+    expect(JSON.stringify(ctx.events)).not.toContain("private driver diagnostics");
+  });
+
+  it("requires browser origin, sanitizes parser failures and rejects retired unverified input", async () => {
+    const ctx = verificationFixture();
+    for (const route of ["/api/auth/email/start", "/API/AUTH/EMAIL/START/", "/api/auth/register/"]) {
+      expect((await ctx.agent.post(route).send({ email: "new-owner@example.test" })).body).toEqual({ error: "origin_forbidden" });
+      expect((await ctx.agent.post(route).set("Origin", "https://foreign.example.test").set("Referer", `${origin}/register`).send({})).status).toBe(403);
+      expect((await ctx.agent.post(route).set("Origin", origin).set("Content-Type", "application/json").send(`{"password":"${password}",`)).body).toEqual({ error: "invalid_verification" });
     }
-    const ctx = setup({ LIFE_LINKS_REGISTRATION_MAX_ACCOUNTS: "1" });
-    expect((await ctx.register({ ...validInput, invitationCode: "wrong_invitation_that_is_long_enough_123" })).status).toBe(403);
-    const response = await ctx.register({ ...validInput, timeZone: undefined });
-    expect(response.status).toBe(201);
-    expect((await ctx.store.listCalendars(response.body.user.id)).items[0].timeZone).toBe("UTC");
-    expect((await ctx.agent.get("/api/auth/registration")).body).toEqual({ enabled: false });
-    expect((await ctx.register({ ...validInput, email: "second@example.test" })).body).toEqual({ error: "registration_unavailable" });
-    expect((await ctx.agent.get("/api/me")).body.user.id).toBe(response.body.user.id);
+    expect((await ctx.agent.post("/api/auth/register").set("Origin", origin).send({ displayName: "Owner", email: "new-owner@example.test", password, invitationCode: "synthetic_old_invitation_1234567890" })).status).toBe(400);
+    expect((await ctx.agent.post("/api/auth/register").set("Origin", origin).send({ password, displayName: "x".repeat(5000) })).body).toEqual({ error: "invalid_verification" });
+    expect(ctx.send).not.toHaveBeenCalled(); expect(JSON.stringify(ctx.events)).not.toContain(password);
+  });
+});
+
+describe("optional member invitation HTTP", () => {
+  it("keeps invitation management owner-scoped and redeems a usable link with verified creation", async () => {
+    const ctx = verificationFixture(), owner = await ctx.existingOwner();
+    expect((await request(ctx.app).post("/api/account-invitations").set("Origin", origin).send({})).status).toBe(401);
+    expect((await ctx.agent.post("/api/account-invitations").send({})).status).toBe(403);
+    const created = await ctx.agent.post("/api/account-invitations").set("Origin", origin).send({}); expect(created.status).toBe(201);
+    const code = created.body.invitationCode, recipient = request.agent(ctx.app);
+    const started = await ctx.emailStart(recipient, "recipient@example.test", { invitationCode: code });
+    await ctx.emailVerify(started.body.attemptToken, ctx.deliveries.at(-1)!.code, recipient);
+    expect((await ctx.register(started.body.attemptToken, {}, recipient)).status).toBe(201);
+    const listing = await ctx.agent.get("/api/account-invitations"); expect(listing.body.invitations[0].redeemedAt).not.toBeNull();
+    for (const value of [code, "recipient@example.test", owner.id]) expect(JSON.stringify(listing.body)).not.toContain(value);
+    expect((await recipient.delete(`/api/account-invitations/${created.body.invitation.id}`).set("Origin", origin)).status).toBe(404);
+    expect((await recipient.post("/api/account-invitations").set("Origin", origin).send({})).status).toBe(201);
+    expect(JSON.stringify(ctx.events)).not.toContain(code);
   });
 
-  it("never overwrites an existing account on case-insensitive duplicate or concurrent retry", async () => {
-    const ctx = setup();
-    const responses = await Promise.all([ctx.register(), ctx.register({ ...validInput, email: validInput.email.toUpperCase(), password: "a-different-synthetic-password" })]);
-    expect(responses.map(response => response.status).sort()).toEqual([201, 409]);
-    const created = responses.find(response => response.status === 201)!;
-    const before = await ctx.store.getUserById(created.body.user.id);
-    const retry = await ctx.register({ ...validInput, password: "never-replace-this-password" });
-    expect(retry.status).toBe(409);
-    expect(retry.body).toEqual({ error: "registration_failed" });
-    expect((await ctx.store.getUserById(created.body.user.id))?.passwordHash).toBe(before?.passwordHash);
-  });
-
-  it("keeps a committed account usable by sign-in after response/session failure without leaking driver errors", async () => {
-    const ctx = setup();
-    const createSession = vi.spyOn(ctx.store, "createSession").mockRejectedValueOnce(new Error(`${validInput.email} ${password} ${invitationCode}`));
-    const failed = await ctx.register();
-    expect(failed.status).toBe(503);
-    expect(failed.body).toEqual({ error: "registration_unavailable" });
-    createSession.mockRestore();
-    expect((await ctx.agent.post("/api/auth/login").send({ email: validInput.email, password })).status).toBe(200);
-    expect((await ctx.register()).status).toBe(409);
-    expect(JSON.stringify(ctx.events)).not.toContain(password);
-    expect(JSON.stringify(ctx.events)).not.toContain(invitationCode);
-    expect(JSON.stringify(ctx.events)).not.toContain(validInput.email);
-  });
-
-  it("bounds signup attempts by IP across different emails and ignores global rate-limit disabling", async () => {
-    const ctx = setup();
-    for (let index = 0; index < 5; index++) expect((await ctx.register({ ...validInput, email: `${index}@example.test`, password: "bad" })).status).toBe(400);
-    const limited = await ctx.register();
-    expect(limited.status).toBe(429);
-    expect(limited.body.error).toBe("rate_limited");
-    expect(Number(limited.headers["retry-after"])).toBeGreaterThan(0);
-    const now = Date.now();
-    vi.spyOn(Date, "now").mockReturnValue(now + 901_000);
-    expect((await ctx.register()).status).toBe(201);
-  });
-
-  it.each([false, true])("ignores untrusted forwarded prefixes when limiting signup (trust proxy: %s)", async trustProxy => {
-    const ctx = setup({ TRUST_PROXY: String(trustProxy) });
-    for (let index = 0; index < 5; index++) {
-      const forwarded = trustProxy ? `198.51.100.${index + 1}, 203.0.113.10` : `198.51.100.${index + 1}`;
-      expect((await ctx.agent.post("/api/auth/register").set("Origin", origin)
-        .set("X-Forwarded-For", forwarded).send({ ...validInput, password: "short" })).status).toBe(400);
-    }
-    const forwarded = trustProxy ? "198.51.100.99, 203.0.113.10" : "198.51.100.99";
-    expect((await ctx.agent.post("/api/auth/register").set("Origin", origin)
-      .set("X-Forwarded-For", forwarded).send(validInput)).status).toBe(429);
-    expect(await ctx.store.getUserByEmail(validInput.email)).toBeNull();
-    if (trustProxy) {
-      // A different client reported by the one trusted proxy still has its own budget.
-      expect((await ctx.agent.post("/api/auth/register").set("Origin", origin)
-        .set("X-Forwarded-For", "198.51.100.99, 203.0.113.11").send(validInput)).status).toBe(201);
-    }
-  });
-
-  it("sanitizes malformed/oversized JSON without storing accounts or logging request content", async () => {
-    const ctx = setup();
-    for (const body of [`{"password":"${password}", "invitationCode":"${invitationCode}",`, JSON.stringify({ ...validInput, displayName: "x".repeat(5000) })]) {
-      const result = await ctx.agent.post("/api/auth/register").set("Origin", origin).set("Content-Type", "application/json").send(body);
-      expect(result.status).toBe(400);
-      expect(result.body).toEqual({ error: "invalid_registration" });
-    }
-    expect(await ctx.store.getUserByEmail(validInput.email)).toBeNull();
-    expect(JSON.stringify(ctx.events)).not.toContain(password);
-    expect(JSON.stringify(ctx.events)).not.toContain(invitationCode);
-  });
-
-  it("preserves signup origin, shared IP rate limits, and error redaction on Express route aliases", async () => {
-    const ctx = setup();
-    for (const route of ["/api/auth/register/", "/API/AUTH/REGISTER", "/API/AUTH/REGISTER/"]) {
-      expect((await ctx.agent.post(route).send(validInput)).body).toEqual({ error: "origin_forbidden" });
-      expect((await ctx.agent.post(route).set("Origin", origin).set("Content-Type", "application/json")
-        .send(`{"password":"${password}",`)).body).toEqual({ error: "invalid_registration" });
-    }
-    for (let index = 0; index < 5; index++) expect((await ctx.agent.post(index % 2 ? "/API/AUTH/REGISTER/" : "/api/auth/register")
-      .set("Origin", origin).send({ ...validInput, password: "short" })).status).toBe(400);
-    expect((await ctx.agent.post("/api/auth/register/").set("Origin", origin).send(validInput)).status).toBe(429);
-    expect(JSON.stringify(ctx.events)).not.toContain(password);
-    expect(JSON.stringify(ctx.events)).not.toContain(invitationCode);
+  it.each(["missing", "cancelled", "closed"] as const)("allows public verified signup with a %s invitation", async state => {
+    const ctx = verificationFixture(), owner = await ctx.existingOwner();
+    const created = await ctx.agent.post("/api/account-invitations").set("Origin", origin).send({});
+    if (state === "cancelled") await ctx.agent.delete(`/api/account-invitations/${created.body.invitation.id}`).set("Origin", origin);
+    if (state === "closed") ctx.config.memberInvitationsEnabled = false;
+    const recipient = request.agent(ctx.app), extra = state === "missing" ? {} : { invitationCode: created.body.invitationCode };
+    const started = await ctx.emailStart(recipient, "recipient@example.test", extra);
+    await ctx.emailVerify(started.body.attemptToken, ctx.deliveries.at(-1)!.code, recipient);
+    expect((await ctx.register(started.body.attemptToken, {}, recipient)).status).toBe(201);
+    expect((await ctx.agent.get("/api/me")).body.user.id).toBe(owner.id);
+    expect((await ctx.store.getMemberInvitation(invitationFingerprint(created.body.invitationCode)))?.redeemedAt).toBeNull();
   });
 });

@@ -13,7 +13,7 @@ export type LinkMediaKind = "image" | "video" | "document";
 
 export type UserRecord = {
   id: string;
-  email: string;
+  email: string | null;
   displayName: string;
   createdAt: string;
 };
@@ -73,7 +73,7 @@ export type QrViewState =
   | { state: "claimed"; link: LinkRecord; viewerIsOwner: boolean };
 
 export type DemoSeedData = {
-  users: Array<UserRecord & { password: string }>;
+  users: Array<UserRecord & { email: string; password: string }>;
   roots: LifeLinkRecord[];
   links: Array<LinkRecord & { parentId: string | null }>;
 };

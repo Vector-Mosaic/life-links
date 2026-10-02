@@ -41,13 +41,24 @@ describe("provider sign-in entry", () => {
     expect(startProviderSignIn).toHaveBeenCalledWith("google", { intent: "register", returnTo: "/life-links", invitationCode, timeZone: "America/New_York" });
   });
 
-  it("requires an invitation for registration and respects the caller's busy state", async () => {
+  it("starts public registration without an invitation and respects the caller's busy state", async () => {
     await render({ intent: "register" });
-    expect(container.querySelector<HTMLButtonElement>("button")!.disabled).toBe(true);
-    expect(container.textContent).toContain("Enter your invitation code");
-    await click(); expect(startProviderSignIn).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLButtonElement>("button")!.disabled).toBe(false);
+    await click(); expect(startProviderSignIn).toHaveBeenCalledExactlyOnceWith("google", { intent: "register", returnTo: "/life-links" });
+    vi.mocked(startProviderSignIn).mockClear();
     await render({ disabled: true }); await click();
     expect(startProviderSignIn).not.toHaveBeenCalled();
+  });
+
+  it("offers the Apple mark and label only when Apple is configured", async () => {
+    vi.mocked(getSignInProviders).mockResolvedValue({ providers: [{ id: "apple", label: "Apple" }] });
+    vi.mocked(startProviderSignIn).mockResolvedValue({ authorizationUrl: "https://appleid.apple.com/auth/authorize" });
+    await render({ intent: "register", invitationCode: "malformed" });
+    expect(container.querySelector('[data-provider="apple"]')?.textContent).toBe("Continue with Apple");
+    expect(container.querySelector('[data-provider="apple"] img')?.getAttribute("aria-hidden")).toBe("true");
+    await click();
+    expect(startProviderSignIn).toHaveBeenCalledWith("apple", { intent: "register", returnTo: "/life-links" });
+    expect(navigate).toHaveBeenCalledWith("https://appleid.apple.com/auth/authorize");
   });
 
   it("hides unconfigured options and discovery failures without disrupting email entry", async () => {

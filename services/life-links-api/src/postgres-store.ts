@@ -218,12 +218,18 @@ import {
   sameCompetitionFixtureCounts
 } from "./store.js";
 import type { AttachmentTextExtraction } from "./attachment-content.js";
-import { assertRegistrationInvitation, prepareRegisteredOwner, prepareRegisteredProviderOwner, RegistrationAdmissionError,
+import { assertRegistrationInvitation, prepareRegisteredOwner, prepareRegisteredProviderOwner, prepareRegisteredVerifiedOwner, RegistrationAdmissionError,
   MAX_PENDING_INVITATIONS, memberInvitationView,
   type MemberInvitation, type MemberInvitationView, type RegisterOwnerInput, type RegisterProviderOwnerInput, type RegistrationInvitation } from "./registration.js";
 import { assertProviderSignInAttempt, providerIdentityKey, validSignInFingerprint,
   MAX_PROVIDER_SIGN_IN_ATTEMPTS, PROVIDER_SIGN_IN_EXPIRY_CLEANUP_LIMIT, ProviderSignInStateError,
   type ProviderIdentityBinding, type VerifiedProviderIdentity, type ProviderSignInAttempt } from "./provider-sign-in-state.js";
+import { assertContactVerificationAttempt, assertPhoneBinding, assertVerificationLimits, assertVerifiedRegistrationAttempt,
+  canUpdateContactVerificationAttempt, contactAttemptMatchesConsumption, phoneBindingKey, validContactFingerprint,
+  validVerifiedContactConsumption, ContactVerificationStateError, MAX_CONTACT_VERIFICATION_ATTEMPTS,
+  MAX_VERIFICATION_LIMITS, VERIFICATION_EXPIRY_CLEANUP_LIMIT,
+  type ContactVerificationAttempt, type PhoneBinding, type VerificationLimit, type VerifiedContactConsumption,
+  type FinalizeVerifiedRegistrationInput, type FinalizeVerifiedPhoneLinkInput } from "./contact-verification-state.js";
 
 type Queryable = Pick<Pool, "query">;
 type StoredLifeLink = Omit<LifeLinkRecord, "qrId" | "media">;
@@ -262,50 +268,218 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     return this.registerPreparedOwner(input.invitation, prepareRegisteredProviderOwner(input), input.identity);
   }
 
-  private async registerPreparedOwner(invitation: RegistrationInvitation,
+  private async registerPreparedOwner(invitation: RegistrationInvitation | undefined,
     prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding): Promise<StoredUser> {
-    const { user, calendar } = prepared;
-    const keys = [`registration-invitation:${invitation.fingerprint}`];
+    const keys = invitation ? [`registration-invitation:${invitation.fingerprint}`] : [];
     if (identity) keys.push(`provider-sign-in-identity:${providerIdentityKey(identity)}`);
     try {
-      return await this.withTransaction(keys, async client => {
-        if (identity) {
-          const saved = await client.query(
-            `SELECT owner_id FROM provider_sign_in_identities WHERE provider=$1 AND issuer=$2 AND client_id=$3 AND subject=$4`,
-            [identity.provider, identity.issuer, identity.clientId, identity.subject]);
-          if (saved.rowCount) throw new ProviderSignInStateError("provider_identity_conflict");
-        }
-        if (invitation.memberInvitationId) {
-          const saved = await client.query(
-            `SELECT id FROM member_invitations WHERE id=$1 AND fingerprint=$2 AND revoked_at IS NULL
-             AND redeemed_at IS NULL AND clock_timestamp() < expires_at FOR UPDATE`,
-            [invitation.memberInvitationId, invitation.fingerprint]);
-          if (!saved.rowCount) throw new RegistrationAdmissionError("registration_unavailable");
-        }
-        const admission = await client.query(
-          `SELECT count(*)::int < $2 AND clock_timestamp() < $3::timestamptz AS available
-           FROM account_registrations WHERE invitation_fingerprint=$1`,
-          [invitation.fingerprint, invitation.maxAccounts, invitation.expiresAt]
-        );
-        if (admission.rows[0]?.available !== true) throw new RegistrationAdmissionError("registration_unavailable");
-        await client.query("INSERT INTO users(id,email,display_name,password_hash,created_at) VALUES($1,$2,$3,$4,$5)",
-          [user.id, user.email, user.displayName, user.passwordHash, user.createdAt]);
-        await insertPostgresCalendar(client, calendar);
-        if (identity) await client.query(
-          `INSERT INTO provider_sign_in_identities(provider,issuer,client_id,subject,owner_id,created_at) VALUES($1,$2,$3,$4,$5,$6)`,
-          [identity.provider, identity.issuer, identity.clientId, identity.subject, user.id, user.createdAt]);
-        await client.query("INSERT INTO account_registrations(user_id,invitation_fingerprint,created_at) VALUES($1,$2,$3)",
-          [user.id, invitation.fingerprint, user.createdAt]);
-        if (invitation.memberInvitationId) {
-          await client.query("UPDATE member_invitations SET redeemed_at=$2 WHERE id=$1", [invitation.memberInvitationId, user.createdAt]);
-        }
-        return user;
-      }, null);
+      return await this.withTransaction(keys, client => this.insertPreparedOwner(client, invitation, prepared, identity), null);
     } catch (error) {
       // Do not propagate PostgreSQL's duplicate-value detail (which contains the email).
       if ((error as { code?: string })?.code === "23505") throw new RegistrationAdmissionError("registration_failed");
       throw error;
     }
+  }
+
+  private async insertPreparedOwner(client: PoolClient, invitation: RegistrationInvitation | undefined,
+    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding): Promise<StoredUser> {
+    const { user, calendar } = prepared;
+    if (identity) {
+      const saved = await client.query(
+        `SELECT owner_id FROM provider_sign_in_identities WHERE provider=$1 AND issuer=$2 AND client_id=$3 AND subject=$4`,
+        [identity.provider, identity.issuer, identity.clientId, identity.subject]);
+      if (saved.rowCount) throw new ProviderSignInStateError("provider_identity_conflict");
+    }
+    if (invitation) {
+      if (invitation.memberInvitationId) {
+        const saved = await client.query(
+          `SELECT id FROM member_invitations WHERE id=$1 AND fingerprint=$2 AND revoked_at IS NULL
+           AND redeemed_at IS NULL AND clock_timestamp() < expires_at FOR UPDATE`,
+          [invitation.memberInvitationId, invitation.fingerprint]);
+        if (!saved.rowCount) throw new RegistrationAdmissionError("registration_unavailable");
+      }
+      const admission = await client.query(
+        `SELECT count(*)::int < $2 AND clock_timestamp() < $3::timestamptz AS available
+         FROM account_registrations WHERE invitation_fingerprint=$1`,
+        [invitation.fingerprint, invitation.maxAccounts, invitation.expiresAt]);
+      if (admission.rows[0]?.available !== true) throw new RegistrationAdmissionError("registration_unavailable");
+    }
+    await client.query("INSERT INTO users(id,email,display_name,password_hash,created_at,email_verified_at) VALUES($1,$2,$3,$4,$5,$6)",
+      [user.id, user.email, user.displayName, user.passwordHash, user.createdAt, user.emailVerifiedAt ?? null]);
+    await insertPostgresCalendar(client, calendar);
+    if (identity) await client.query(
+      `INSERT INTO provider_sign_in_identities(provider,issuer,client_id,subject,owner_id,created_at) VALUES($1,$2,$3,$4,$5,$6)`,
+      [identity.provider, identity.issuer, identity.clientId, identity.subject, user.id, user.createdAt]);
+    if (invitation) {
+      await client.query("INSERT INTO account_registrations(user_id,invitation_fingerprint,created_at) VALUES($1,$2,$3)",
+        [user.id, invitation.fingerprint, user.createdAt]);
+      if (invitation.memberInvitationId) {
+        await client.query("UPDATE member_invitations SET redeemed_at=$2 WHERE id=$1", [invitation.memberInvitationId, user.createdAt]);
+      }
+    }
+    return user;
+  }
+
+  async createContactVerificationAttempt(attempt: ContactVerificationAttempt): Promise<void> {
+    assertContactVerificationAttempt(attempt);
+    if (attempt.version !== 1 || attempt.phase === "consumed") throw new ContactVerificationStateError("verification_unavailable");
+    try {
+      await this.withTransaction(["contact-verification-attempts"], async client => {
+        await client.query(`DELETE FROM contact_verification_attempts WHERE token_hash IN
+          (SELECT token_hash FROM contact_verification_attempts WHERE expires_at <= clock_timestamp()
+           ORDER BY expires_at,token_hash LIMIT $1)`, [VERIFICATION_EXPIRY_CLEANUP_LIMIT]);
+        const active = await client.query("SELECT count(*)::int AS count FROM contact_verification_attempts WHERE expires_at > clock_timestamp()");
+        if (active.rows[0].count >= MAX_CONTACT_VERIFICATION_ATTEMPTS) throw new ContactVerificationStateError("verification_unavailable");
+        const unresolved = await client.query(`SELECT 1 FROM contact_verification_attempts
+          WHERE channel=$1 AND address_hash=$2 AND phase IN ('send_pending','send_unknown','verifying')
+          AND expires_at > clock_timestamp() LIMIT 1`, [attempt.channel, attempt.addressHash]);
+        if (unresolved.rowCount) throw new ContactVerificationStateError("verification_unavailable");
+        await client.query(`INSERT INTO contact_verification_attempts
+          (token_hash,browser_hash,address_hash,channel,intent,phase,encrypted_payload,expires_at,resend_at,version,check_count)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          [attempt.tokenHash, attempt.browserHash, attempt.addressHash, attempt.channel, attempt.intent, attempt.phase,
+            attempt.encryptedPayload, attempt.expiresAt, attempt.resendAt, attempt.version, attempt.checkCount]);
+      }, null);
+    } catch (error) {
+      if ((error as { code?: string })?.code === "23505") throw new ContactVerificationStateError("verification_unavailable");
+      throw error;
+    }
+  }
+
+  async getContactVerificationAttempt(tokenHash: string, browserHash: string): Promise<ContactVerificationAttempt | null> {
+    if (!validContactFingerprint(tokenHash) || !validContactFingerprint(browserHash)) return null;
+    const result = await this.pool.query(`SELECT * FROM contact_verification_attempts
+      WHERE token_hash=$1 AND browser_hash=$2 AND expires_at > clock_timestamp()`, [tokenHash, browserHash]);
+    return result.rows[0] ? mapContactVerificationAttempt(result.rows[0]) : null;
+  }
+
+  async updateContactVerificationAttempt(attempt: ContactVerificationAttempt, expectedVersion: number): Promise<boolean> {
+    assertContactVerificationAttempt(attempt);
+    try {
+      return await this.withTransaction(["contact-verification-attempts"], async client => {
+        const result = await client.query(`SELECT * FROM contact_verification_attempts
+          WHERE token_hash=$1 AND browser_hash=$2 AND expires_at > clock_timestamp() FOR UPDATE`, [attempt.tokenHash, attempt.browserHash]);
+        const saved = result.rows[0] ? mapContactVerificationAttempt(result.rows[0]) : null;
+        if (!saved || !canUpdateContactVerificationAttempt(saved, attempt, expectedVersion)) return false;
+        if (["send_pending", "send_unknown", "verifying"].includes(attempt.phase)) {
+          const unresolved = await client.query(`SELECT 1 FROM contact_verification_attempts WHERE token_hash<>$1
+            AND channel=$2 AND address_hash=$3 AND phase IN ('send_pending','send_unknown','verifying')
+            AND expires_at > clock_timestamp() LIMIT 1`, [attempt.tokenHash, attempt.channel, attempt.addressHash]);
+          if (unresolved.rowCount) return false;
+        }
+        await client.query(`UPDATE contact_verification_attempts SET phase=$2,encrypted_payload=$3,resend_at=$4,
+          version=$5,check_count=$6 WHERE token_hash=$1`,
+          [attempt.tokenHash, attempt.phase, attempt.encryptedPayload, attempt.resendAt,
+            attempt.version, attempt.checkCount]);
+        return true;
+      }, null);
+    } catch (error) {
+      if ((error as { code?: string })?.code === "23505") return false;
+      throw error;
+    }
+  }
+
+  async reserveVerificationLimits(limits: VerificationLimit[]): Promise<boolean> {
+    assertVerificationLimits(limits);
+    return this.withTransaction(["contact-verification-limits", ...limits.map(item => `verification-limit:${item.keyHash}`)], async client => {
+      await client.query(`DELETE FROM contact_verification_limits WHERE key_hash IN
+        (SELECT key_hash FROM contact_verification_limits WHERE expires_at <= clock_timestamp()
+         ORDER BY expires_at,key_hash LIMIT $1)`, [VERIFICATION_EXPIRY_CLEANUP_LIMIT]);
+      const nowResult = await client.query("SELECT clock_timestamp() AS now");
+      const now = Date.parse(toIso(nowResult.rows[0].now));
+      const rows = await client.query(`SELECT * FROM contact_verification_limits WHERE key_hash = ANY($1::text[]) FOR UPDATE`,
+        [limits.map(item => item.keyHash)]);
+      const existing = new Map(rows.rows.map(row => [String(row.key_hash), { count: Number(row.count), expiresAt: Date.parse(toIso(row.expires_at)) }]));
+      const active = await client.query("SELECT count(*)::int AS count FROM contact_verification_limits WHERE expires_at > $1", [new Date(now).toISOString()]);
+      const next = limits.map(item => {
+        const saved = existing.get(item.keyHash);
+        return { key: item.keyHash, max: item.max, row: saved && saved.expiresAt > now
+          ? { ...saved, count: saved.count + 1 } : { count: 1, expiresAt: now + item.windowMs },
+          isNew: !saved || saved.expiresAt <= now };
+      });
+      if (next.some(item => item.row.count > item.max)
+          || active.rows[0].count + next.filter(item => item.isNew).length > MAX_VERIFICATION_LIMITS) return false;
+      for (const item of next) await client.query(`INSERT INTO contact_verification_limits(key_hash,count,expires_at)
+        VALUES($1,$2,$3) ON CONFLICT(key_hash) DO UPDATE SET count=EXCLUDED.count,expires_at=EXCLUDED.expires_at`,
+        [item.key, item.row.count, new Date(item.row.expiresAt).toISOString()]);
+      return true;
+    }, null);
+  }
+
+  async finalizeVerifiedRegistration(input: FinalizeVerifiedRegistrationInput): Promise<StoredUser> {
+    if (!validVerifiedContactConsumption(input)) throw new ContactVerificationStateError("invalid_verification");
+    const prepared = prepareRegisteredVerifiedOwner(input);
+    const keys = ["contact-verification-attempts"];
+    if (input.invitation) keys.push(`registration-invitation:${input.invitation.fingerprint}`);
+    if (input.phoneBinding) keys.push(`phone-sign-in-identity:${phoneBindingKey(input.phoneBinding)}`);
+    try {
+      return await this.withTransaction(keys, async client => {
+        const saved = await loadVerifiedContactAttempt(client, input);
+        if (!saved) throw new ContactVerificationStateError("invalid_verification");
+        assertVerifiedRegistrationAttempt(saved, input);
+        if (saved.channel === "email") prepared.user.emailVerifiedAt = new Date().toISOString();
+        if (input.phoneBinding && (await loadPhoneIdentity(client, input.phoneBinding)).rowCount) {
+          throw new ContactVerificationStateError("invalid_verification");
+        }
+        const user = await this.insertPreparedOwner(client, input.invitation, prepared);
+        if (input.phoneBinding) await insertPhoneIdentity(client, user.id, input.phoneBinding, user.createdAt);
+        await consumeContactAttempt(client, saved);
+        return user;
+      }, null);
+    } catch (error) {
+      if ((error as { code?: string })?.code === "23505") {
+        if ((error as { constraint?: string }).constraint === "phone_sign_in_identities_pkey") {
+          throw new ContactVerificationStateError("invalid_verification");
+        }
+        throw new RegistrationAdmissionError("registration_failed");
+      }
+      throw error;
+    }
+  }
+
+  async getPhoneUser(binding: PhoneBinding): Promise<StoredUser | null> {
+    assertPhoneBinding(binding);
+    const result = await this.pool.query(`SELECT u.* FROM phone_sign_in_identities p JOIN users u ON u.id=p.owner_id
+      WHERE p.phone_hash=$1`, [binding.phoneHash]);
+    return result.rows[0] ? mapUser(result.rows[0]) : null;
+  }
+
+  async listPhoneBindings(ownerId: string): Promise<PhoneBinding[]> {
+    const result = await this.pool.query(`SELECT * FROM phone_sign_in_identities WHERE owner_id=$1
+      ORDER BY phone_hash`, [ownerId]);
+    return result.rows.map(mapPhoneBinding);
+  }
+
+  async finalizeVerifiedPhoneLink(input: FinalizeVerifiedPhoneLinkInput): Promise<void> {
+    const key = phoneBindingKey(input.phoneBinding);
+    if (!validVerifiedContactConsumption(input)) throw new ContactVerificationStateError("invalid_verification");
+    if (!validContactFingerprint(input.sessionTokenHash)) throw new ContactVerificationStateError("authentication_required");
+    await this.withTransaction(["contact-verification-attempts", `phone-sign-in-identity:${key}`, `owner:${input.ownerId}`], async client => {
+      // This row lock serializes completion with logout's DELETE and owner-session cleanup.
+      const session = await client.query(`SELECT 1 FROM sessions WHERE token_hash=$1 AND user_id=$2
+        AND expires_at > clock_timestamp() FOR SHARE`, [input.sessionTokenHash, input.ownerId]);
+      if (!session.rowCount) throw new ContactVerificationStateError("authentication_required");
+      const saved = await loadVerifiedContactAttempt(client, input);
+      if (!saved || saved.channel !== "phone" || saved.intent !== "link"
+          || saved.addressHash !== input.phoneBinding.phoneHash) throw new ContactVerificationStateError("invalid_verification");
+      if (!(await client.query("SELECT id FROM users WHERE id=$1", [input.ownerId])).rowCount) {
+        throw new ContactVerificationStateError("invalid_verification");
+      }
+      const existing = await loadPhoneIdentity(client, input.phoneBinding);
+      if (existing.rowCount && String(existing.rows[0].owner_id) !== input.ownerId) throw new ContactVerificationStateError("invalid_verification");
+      if (!existing.rowCount) await insertPhoneIdentity(client, input.ownerId, input.phoneBinding, new Date().toISOString());
+      await consumeContactAttempt(client, saved);
+    }, null);
+  }
+
+  async consumeVerifiedContactAttempt(input: VerifiedContactConsumption): Promise<boolean> {
+    if (!validVerifiedContactConsumption(input)) return false;
+    return this.withTransaction(["contact-verification-attempts"], async client => {
+      const saved = await loadVerifiedContactAttempt(client, input);
+      if (!saved || saved.channel !== "phone" || saved.intent === "link") return false;
+      await consumeContactAttempt(client, saved);
+      return true;
+    }, null);
   }
 
   async getProviderUser(identity: ProviderIdentityBinding): Promise<StoredUser | null> {
@@ -462,7 +636,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
 
   async getSessionByTokenHash(tokenHash: string): Promise<(SessionRecord & { user: StoredUser }) | null> {
     const result = await this.pool.query(
-      `SELECT s.*, u.id AS user_id_value, u.email, u.display_name, u.password_hash,
+      `SELECT s.*, u.id AS user_id_value, u.email, u.email_verified_at, u.display_name, u.password_hash,
               u.agent_connected_at AS user_agent_connected_at,
               u.agent_tool_catalog_id AS user_agent_tool_catalog_id,
               u.created_at AS user_created_at
@@ -483,7 +657,8 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       createdAt: toIso(row.created_at),
       user: {
         id: String(row.user_id_value),
-        email: String(row.email),
+        email: row.email === null ? null : String(row.email),
+        emailVerifiedAt: nullableIso(row.email_verified_at),
         displayName: String(row.display_name),
         passwordHash: row.password_hash === null ? null : String(row.password_hash),
         agentConnectedAt: nullableIso(row.user_agent_connected_at),
@@ -3192,6 +3367,7 @@ async function replacePostgresCompetitionFixture(
      VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (id) DO UPDATE
        SET email = EXCLUDED.email,
+           email_verified_at = CASE WHEN lower(users.email) = lower(EXCLUDED.email) THEN users.email_verified_at ELSE NULL END,
            display_name = EXCLUDED.display_name,
            password_hash = EXCLUDED.password_hash,
            created_at = EXCLUDED.created_at`,
@@ -3656,6 +3832,40 @@ function assertCollectionFresh(collection: CollectionRecord, expectedUpdatedAt: 
   }
 }
 
+async function loadVerifiedContactAttempt(client: PoolClient, input: VerifiedContactConsumption): Promise<ContactVerificationAttempt | null> {
+  const result = await client.query(`SELECT * FROM contact_verification_attempts WHERE token_hash=$1 AND browser_hash=$2
+    AND version=$3 AND phase='verified' AND expires_at > clock_timestamp() FOR UPDATE`,
+    [input.tokenHash, input.browserHash, input.expectedVersion]);
+  const attempt = result.rows[0] ? mapContactVerificationAttempt(result.rows[0]) : null;
+  return contactAttemptMatchesConsumption(attempt, input) ? attempt : null;
+}
+
+async function consumeContactAttempt(client: PoolClient, attempt: ContactVerificationAttempt): Promise<void> {
+  await client.query("UPDATE contact_verification_attempts SET phase='consumed',version=version+1 WHERE token_hash=$1", [attempt.tokenHash]);
+}
+
+async function loadPhoneIdentity(client: PoolClient, binding: PhoneBinding) {
+  assertPhoneBinding(binding);
+  return client.query("SELECT owner_id FROM phone_sign_in_identities WHERE phone_hash=$1", [binding.phoneHash]);
+}
+
+async function insertPhoneIdentity(client: PoolClient, ownerId: string, binding: PhoneBinding, createdAt: string): Promise<void> {
+  assertPhoneBinding(binding);
+  await client.query(`INSERT INTO phone_sign_in_identities(phone_hash,masked_number,owner_id,created_at)
+    VALUES($1,$2,$3,$4)`, [binding.phoneHash, binding.maskedNumber, ownerId, createdAt]);
+}
+
+function mapPhoneBinding(row: Record<string, unknown>): PhoneBinding {
+  return { phoneHash: String(row.phone_hash), maskedNumber: String(row.masked_number) };
+}
+
+function mapContactVerificationAttempt(row: Record<string, unknown>): ContactVerificationAttempt {
+  return { tokenHash: String(row.token_hash), browserHash: String(row.browser_hash), addressHash: String(row.address_hash),
+    channel: String(row.channel) as ContactVerificationAttempt["channel"], intent: String(row.intent) as ContactVerificationAttempt["intent"],
+    phase: String(row.phase) as ContactVerificationAttempt["phase"], encryptedPayload: String(row.encrypted_payload),
+    expiresAt: toIso(row.expires_at), resendAt: toIso(row.resend_at), version: Number(row.version), checkCount: Number(row.check_count) };
+}
+
 function mapProviderSignInAttempt(row: Record<string, unknown>): ProviderSignInAttempt {
   return { stateHash: String(row.state_hash), browserHash: String(row.browser_hash), provider: String(row.provider),
     encryptedPayload: String(row.encrypted_payload), expiresAt: toIso(row.expires_at) };
@@ -3664,7 +3874,8 @@ function mapProviderSignInAttempt(row: Record<string, unknown>): ProviderSignInA
 function mapUser(row: Record<string, unknown>): StoredUser {
   return {
     id: String(row.id),
-    email: String(row.email),
+    email: row.email === null ? null : String(row.email),
+    emailVerifiedAt: nullableIso(row.email_verified_at),
     displayName: String(row.display_name),
     passwordHash: row.password_hash === null ? null : String(row.password_hash),
     agentConnectedAt: nullableIso(row.agent_connected_at),

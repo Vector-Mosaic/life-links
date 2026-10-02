@@ -314,7 +314,7 @@ export function OwnerWorkspace({ controller, snapshot, remoteAuthorization, onOp
           <button className={`ll-nav-item ${searchMode ? "active" : ""}`} title={!navOpen ? "Search records" : undefined} onClick={() => navigate(() => { controller.setDetailsOpen(false); controller.setActiveView("search"); })}><Search size={22} /><span>Search records</span></button>
           <button className={`ll-nav-item ${scanMode ? "active" : ""}`} title={!navOpen ? "Scan a QR" : undefined} onClick={() => navigate(() => { controller.setDetailsOpen(false); controller.setActiveView("scan"); })}><ScanLine size={22} /><span>Scan a QR</span></button>
         </nav>
-        <div className="ll-account"><ActionMenu key={snapshot.routePathname} label="Account" className="ll-account-button" above onOpenChange={setAccountMenuOpen} heading={<><strong>{currentUser?.displayName}</strong><span>{currentUser?.email}</span></>} items={[
+        <div className="ll-account"><ActionMenu key={snapshot.routePathname} label="Account" className="ll-account-button" above onOpenChange={setAccountMenuOpen} heading={<><strong>{currentUser?.displayName}</strong><span>{currentUser?.email ?? "Phone or provider sign-in"}</span></>} items={[
           { label: "Invite people", icon: <Plus size={18} />, onClick: () => setDialog({ kind: "invite" }) },
           { label: "Sign-in methods", icon: <LogIn size={18} />, onClick: () => setDialog({ kind: "sign-in-methods" }) },
           { separator: true }, { label: "Settings", icon: <Settings size={18} />, onClick: () => setDialog({ kind: "settings" }) }, { separator: true },

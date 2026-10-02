@@ -75,11 +75,11 @@ export function InvitePeopleDialog({ onClose }: { onClose(): void }) {
       <button className="ll-button ll-primary" disabled={loading || busy || !enabled || active.length >= 10} onClick={() => void create()}>
         <UserPlus size={18} />{busy ? "Working…" : newLink ? "Create another invitation" : "Create invitation link"}
       </button>
-      <p className="ll-muted">One signup per link · Expires in 7 days · Up to 10 pending invitations</p>
+      <p className="ll-muted">One invitation use per link · Expires in 7 days · Up to 10 pending invitations. People can also sign up directly.</p>
       {newLink && <section aria-label="New invitation">
         <label>Invitation link<input ref={linkInput} value={newLink.url} readOnly autoComplete="off" spellCheck={false} onFocus={event => event.target.select()} /></label>
         <div className="ll-button-row"><button className="ll-button" onClick={() => void copy()}><Copy size={16} />{copied ? "Copied!" : "Copy link"}</button></div>
-        <p className="ll-muted">Send this link in a message. Anyone with it can use it once. Save it before closing this dialog.</p>
+        <p className="ll-muted">Send this link in a message and save it before closing this dialog. The invitation can be used once; signup remains available if it expires or is cancelled.</p>
       </section>}
       {error && <p className="ll-inline-warning" role="alert">{error}</p>}
       {copied && <p role="status" className="ll-muted">Invitation link copied.</p>}

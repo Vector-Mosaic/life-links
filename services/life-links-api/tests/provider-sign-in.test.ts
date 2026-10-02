@@ -6,8 +6,8 @@ import { readConfig } from "../src/config.js";
 import { createLogger, type LogEvent } from "../src/logger.js";
 import { createLifeLinksApp } from "../src/server.js";
 import { InMemoryLifeLinksStore } from "../src/store.js";
-import { prepareMemberInvitation } from "../src/registration.js";
-import { verifyPassword } from "../src/password.js";
+import { prepareMemberInvitation, RegistrationAdmissionError } from "../src/registration.js";
+import { hashPassword, verifyPassword } from "../src/password.js";
 
 const origin = "https://sign-in.example.test";
 const invitationCode = "synthetic_provider_signup_invitation_123456789";
@@ -70,7 +70,7 @@ type Agent = ReturnType<typeof request.agent>;
 
 async function begin(ctx: Context, agent: Agent, intent: "login" | "register" | "link", extra: Record<string, unknown> = {}) {
   const response = await agent.post("/api/auth/providers/google/start").set("Origin", origin)
-    .send({ intent, ...(intent === "register" ? { invitationCode } : {}), ...extra });
+    .send({ intent, ...extra });
   expect(response.status).toBe(200);
   expect(Object.keys(response.body)).toEqual(["authorizationUrl"]);
   expect(response.headers["cache-control"]).toBe("private, no-store");
@@ -83,10 +83,14 @@ function callback(agent: Agent, state: string) {
   return agent.get("/api/auth/providers/google/callback").query({ state,
     code: `synthetic-auth-code-${state}`, iss: initialIdentity.issuer });
 }
-async function registerManual(agent: Agent, email = "manual-owner@example.test") {
-  const response = await agent.post("/api/auth/register").set("Origin", origin)
-    .send({ displayName: "Manual Owner", email, password, invitationCode, timeZone: "America/New_York" });
-  expect(response.status).toBe(201);
+async function seedManual(ctx: Context, email: string, displayName = "Manual Owner") {
+  // Existing-owner fixtures are not exercises of native verified signup.
+  return ctx.store.registerOwner({ displayName, email, passwordHash: await hashPassword(password), timeZone: "America/New_York" });
+}
+async function registerManual(ctx: Context, agent = ctx.agent, email = "manual-owner@example.test") {
+  await seedManual(ctx, email);
+  const response = await agent.post("/api/auth/login").set("Origin", origin).send({ email, password });
+  expect(response.status).toBe(200);
   return response.body.user as { id: string; email: string };
 }
 
@@ -100,10 +104,10 @@ function responseCookie(response: { headers: Record<string, unknown> }, name: st
 async function prepareAppleLink(ctx: Context) {
   // Supertest serves HTTP. Explicit fixture Cookie headers model the two HTTPS
   // browser requests while allowing assertions on the production cookie flags.
-  const ownerResponse = await request(ctx.app).post("/api/auth/register").set("Origin", origin)
-    .send({ displayName: "Existing Apple-link owner", email: "manual-apple-owner@example.test", password,
-      invitationCode, timeZone: "America/New_York" });
-  expect(ownerResponse.status).toBe(201);
+  await seedManual(ctx, "manual-apple-owner@example.test", "Existing Apple-link owner");
+  const ownerResponse = await request(ctx.app).post("/api/auth/login").set("Origin", origin)
+    .send({ email: "manual-apple-owner@example.test", password });
+  expect(ownerResponse.status).toBe(200);
   const ownerCookie = responseCookie(ownerResponse, "life_links_session");
   const started = await request(ctx.app).post("/api/auth/providers/apple/start").set("Origin", origin)
     .set("Cookie", ownerCookie).send({ intent: "link", returnTo: "/calendar" });
@@ -164,11 +168,48 @@ describe("provider sign-in HTTP", () => {
     const passwordLogin = await request(ctx.app).post("/api/auth/login").send({ email: initialIdentity.email, password });
     expect(passwordLogin.status).toBe(401);
     expect(passwordLogin.body).toEqual({ error: "invalid_credentials" });
-    expect((await ctx.agent.get("/api/account-sign-in-methods")).body).toEqual({ providers: [{ id: "google", label: "Google", linked: true }] });
+    expect((await ctx.agent.get("/api/account-sign-in-methods")).body).toEqual({ providers: [{ id: "google", label: "Google", linked: true }],
+      phone: { enabled: false, linked: false, maskedNumber: null } });
+  });
+
+  it.each(["login", "register"] as const)("admits a new public subject through %s with no invitation configuration", async intent => {
+    const ctx = setup();
+    ctx.config.memberInvitationsEnabled = false; ctx.config.registration = undefined;
+    const registered = vi.spyOn(ctx.store, "registerProviderOwner");
+    const pending = await begin(ctx, ctx.agent, intent);
+    expect((await callback(ctx.agent, pending.state)).headers.location).toBe("/");
+    const owner = (await ctx.agent.get("/api/me")).body.user;
+    expect((await ctx.store.getProviderUser(initialIdentity))?.id).toBe(owner.id);
+    expect(registered).toHaveBeenCalledTimes(1);
+    expect(registered.mock.calls[0][0]).not.toHaveProperty("invitation");
+  });
+
+  it("admits a named provider subject with no email without a contact challenge", async () => {
+    const ctx = setup({ email: null, emailVerified: false });
+    const pending = await begin(ctx, ctx.agent, "login");
+    expect((await callback(ctx.agent, pending.state)).headers.location).toBe("/");
+    const owner = (await ctx.agent.get("/api/me")).body.user;
+    expect(owner).toMatchObject({ displayName: initialIdentity.displayName, email: null });
+    const stored = await ctx.store.getUserById(owner.id);
+    expect(stored?.passwordHash).toBeNull();
+    expect((await ctx.store.getProviderUser({ ...initialIdentity, email: null, emailVerified: false }))?.id).toBe(owner.id);
+  });
+
+  it("does not reserve an unverified provider email or merge it with an existing owner", async () => {
+    const ctx = setup({ emailVerified: false }), original = await registerManual(ctx, ctx.agent, initialIdentity.email!);
+    const before = await ctx.store.getUserById(original.id);
+    const newcomer = request.agent(ctx.app), pending = await begin(ctx, newcomer, "login");
+    expect((await callback(newcomer, pending.state)).headers.location).toBe("/");
+    const owner = (await newcomer.get("/api/me")).body.user;
+    expect(owner.id).not.toBe(original.id);
+    expect(owner.email).toBeNull();
+    expect((await ctx.store.getProviderUser({ ...initialIdentity, emailVerified: false }))?.id).toBe(owner.id);
+    expect(await ctx.store.getUserById(original.id)).toEqual(before);
+    expect(await verifyPassword(password, before!.passwordHash)).toBe(true);
   });
 
   it("does not use a matching provider email to sign in to or overwrite an existing password account", async () => {
-    const ctx = setup(), owner = await registerManual(ctx.agent, initialIdentity.email!);
+    const ctx = setup(), owner = await registerManual(ctx, ctx.agent, initialIdentity.email!);
     const before = await ctx.store.getUserById(owner.id);
     const newcomer = request.agent(ctx.app), pending = await begin(ctx, newcomer, "register");
     const rejected = await callback(newcomer, pending.state);
@@ -180,7 +221,7 @@ describe("provider sign-in HTTP", () => {
     expect(await verifyPassword(password, before!.passwordHash)).toBe(true);
     expect(await ctx.store.registrationAvailable(ctx.config.registration!)).toBe(true);
     const login = await begin(ctx, newcomer, "login");
-    expect((await callback(newcomer, login.state)).headers.location).toBe("/#signin_error=invitation_required");
+    expect((await callback(newcomer, login.state)).headers.location).toBe("/#signin_error=signup_failed");
     expect((await newcomer.get("/api/me")).body.user).toBeNull();
   });
 
@@ -196,13 +237,34 @@ describe("provider sign-in HTTP", () => {
     expect((await ctx.agent.get("/api/me")).body.user.id).toBe(ownerId);
   });
 
+  it.each(["before", "during"])("refuses new-owner creation when another owner signs in %s provider authorization", async timing => {
+    const ctx = setup();
+    if (timing === "before") await registerManual(ctx);
+    const pending = await begin(ctx, ctx.agent, timing === "before" ? "login" : "register");
+    const owner = timing === "before" ? (await ctx.agent.get("/api/me")).body.user : await registerManual(ctx);
+    expect((await callback(ctx.agent, pending.state)).headers.location).toBe("/#signin_error=signin_failed");
+    expect((await ctx.agent.get("/api/me")).body.user.id).toBe(owner.id);
+    expect(await ctx.store.getProviderUser(initialIdentity)).toBeNull();
+  });
+
+  it("preserves account switching for an already mapped provider subject", async () => {
+    const ctx = setup(), providerAgent = request.agent(ctx.app), registered = await begin(ctx, providerAgent, "register");
+    expect((await callback(providerAgent, registered.state)).headers.location).toBe("/");
+    const mapped = (await providerAgent.get("/api/me")).body.user;
+    const original = await registerManual(ctx);
+    const pending = await begin(ctx, ctx.agent, "login");
+    expect((await callback(ctx.agent, pending.state)).headers.location).toBe("/");
+    expect((await ctx.agent.get("/api/me")).body.user.id).toBe(mapped.id);
+    expect(await ctx.store.getUserById(original.id)).not.toBeNull();
+  });
+
   it("requires an authenticated cookie owner for linking and cannot move an identity from another owner", async () => {
     const ctx = setup();
     expect((await ctx.agent.post("/api/auth/providers/google/start").set("Origin", origin).send({ intent: "link" })).status).toBe(401);
     const providerAgent = request.agent(ctx.app), registered = await begin(ctx, providerAgent, "register");
     expect((await callback(providerAgent, registered.state)).headers.location).toBe("/");
     const providerOwner = (await providerAgent.get("/api/me")).body.user;
-    const owner = await registerManual(ctx.agent);
+    const owner = await registerManual(ctx);
     const nativeLogin = await request(ctx.app).post("/api/auth/login").send({ email: owner.email, password, client: "native" });
     expect(nativeLogin.status).toBe(200);
     const bearerLink = await request(ctx.app).post("/api/auth/providers/google/start").set("Origin", origin)
@@ -217,9 +279,9 @@ describe("provider sign-in HTTP", () => {
 
   it("refuses linking after logout or a same-browser account switch during provider authorization", async () => {
     for (const switchAccount of [false, true]) {
-      const ctx = setup(), owner = await registerManual(ctx.agent), pending = await begin(ctx, ctx.agent, "link");
+      const ctx = setup(), owner = await registerManual(ctx), pending = await begin(ctx, ctx.agent, "link");
       if (switchAccount) {
-        const otherAgent = request.agent(ctx.app), other = await registerManual(otherAgent, "another-owner@example.test");
+        const otherAgent = request.agent(ctx.app), other = await registerManual(ctx, otherAgent, "another-owner@example.test");
         expect((await ctx.agent.post("/api/auth/login").send({ email: other.email, password })).status).toBe(200);
         expect((await ctx.agent.get("/api/me")).body.user.id).toBe(other.id);
       } else expect((await ctx.agent.post("/api/auth/logout")).status).toBe(204);
@@ -230,7 +292,7 @@ describe("provider sign-in HTTP", () => {
   });
 
   it("successfully links an existing owner without changing their password or private records", async () => {
-    const ctx = setup(), owner = await registerManual(ctx.agent), before = await ctx.store.getUserById(owner.id);
+    const ctx = setup(), owner = await registerManual(ctx), before = await ctx.store.getUserById(owner.id);
     const item = await ctx.store.createLifeLink({ id: "manual-owner-record", ownerId: owner.id, title: "Existing private record", createdAt: before!.createdAt });
     const pending = await begin(ctx, ctx.agent, "link");
     expect((await callback(ctx.agent, pending.state)).headers.location).toBe("/");
@@ -240,9 +302,9 @@ describe("provider sign-in HTTP", () => {
     expect((await ctx.agent.get("/api/account-sign-in-methods")).body.providers[0].linked).toBe(true);
   });
 
-  it("rechecks cancellation and invitation expiry after provider authorization, before account creation", async () => {
+  it("admits public provider owners after an optional invitation is cancelled or expires", async () => {
     for (const expire of [false, true]) {
-      const ctx = setup(), inviter = await registerManual(ctx.agent), prepared = prepareMemberInvitation(inviter.id);
+      const ctx = setup(), inviter = await registerManual(ctx), prepared = prepareMemberInvitation(inviter.id);
       const now = Date.now();
       if (expire) {
         prepared.invitation.createdAt = new Date(now - 7 * 86_400_000 + 30_000).toISOString();
@@ -253,11 +315,48 @@ describe("provider sign-in HTTP", () => {
       const clock = expire ? vi.spyOn(Date, "now").mockReturnValue(now + 60_000) : null;
       try {
         if (!expire) await ctx.store.revokeMemberInvitation(inviter.id, prepared.invitation.id);
-        expect((await callback(recipient, pending.state)).headers.location).toBe("/#signin_error=invitation_required");
-        expect(await ctx.store.getProviderUser(initialIdentity)).toBeNull();
-        expect(await ctx.store.getUserByEmail(initialIdentity.email!)).toBeNull();
+        expect((await callback(recipient, pending.state)).headers.location).toBe("/");
+        const owner = (await recipient.get("/api/me")).body.user;
+        expect((await ctx.store.getProviderUser(initialIdentity))?.id).toBe(owner.id);
+        expect((await ctx.store.getMemberInvitation(prepared.invitation.fingerprint))?.redeemedAt).toBeNull();
       } finally { clock?.mockRestore(); }
     }
+  });
+
+  it("redeems a valid optional member invitation in the same provider admission", async () => {
+    const ctx = setup(), inviter = await registerManual(ctx), prepared = prepareMemberInvitation(inviter.id);
+    await ctx.store.createMemberInvitation(prepared.invitation);
+    const recipient = request.agent(ctx.app), pending = await begin(ctx, recipient, "register", { invitationCode: prepared.code });
+    expect((await callback(recipient, pending.state)).headers.location).toBe("/");
+    expect((await ctx.store.getMemberInvitation(prepared.invitation.fingerprint))?.redeemedAt).toEqual(expect.any(String));
+    expect((await ctx.store.getProviderUser(initialIdentity))?.id).toBe((await recipient.get("/api/me")).body.user.id);
+  });
+
+  it("retries a rolled-back invitation cancellation race once as public signup", async () => {
+    const ctx = setup(), inviter = await registerManual(ctx), prepared = prepareMemberInvitation(inviter.id);
+    await ctx.store.createMemberInvitation(prepared.invitation);
+    const realRegistration = ctx.store.registerProviderOwner.bind(ctx.store);
+    const registered = vi.spyOn(ctx.store, "registerProviderOwner").mockImplementation(async input => {
+      if (input.invitation) await ctx.store.revokeMemberInvitation(inviter.id, prepared.invitation.id);
+      return realRegistration(input);
+    });
+    const recipient = request.agent(ctx.app), pending = await begin(ctx, recipient, "register", { invitationCode: prepared.code });
+    expect((await callback(recipient, pending.state)).headers.location).toBe("/");
+    expect(registered).toHaveBeenCalledTimes(2);
+    expect(registered.mock.calls[0][0].invitation?.memberInvitationId).toBe(prepared.invitation.id);
+    expect(registered.mock.calls[1][0]).not.toHaveProperty("invitation");
+    expect((await ctx.store.getMemberInvitation(prepared.invitation.fingerprint))?.redeemedAt).toBeNull();
+  });
+
+  it.each(["registration_failed", "unknown"])("does not retry %s store failures", async failure => {
+    const ctx = setup(), registered = vi.spyOn(ctx.store, "registerProviderOwner").mockRejectedValue(
+      failure === "registration_failed" ? new RegistrationAdmissionError("registration_failed") : new Error("private store diagnostics"));
+    const pending = await begin(ctx, ctx.agent, "register", { invitationCode });
+    expect((await callback(ctx.agent, pending.state)).headers.location).toBe(
+      `/#signin_error=${failure === "registration_failed" ? "signup_failed" : "signin_failed"}`);
+    expect(registered).toHaveBeenCalledTimes(1);
+    expect((await ctx.agent.get("/api/me")).body.user).toBeNull();
+    expect(JSON.stringify(ctx.events)).not.toContain("private store diagnostics");
   });
 
   it("signs returning linked subjects into the same owner without an invitation or email reassignment", async () => {
@@ -292,7 +391,7 @@ describe("provider sign-in HTTP", () => {
     expect(await ctx.store.listProviderIdentities(owner.id)).toHaveLength(2);
   });
 
-  it("collects missing contact fields through browser-bound verified continuation without passwords and completes once", async () => {
+  it("collects a missing display name through browser-bound continuation without editable email and completes once", async () => {
     const ctx = setup({ email: null, emailVerified: false, displayName: null });
     const pending = await begin(ctx, ctx.agent, "register", { returnTo: "/routines" });
     const authorized = await callback(ctx.agent, pending.state);
@@ -301,28 +400,53 @@ describe("provider sign-in HTTP", () => {
     const signupToken = authorized.headers.location.split("#signup=")[1];
     expect((await ctx.agent.get("/api/me")).body.user).toBeNull();
     expect(await ctx.store.getProviderUser(initialIdentity)).toBeNull();
-    const body = { signupToken, email: "chosen-contact@example.test", displayName: "New Member", timeZone: "America/New_York" };
+    const body = { signupToken, displayName: "New Member", timeZone: "America/New_York" };
     const stranger = request.agent(ctx.app);
     expect((await stranger.post("/api/auth/provider-signup/details").set("Origin", origin).send({ signupToken })).status).toBe(400);
     expect((await stranger.post("/api/auth/provider-signup/complete").set("Origin", origin).send(body)).status).toBe(400);
     const details = await ctx.agent.post("/api/auth/provider-signup/details").set("Origin", origin).send({ signupToken });
     expect(details.status).toBe(200);
     expect(details.body).toEqual({ email: null, displayName: null });
+    expect((await ctx.agent.post("/api/auth/provider-signup/complete").set("Origin", origin)
+      .send({ ...body, email: "arbitrary-reserved-address@example.test" })).status).toBe(400);
     expect((await ctx.agent.post("/api/auth/provider-signup/complete").send(body)).status).toBe(403);
     const completed = await ctx.agent.post("/api/auth/provider-signup/complete").set("Origin", origin).send(body);
     expect(completed.status).toBe(201);
     expect(completed.body).toEqual({ returnTo: "/routines" });
     const owner = (await ctx.agent.get("/api/me")).body.user;
-    expect(owner).toMatchObject({ displayName: body.displayName, email: body.email });
+    expect(owner).toMatchObject({ displayName: body.displayName, email: null });
     expect((await ctx.store.getUserById(owner.id))?.passwordHash).toBeNull();
     expect((await ctx.store.getProviderUser(initialIdentity))?.id).toBe(owner.id);
     expect((await ctx.agent.post("/api/auth/provider-signup/complete").set("Origin", origin).send(body)).status).toBe(400);
     expect((await ctx.agent.post("/api/auth/provider-signup/details").set("Origin", origin).send({ signupToken })).status).toBe(400);
   });
 
+  it.each([true, false])("retains read-only provider email metadata and persists only a verified claim (%s)", async emailVerified => {
+    const ctx = setup({ displayName: null, emailVerified });
+    const pending = await begin(ctx, ctx.agent, "login"), authorized = await callback(ctx.agent, pending.state);
+    const signupToken = authorized.headers.location.split("#signup=")[1];
+    const details = await ctx.agent.post("/api/auth/provider-signup/details").set("Origin", origin).send({ signupToken });
+    expect(details.body).toEqual({ email: initialIdentity.email, displayName: null });
+    const completed = await ctx.agent.post("/api/auth/provider-signup/complete").set("Origin", origin)
+      .send({ signupToken, displayName: "Chosen display name" });
+    expect(completed.status).toBe(201);
+    expect((await ctx.agent.get("/api/me")).body.user.email).toBe(emailVerified ? initialIdentity.email : null);
+  });
+
+  it("reports a retained phone binding safely when the phone sender is disabled", async () => {
+    const ctx = setup(), owner = await registerManual(ctx);
+    vi.spyOn(ctx.store, "listPhoneBindings").mockResolvedValue([{ phoneHash: "3".repeat(64), maskedNumber: "+1 •••• 4242" }]);
+    const response = await ctx.agent.get("/api/account-sign-in-methods");
+    expect(response.body.phone).toEqual({ enabled: false, linked: true, maskedNumber: "+1 •••• 4242" });
+    const serialized = JSON.stringify(response.body);
+    expect(serialized).not.toContain("phoneHash");
+    expect(serialized).not.toContain(owner.email);
+    expect((await request(ctx.app).get("/api/account-sign-in-methods")).status).toBe(401);
+  });
+
   it("keeps raw invitations, authorization codes, transaction material and provider claims out of persistence payloads and logs", async () => {
     const ctx = setup(), saved = vi.spyOn(ctx.store, "saveProviderSignInAttempt");
-    const pending = await begin(ctx, ctx.agent, "register");
+    const pending = await begin(ctx, ctx.agent, "register", { invitationCode });
     const persisted = saved.mock.calls[0][0];
     expect(persisted.stateHash).toMatch(/^[a-f0-9]{64}$/);
     expect(persisted.browserHash).toMatch(/^[a-f0-9]{64}$/);
@@ -368,11 +492,10 @@ describe("provider sign-in HTTP", () => {
       const ctx = setup({}, true, { provider: "apple", secureCookies: true }), pending = await prepareAppleLink(ctx);
       let completionCookie = pending.ownerCookie;
       if (mode !== "logout") {
-        const sessionResponse = mode === "another-owner"
-          ? await request(ctx.app).post("/api/auth/register").set("Origin", origin).send({
-            displayName: "Other owner", email: "other-apple-owner@example.test", password, invitationCode })
-          : await request(ctx.app).post("/api/auth/login").set("Origin", origin).send({ email: pending.owner.email, password });
-        expect(sessionResponse.status).toBe(mode === "another-owner" ? 201 : 200);
+        if (mode === "another-owner") await seedManual(ctx, "other-apple-owner@example.test", "Other owner");
+        const sessionResponse = await request(ctx.app).post("/api/auth/login").set("Origin", origin)
+          .send({ email: mode === "another-owner" ? "other-apple-owner@example.test" : pending.owner.email, password });
+        expect(sessionResponse.status).toBe(200);
         completionCookie = responseCookie(sessionResponse, "life_links_session");
         const refused = await request(ctx.app).post("/api/auth/provider-link/complete").set("Origin", origin)
           .set("Cookie", `${completionCookie}; ${pending.browserCookie}`).send({ linkToken: pending.linkToken });

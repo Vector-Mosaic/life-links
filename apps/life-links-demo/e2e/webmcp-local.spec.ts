@@ -13,12 +13,12 @@ import {
 
 import { LIFE_LINKS_PAGE_TOOL_NAMES } from "../src/agent/browserWebMcpHost";
 
-const owner: Pick<UserRecord, "id" | "email" | "displayName" | "createdAt"> = {
+const owner = {
   id: "webmcp-owner",
   email: "owner@webmcp.test",
   displayName: "WebMCP Owner",
   createdAt: "2026-08-26T12:00:00.000Z"
-};
+} satisfies Pick<UserRecord, "id" | "email" | "displayName" | "createdAt">;
 
 const rootLifeLink: LifeLinkRecord = {
   id: "life-link-camera-bag",

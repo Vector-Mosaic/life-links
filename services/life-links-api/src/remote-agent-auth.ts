@@ -213,8 +213,8 @@ export class RemoteAgentAuth {
       const content=login && !owner?`<label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" autocomplete="current-password" required></label>`:
         `<p>${login?"Continue as":"Authorize"} ${html(owner?.email??"your Life Links account")}.</p>`;
       const scopes=String(details.params.scope??"").split(" ").filter(s=>(REMOTE_AGENT_SCOPES as readonly string[]).includes(s));
-      const registrationAvailable=login && this.config.registration && await this.store.registrationAvailable(this.config.registration);
-      const registrationLink=registrationAvailable?`<p>Have a private judge invitation? <a href="${html(`/register?returnTo=${encodeURIComponent(`/agent-authorize/${uid}`)}`)}">Create your private Life Links account</a>.</p>`:"";
+      const registrationAvailable=login && Boolean(this.config.contactVerification?.email || this.config.contactVerification?.phone || this.config.providerSignIn?.length);
+      const registrationLink=registrationAvailable?`<p>New to LifeLinks? <a href="${html(`/register?returnTo=${encodeURIComponent(`/agent-authorize/${uid}`)}`)}">Create your private LifeLinks account</a>.</p>`:"";
       res.type("html").send(page(`Connect ${name} to Life Links`,`${content ? `<form method="post" action="/agent-authorize/${html(uid)}"><input type="hidden" name="csrf" value="${html(this.csrf(uid))}">${content}`:""}
         ${!login?`<p>This connection can work while Life Links is closed. Access stays private to this account.</p><ul>${scopes.map(s=>`<li>${html(s.replace(":",": "))}</li>`).join("")}</ul><p>Calendar access is additionally limited by each calendar's Agent access setting. Your agent cannot grant itself permissions.</p>`:""}
         <button name="action" value="approve">${login?"Continue":"Connect Life Links"}</button><button class="secondary" name="action" value="cancel">Cancel</button></form>${registrationLink}`));

@@ -4332,9 +4332,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     } catch (issue) {
       const code = issue instanceof ApiError ? issue.code : "";
       const messages: Record<string, string> = {
-        invalid_registration: "Check your name, email, password, and invitation code. Passwords must be 12–128 characters.",
-        registration_unavailable: "Account creation is unavailable with this invitation. Check the private invitation instructions or sign in to an existing account.",
-        registration_failed: "We couldn't create an account with those details. If you already have an account, sign in instead.",
+        invalid_verification: "Verify your email with the latest code before creating your account.",
+        verification_unavailable: "Account creation is currently unavailable. Choose another available signup method or sign in to an existing account.",
+        signup_failed: "We couldn't create an account with those details. If you already have an account, sign in instead.",
+        sign_out_required: "Sign out before creating a separate private account.",
+        verification_rate_limited: "Too many attempts. Please wait before trying again; existing account sign-in is still available.",
         rate_limited: "Too many attempts. Please wait before trying again; existing account sign-in is still available."
       };
       this.update({ error: messages[code] ?? "We couldn't confirm account creation. Try signing in before submitting again." });

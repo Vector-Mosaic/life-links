@@ -2,6 +2,28 @@
 
 ## Current source-candidate notice boundary
 
+The verified-signup presentation includes the Apple mark from Bootstrap Icons.
+Its MIT notice, Copyright (c) 2019-2024 The Bootstrap Authors, and complete
+license terms ship in `apps/life-links-demo/public/BootstrapIcons-LICENSE.txt`.
+The icon's source attribution is maintained in
+`apps/life-links-demo/src/assets/README.md`.
+The verification transports add no external SDK dependency. The API's phone
+country parser adds `libphonenumber-js@1.13.14`, including MIT library code and
+Google's Apache-2.0 phone metadata. The
+[phone-number parsing appendix](#phone-number-parsing-dependency-addition)
+retains the exact package attribution and applicable license terms.
+The standalone lock SHA-256 for this addition is
+`5456b7de182832243704e13007a3d07566cca71c58814e71aaacfef74c9d0b86`.
+The lock adds only this package's API importer, exact package resolution and
+dependency-free snapshot. Cloud run `36947795002` installed the exact source
+`57d3ba88cd1186c15cc160afb1f9fa76a807b561` with this frozen standalone lock.
+Its production inventory comparison against issued run `36940425749` adds only
+`libphonenumber-js@1.13.14`, removes no versions, and increases exact version
+entries from 346 to 347. The parsing appendix covers that added package's MIT
+code and Apache-2.0 metadata notices. This reconciles the dependency addition;
+subsequent first-party email transport changes add no external dependency and
+do not expand that run's source qualification or establish deployment.
+
 The Provider Sign-In addition imports the already admitted MSAL, Google auth
 and jose versions through a new first-party workspace package. Its standalone
 lock SHA-256 is
@@ -1468,3 +1490,53 @@ The retained upstream license file SHA-256 is
 `44a7ca64cb59fbe6481a7260e4317ff0177127a6e50e6077a9bfa60f89f905a2`.
 This closes the missing-text provenance item without asserting that the
 original archive contained a license file or granting legal clearance.
+
+## Phone-number parsing dependency addition
+
+The API uses `libphonenumber-js@1.13.14` through its `max` entry point for phone
+validation and country recognition. Its exact
+[npm registry metadata](https://registry.npmjs.org/libphonenumber-js/1.13.14)
+declares MIT, author `catamphetamine <purecatamphetamine@gmail.com>`, and no
+runtime, optional or peer dependencies. The package repository is
+[catamphetamine/libphonenumber-js](https://gitlab.com/catamphetamine/libphonenumber-js).
+
+The exact [primary npm archive](https://registry.npmjs.org/libphonenumber-js/-/libphonenumber-js-1.13.14.tgz)
+was read without installation or execution. Its SHA-512 matches the pinned
+standalone lock and registry metadata; `package/package.json` confirms the
+exact package name and version. The archive SHA-256 is
+`099ff8da2cde016ee84c8187ec9e9af5a7bfbfec83f1a043e7f3f3f1adbb5e3b`.
+
+The distributed README identifies Google's transformed phone metadata and
+distinguishes Google's Apache-2.0 license from this library's MIT license.
+`package/LICENSE.Apache` retains the complete Apache-2.0 terms, sections 1–9.
+Those terms match the complete [Apache-2.0 terms already retained above](#html5-qrcode-238---apache-20)
+after whitespace normalization and apply to the reused Google metadata here.
+The exact archive has no separate NOTICE file. Its Apache license file contains
+no additional copyright attribution.
+
+The complete `package/LICENSE` is:
+
+```text
+(The MIT License)
+
+Copyright (c) 2016 @catamphetamine <purecatamphetamine@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+'Software'), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED 'AS IS', WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```

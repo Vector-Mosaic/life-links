@@ -47,6 +47,7 @@ import { calendarStoreContract } from "./calendar-store-contract.js";
 import { attachmentTextStoreContract } from "./attachment-text-store-contract.js";
 import { registrationStoreContract } from "./registration-store-contract.js";
 import { providerSignInStoreContract } from "./provider-sign-in-store-contract.js";
+import { contactVerificationStoreContract } from "./contact-verification-store-contract.js";
 import { CalendarProviderGateway, calendarProviderCredentialHandle } from "../src/calendar-provider-gateway.js";
 import { PostgresCalendarProviderStateStore } from "../src/calendar-provider-postgres.js";
 import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
@@ -96,6 +97,44 @@ describe("Life Links Postgres integration", () => {
   calendarStoreContract(() => store);
   registrationStoreContract(() => store);
   providerSignInStoreContract(() => store);
+  contactVerificationStoreContract(() => store);
+
+  it("serializes phone-link completion with a committed logout and preserves the refused proof", async () => {
+    const owner = await store.registerOwner({ displayName: "Phone link owner", email: `${randomUUID()}@example.test`,
+      passwordHash: "synthetic-password-hash", timeZone: "UTC" });
+    const sessionTokenHash = invitationFingerprint(randomUUID());
+    await store.createSession(owner.id, sessionTokenHash, new Date(Date.now() + 3_600_000).toISOString());
+    const phoneBinding = { phoneHash: invitationFingerprint(randomUUID()), maskedNumber: "•••• 0123" };
+    const attempt = { tokenHash: invitationFingerprint(randomUUID()), browserHash: invitationFingerprint(randomUUID()),
+      addressHash: phoneBinding.phoneHash, channel: "phone" as const, intent: "link" as const, phase: "verified" as const,
+      encryptedPayload: "synthetic-protected-link-payload", expiresAt: new Date(Date.now() + 600_000).toISOString(),
+      resendAt: new Date().toISOString(), version: 1, checkCount: 1 };
+    await store.createContactVerificationAttempt(attempt);
+    const logout = await postgresPool.connect();
+    let completion: Promise<void> | undefined;
+    try {
+      const logoutPid = (await logout.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      await logout.query("BEGIN");
+      await logout.query("DELETE FROM sessions WHERE token_hash=$1", [sessionTokenHash]);
+      completion = store.finalizeVerifiedPhoneLink({ tokenHash: attempt.tokenHash, browserHash: attempt.browserHash,
+        expectedVersion: 1, ownerId: owner.id, phoneBinding, sessionTokenHash });
+      // Observe the transaction waiting on the exact session query rather than
+      // using a timing assumption to claim that logout won the race.
+      const rejected = expect(completion).rejects.toMatchObject({ code: "authentication_required" });
+      await vi.waitFor(async () => {
+        const blocked = await postgresPool.query(`SELECT 1 FROM pg_stat_activity
+          WHERE datname=current_database() AND query LIKE '%FROM sessions%FOR SHARE%' AND wait_event_type='Lock'
+            AND $1::integer=ANY(pg_blocking_pids(pid))`, [logoutPid]);
+        expect(blocked.rowCount).toBeGreaterThan(0);
+      }, { timeout: 3_000, interval: 10 });
+      await logout.query("COMMIT"); await rejected;
+      expect(await store.listPhoneBindings(owner.id)).toEqual([]);
+      expect(await store.getContactVerificationAttempt(attempt.tokenHash, attempt.browserHash)).toEqual(attempt);
+    } finally {
+      await logout.query("ROLLBACK"); logout.release();
+      await completion?.catch(() => {});
+    }
+  });
 
   it("preserves durable invitation capacity across store instances and rolls back failed owner admission", async () => {
     const second = createPostgresStore(requireTestDatabaseUrl(), schemaName);
@@ -917,7 +956,7 @@ describe("Life Links Postgres integration", () => {
       const users = await isolated.pool.query("SELECT count(*)::int AS count FROM users");
       const migrations = await isolated.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
       expect(users.rows[0].count).toBe(2);
-      expect(migrations.rows[0].count).toBe(22);
+      expect(migrations.rows[0].count).toBe(23);
       const agentConnectionColumn = await adminPool.query(
         `SELECT is_nullable, data_type
          FROM information_schema.columns
@@ -1837,7 +1876,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(22);
+      expect(receiptCount.rows[0].count).toBe(23);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1888,7 +1927,7 @@ describe("Life Links Postgres integration", () => {
       const newlyCreated = await fixture.store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
         ownerId, title: "New default", createdAt, steps: [{ id: `routine-step-${randomUUID()}`, activityId, activityTitle: "Prepare", position: 0 }] });
       expect(newlyCreated.currentRevision.revision.ordering).toBe("unordered");
-      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(22);
+      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(23);
     } finally {
       await fixture.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1955,7 +1994,8 @@ describe("Life Links Postgres integration", () => {
         "019_remote_agent_protocol_state.sql",
         "020_invitation_registration.sql",
         "021_member_invitations.sql",
-        "022_provider_sign_in.sql"
+        "022_provider_sign_in.sql",
+        "023_verified_public_signup.sql"
       ]);
     } finally {
       await concurrent.store.close();

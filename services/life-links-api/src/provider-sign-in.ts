@@ -75,6 +75,19 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
     const accepted = member ? memberRegistrationInvitation(member) : config.registration && matchesRegistrationInvitation(code, config.registration) ? config.registration : null;
     return accepted && await store.registrationAvailable(accepted) ? accepted : null;
   }
+  async function registerPublicOwner(identity: VerifiedProviderIdentity, displayName: string, email: string | null,
+    timeZone: string, invitationCode?: string) {
+    const accepted = await invitation(invitationCode);
+    const input = { identity, displayName, email, timeZone };
+    try {
+      return await store.registerProviderOwner({ ...input, ...(accepted ? { invitation: accepted } : {}) });
+    } catch (error) {
+      // Cancellation/capacity races roll back admission atomically. The verified
+      // subject can still join publicly; an uncertain store failure is not retried.
+      if (!accepted || !(error instanceof RegistrationAdmissionError) || error.code !== "registration_unavailable") throw error;
+      return store.registerProviderOwner(input);
+    }
+  }
   function returnPath(value: unknown) {
     if (value === undefined) return "/";
     if (typeof value !== "string" || value.length > 2048 || !value.startsWith("/") || value.startsWith("//") || /[\\#\u0000-\u001f\u007f]/.test(value)) throw new Error();
@@ -88,6 +101,11 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
     if (!clean || /[\u0000-\u001f\u007f]/.test(clean) || clean.length > (email ? 254 : 100)) return null;
     return email ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(clean) ? clean.toLowerCase() : null : clean;
   }
+  function accountEmail(identity: VerifiedProviderIdentity) {
+    // This retains the exact provider claim; it does not add mailbox recovery
+    // authority. Unverified profile data cannot reserve the unique email field.
+    return identity.emailVerified === true ? profile(identity.email, true) : null;
+  }
   function fail(response: Response, returnTo = "/", code = "signin_failed") {
     noStore(response); clearBrowser(response); response.redirect(303, `${returnTo}#signin_error=${code}`);
   }
@@ -98,10 +116,14 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
   routes.get("/api/auth/providers", (_request, response) => { noStore(response); response.json({ providers: adapters.map(adapter => ({ id: adapter.id, label: adapter.displayName })) }); });
   routes.get("/api/account-sign-in-methods", async (request: AuthRequest, response) => {
     noStore(response); if (!request.user) { response.status(401).json({ error: "authentication_required" }); return; }
-    const linked = await store.listProviderIdentities(request.user.id);
+    const [linked, phoneBindings] = await Promise.all([
+      store.listProviderIdentities(request.user.id), store.listPhoneBindings(request.user.id)
+    ]);
     response.json({ providers: adapters.map(adapter => ({ id: adapter.id, label: adapter.displayName,
       linked: linked.some(binding => binding.provider === adapter.id &&
-        binding.clientId === config.providerSignIn?.find(provider => provider.id === adapter.id)?.clientId) })) });
+        binding.clientId === config.providerSignIn?.find(provider => provider.id === adapter.id)?.clientId) })),
+      phone: { enabled: Boolean(config.contactVerification?.phone), linked: phoneBindings.length > 0,
+        maskedNumber: phoneBindings[0]?.maskedNumber ?? null } });
   });
   routes.post("/api/auth/providers/:provider/start", async (request: AuthRequest, response) => {
     noStore(response); if (!budget(request, response)) return;
@@ -114,13 +136,12 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
       if (!["login", "register", "link"].includes(intent)) throw new Error();
       if (intent === "link" && (!request.user || request.authTransport !== "cookie" || !request.sessionTokenHash)) { response.status(401).json({ error: "authentication_required" }); return; }
       if (intent === "register" && request.user) { response.status(409).json({ error: "sign_out_required" }); return; }
-      if (intent === "register" && !await invitation(body.invitationCode)) { response.status(403).json({ error: "invitation_required" }); return; }
       if (provider.responseMode === "form_post" && !config.secureCookies) throw new Error();
       const returnTo = returnPath(body.returnTo), timeZone = normalizeCalendarIanaTimeZone(body.timeZone ?? "UTC");
       const transaction = createProviderTransaction(), browser = randomBytes(32).toString("base64url");
       const authorizationUrl = await provider.authorizationUrl(transaction);
       await save(transaction.state, browser, { phase: "authorize", provider: provider.id, transaction, intent, returnTo, timeZone,
-        expiresAt: Date.now() + LIFETIME, ...(intent === "register" ? { invitationCode: body.invitationCode } : {}),
+        expiresAt: Date.now() + LIFETIME, ...(intent !== "link" && validInvitationCode(body.invitationCode) ? { invitationCode: body.invitationCode } : {}),
         ...(intent === "link" ? { ownerId: request.user!.id, sessionHash: request.sessionTokenHash } : {}) });
       setBrowser(response, browser, provider.responseMode === "form_post");
       safeEvent(request, "life_links.sign_in.started", provider.id);
@@ -160,16 +181,18 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
       }
       let user = await store.getProviderUser(identity);
       if (!user) {
-        if (payload.intent !== "register") { fail(response, payload.returnTo, "invitation_required"); return; }
-        const accepted = await invitation(payload.invitationCode); if (!accepted) { fail(response, payload.returnTo, "invitation_required"); return; }
-        const email = profile(identity.email, true), displayName = profile(identity.displayName);
-        if (!email || !displayName) {
+        if (request.user) throw new Error();
+        // Provider subject authentication admits the owner independently of
+        // invitation or email. Apple returns to our origin before creation so
+        // the canonical Lax cookie can enforce the same signed-out boundary.
+        const email = accountEmail(identity), displayName = profile(identity.displayName);
+        if (!displayName || (request.method === "POST" && provider.responseMode === "form_post")) {
           const token = randomBytes(32).toString("base64url");
           await save(token, browserValue(request), { phase: "signup", provider: provider.id, identity, returnTo: payload.returnTo,
             invitationCode: payload.invitationCode, timeZone: payload.timeZone, expiresAt: Date.now() + LIFETIME });
           response.redirect(303, `/register#signup=${token}`); return;
         }
-        user = await store.registerProviderOwner({ identity, invitation: accepted, displayName, email, timeZone: payload.timeZone });
+        user = await registerPublicOwner(identity, displayName, email, payload.timeZone, payload.invitationCode);
       }
       await issueSession(user, response); clearBrowser(response);
       safeEvent(request, "life_links.sign_in.completed", provider.id, user.id);
@@ -209,13 +232,13 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
     noStore(response); if (!budget(request, response)) return;
     try {
       const body = request.body;
-      if (!body || Object.keys(body).some(name => !["signupToken", "email", "displayName", "timeZone"].includes(name)) || request.user) throw new Error();
-      const email = profile(body.email, true), displayName = profile(body.displayName), timeZone = normalizeCalendarIanaTimeZone(body.timeZone ?? "UTC");
-      if (!email || !displayName) throw new Error();
+      if (!body || typeof body !== "object" || Array.isArray(body) ||
+          Object.keys(body).some(name => !["signupToken", "displayName", "timeZone"].includes(name)) || request.user) throw new Error();
+      const displayName = profile(body.displayName), timeZone = normalizeCalendarIanaTimeZone(body.timeZone ?? "UTC");
+      if (!displayName) throw new Error();
       const payload = await read(body.signupToken, request, true);
       if (payload.phase !== "signup" || !payload.identity) throw new Error();
-      const accepted = await invitation(payload.invitationCode); if (!accepted) { response.status(403).json({ error: "invitation_required" }); return; }
-      const user = await store.registerProviderOwner({ identity: payload.identity, invitation: accepted, email, displayName, timeZone });
+      const user = await registerPublicOwner(payload.identity, displayName, accountEmail(payload.identity), timeZone, payload.invitationCode);
       await issueSession(user, response); clearBrowser(response);
       safeEvent(request, "life_links.sign_in.completed", payload.provider, user.id);
       response.status(201).json({ returnTo: payload.returnTo });

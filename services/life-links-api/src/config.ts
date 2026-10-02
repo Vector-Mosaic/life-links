@@ -7,12 +7,14 @@ import type { MicrosoftCalendarAuthConfig } from "./calendar-microsoft-auth.js";
 import type { GoogleCalendarAuthConfig } from "./calendar-google-auth.js";
 import type { ProviderSignInConfig } from "@vmosaic/provider-sign-in";
 import { readProviderSignInConfig } from "./provider-sign-in-config.js";
+import { readContactVerificationConfig, type ContactVerificationConfig } from "./contact-verification-config.js";
 import { invitationFingerprint, validInvitationCode, type RegistrationInvitation } from "./registration.js";
 
 export type StoreMode = "postgres" | "memory";
 export type SeedProfile = "legacy-demo" | "competition";
 
 export type LifeLinksConfig = {
+  contactVerification?: ContactVerificationConfig;
   providerSignIn?: ProviderSignInConfig[];
   memberInvitationsEnabled?: boolean;
   registration?: RegistrationInvitation;
@@ -83,6 +85,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
   const buildSha = env.BUILD_SHA ?? env.RAILWAY_GIT_COMMIT_SHA ?? "local";
   const canonicalSourceSha = env.CANONICAL_SOURCE_SHA ?? buildSha;
   const sourceTreeSha256 = env.SOURCE_TREE_SHA256 ?? "unknown";
+  const secureCookies = env.COOKIE_SECURE ? env.COOKIE_SECURE === "true" : productionLike;
   const qrBaseUrl =
     runtimeEnv === "webmcp-challenge"
       ? requireChallengeQrBaseUrl(env.QR_BASE_URL)
@@ -92,8 +95,14 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
     requireLowercaseHexIdentity("CANONICAL_SOURCE_SHA", env.CANONICAL_SOURCE_SHA, 40);
     requireLowercaseHexIdentity("SOURCE_TREE_SHA256", env.SOURCE_TREE_SHA256, 64);
   }
+  const contactVerification = readContactVerificationConfig(env, { storeMode, secureCookies, publicOrigin: qrBaseUrl });
+  if (contactVerification && (!env.SESSION_SECRET || Buffer.byteLength(env.SESSION_SECRET, "utf8") < 32
+    || Buffer.byteLength(env.SESSION_SECRET, "utf8") > 4096 || /[\u0000-\u001f\u007f]/u.test(env.SESSION_SECRET))) {
+    throw new Error("Contact verification requires an explicit SESSION_SECRET of 32–4096 bytes without control characters.");
+  }
 
   return {
+    contactVerification,
     providerSignIn: readProviderSignInConfig(env, qrBaseUrl),
     memberInvitationsEnabled: env.LIFE_LINKS_MEMBER_INVITATIONS_ENABLED !== "false",
     registration: readRegistrationConfig(env),
@@ -113,7 +122,7 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
     storeMode,
     sessionSecret,
     sessionTtlDays: Number(env.SESSION_TTL_DAYS ?? "14"),
-    secureCookies: env.COOKIE_SECURE ? env.COOKIE_SECURE === "true" : productionLike,
+    secureCookies,
     qrBaseUrl,
     staticDistPath:
       env.STATIC_DIST_PATH ?? path.resolve(serviceRoot, "../../apps/life-links-demo/dist"),

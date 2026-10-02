@@ -166,15 +166,22 @@ import {
 
 import { hashPassword, verifyPassword } from "./password.js";
 import type { AttachmentTextExtraction } from "./attachment-content.js";
-import { assertRegistrationInvitation, prepareRegisteredOwner, prepareRegisteredProviderOwner, RegistrationAdmissionError,
+import { assertRegistrationInvitation, prepareRegisteredOwner, prepareRegisteredProviderOwner, prepareRegisteredVerifiedOwner, RegistrationAdmissionError,
   MAX_PENDING_INVITATIONS, memberInvitationActive, memberInvitationView,
   type MemberInvitation, type MemberInvitationView, type RegisterOwnerInput, type RegisterProviderOwnerInput, type RegistrationInvitation } from "./registration.js";
 import { assertProviderSignInAttempt, identityBinding, providerIdentityKey, validSignInFingerprint,
   MAX_PROVIDER_SIGN_IN_ATTEMPTS, PROVIDER_SIGN_IN_EXPIRY_CLEANUP_LIMIT, ProviderSignInStateError,
   type ProviderIdentityBinding, type VerifiedProviderIdentity, type ProviderSignInAttempt } from "./provider-sign-in-state.js";
+import { assertContactVerificationAttempt, assertPhoneBinding, assertVerificationLimits, assertVerifiedRegistrationAttempt,
+  canUpdateContactVerificationAttempt, contactAttemptMatchesConsumption, phoneBindingKey, validContactFingerprint,
+  validVerifiedContactConsumption, ContactVerificationStateError, MAX_CONTACT_VERIFICATION_ATTEMPTS,
+  MAX_VERIFICATION_LIMITS, VERIFICATION_EXPIRY_CLEANUP_LIMIT,
+  type ContactVerificationAttempt, type PhoneBinding, type VerificationLimit, type VerifiedContactConsumption,
+  type FinalizeVerifiedRegistrationInput, type FinalizeVerifiedPhoneLinkInput } from "./contact-verification-state.js";
 
 export type StoredUser = UserRecord & {
   passwordHash: string | null;
+  emailVerifiedAt?: string | null;
   agentConnectedAt: string | null;
   agentToolCatalogId: AgentToolCatalogId | null;
 };
@@ -409,6 +416,15 @@ export type LifeLinksStore = {
   saveProviderSignInAttempt(attempt: ProviderSignInAttempt): Promise<void>;
   getProviderSignInAttempt(stateHash: string, browserHash: string): Promise<ProviderSignInAttempt | null>;
   consumeProviderSignInAttempt(stateHash: string, browserHash: string): Promise<ProviderSignInAttempt | null>;
+  createContactVerificationAttempt(attempt: ContactVerificationAttempt): Promise<void>;
+  getContactVerificationAttempt(tokenHash: string, browserHash: string): Promise<ContactVerificationAttempt | null>;
+  updateContactVerificationAttempt(attempt: ContactVerificationAttempt, expectedVersion: number): Promise<boolean>;
+  reserveVerificationLimits(limits: VerificationLimit[]): Promise<boolean>;
+  finalizeVerifiedRegistration(input: FinalizeVerifiedRegistrationInput): Promise<StoredUser>;
+  getPhoneUser(binding: PhoneBinding): Promise<StoredUser | null>;
+  listPhoneBindings(ownerId: string): Promise<PhoneBinding[]>;
+  finalizeVerifiedPhoneLink(input: FinalizeVerifiedPhoneLinkInput): Promise<void>;
+  consumeVerifiedContactAttempt(input: VerifiedContactConsumption): Promise<boolean>;
   getUserById(userId: string): Promise<StoredUser | null>;
   connectAgent(userId: string, toolCatalogId?: AgentToolCatalogId): Promise<StoredUser | null>;
   disconnectAgent(userId: string): Promise<StoredUser | null>;
@@ -573,6 +589,9 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   private memberInvitations = new Map<string, MemberInvitation>();
   private providerIdentities = new Map<string, { ownerId: string; identity: ProviderIdentityBinding }>();
   private providerSignInAttempts = new Map<string, ProviderSignInAttempt>();
+  private contactVerificationAttempts = new Map<string, ContactVerificationAttempt>();
+  private verificationLimits = new Map<string, { count: number; expiresAt: number }>();
+  private phoneIdentities = new Map<string, { ownerId: string; binding: PhoneBinding }>();
   private sessions = new Map<string, SessionRecord>();
   private lifeLinks = new Map<string, StoredLifeLink>();
   private collections = new Map<string, CollectionRecord>();
@@ -816,24 +835,151 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     return this.registerPreparedOwner(input.invitation, prepareRegisteredProviderOwner(input), input.identity);
   }
 
-  private async registerPreparedOwner(invitation: RegistrationInvitation,
+  private async registerPreparedOwner(invitation: RegistrationInvitation | undefined,
+    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding): Promise<StoredUser> {
+    return this.withLocks(["\u0000account-registration"], () => this.insertPreparedOwner(invitation, prepared, identity));
+  }
+
+  private async insertPreparedOwner(invitation: RegistrationInvitation | undefined,
     prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding): Promise<StoredUser> {
     const { user, calendar } = prepared;
-    return this.withLocks(["\u0000account-registration"], async () => {
-      const identityKey = identity ? providerIdentityKey(identity) : null;
-      if (identityKey && this.providerIdentities.has(identityKey)) throw new ProviderSignInStateError("provider_identity_conflict");
-      if (!(await this.registrationAvailable(invitation))) throw new RegistrationAdmissionError("registration_unavailable");
-      if (this.userIdsByEmail.has(user.email.toLowerCase())) throw new RegistrationAdmissionError("registration_failed");
-      this.users.set(user.id, user);
-      this.userIdsByEmail.set(user.email.toLowerCase(), user.id);
-      this.calendars.set(calendar.id, calendar);
-      if (identity && identityKey) this.providerIdentities.set(identityKey, { ownerId: user.id, identity: { ...identityBinding(identity) } });
+    const identityKey = identity ? providerIdentityKey(identity) : null;
+    if (identityKey && this.providerIdentities.has(identityKey)) throw new ProviderSignInStateError("provider_identity_conflict");
+    if (invitation && !(await this.registrationAvailable(invitation))) throw new RegistrationAdmissionError("registration_unavailable");
+    if (user.email !== null && this.userIdsByEmail.has(user.email)) throw new RegistrationAdmissionError("registration_failed");
+    this.users.set(user.id, user);
+    if (user.email !== null) this.userIdsByEmail.set(user.email, user.id);
+    this.calendars.set(calendar.id, calendar);
+    if (identity && identityKey) this.providerIdentities.set(identityKey, { ownerId: user.id, identity: identityBinding(identity) });
+    if (invitation) {
       this.registrationCounts.set(invitation.fingerprint, (this.registrationCounts.get(invitation.fingerprint) ?? 0) + 1);
       if (invitation.memberInvitationId) {
         const saved = this.memberInvitations.get(invitation.memberInvitationId)!;
         this.memberInvitations.set(saved.id, { ...saved, redeemedAt: user.createdAt });
       }
+    }
+    return user;
+  }
+
+  async createContactVerificationAttempt(attempt: ContactVerificationAttempt): Promise<void> {
+    assertContactVerificationAttempt(attempt);
+    if (attempt.version !== 1 || attempt.phase === "consumed") throw new ContactVerificationStateError("verification_unavailable");
+    return this.withLocks(["\u0000contact-verification-attempts"], async () => {
+      let removed = 0;
+      const now = Date.now();
+      for (const [key, saved] of this.contactVerificationAttempts) {
+        if (removed >= VERIFICATION_EXPIRY_CLEANUP_LIMIT) break;
+        if (Date.parse(saved.expiresAt) <= now) { this.contactVerificationAttempts.delete(key); removed += 1; }
+      }
+      const rows = [...this.contactVerificationAttempts.values()];
+      if (this.contactVerificationAttempts.has(attempt.tokenHash)
+          || rows.filter(saved => Date.parse(saved.expiresAt) > now).length >= MAX_CONTACT_VERIFICATION_ATTEMPTS
+          || rows.some(saved => Date.parse(saved.expiresAt) > now && saved.channel === attempt.channel
+            && saved.addressHash === attempt.addressHash && ["send_pending", "send_unknown", "verifying"].includes(saved.phase))) {
+        throw new ContactVerificationStateError("verification_unavailable");
+      }
+      this.contactVerificationAttempts.set(attempt.tokenHash, { ...attempt });
+    });
+  }
+
+  async getContactVerificationAttempt(tokenHash: string, browserHash: string): Promise<ContactVerificationAttempt | null> {
+    if (!validContactFingerprint(tokenHash) || !validContactFingerprint(browserHash)) return null;
+    const saved = this.contactVerificationAttempts.get(tokenHash);
+    return saved && saved.browserHash === browserHash && Date.parse(saved.expiresAt) > Date.now() ? { ...saved } : null;
+  }
+
+  async updateContactVerificationAttempt(attempt: ContactVerificationAttempt, expectedVersion: number): Promise<boolean> {
+    assertContactVerificationAttempt(attempt);
+    return this.withLocks(["\u0000contact-verification-attempts"], async () => {
+      const saved = this.contactVerificationAttempts.get(attempt.tokenHash);
+      if (!saved || !canUpdateContactVerificationAttempt(saved, attempt, expectedVersion)
+          || (["send_pending", "send_unknown", "verifying"].includes(attempt.phase)
+            && [...this.contactVerificationAttempts.values()].some(row => row.tokenHash !== attempt.tokenHash
+              && row.channel === attempt.channel && row.addressHash === attempt.addressHash && Date.parse(row.expiresAt) > Date.now()
+              && ["send_pending", "send_unknown", "verifying"].includes(row.phase)))) return false;
+      this.contactVerificationAttempts.set(attempt.tokenHash, { ...attempt });
+      return true;
+    });
+  }
+
+  async reserveVerificationLimits(limits: VerificationLimit[]): Promise<boolean> {
+    assertVerificationLimits(limits);
+    return this.withLocks(["\u0000contact-verification-limits", ...limits.map(item => `verification-limit:${item.keyHash}`)], async () => {
+      const now = Date.now();
+      let removed = 0;
+      for (const [key, row] of this.verificationLimits) {
+        if (removed >= VERIFICATION_EXPIRY_CLEANUP_LIMIT) break;
+        if (row.expiresAt <= now) { this.verificationLimits.delete(key); removed += 1; }
+      }
+      const activeCount = [...this.verificationLimits.values()].filter(row => row.expiresAt > now).length;
+      const next = limits.map(item => {
+        const saved = this.verificationLimits.get(item.keyHash);
+        return { key: item.keyHash, max: item.max, row: saved && saved.expiresAt > now
+          ? { ...saved, count: saved.count + 1 } : { count: 1, expiresAt: now + item.windowMs },
+          isNew: !saved || saved.expiresAt <= now };
+      });
+      if (next.some(item => item.row.count > item.max)
+          || activeCount + next.filter(item => item.isNew).length > MAX_VERIFICATION_LIMITS) return false;
+      for (const item of next) this.verificationLimits.set(item.key, item.row);
+      return true;
+    });
+  }
+
+  async finalizeVerifiedRegistration(input: FinalizeVerifiedRegistrationInput): Promise<StoredUser> {
+    if (!validVerifiedContactConsumption(input)) throw new ContactVerificationStateError("invalid_verification");
+    const prepared = prepareRegisteredVerifiedOwner(input);
+    if (input.phoneBinding) assertPhoneBinding(input.phoneBinding);
+    return this.withLocks(["\u0000account-registration", "\u0000contact-verification-attempts"], async () => {
+      const saved = this.contactVerificationAttempts.get(input.tokenHash) ?? null;
+      if (!contactAttemptMatchesConsumption(saved, input)) throw new ContactVerificationStateError("invalid_verification");
+      assertVerifiedRegistrationAttempt(saved, input);
+      if (saved.channel === "email") prepared.user.emailVerifiedAt = new Date().toISOString();
+      const key = input.phoneBinding ? phoneBindingKey(input.phoneBinding) : null;
+      if (key && this.phoneIdentities.has(key)) throw new ContactVerificationStateError("invalid_verification");
+      const user = await this.insertPreparedOwner(input.invitation, prepared);
+      if (key && input.phoneBinding) this.phoneIdentities.set(key, { ownerId: user.id, binding: { ...input.phoneBinding } });
+      this.contactVerificationAttempts.set(saved.tokenHash, { ...saved, phase: "consumed", version: saved.version + 1 });
       return user;
+    });
+  }
+
+  async getPhoneUser(binding: PhoneBinding): Promise<StoredUser | null> {
+    const saved = this.phoneIdentities.get(phoneBindingKey(binding));
+    return saved ? this.users.get(saved.ownerId) ?? null : null;
+  }
+
+  async listPhoneBindings(ownerId: string): Promise<PhoneBinding[]> {
+    return [...this.phoneIdentities.values()].filter(row => row.ownerId === ownerId)
+      .map(row => ({ ...row.binding })).sort((a, b) => phoneBindingKey(a).localeCompare(phoneBindingKey(b)));
+  }
+
+  async finalizeVerifiedPhoneLink(input: FinalizeVerifiedPhoneLinkInput): Promise<void> {
+    assertPhoneBinding(input.phoneBinding);
+    if (!validContactFingerprint(input.sessionTokenHash)) throw new ContactVerificationStateError("authentication_required");
+    return this.withLocks(["\u0000account-registration", "\u0000contact-verification-attempts", `\u0000session:${input.sessionTokenHash}`], async () => {
+      const session = this.sessions.get(input.sessionTokenHash);
+      if (!session || session.userId !== input.ownerId || Date.parse(session.expiresAt) <= Date.now()) {
+        throw new ContactVerificationStateError("authentication_required");
+      }
+      const saved = this.contactVerificationAttempts.get(input.tokenHash) ?? null;
+      if (!contactAttemptMatchesConsumption(saved, input) || saved.channel !== "phone" || saved.intent !== "link"
+          || saved.addressHash !== input.phoneBinding.phoneHash || !this.users.has(input.ownerId)) {
+        throw new ContactVerificationStateError("invalid_verification");
+      }
+      const key = phoneBindingKey(input.phoneBinding), existing = this.phoneIdentities.get(key);
+      if (existing && existing.ownerId !== input.ownerId) throw new ContactVerificationStateError("invalid_verification");
+      if (!existing) this.phoneIdentities.set(key, { ownerId: input.ownerId, binding: { ...input.phoneBinding } });
+      this.contactVerificationAttempts.set(saved.tokenHash, { ...saved, phase: "consumed", version: saved.version + 1 });
+    });
+  }
+
+  async consumeVerifiedContactAttempt(input: VerifiedContactConsumption): Promise<boolean> {
+    if (!validVerifiedContactConsumption(input)) return false;
+    return this.withLocks(["\u0000contact-verification-attempts"], async () => {
+      const saved = this.contactVerificationAttempts.get(input.tokenHash) ?? null;
+      if (!contactAttemptMatchesConsumption(saved, input) || saved.channel !== "phone" || saved.intent === "link") return false;
+      this.contactVerificationAttempts.set(saved.tokenHash, { ...saved, phase: "consumed", version: saved.version + 1 });
+      return true;
     });
   }
 
@@ -985,7 +1131,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   }
 
   async deleteSessionByTokenHash(tokenHash: string): Promise<void> {
-    this.sessions.delete(tokenHash);
+    return this.withLocks([`\u0000session:${tokenHash}`], async () => { this.sessions.delete(tokenHash); });
   }
 
   async listLifeLinks(
@@ -2217,7 +2363,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     for (const user of data.users) {
       if (!this.users.has(user.id)) {
         const passwordHash = await hashPassword(password);
-        this.users.set(user.id, { ...user, passwordHash, agentConnectedAt: null, agentToolCatalogId: null });
+        this.users.set(user.id, { ...user, passwordHash, emailVerifiedAt: null, agentConnectedAt: null, agentToolCatalogId: null });
         this.userIdsByEmail.set(user.email.toLowerCase(), user.id);
       }
     }
@@ -2807,6 +2953,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
         .filter((item) => Boolean(item.batchId && ownerBatchIds.has(item.batchId)))
         .map((item) => item.id)
     );
+    if (fixture.owner.email === null) throw new Error("Competition fixture requires its configured email.");
     const emailOwner = this.userIdsByEmail.get(fixture.owner.email.toLowerCase());
     if (emailOwner && emailOwner !== ownerId) {
       throw new Error("Competition fixture email is owned by another account.");
@@ -2922,15 +3069,17 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     }
 
     const existingOwner = this.users.get(ownerId);
-    if (existingOwner) {
+    if (existingOwner?.email) {
       this.userIdsByEmail.delete(existingOwner.email.toLowerCase());
     }
     this.users.set(ownerId, {
       ...fixture.owner,
       passwordHash,
+      emailVerifiedAt: existingOwner?.email === fixture.owner.email ? existingOwner?.emailVerifiedAt ?? null : null,
       agentConnectedAt: existingOwner?.agentConnectedAt ?? null,
       agentToolCatalogId: existingOwner?.agentToolCatalogId ?? null
     });
+    if (fixture.owner.email === null) throw new Error("Competition fixture requires its configured email.");
     this.userIdsByEmail.set(fixture.owner.email.toLowerCase(), ownerId);
     this.batches.set(fixture.batch.id, { ...fixture.batch });
     this.batchQrIds.set(fixture.batch.id, fixture.qrInventory.map((item) => item.id));
@@ -2965,7 +3114,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       user.displayName !== fixture.owner.displayName ||
       user.createdAt !== fixture.owner.createdAt ||
       user.passwordHash !== passwordHash ||
-      this.userIdsByEmail.get(fixture.owner.email.toLowerCase()) !== fixture.owner.id
+      (fixture.owner.email === null || this.userIdsByEmail.get(fixture.owner.email.toLowerCase()) !== fixture.owner.id)
     ) {
       throw new CompetitionFixtureShapeMismatchError("Competition fixture owner postcondition failed.");
     }

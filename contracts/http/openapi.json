@@ -117,8 +117,8 @@
     "/api/account-sign-in-methods": {
       "get": {
         "operationId": "getAccountSignInMethods",
-        "summary": "List your configured provider sign-in methods",
-        "description": "Returns configured adapter choices and whether each has an exact binding owned by the authenticated current owner. Does not return provider subject, email, issuer, client ID, credentials or another owner. Matching email never links accounts.",
+        "summary": "List your configured provider and phone sign-in methods",
+        "description": "Returns configured provider choices and exact-binding linkage owned by the authenticated current owner, plus required phone enabled/linked metadata and a maskedNumber or null. The phone metadata remains readable when new phone verification is disabled. Never returns a full phone number, delivery-provider account/profile/message ID, phone fingerprint, provider subject, email, credentials or another owner. Equal contact values never link or merge accounts.",
         "tags": [
           "session"
         ],
@@ -182,8 +182,8 @@
     "/api/auth/providers/{provider}/start": {
       "post": {
         "operationId": "startProviderSignIn",
-        "summary": "Start browser provider login, invited signup or explicit account linking",
-        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Login requires an existing exact provider binding. Register checks a valid invitation and rechecks admission after verified callback. Link requires the current CookieSession and records that exact session/owner; bearer authentication cannot initiate linking. A ten-minute one-use state, nonce, PKCE verifier and intent are encrypted server-side and bound to a fresh HttpOnly browser cookie. Apple form_post requires secure cookies. Starting another transaction replaces the browser binding. Sign-in creates no Calendar connection or agent grant. LifeLinks responses never put provider access/refresh/ID tokens, client secrets or canonical session tokens in JSON or redirect URLs, or expose them to browser JavaScript. The canonical session cookie remains HttpOnly.",
+        "summary": "Start browser provider login, public signup or explicit account linking",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Login/register resolves the exact provider identity after verification and may admit an unbound signed-out person as a private owner; invitationCode is optional and never required for public signup. Register refuses an authenticated current owner. Link requires the current CookieSession and records that exact session/owner; bearer authentication cannot initiate linking. A ten-minute one-use state, nonce, PKCE verifier and intent are encrypted server-side and bound to a fresh HttpOnly browser cookie. Apple form_post requires secure cookies. Starting another transaction replaces the browser binding. Sign-in creates no external Calendar connection or agent grant. Provider credentials and canonical session tokens never enter response JSON or redirect URLs.",
         "tags": [
           "session"
         ],
@@ -268,7 +268,7 @@
             }
           },
           "403": {
-            "description": "origin_forbidden or invitation_required.",
+            "description": "origin_forbidden.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/RequestId"
@@ -367,7 +367,7 @@
       "get": {
         "operationId": "receiveProviderSignInCallback",
         "summary": "Receive a provider query callback",
-        "description": "Provider OAuth callback mounted before the ordinary browser Origin and general rate-limit guards. CSRF admission instead requires a matching one-use state and HttpOnly transaction browser binding; the attempt is consumed before provider code exchange. The shared adapter verifies the provider protocol identity, including applicable issuer/audience/signature/nonce/PKCE checks. Login resolves the exact provider/issuer/clientId/subject binding, never email matching. Invited signup rechecks admission and creates a private owner only when allowed; missing profile fields redirect to /register#signup=PROOF. Explicit linking requires the same original live canonical cookie session; an Apple form_post without that cookie redirects to /#link=PROOF for same-origin completion; the recorded returnTo remains encrypted server-side and is returned by completion. Success redirects to the recorded same-origin returnTo; failures redirect with a closed #signin_error code and no diagnostic details. Fragments are captured and scrubbed before React mounts. No provider credentials, identity claims or raw callback values enter logs. LifeLinks responses never put provider access/refresh/ID tokens, client secrets or canonical session tokens in JSON or redirect URLs, or expose them to browser JavaScript. The canonical session cookie remains HttpOnly. Other provider string fields are accepted up to 32768 characters each; duplicate array/object query values are refused.",
+        "description": "Provider OAuth callback mounted before the ordinary browser Origin and general rate-limit guards. CSRF admission instead requires a matching one-use state and HttpOnly transaction browser binding; the attempt is consumed before provider code exchange. The shared adapter verifies the provider protocol identity, including applicable issuer/audience/signature/nonce/PKCE checks. Login resolves the exact provider/issuer/clientId/subject binding, never email matching. A verified unbound provider subject may join publicly without an invitation; only emailVerified: true supplies a retained account email, otherwise User.email is null. Missing display name and Apple form_post signup redirect to /register#signup=PROOF before private owner creation. Optional valid invitation receipts are handled atomically and never gate public admission. Explicit linking requires the same original live canonical cookie session; an Apple form_post without that cookie redirects to /#link=PROOF for same-origin completion; the recorded returnTo remains encrypted server-side and is returned by completion. Success redirects to the recorded same-origin returnTo; failures redirect with a closed #signin_error code and no diagnostic details. Fragments are captured and scrubbed before React mounts. No provider credentials, identity claims or raw callback values enter logs. LifeLinks responses never put provider access/refresh/ID tokens, client secrets or canonical session tokens in JSON or redirect URLs, or expose them to browser JavaScript. The canonical session cookie remains HttpOnly. Other provider string fields are accepted up to 32768 characters each; duplicate array/object query values are refused.",
         "tags": [
           "session"
         ],
@@ -428,7 +428,7 @@
         ],
         "responses": {
           "303": {
-            "description": "303 browser transition: recorded returnTo on login/link success, /register#signup=PROOF for missing profile fields, /#link=PROOF for form_post linking, or returnTo#signin_error=signin_failed|invitation_required|signup_failed|link_failed on failure.",
+            "description": "303 browser transition: recorded returnTo on login/link success, /register#signup=PROOF for profile completion or Apple form_post signup, /#link=PROOF for form_post linking, or returnTo#signin_error=signin_failed|signup_failed|link_failed on failure.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/RequestId"
@@ -481,7 +481,7 @@
       "post": {
         "operationId": "receiveProviderSignInFormPostCallback",
         "summary": "Receive an Apple provider form_post callback",
-        "description": "Provider OAuth callback mounted before the ordinary browser Origin and general rate-limit guards. CSRF admission instead requires a matching one-use state and HttpOnly transaction browser binding; the attempt is consumed before provider code exchange. The shared adapter verifies the provider protocol identity, including applicable issuer/audience/signature/nonce/PKCE checks. Login resolves the exact provider/issuer/clientId/subject binding, never email matching. Invited signup rechecks admission and creates a private owner only when allowed; missing profile fields redirect to /register#signup=PROOF. Explicit linking requires the same original live canonical cookie session; an Apple form_post without that cookie redirects to /#link=PROOF for same-origin completion; the recorded returnTo remains encrypted server-side and is returned by completion. Success redirects to the recorded same-origin returnTo; failures redirect with a closed #signin_error code and no diagnostic details. Fragments are captured and scrubbed before React mounts. No provider credentials, identity claims or raw callback values enter logs. LifeLinks responses never put provider access/refresh/ID tokens, client secrets or canonical session tokens in JSON or redirect URLs, or expose them to browser JavaScript. The canonical session cookie remains HttpOnly. Accepts application/x-www-form-urlencoded with a 40 KiB body limit and at most twelve parameters. Ordinary browser Origin enforcement is deliberately replaced by browser-bound OAuth state.",
+        "description": "Provider OAuth callback mounted before the ordinary browser Origin and general rate-limit guards. CSRF admission instead requires a matching one-use state and HttpOnly transaction browser binding; the attempt is consumed before provider code exchange. The shared adapter verifies the provider protocol identity, including applicable issuer/audience/signature/nonce/PKCE checks. Login resolves the exact provider/issuer/clientId/subject binding, never email matching. A verified unbound provider subject may join publicly without an invitation; only emailVerified: true supplies a retained account email, otherwise User.email is null. Missing display name and Apple form_post signup redirect to /register#signup=PROOF before private owner creation. Optional valid invitation receipts are handled atomically and never gate public admission. Explicit linking requires the same original live canonical cookie session; an Apple form_post without that cookie redirects to /#link=PROOF for same-origin completion; the recorded returnTo remains encrypted server-side and is returned by completion. Success redirects to the recorded same-origin returnTo; failures redirect with a closed #signin_error code and no diagnostic details. Fragments are captured and scrubbed before React mounts. No provider credentials, identity claims or raw callback values enter logs. LifeLinks responses never put provider access/refresh/ID tokens, client secrets or canonical session tokens in JSON or redirect URLs, or expose them to browser JavaScript. The canonical session cookie remains HttpOnly. Accepts application/x-www-form-urlencoded with a 40 KiB body limit and at most twelve parameters. Ordinary browser Origin enforcement is deliberately replaced by browser-bound OAuth state.",
         "tags": [
           "session"
         ],
@@ -511,7 +511,7 @@
         ],
         "responses": {
           "303": {
-            "description": "303 browser transition: recorded returnTo on login/link success, /register#signup=PROOF for missing profile fields, /#link=PROOF for form_post linking, or returnTo#signin_error=signin_failed|invitation_required|signup_failed|link_failed on failure.",
+            "description": "303 browser transition: recorded returnTo on login/link success, /register#signup=PROOF for profile completion or Apple form_post signup, /#link=PROOF for form_post linking, or returnTo#signin_error=signin_failed|signup_failed|link_failed on failure.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/RequestId"
@@ -590,8 +590,8 @@
     "/api/auth/provider-signup/details": {
       "post": {
         "operationId": "getProviderSignupDetails",
-        "summary": "Read missing profile details for an invited provider signup",
-        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the original transaction browser cookie and a valid ten-minute signup proof. Reads the encrypted verified-callback continuation without consuming it. Returns only usable email/display name metadata; no exact binding or provider tokens. Null fields require input in the signup form.",
+        "summary": "Read display metadata for a public provider signup continuation",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the original transaction browser cookie and a valid ten-minute signup proof. Reads the encrypted verified-callback continuation without consuming it. Returns bounded provider-supplied email/display metadata; email is read-only profile data, can be null or unverified, and is not accepted from the completion form. The local account retains an email only when the verified identity reports emailVerified: true; otherwise email is null. No exact identity binding or provider tokens are exposed.",
         "tags": [
           "session"
         ],
@@ -707,8 +707,8 @@
     "/api/auth/provider-signup/complete": {
       "post": {
         "operationId": "completeProviderSignup",
-        "summary": "Create an invited private owner from a verified provider continuation",
-        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires no authenticated current owner, the original browser-binding cookie and a valid signup proof. Validates profile fields, atomically consumes the one-use proof, rechecks the exact invitation and atomically commits a new private owner, its normal native My Calendar with no agent access, invitation receipt and exact provider binding. Creates a provider-only owner with no password hash. Never merges with an existing owner by email or changes existing credentials. A canonical HttpOnly cookie session is then issued. After an uncertain response, use the same provider sign-in rather than automatically resubmitting the consumed proof. LifeLinks responses never put provider access/refresh/ID tokens, client secrets or canonical session tokens in JSON or redirect URLs, or expose them to browser JavaScript. The canonical session cookie remains HttpOnly.",
+        "summary": "Create a private owner from a verified provider continuation",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires no authenticated current owner, the original browser-binding cookie and a valid signup proof. Accepts only signupToken, displayName and optional timeZone; editable email and password are refused. Atomically consumes the one-use proof and commits a new private owner, its normal native My Calendar with agent access none and the exact provider identity binding. A provider address is retained only when emailVerified is true; otherwise User.email is null. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. Creates a provider-only owner with no password hash. Never merges with an existing owner by email or changes existing credentials. Then issues the canonical HttpOnly cookie session. After an uncertain response, use provider sign-in rather than automatically resubmitting the consumed proof. Provider credentials and canonical session tokens never enter JSON or redirect URLs.",
         "tags": [
           "session"
         ],
@@ -781,7 +781,7 @@
             }
           },
           "403": {
-            "description": "origin_forbidden or invitation_required: invitation is unavailable at completion.",
+            "description": "origin_forbidden.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/RequestId"
@@ -2408,31 +2408,1726 @@
     "/api/auth/registration": {
       "get": {
         "operationId": "getLifeLinksRegistrationAvailability",
-        "summary": "Check private invitation registration availability",
-        "description": "Returns only enabled: true when member invitations are enabled or an operator invitation has unexpired capacity. Enabled does not validate a particular link; registration checks that exact invitation. Never exposes an invitation, fingerprint, capacity, or account identity.",
-        "tags": ["session"], "security": [],
-        "parameters": [{"$ref":"#/components/parameters/XRequestId"}],
+        "summary": "Read public signup and configured contact-verification availability",
+        "description": "Public registration is enabled independently of invitations. Returns enabled: true and the actual configured email/phone verification flags; show unavailable contact options as disabled. No invitation, credential, destination, spend limit, account identity or provider approval detail is exposed. OAuth provider choices remain at /api/auth/providers.",
+        "tags": [
+          "session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
         "responses": {
-          "200": {"description":"Invitation admission availability.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"},"Cache-Control":{"schema":{"const":"no-store"}}},"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"required":["enabled"],"properties":{"enabled":{"type":"boolean"}}}}}},
-          "503": {"description":"Admission storage unavailable; registration_unavailable, without diagnostic or account details.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}}
+          "200": {
+            "description": "Public signup availability and configured contact-verification choices.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrationAvailabilityResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/email/start": {
+      "post": {
+        "operationId": "startLifeLinksEmailVerification",
+        "summary": "Start mailbox verification for public native signup",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires a signed-out browser and configured send-only Agent Communications application sender; the gateway owns its fixed mailbox and Graph custody, with no mailbox-content access exposed to LifeLinks. Normalizes the address to lowercase, stores a browser-bound register-email attempt and dispatches a six-digit code only after durable send limits. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. Returns the opaque attempt reference after dispatch, including an unknown email-send outcome; this is neither proof of provider acceptance nor delivery. No owner, Calendar or session is created.",
+        "tags": [
+          "session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailVerificationStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Verification attempt recorded and dispatch attempted; no mailbox possession or delivery claim.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Set-Cookie": {
+                "description": "HttpOnly verification-browser or canonical session cookie set or cleared by this transition; no cookie value is returned in JSON.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationAttemptResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_verification: malformed input, wrong channel/browser, expired, exhausted, consumed or stale attempt, or an incorrect code. Parser failures also use invalid_verification.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden: an allowed browser Origin or same-origin Referer is mandatory, including when general origin enforcement is disabled.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "verification_rate_limited is a string-only contact error without retryAfterSeconds or Retry-After. The general API guard may instead return rate_limited with retryAfterSeconds and Retry-After.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Retry-After": {
+                "description": "Present only for the general API rate-limit response, absent for verification_rate_limited.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RateLimitResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "verification_unavailable or send_outcome_unknown: disabled/configuration/storage/provider failure or an uncertain phone send/check. Unknown outcomes never establish possession or authorize automatic resend.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "sign_out_required or signup_failed: existing-owner conflict or generic account/phone association conflict. Never identifies another account or changes its credentials.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/email/resend": {
+      "post": {
+        "operationId": "resendLifeLinksEmailVerification",
+        "summary": "Resend or reconcile a browser-bound email verification",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Wait at least the returned resend cooldown, initially sixty seconds. An ordinary admitted resend replaces the code/digest and invalidates the previous code. An unknown email-send outcome is explicitly reconciled with the same exact payload and operation ID under the original keyed Agent Communications sender context. The shared sender first reads only that application's original operation: matching accepted/reconciled submission is acknowledged, pending/unknown does not dispatch again, and definite operation absence, the gateway's durable never-attempted admitted stage, or positively deferred provider throttling with a well-formed elapsed retry time permits explicit same-ID/body submission. Missing provider markers after an uncertain effect do not establish no effect; HTTP failures remain unknown. Changed gateway/mailbox/display/credential context refuses reconciliation while the original arrived code remains locally verifiable. The gateway owns durable operation identity and provider reconciliation; no finite provider idempotency-window claim applies and this does not mint a new send operation. Durable resend budgets remain enforced.",
+        "tags": [
+          "session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          },
+          {
+            "$ref": "#/components/parameters/ContactVerificationBrowser"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactVerificationResendRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Attempt reference and cooldown, including possible unknown email-send outcome.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationAttemptResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_verification: malformed input, wrong channel/browser, expired, exhausted, consumed or stale attempt, or an incorrect code. Parser failures also use invalid_verification.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden: an allowed browser Origin or same-origin Referer is mandatory, including when general origin enforcement is disabled.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "verification_rate_limited is a string-only contact error without retryAfterSeconds or Retry-After. The general API guard may instead return rate_limited with retryAfterSeconds and Retry-After.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Retry-After": {
+                "description": "Present only for the general API rate-limit response, absent for verification_rate_limited.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RateLimitResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "verification_unavailable or send_outcome_unknown: disabled/configuration/storage/provider failure or an uncertain phone send/check. Unknown outcomes never establish possession or authorize automatic resend.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/email/verify": {
+      "post": {
+        "operationId": "verifyLifeLinksEmail",
+        "summary": "Verify the mailbox code for a native signup attempt",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Checks six ASCII digits against the current purpose/address/challenge-bound keyed digest. An unknown email send may still be verified by its received code. A correct code marks only this attempt verified; it creates no owner or session. Re-reading an already verified attempt returns verified until consumed or expired.",
+        "tags": [
+          "session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          },
+          {
+            "$ref": "#/components/parameters/ContactVerificationBrowser"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactVerificationCodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "This browser-bound email attempt is verified; account registration remains a separate one-use transition.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailVerificationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_verification: malformed input, wrong channel/browser, expired, exhausted, consumed or stale attempt, or an incorrect code. Parser failures also use invalid_verification.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden: an allowed browser Origin or same-origin Referer is mandatory, including when general origin enforcement is disabled.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "verification_rate_limited is a string-only contact error without retryAfterSeconds or Retry-After. The general API guard may instead return rate_limited with retryAfterSeconds and Retry-After.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Retry-After": {
+                "description": "Present only for the general API rate-limit response, absent for verification_rate_limited.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RateLimitResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "verification_unavailable or send_outcome_unknown: disabled/configuration/storage/provider failure or an uncertain phone send/check. Unknown outcomes never establish possession or authorize automatic resend.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/phone/start": {
+      "post": {
+        "operationId": "startLifeLinksPhoneVerification",
+        "summary": "Start SMS possession verification for login, signup or linking",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires a configured Telnyx SMS sender, a valid canonical E.164 number in the explicitly allowed parsed US/Canada regions and current durable send/spend budgets. A +1 prefix alone does not establish region eligibility. Accepts explicit verification-only SMS consent with its exact version before dispatch. Login/register requires no current authenticated owner; link requires the current canonical CookieSession and retains that exact session/owner. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. A first send with unknown SMS outcome returns the original attempt so an arrived local code can still be checked, without replay or automatic resend. The returned attempt reference is not delivery or possession proof, and no account/session/link transition occurs on send.",
+        "tags": [
+          "session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhoneVerificationStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Browser-bound SMS attempt recorded, including an unknown first SMS-send outcome. This returns the original attempt, not SMS delivery or possession proof.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Set-Cookie": {
+                "description": "HttpOnly verification-browser or canonical session cookie set or cleared by this transition; no cookie value is returned in JSON.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationAttemptResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_verification: malformed input, wrong channel/browser, expired, exhausted, consumed or stale attempt, or an incorrect code. Parser failures also use invalid_verification.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden: an allowed browser Origin or same-origin Referer is mandatory, including when general origin enforcement is disabled.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "verification_rate_limited is a string-only contact error without retryAfterSeconds or Retry-After. The general API guard may instead return rate_limited with retryAfterSeconds and Retry-After.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Retry-After": {
+                "description": "Present only for the general API rate-limit response, absent for verification_rate_limited.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RateLimitResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "verification_unavailable: disabled/configuration/storage failure or sanitized SMS delivery rejection. No provider response or code is exposed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "authentication_required: phone linking requires the same still-live original canonical CookieSession; a native bearer session is insufficient.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "sign_out_required or signup_failed: existing-owner conflict or generic account/phone association conflict. Never identifies another account or changes its credentials.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/phone/resend": {
+      "post": {
+        "operationId": "resendLifeLinksPhoneVerification",
+        "summary": "Resend an admitted browser-bound phone verification",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Wait at least the returned resend cooldown, initially sixty seconds, and enforce current durable send/spend budgets before another SMS. Only a known accepted or rejected outcome permits manual resend, which replaces the local code and delivery operation without resetting the original expiry or check count. An unknown SMS outcome refuses resend without another network call, code or operation; the retained original code remains locally checkable if it arrives. No automatic replay or fresh delivery is performed.",
+        "tags": [
+          "session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          },
+          {
+            "$ref": "#/components/parameters/ContactVerificationBrowser"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactVerificationResendRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Manual SMS dispatch recorded for the retained attempt after a known prior outcome, replacing the local code/operation within its original expiry and check count. A new unknown send outcome still returns the recorded attempt without claiming delivery.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationAttemptResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_verification: malformed input, wrong channel/browser, expired, exhausted, consumed or stale attempt, or an incorrect code. Parser failures also use invalid_verification.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden: an allowed browser Origin or same-origin Referer is mandatory, including when general origin enforcement is disabled.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "verification_rate_limited is a string-only contact error without retryAfterSeconds or Retry-After. The general API guard may instead return rate_limited with retryAfterSeconds and Retry-After.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Retry-After": {
+                "description": "Present only for the general API rate-limit response, absent for verification_rate_limited.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RateLimitResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "verification_unavailable or send_outcome_unknown: sanitized configuration/storage/delivery failure or refusal to resend an unknown SMS outcome. Unknown resend refusal performs no network call, code replacement or new operation.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/phone/verify": {
+      "post": {
+        "operationId": "verifyLifeLinksPhone",
+        "summary": "Check phone possession and continue the explicit account flow",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Requires six ASCII digits, checked locally against the protected challenge/address/purpose-bound digest using the shared email/SMS code engine. No provider check request or verification SID establishes possession. The original code can be checked after an unknown SMS send if it arrives; the unknown outcome itself is not proof. An existing associated owner is signed in for login/register; an unassociated number returns profile_required without consuming the proof, for phone/complete. Link requires the same still-live original canonical CookieSession, associates the number only to that owner and preserves the session. Equal contact data never merges owners.",
+        "tags": [
+          "session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          },
+          {
+            "$ref": "#/components/parameters/ContactVerificationBrowser"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactVerificationCodeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "signed_in issues the canonical HttpOnly session; linked preserves the original session; profile_required retains verified state for completion.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Set-Cookie": {
+                "description": "HttpOnly verification-browser or canonical session cookie set or cleared by this transition; no cookie value is returned in JSON.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhoneVerificationResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_verification: malformed input, wrong channel/browser, expired, exhausted, consumed or stale attempt, or an incorrect code. Parser failures also use invalid_verification.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden: an allowed browser Origin or same-origin Referer is mandatory, including when general origin enforcement is disabled.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "verification_rate_limited is a string-only contact error without retryAfterSeconds or Retry-After. The general API guard may instead return rate_limited with retryAfterSeconds and Retry-After.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Retry-After": {
+                "description": "Present only for the general API rate-limit response, absent for verification_rate_limited.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RateLimitResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "verification_unavailable: sanitized configuration/storage or local verification/account-transition failure. No raw error or code is exposed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "authentication_required: phone linking requires the same still-live original canonical CookieSession; a native bearer session is insufficient.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "sign_out_required or signup_failed: existing-owner conflict or generic account/phone association conflict. Never identifies another account or changes its credentials.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/phone/complete": {
+      "post": {
+        "operationId": "completeLifeLinksPhoneSignup",
+        "summary": "Create a private owner from verified phone possession",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Requires a signed-out browser, a verified non-link phone attempt and bounded profile fields. Atomically consumes the proof, creates a private owner and normal native My Calendar with agent access none, and associates the verified phone. The owner has null email and no password; no fabricated email is created. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. Then issues the canonical HttpOnly cookie session and clears temporary browser state. After a lost response, sign in again by phone rather than automatically resubmitting the consumed proof.",
+        "tags": [
+          "session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          },
+          {
+            "$ref": "#/components/parameters/ContactVerificationBrowser"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhoneSignupCompleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Private phone-only owner admitted; canonical cookie session issued and recorded local returnTo returned.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Set-Cookie": {
+                "description": "HttpOnly verification-browser or canonical session cookie set or cleared by this transition; no cookie value is returned in JSON.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderCompletionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_verification: malformed input, wrong channel/browser, expired, exhausted, consumed or stale attempt, or an incorrect code. Parser failures also use invalid_verification.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden: an allowed browser Origin or same-origin Referer is mandatory, including when general origin enforcement is disabled.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "verification_rate_limited is a string-only contact error without retryAfterSeconds or Retry-After. The general API guard may instead return rate_limited with retryAfterSeconds and Retry-After.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Retry-After": {
+                "description": "Present only for the general API rate-limit response, absent for verification_rate_limited.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RateLimitResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "verification_unavailable: sanitized configuration/storage or local verification/account-transition failure. No raw error or code is exposed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "sign_out_required or signup_failed: existing-owner conflict or generic account/phone association conflict. Never identifies another account or changes its credentials.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          }
         }
       }
     },
     "/api/auth/register": {
       "post": {
         "operationId": "registerLifeLinksOwner",
-        "summary": "Create a private owner using a limited invitation",
-        "description": "Browser-only, create-only invitation admission. An allowed Origin or allowed same-origin Referer is mandatory even when general origin checking is disabled; native bearer and missing-origin exceptions do not apply. Bounded to five attempts per client IP per fifteen minutes, including when general rate limits are disabled. Owner, normal native My Calendar (agent access none), and spent invitation capacity commit atomically. A failed or repeated submission never changes an existing password. Email is an unverified sign-in identifier, not verified provider identity or recovery authority. Successful browser session uses an HTTP-only cookie; no token, password, invitation, provider connection, or agent grant is returned. After a lost response, use normal sign-in with the chosen credentials. JSON request limit is 4 KiB.",
-        "tags": ["session"], "security": [],
-        "parameters": [{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/BrowserOrigin"}],
-        "requestBody": {"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/RegistrationRequest"}}}},
+        "summary": "Create a private native owner from verified mailbox control",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Requires a signed-out browser and a verified register-email attempt. Accepts profile, verbatim password and optional time zone; the email is taken only from the protected verified attempt, and editable email/invitation fields are refused. Atomically consumes the proof and creates the private owner, password credential and normal native My Calendar with agent access none. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. A failed/repeated submission never changes existing credentials. The canonical browser session uses an HttpOnly cookie; no session token, password, invitation or provider credential is returned in JSON. After a lost response, use ordinary password sign-in. JSON request limit is 4 KiB.",
+        "tags": [
+          "session"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          },
+          {
+            "$ref": "#/components/parameters/ContactVerificationBrowser"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistrationRequest"
+              }
+            }
+          }
+        },
         "responses": {
-          "201": {"description":"New private owner and browser cookie session.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"},"Set-Cookie":{"schema":{"type":"string"}},"Cache-Control":{"schema":{"const":"private, no-store"}}},"content":{"application/json":{"schema":{"allOf":[{"$ref":"#/components/schemas/LoginResponse"},{"not":{"required":["sessionToken"]}}]}}}},
-          "400": {"description":"invalid_registration: malformed, excessive, or invalid input.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},
-          "403": {"description":"origin_forbidden or registration_unavailable (disabled, invalid, expired, or exhausted invitation).","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},
-          "409": {"description":"registration_failed: account could not be created. Generic response never returns the existing owner or modifies credentials.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}},
-          "429": {"$ref":"#/components/responses/RateLimited"},
-          "503": {"description":"registration_unavailable: temporary failure. If account admission already committed, normal sign-in remains usable.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"$ref":"#/components/schemas/ErrorResponse"}}}}
+          "201": {
+            "description": "Private verified-email owner and canonical browser session created.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Set-Cookie": {
+                "description": "HttpOnly verification-browser or canonical session cookie set or cleared by this transition; no cookie value is returned in JSON.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/LoginResponse"
+                    },
+                    {
+                      "not": {
+                        "required": [
+                          "sessionToken"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_verification: malformed input, wrong channel/browser, expired, exhausted, consumed or stale attempt, or an incorrect code. Parser failures also use invalid_verification.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "origin_forbidden: an allowed browser Origin or same-origin Referer is mandatory, including when general origin enforcement is disabled.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "verification_rate_limited is a string-only contact error without retryAfterSeconds or Retry-After. The general API guard may instead return rate_limited with retryAfterSeconds and Retry-After.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Retry-After": {
+                "description": "Present only for the general API rate-limit response, absent for verification_rate_limited.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RateLimitResponse"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "verification_unavailable or send_outcome_unknown: disabled/configuration/storage/provider failure or an uncertain phone send/check. Unknown outcomes never establish possession or authorize automatic resend.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "sign_out_required or signup_failed: existing-owner conflict or generic account/phone association conflict. Never identifies another account or changes its credentials.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContactVerificationErrorResponse"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -5121,6 +6816,19 @@
           "maxLength": 128
         }
       },
+      "ContactVerificationBrowser": {
+        "name": "life_links_contact_verification",
+        "in": "cookie",
+        "required": true,
+        "description": "HttpOnly, SameSite=Lax verification-browser binding set by contact start. Must match the exact retained unexpired attempt; this is not the canonical owner session.",
+        "schema": {
+          "type": "string",
+          "minLength": 43,
+          "maxLength": 43,
+          "pattern": "^[A-Za-z0-9_-]{43}$",
+          "writeOnly": true
+        }
+      },
       "BrowserOrigin": {
         "name": "Origin",
         "in": "header",
@@ -5239,7 +6947,8 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "providers"
+          "providers",
+          "phone"
         ],
         "properties": {
           "providers": {
@@ -5264,6 +6973,34 @@
                   "type": "boolean",
                   "description": "At least one exact provider identity binding for this configured provider belongs to the current owner."
                 }
+              }
+            }
+          },
+          "phone": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "enabled",
+              "linked",
+              "maskedNumber"
+            ],
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "description": "Actual current phone-verification configuration, independent of whether a binding exists."
+              },
+              "linked": {
+                "type": "boolean",
+                "description": "The current owner has a retained phone sign-in association."
+              },
+              "maskedNumber": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "maxLength": 32,
+                "description": "Masked display with at most the final four digits, or null. Never exposes the complete phone number or proof/provider bindings."
               }
             }
           }
@@ -5308,7 +7045,7 @@
             "maxLength": 128,
             "pattern": "^[A-Za-z0-9_-]{32,128}$",
             "writeOnly": true,
-            "description": "Private invitation supplied only in this JSON body. Retained encrypted for admission and never included in the provider authorization URL or callback."
+            "description": "Optional private share-link code supplied only in JSON and retained encrypted. A valid available invitation can be recorded during account creation; it is never required for verified public admission, never authenticates an existing owner, and never appears in a provider authorization URL or ordinary logs."
           },
           "timeZone": {
             "type": "string",
@@ -5317,23 +7054,7 @@
             "description": "Canonical IANA time zone for the initial native My Calendar. Browser callers send their resolved zone."
           }
         },
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "intent": {
-                  "const": "register"
-                }
-              }
-            },
-            "then": {
-              "required": [
-                "invitationCode"
-              ]
-            }
-          }
-        ],
-        "description": "Register requires a valid unspent invitation and no authenticated current owner. Link requires the current canonical cookie session. Login resolves only an already-linked exact provider identity."
+        "description": "Login/register may create a private owner after verified subject authentication; invitationCode is optional. Register requires a signed-out browser. Link requires the current canonical cookie session and never merges by email."
       },
       "ProviderAuthorizationResponse": {
         "type": "object",
@@ -5379,7 +7100,7 @@
             "format": "email",
             "maxLength": 254,
             "readOnly": true,
-            "description": "Usable provider-supplied profile email, or null. Not an account-linking key or recovery authority."
+            "description": "Read-only usable provider-supplied profile email, or null; this display metadata may be unverified. Completion cannot edit it, and only emailVerified: true permits a retained local account address. Not an account-linking key or recovery authority."
           },
           "displayName": {
             "type": [
@@ -5396,19 +7117,11 @@
         "additionalProperties": false,
         "required": [
           "signupToken",
-          "email",
           "displayName"
         ],
         "properties": {
           "signupToken": {
             "$ref": "#/components/schemas/ProviderContinuationToken"
-          },
-          "email": {
-            "type": "string",
-            "format": "email",
-            "minLength": 3,
-            "maxLength": 254,
-            "description": "Trimmed and normalized to lowercase; not verified ownership of the mailbox."
           },
           "displayName": {
             "type": "string",
@@ -5423,7 +7136,7 @@
             "description": "Canonical IANA time zone for the initial native My Calendar. Browser callers send their resolved zone."
           }
         },
-        "description": "Complete missing profile details after a verified provider callback. Password and provider credentials are not accepted."
+        "description": "Complete display details after verified provider authentication. The provider's emailVerified claim alone determines retained email; editable email, password and provider credentials are not accepted."
       },
       "ProviderLinkCompleteRequest": {
         "type": "object",
@@ -6096,9 +7809,13 @@
             "type": "string"
           },
           "email": {
-            "type": "string",
+            "type": [
+              "string",
+              "null"
+            ],
             "format": "email",
-            "maxLength": 254
+            "maxLength": 254,
+            "description": "Canonical native or verified provider address when retained, otherwise null for phone-only or provider owners without a usable verified email. No fabricated address; email equality is not account-merging authority."
           },
           "displayName": {
             "type": "string"
@@ -7837,16 +9554,278 @@
           }
         }
       },
-      "RegistrationRequest": {
-        "type":"object", "additionalProperties":false,
-        "required":["displayName","email","password","invitationCode"],
+      "RegistrationAvailabilityResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled",
+          "emailVerificationEnabled",
+          "phoneVerificationEnabled"
+        ],
         "properties": {
-          "displayName":{"type":"string","minLength":1,"maxLength":100,"description":"Trimmed display name; control characters refused."},
-          "email":{"type":"string","format":"email","minLength":3,"maxLength":254,"description":"Trimmed and normalized to lowercase; not verified ownership of the mailbox."},
-          "password":{"type":"string","format":"password","minLength":12,"maxLength":128,"writeOnly":true,"description":"Used verbatim, never trimmed."},
-          "invitationCode":{"type":"string","minLength":32,"maxLength":128,"pattern":"^[A-Za-z0-9_-]{32,128}$","writeOnly":true,"description":"Private admission-only code supplied in the body, never a URL or an existing-account credential."},
-          "timeZone":{"type":"string","maxLength":100,"default":"UTC","description":"Canonical IANA time zone for the initial native My Calendar. Browser callers send their resolved zone."}
+          "enabled": {
+            "const": true
+          },
+          "emailVerificationEnabled": {
+            "type": "boolean"
+          },
+          "phoneVerificationEnabled": {
+            "type": "boolean"
+          }
+        },
+        "description": "Public signup availability; configuration flags do not prove live provider delivery or readiness."
+      },
+      "ContactVerificationAttemptToken": {
+        "type": "string",
+        "minLength": 43,
+        "maxLength": 43,
+        "pattern": "^[A-Za-z0-9_-]{43}$",
+        "description": "Opaque ten-minute consumer attempt reference, usable only with its original verification-browser cookie. It is not possession proof, a session, provider SID or account credential. Never place it in URLs, logs or persistent browser storage."
+      },
+      "ContactVerificationAttemptResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "attemptToken",
+          "expiresAt",
+          "resendAfterSeconds"
+        ],
+        "properties": {
+          "attemptToken": {
+            "$ref": "#/components/schemas/ContactVerificationAttemptToken"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "resendAfterSeconds": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "description": "Recorded attempt and resend cooldown. Email and SMS dispatches with unknown provider outcome can also return this response; the original local code remains checkable if it arrives, without a delivery or possession claim. Unknown SMS dispatch cannot be replayed or freshly resent."
+      },
+      "EmailVerificationStartRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "maxLength": 254,
+            "description": "Trimmed and lowercased canonical mailbox to verify; bounded syntax and control characters checked before sending."
+          },
+          "invitationCode": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]{32,128}$",
+            "writeOnly": true,
+            "description": "Optional private share-link code supplied only in JSON and retained encrypted. A valid available invitation can be recorded during account creation; it is never required for verified public admission, never authenticates an existing owner, and never appears in a provider authorization URL or ordinary logs."
+          },
+          "returnTo": {
+            "$ref": "#/components/schemas/ProviderReturnTo"
+          }
         }
+      },
+      "PhoneVerificationStartRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "phoneNumber",
+          "intent",
+          "smsConsent",
+          "smsConsentVersion"
+        ],
+        "properties": {
+          "phoneNumber": {
+            "type": "string",
+            "pattern": "^\\+[1-9][0-9]{7,14}$",
+            "minLength": 9,
+            "maxLength": 16,
+            "writeOnly": true,
+            "description": "Canonical E.164 destination that the maintained phone-number parser validates within the explicitly allowed US/Canada regions; a +1 prefix alone is insufficient. The complete number is never returned in account metadata."
+          },
+          "intent": {
+            "type": "string",
+            "enum": [
+              "login",
+              "register",
+              "link"
+            ]
+          },
+          "smsConsent": {
+            "const": true,
+            "description": "Explicit agreement to receive SMS for this verification attempt only; no marketing subscription."
+          },
+          "smsConsentVersion": {
+            "const": "life-links-sms-verification-v1"
+          },
+          "invitationCode": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]{32,128}$",
+            "writeOnly": true,
+            "description": "Optional private share-link code supplied only in JSON and retained encrypted. A valid available invitation can be recorded during account creation; it is never required for verified public admission, never authenticates an existing owner, and never appears in a provider authorization URL or ordinary logs."
+          },
+          "returnTo": {
+            "$ref": "#/components/schemas/ProviderReturnTo"
+          }
+        }
+      },
+      "ContactVerificationResendRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "attemptToken"
+        ],
+        "properties": {
+          "attemptToken": {
+            "$ref": "#/components/schemas/ContactVerificationAttemptToken"
+          }
+        }
+      },
+      "ContactVerificationCodeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "attemptToken",
+          "code"
+        ],
+        "properties": {
+          "attemptToken": {
+            "$ref": "#/components/schemas/ContactVerificationAttemptToken"
+          },
+          "code": {
+            "type": "string",
+            "minLength": 6,
+            "maxLength": 6,
+            "pattern": "^[0-9]{6}$",
+            "writeOnly": true,
+            "description": "Six ASCII digits, including leading zeroes; supplied only in this JSON body and never logged."
+          }
+        }
+      },
+      "EmailVerificationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "const": "verified"
+          }
+        },
+        "description": "Only the bound attempt is verified; no account or session is created."
+      },
+      "PhoneVerificationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "returnTo"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "signed_in",
+              "linked",
+              "profile_required"
+            ]
+          },
+          "returnTo": {
+            "$ref": "#/components/schemas/ProviderReturnTo"
+          }
+        }
+      },
+      "PhoneSignupCompleteRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "attemptToken",
+          "displayName"
+        ],
+        "properties": {
+          "attemptToken": {
+            "$ref": "#/components/schemas/ContactVerificationAttemptToken"
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "Trimmed display name; control characters refused."
+          },
+          "timeZone": {
+            "type": "string",
+            "maxLength": 100,
+            "default": "UTC",
+            "description": "Canonical IANA time zone for the initial native My Calendar. Browser callers send their resolved zone."
+          }
+        },
+        "description": "Complete a verified non-link phone attempt; email, password, phone number, invitation and provider credentials are not accepted."
+      },
+      "ContactVerificationErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": [
+              "invalid_verification",
+              "verification_unavailable",
+              "verification_rate_limited",
+              "send_outcome_unknown",
+              "sign_out_required",
+              "authentication_required",
+              "signup_failed"
+            ]
+          }
+        },
+        "description": "Sanitized local failure only; no destination, code, provider response or credential is returned."
+      },
+      "RegistrationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "attemptToken",
+          "displayName",
+          "password"
+        ],
+        "properties": {
+          "attemptToken": {
+            "$ref": "#/components/schemas/ContactVerificationAttemptToken"
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "Trimmed display name; control characters refused."
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "minLength": 12,
+            "maxLength": 128,
+            "writeOnly": true,
+            "description": "Used verbatim, never trimmed."
+          },
+          "timeZone": {
+            "type": "string",
+            "maxLength": 100,
+            "default": "UTC",
+            "description": "Canonical IANA time zone for the initial native My Calendar. Browser callers send their resolved zone."
+          }
+        },
+        "description": "Create-only signup from a current verified email attempt and its original browser. The verified mailbox is retained server-side; editable email, invitation and provider credentials are refused."
       },
       "LoginRequest": {
         "type": "object",

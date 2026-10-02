@@ -265,7 +265,7 @@ describe("LifeLinksWorkspaceController", () => {
     api.registerAccount.mockResolvedValue({ user: privateOwner, qrBaseUrl: "https://example.test", agentConnection: disconnectedAgentConnection });
     const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/register") });
     await controller.start();
-    const input = { displayName: "Judge", email: privateOwner.email, password: "private-password", invitationCode: "x".repeat(32), timeZone: "America/New_York" };
+    const input = { displayName: "Judge", password: "private-password", attemptToken: "x".repeat(43), timeZone: "America/New_York" };
     expect(await controller.registerAccount(input)).toBe(true);
     expect(api.registerAccount).toHaveBeenCalledExactlyOnceWith(input);
     expect(controller.getSnapshot()).toMatchObject({ currentUser: privateOwner, links: [], rootLifeLinks: { items: [], loaded: true }, agentConnection: disconnectedAgentConnection, busy: false });
@@ -273,7 +273,7 @@ describe("LifeLinksWorkspaceController", () => {
     expect(api.createQrBatch).not.toHaveBeenCalled();
     expect(api.createLifeLink).not.toHaveBeenCalled();
     expect(JSON.stringify(controller.getSnapshot())).not.toContain(input.password);
-    expect(JSON.stringify(controller.getSnapshot())).not.toContain(input.invitationCode);
+    expect(JSON.stringify(controller.getSnapshot())).not.toContain(input.attemptToken);
     controller.dispose();
   });
 
@@ -282,7 +282,7 @@ describe("LifeLinksWorkspaceController", () => {
     const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/register") });
     let finish!: (result: Awaited<ReturnType<LifeLinksWorkspaceApi["registerAccount"]>>) => void;
     api.registerAccount.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
-    const input = { displayName: "Judge", email: "private@example.test", password: "private-password", invitationCode: "x".repeat(32) };
+    const input = { displayName: "Judge", password: "private-password", attemptToken: "x".repeat(43) };
     const first = controller.registerAccount(input);
     expect(await controller.registerAccount(input)).toBe(false);
     await controller.login(owner.email, "password");
@@ -296,14 +296,21 @@ describe("LifeLinksWorkspaceController", () => {
     controller.dispose();
   });
 
-  it.each(["registration_unavailable", "registration_failed", "rate_limited"])("keeps %s inline without changing the owner or retrying", async (code) => {
+  it.each([
+    ["invalid_verification", 400, "Verify your email with the latest code before creating your account."],
+    ["verification_unavailable", 503, "Account creation is currently unavailable. Choose another available signup method or sign in to an existing account."],
+    ["signup_failed", 409, "We couldn't create an account with those details. If you already have an account, sign in instead."],
+    ["sign_out_required", 409, "Sign out before creating a separate private account."],
+    ["verification_rate_limited", 429, "Too many attempts. Please wait before trying again; existing account sign-in is still available."],
+    ["rate_limited", 429, "Too many attempts. Please wait before trying again; existing account sign-in is still available."]
+  ] as const)("keeps %s inline without changing the owner or retrying", async (code, status, message) => {
     const api = fakeApi();
-    api.registerAccount.mockRejectedValue(new ApiError(code === "rate_limited" ? 429 : 403, code, {}));
+    api.registerAccount.mockRejectedValue(new ApiError(status, code, { detail: "private backend diagnostics" }));
     const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/register") });
-    expect(await controller.registerAccount({ displayName: "Judge", email: "private@example.test", password: "private-password", invitationCode: "x".repeat(32) })).toBe(false);
+    expect(await controller.registerAccount({ displayName: "Judge", password: "private-password", attemptToken: "x".repeat(43) })).toBe(false);
     expect(api.registerAccount).toHaveBeenCalledOnce();
     expect(controller.getSnapshot()).toMatchObject({ currentUser: null, busy: false });
-    expect(controller.getSnapshot().error).not.toBe("");
+    expect(controller.getSnapshot().error).toBe(message);
     controller.dispose();
   });
 
@@ -311,7 +318,7 @@ describe("LifeLinksWorkspaceController", () => {
     const api = fakeApi();
     api.listLinks.mockRejectedValue(new Error("offline"));
     const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/register") });
-    expect(await controller.registerAccount({ displayName: "Judge", email: "private@example.test", password: "private-password", invitationCode: "x".repeat(32) })).toBe(true);
+    expect(await controller.registerAccount({ displayName: "Judge", password: "private-password", attemptToken: "x".repeat(43) })).toBe(true);
     expect(api.registerAccount).toHaveBeenCalledOnce();
     expect(controller.getSnapshot().currentUser).toEqual(owner);
     expect(controller.getSnapshot().error).toContain("account was created");

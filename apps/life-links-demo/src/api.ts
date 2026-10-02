@@ -337,7 +337,6 @@ export function getProviderSignupDetails(signupToken: string) {
 export interface ProviderSignupInput {
   signupToken: string;
   displayName: string;
-  email: string;
   timeZone?: string;
 }
 
@@ -354,19 +353,72 @@ export function completeProviderLink(linkToken: string) {
 }
 
 export function getAccountSignInMethods(signal?: AbortSignal) {
-  return apiFetch<{ providers: Array<SignInProvider & { linked: boolean }> }>("/api/account-sign-in-methods", { signal });
+  return apiFetch<{
+    providers: Array<SignInProvider & { linked: boolean }>;
+    phone: { enabled: boolean; linked: boolean; maskedNumber: string | null };
+  }>("/api/account-sign-in-methods", { signal });
 }
 
 export interface AccountRegistrationInput {
+  attemptToken: string;
   displayName: string;
-  email: string;
   password: string;
-  invitationCode: string;
   timeZone?: string;
 }
 
 export async function getRegistration() {
-  return apiFetch<{ enabled: boolean }>("/api/auth/registration");
+  return apiFetch<{ enabled: boolean; emailVerificationEnabled: boolean; phoneVerificationEnabled: boolean }>("/api/auth/registration");
+}
+
+export interface VerificationAttempt {
+  attemptToken: string;
+  expiresAt: string;
+  resendAfterSeconds: number;
+}
+
+export interface EmailVerificationInput {
+  email: string;
+  invitationCode?: string;
+  returnTo?: string;
+}
+
+export function startEmailVerification(input: EmailVerificationInput) {
+  return apiFetch<VerificationAttempt>("/api/auth/email/start", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function resendEmailVerification(attemptToken: string) {
+  return apiFetch<VerificationAttempt>("/api/auth/email/resend", { method: "POST", body: JSON.stringify({ attemptToken }) });
+}
+
+export function verifyEmailVerification(attemptToken: string, code: string) {
+  return apiFetch<{ status: "verified" }>("/api/auth/email/verify", { method: "POST", body: JSON.stringify({ attemptToken, code }) });
+}
+
+export interface PhoneVerificationInput {
+  phoneNumber: string;
+  intent: "login" | "register" | "link";
+  smsConsent: true;
+  smsConsentVersion: "life-links-sms-verification-v1";
+  invitationCode?: string;
+  returnTo?: string;
+}
+
+export function startPhoneVerification(input: PhoneVerificationInput) {
+  return apiFetch<VerificationAttempt>("/api/auth/phone/start", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function resendPhoneVerification(attemptToken: string) {
+  return apiFetch<VerificationAttempt>("/api/auth/phone/resend", { method: "POST", body: JSON.stringify({ attemptToken }) });
+}
+
+export function verifyPhoneVerification(attemptToken: string, code: string) {
+  return apiFetch<{ status: "signed_in" | "profile_required" | "linked"; returnTo: string }>("/api/auth/phone/verify", {
+    method: "POST", body: JSON.stringify({ attemptToken, code })
+  });
+}
+
+export function completePhoneSignup(input: { attemptToken: string; displayName: string; timeZone?: string }) {
+  return apiFetch<{ returnTo: string }>("/api/auth/phone/complete", { method: "POST", body: JSON.stringify(input) });
 }
 
 export interface AccountInvitation {

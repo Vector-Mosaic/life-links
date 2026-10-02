@@ -108,8 +108,10 @@ import {
 import type { LifeLinksConfig } from "./config.js";
 import type { Logger } from "./logger.js";
 import { createSessionToken, hasSessionTokenShape, hashPassword, hashSessionToken, verifyPassword } from "./password.js";
-import { invitationFingerprint, matchesRegistrationInvitation, memberRegistrationInvitation, parseRegistrationRequest,
-  prepareMemberInvitation, RegistrationAdmissionError } from "./registration.js";
+import { prepareMemberInvitation, RegistrationAdmissionError } from "./registration.js";
+import { createContactVerificationRouter } from "./contact-verification.js";
+import type { EmailVerificationSender } from "@vmosaic/provider-sign-in/email";
+import type { SmsVerificationSender } from "@vmosaic/provider-sign-in/phone";
 import {
   ClaimIdempotencyConflictError,
   LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID,
@@ -203,6 +205,8 @@ type RateLimitBucket = {
 
 export type LifeLinksAppDeps = {
   signInAdapters?: ProviderAdapter[];
+  emailVerificationSender?: EmailVerificationSender;
+  smsVerificationSender?: SmsVerificationSender;
   store: LifeLinksStore;
   config: LifeLinksConfig;
   logger: Logger;
@@ -214,7 +218,8 @@ export type LifeLinksAppDeps = {
 };
 
 export function createLifeLinksApp({ store, config, logger, calendarProviderGateway, calendarAuthorizationService,
-  calendarSubscriptionService, wakeCalendarRuntime, remoteAgent, signInAdapters }: LifeLinksAppDeps): Express {
+  calendarSubscriptionService, wakeCalendarRuntime, remoteAgent, signInAdapters,
+  emailVerificationSender, smsVerificationSender }: LifeLinksAppDeps): Express {
   const app = express();
   const attachmentReader = new AttachmentContentReader(undefined, config.attachmentRuntime, {
     get: (file, revision) => store.getAttachmentText(file, revision),
@@ -271,6 +276,8 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     app.use(createCalendarProviderNotificationRouter(calendarSubscriptionService, wakeCalendarRuntime ?? (() => {})));
   }
   app.use("/api/auth/register", express.json({ limit: "4kb" }));
+  app.use("/api/auth/email", express.json({ limit: "4kb" }));
+  app.use("/api/auth/phone", express.json({ limit: "4kb" }));
   app.use(express.json({ limit: "1mb" }));
   app.use(async (request, _response, next) => {
     const appRequest = request as AppRequest;
@@ -305,18 +312,22 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
       next(error);
     }
   });
-  const providerSignIn = createProviderSignInRouters({ store, config, logger, adapters: signInAdapters,
-    issueSession: async (user, response) => {
-      const token = createSessionToken();
-      await store.createSession(user.id, hashSessionToken(token, config.sessionSecret), new Date(Date.now() + config.sessionTtlDays * 86400000).toISOString());
-      setSessionCookie(response, token, config);
-    } });
+  const issueSession = async (user: StoredUser, response: Response) => {
+    const token = createSessionToken();
+    await store.createSession(user.id, hashSessionToken(token, config.sessionSecret), new Date(Date.now() + config.sessionTtlDays * 86400000).toISOString());
+    setSessionCookie(response, token, config);
+  };
+  const providerSignIn = createProviderSignInRouters({ store, config, logger, adapters: signInAdapters, issueSession });
+  const contactVerification = createContactVerificationRouter({ store, config, logger, issueSession,
+    emailSender: emailVerificationSender, smsSender: smsVerificationSender,
+    registrationResponse: user => ({ user: publicUser(user), agentConnection: agentConnectionForUser(user), qrBaseUrl: config.qrBaseUrl }) });
   // These callbacks verify a one-use, browser-bound transaction. Apple uses
   // cross-site form_post; it cannot pass the ordinary mutation Origin guard.
   app.use(providerSignIn.callbacks);
   app.use(originGuard(config, logger));
   app.use(rateLimitGuard(config, logger));
   app.use(providerSignIn.routes);
+  app.use(contactVerification);
 
   const requireAuthenticated = requireUser(logger);
   if (calendarProviderGateway) {
@@ -407,9 +418,10 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     });
   });
 
-  app.get("/api/auth/registration", async (_request, response) => {
+  app.get("/api/auth/registration", (_request, response) => {
     response.setHeader("Cache-Control", "no-store");
-    response.json({ enabled: Boolean(config.memberInvitationsEnabled || (config.registration && await store.registrationAvailable(config.registration))) });
+    response.json({ enabled: true, emailVerificationEnabled: Boolean(config.contactVerification?.email),
+      phoneVerificationEnabled: Boolean(config.contactVerification?.phone) });
   });
 
   app.get("/api/account-invitations", requireAuthenticated, async (request: AppRequest, response) => {
@@ -443,41 +455,6 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     logger.info("life_links.invitation.cancelled", { msg: "Account invitation cancelled", request_id: request.requestId,
       user_id: request.user!.id, invitation_id: String(request.params.invitationId) });
     response.status(204).send();
-  });
-
-  app.post("/api/auth/register", async (request: AppRequest, response) => {
-    response.setHeader("Cache-Control", "private, no-store");
-    if (!config.memberInvitationsEnabled && (!config.registration || Date.parse(config.registration.expiresAt) <= Date.now())) {
-      response.status(403).json({ error: "registration_unavailable" });
-      return;
-    }
-    const input = parseRegistrationRequest(request.body);
-    if (!input) {
-      response.status(400).json({ error: "invalid_registration" });
-      return;
-    }
-    const memberInvitation = config.memberInvitationsEnabled
-      ? await store.getMemberInvitation(invitationFingerprint(input.invitationCode)) : null;
-    const invitation = memberInvitation ? memberRegistrationInvitation(memberInvitation)
-      : config.registration && matchesRegistrationInvitation(input.invitationCode, config.registration) ? config.registration : null;
-    if (!invitation || !await store.registrationAvailable(invitation)) {
-      response.status(403).json({ error: "registration_unavailable" });
-      return;
-    }
-    try {
-      const passwordHash = await hashPassword(input.password);
-      const user = await store.registerOwner({ displayName: input.displayName, email: input.email,
-        passwordHash, timeZone: input.timeZone, invitation });
-      const token = createSessionToken();
-      await store.createSession(user.id, hashSessionToken(token, config.sessionSecret),
-        new Date(Date.now() + config.sessionTtlDays * 24 * 60 * 60 * 1000).toISOString());
-      setSessionCookie(response, token, config);
-      logger.info("life_links.auth.registered", { msg: "Private account created", request_id: request.requestId, user_id: user.id });
-      response.status(201).json({ user: publicUser(user), agentConnection: agentConnectionForUser(user), qrBaseUrl: config.qrBaseUrl });
-    } catch (error) {
-      if (!(error instanceof RegistrationAdmissionError)) throw error;
-      response.status(error.code === "registration_unavailable" ? 403 : 409).json({ error: error.code });
-    }
   });
 
   app.post("/api/auth/logout", async (request: AppRequest, response) => {
@@ -2355,10 +2332,11 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
     if (isRegistrationPath(request.path) || /^\/api\/auth\/registration\/?$/i.test(request.path) ||
         /^\/api\/account-invitations(?:\/|$)/i.test(request.path) ||
-        /^\/api\/auth\/(?:providers|provider-signup|provider-link)(?:\/|$)/i.test(request.path)) {
+        /^\/api\/auth\/(?:providers|provider-signup|provider-link|email|phone)(?:\/|$)/i.test(request.path)) {
       // Parser/driver messages may contain submitted credentials or unique-key details.
       const badInput = ["entity.parse.failed", "entity.too.large", "parameters.too.many"].includes(String((error as { type?: string })?.type));
       const signInRoute = /^\/api\/auth\/(?:providers|provider-signup|provider-link)(?:\/|$)/i.test(request.path);
+      const verificationRoute = isRegistrationPath(request.path) || /^\/api\/auth\/(?:email|phone)(?:\/|$)/i.test(request.path);
       logger.error(signInRoute ? "life_links.sign_in.request_failed" : "life_links.auth.registration_error", { msg: "Account request failed",
         request_id: (request as AppRequest).requestId, status: badInput ? 400 : 503 });
       response.setHeader("Cache-Control", "no-store");
@@ -2366,6 +2344,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
       response.status(badInput ? 400 : 503).json({ error: invitationRoute
         ? badInput ? "invalid_invitation" : "invitations_unavailable"
         : signInRoute ? badInput ? "invalid_sign_in_request" : "sign_in_unavailable"
+        : verificationRoute ? badInput ? "invalid_verification" : "verification_unavailable"
         : badInput ? "invalid_registration" : "registration_unavailable" });
       return;
     }
@@ -2464,7 +2443,7 @@ function securityHeaders(config: LifeLinksConfig) {
 function originGuard(config: LifeLinksConfig, logger: Logger) {
   return (request: Request, response: Response, next: NextFunction) => {
     const registration = (request.method === "POST" && isRegistrationPath(request.path)) ||
-      (isMutatingMethod(request.method) && /^\/api\/(?:account-invitations|auth\/providers|auth\/provider-signup|auth\/provider-link)(?:\/|$)/i.test(request.path));
+      (isMutatingMethod(request.method) && /^\/api\/(?:account-invitations|auth\/providers|auth\/provider-signup|auth\/provider-link|auth\/email|auth\/phone)(?:\/|$)/i.test(request.path));
     if ((!config.originCheckEnabled && !registration) || !isMutatingMethod(request.method)) {
       next();
       return;

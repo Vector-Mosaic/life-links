@@ -4,6 +4,7 @@ import { ApiError, getSignInProviders, startProviderSignIn, type SignInProvider,
 import { providerAuthorizationUrl, providerSignInErrorMessage, validateProviderReturnTo } from "./providerSignInLink";
 
 const googleLogo = new URL("./assets/google-g.png", import.meta.url).href;
+const appleLogo = new URL("./assets/apple.svg", import.meta.url).href;
 
 export interface ProviderSignInProps {
   intent: "login" | "register";
@@ -12,21 +13,23 @@ export interface ProviderSignInProps {
   timeZone?: string;
   disabled?: boolean;
   onNavigate?: (url: string) => void;
+  onBusyChange?: (busy: boolean) => void;
 }
 
 export function ProviderSignIn({ intent, returnTo, invitationCode, timeZone, disabled = false,
-  onNavigate = url => window.location.assign(url) }: ProviderSignInProps) {
+  onNavigate = url => window.location.assign(url), onBusyChange }: ProviderSignInProps) {
   const [providers, setProviders] = useState<SignInProvider[]>([]);
   const [starting, setStarting] = useState<SignInProviderId | null>(null);
   const [error, setError] = useState("");
   const pending = useRef(false);
   const mounted = useRef(false);
+  const busyCallback = useRef(onBusyChange);
+  busyCallback.current = onBusyChange;
   const invitation = invitationCode?.trim() ?? "";
-  const needsInvitation = intent === "register" && !/^[A-Za-z0-9_-]{32,128}$/.test(invitation);
 
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; };
+    return () => { mounted.current = false; if (pending.current) busyCallback.current?.(false); };
   }, []);
   useEffect(() => {
     let active = true;
@@ -42,14 +45,15 @@ export function ProviderSignIn({ intent, returnTo, invitationCode, timeZone, dis
   }, []);
 
   async function start(provider: SignInProvider) {
-    if (pending.current || disabled || needsInvitation) return;
+    if (pending.current || disabled) return;
     pending.current = true;
+    busyCallback.current?.(true);
     setStarting(provider.id);
     setError("");
     try {
       const result = await startProviderSignIn(provider.id, {
         intent, returnTo: validateProviderReturnTo(returnTo),
-        ...(intent === "register" ? { invitationCode: invitation } : {}),
+        ...(intent === "register" && /^[A-Za-z0-9_-]{32,128}$/.test(invitation) ? { invitationCode: invitation } : {}),
         ...(timeZone ? { timeZone } : {})
       });
       if (!mounted.current) return;
@@ -61,7 +65,7 @@ export function ProviderSignIn({ intent, returnTo, invitationCode, timeZone, dis
         "We couldn't start sign-in. Try again or use your existing sign-in method.");
     } finally {
       pending.current = false;
-      if (mounted.current) setStarting(null);
+      if (mounted.current) { setStarting(null); busyCallback.current?.(false); }
     }
   }
 
@@ -70,12 +74,12 @@ export function ProviderSignIn({ intent, returnTo, invitationCode, timeZone, dis
       <div className="provider-sign-in-buttons">
         {providers.map(provider => <button key={provider.id} type="button" className="secondary-button provider-sign-in-button"
           data-provider={provider.id}
-          disabled={disabled || starting !== null || needsInvitation} onClick={() => void start(provider)}>
+          disabled={disabled || starting !== null} onClick={() => void start(provider)}>
           {provider.id === "google" && <img className="provider-sign-in-logo" src={googleLogo} alt="" aria-hidden="true" width={20} height={20} />}
+          {provider.id === "apple" && <img className="provider-sign-in-logo" src={appleLogo} alt="" aria-hidden="true" width={20} height={20} />}
           <span>{starting === provider.id ? `Opening ${provider.label}…` : providerButtonLabel(provider.id)}</span>
         </button>)}
       </div>
-      {needsInvitation && <p className="account-entry-help">Enter your invitation code or open your invitation link to continue.</p>}
     {error && <p className="error-banner" role="alert">{error}</p>}
     <div className="provider-sign-in-divider" aria-hidden="true"><span>or</span></div>
   </div>;
