@@ -56,6 +56,7 @@ import { PersistentRemoteApprovals, RemoteAgentState } from "../src/remote-agent
 import type { RemoteAgentPrincipal } from "../src/remote-agent-principal.js";
 import { invitationFingerprint } from "../src/registration.js";
 import { hashPassword } from "../src/password.js";
+import { createSmsVerificationConsentReceipt, SMS_CONSENT_RETENTION_MS } from "../src/sms-verification-consent.js";
 
 const databaseUrl = process.env.LIFE_LINKS_TEST_DATABASE_URL;
 const allowSchemaMutation = process.env.LIFE_LINKS_ALLOW_TEST_DB_SCHEMA === "1";
@@ -98,6 +99,82 @@ describe("Life Links Postgres integration", () => {
   registrationStoreContract(() => store);
   providerSignInStoreContract(() => store);
   contactVerificationStoreContract(() => store);
+
+  it("retains only the minimal original SMS consent receipt across stores and physically purges expired rows", async () => {
+    const receipt = createSmsVerificationConsentReceipt({ receiptHash: invitationFingerprint(randomUUID()),
+      phoneHash: invitationFingerprint(randomUUID()), consentedAt: new Date().toISOString(), disclosureVersion: "life-links-sms-verification-v2" });
+    expect(await store.recordSmsVerificationConsent(receipt)).toBe(true);
+    const second = createPostgresStore(requireTestDatabaseUrl(), schemaName);
+    try { expect(await second.store.recordSmsVerificationConsent(receipt)).toBe(false); }
+    finally { await second.pool.end(); }
+    const rows = await postgresPool.query("SELECT * FROM sms_verification_consent_receipts WHERE receipt_hash=$1", [receipt.receiptHash]);
+    expect(Object.keys(rows.rows[0]).sort()).toEqual(["consented_at", "disclosure_version", "expires_at", "phone_hash", "receipt_hash"]);
+    expect(rows.rows[0].consented_at.toISOString()).toBe(receipt.consentedAt);
+    expect(rows.rows[0].expires_at.toISOString()).toBe(receipt.expiresAt);
+    const expiredHash = invitationFingerprint(randomUUID()), expiredAt = new Date(Date.now() - 60_000).toISOString();
+    await postgresPool.query(`INSERT INTO sms_verification_consent_receipts
+      (receipt_hash,phone_hash,consented_at,disclosure_version,expires_at) VALUES($1,$2,$3,$4,$5)`,
+      [expiredHash, receipt.phoneHash, new Date(Date.parse(expiredAt) - SMS_CONSENT_RETENTION_MS).toISOString(), receipt.disclosureVersion, expiredAt]);
+    expect(await store.purgeExpiredSmsVerificationConsent()).toBe(1);
+    expect((await postgresPool.query("SELECT 1 FROM sms_verification_consent_receipts WHERE receipt_hash=$1", [expiredHash])).rowCount).toBe(0);
+    expect(await store.recordSmsVerificationConsent(receipt)).toBe(false);
+  });
+
+  it("preserves rolling reservations across separate connections and recreated store instances", async () => {
+    const limit = { keyHash: invitationFingerprint(randomUUID()), max: 10,
+      windowMs: 24 * 60 * 60_000, windowType: "rolling" as const };
+    const second = createPostgresStore(requireTestDatabaseUrl(), schemaName);
+    try {
+      const results = await Promise.all(Array.from({ length: 20 }, (_, index) =>
+        (index % 2 ? second.store : store).reserveVerificationLimits([limit])));
+      expect(results.filter(Boolean)).toHaveLength(10);
+      const rows = await postgresPool.query("SELECT count,reserved_at FROM contact_verification_limits WHERE key_hash=$1", [limit.keyHash]);
+      expect(rows.rows[0].count).toBe(10);
+      expect(rows.rows[0].reserved_at).toHaveLength(10);
+      expect(rows.rows[0].reserved_at.every((time: unknown) => time instanceof Date)).toBe(true);
+    } finally { await second.pool.end(); }
+    const restarted = createPostgresStore(requireTestDatabaseUrl(), schemaName);
+    try { expect(await restarted.store.reserveVerificationLimits([limit])).toBe(false); }
+    finally { await restarted.pool.end(); }
+  });
+
+  it("prunes aged rolling reservation timestamps without resetting the still-active recipient window", async () => {
+    const limit = { keyHash: invitationFingerprint(randomUUID()), max: 10,
+      windowMs: 24 * 60 * 60_000, windowType: "rolling" as const };
+    await postgresPool.query(`INSERT INTO contact_verification_limits(key_hash,count,expires_at,reserved_at)
+      VALUES($1,10,clock_timestamp()+interval '23 hours',
+        ARRAY[clock_timestamp()-interval '24 hours'] || array_fill(clock_timestamp()-interval '1 hour', ARRAY[9]))`, [limit.keyHash]);
+    expect(await store.reserveVerificationLimits([limit])).toBe(true);
+    expect(await store.reserveVerificationLimits([limit])).toBe(false);
+    const rows = await postgresPool.query("SELECT count,reserved_at FROM contact_verification_limits WHERE key_hash=$1", [limit.keyHash]);
+    expect(rows.rows[0].count).toBe(10);
+    expect(rows.rows[0].reserved_at).toHaveLength(10);
+  });
+
+  it("adds rolling-history storage without changing pre-existing fixed-window reservations", async () => {
+    const precedingSchema = createSchemaName();
+    await adminPool.query(`CREATE SCHEMA ${quoteIdentifier(precedingSchema)}`);
+    const preceding = createPostgresStore(requireTestDatabaseUrl(), precedingSchema);
+    try {
+      await preceding.pool.query("CREATE TABLE schema_migrations(id text PRIMARY KEY,applied_at timestamptz NOT NULL DEFAULT now())");
+      const files = (await fs.readdir(migrationDir)).filter(file => file.endsWith(".sql") && file < "024_rolling_verification_limits.sql").sort();
+      for (const file of files) await applyMigrationFile(preceding.pool, file);
+      const keyHash = invitationFingerprint(randomUUID()), expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+      await preceding.pool.query("INSERT INTO contact_verification_limits(key_hash,count,expires_at) VALUES($1,2,$2)", [keyHash, expiresAt]);
+      await runMigrations(preceding.pool, migrationDir, logger);
+      const fixed = { keyHash, max: 2, windowMs: 600_000 };
+      expect(await preceding.store.reserveVerificationLimits([fixed])).toBe(false);
+      expect(await preceding.store.reserveVerificationLimits([{ ...fixed, max: 3 }])).toBe(true);
+      await runMigrations(preceding.pool, migrationDir, logger);
+      const rows = await preceding.pool.query("SELECT count,expires_at,reserved_at FROM contact_verification_limits WHERE key_hash=$1", [keyHash]);
+      expect(rows.rows[0].count).toBe(3);
+      expect(rows.rows[0].expires_at.toISOString()).toBe(expiresAt);
+      expect(rows.rows[0].reserved_at).toEqual([]);
+    } finally {
+      await preceding.pool.end();
+      await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(precedingSchema)} CASCADE`);
+    }
+  });
 
   it("serializes phone-link completion with a committed logout and preserves the refused proof", async () => {
     const owner = await store.registerOwner({ displayName: "Phone link owner", email: `${randomUUID()}@example.test`,
@@ -956,7 +1033,7 @@ describe("Life Links Postgres integration", () => {
       const users = await isolated.pool.query("SELECT count(*)::int AS count FROM users");
       const migrations = await isolated.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
       expect(users.rows[0].count).toBe(2);
-      expect(migrations.rows[0].count).toBe(23);
+      expect(migrations.rows[0].count).toBe(25);
       const agentConnectionColumn = await adminPool.query(
         `SELECT is_nullable, data_type
          FROM information_schema.columns
@@ -1876,7 +1953,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(23);
+      expect(receiptCount.rows[0].count).toBe(25);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1927,7 +2004,7 @@ describe("Life Links Postgres integration", () => {
       const newlyCreated = await fixture.store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
         ownerId, title: "New default", createdAt, steps: [{ id: `routine-step-${randomUUID()}`, activityId, activityTitle: "Prepare", position: 0 }] });
       expect(newlyCreated.currentRevision.revision.ordering).toBe("unordered");
-      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(23);
+      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(25);
     } finally {
       await fixture.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -1995,7 +2072,9 @@ describe("Life Links Postgres integration", () => {
         "020_invitation_registration.sql",
         "021_member_invitations.sql",
         "022_provider_sign_in.sql",
-        "023_verified_public_signup.sql"
+        "023_verified_public_signup.sql",
+        "024_rolling_verification_limits.sql",
+        "025_sms_verification_consent.sql"
       ]);
     } finally {
       await concurrent.store.close();

@@ -173,11 +173,13 @@ import { assertProviderSignInAttempt, identityBinding, providerIdentityKey, vali
   MAX_PROVIDER_SIGN_IN_ATTEMPTS, PROVIDER_SIGN_IN_EXPIRY_CLEANUP_LIMIT, ProviderSignInStateError,
   type ProviderIdentityBinding, type VerifiedProviderIdentity, type ProviderSignInAttempt } from "./provider-sign-in-state.js";
 import { assertContactVerificationAttempt, assertPhoneBinding, assertVerificationLimits, assertVerifiedRegistrationAttempt,
-  canUpdateContactVerificationAttempt, contactAttemptMatchesConsumption, phoneBindingKey, validContactFingerprint,
+  canUpdateContactVerificationAttempt, contactAttemptMatchesConsumption, nextVerificationLimitReservation, phoneBindingKey, validContactFingerprint,
   validVerifiedContactConsumption, ContactVerificationStateError, MAX_CONTACT_VERIFICATION_ATTEMPTS,
   MAX_VERIFICATION_LIMITS, VERIFICATION_EXPIRY_CLEANUP_LIMIT,
-  type ContactVerificationAttempt, type PhoneBinding, type VerificationLimit, type VerifiedContactConsumption,
+  type ContactVerificationAttempt, type PhoneBinding, type VerificationLimit, type VerificationLimitReservation, type VerifiedContactConsumption,
   type FinalizeVerifiedRegistrationInput, type FinalizeVerifiedPhoneLinkInput } from "./contact-verification-state.js";
+import { assertSmsVerificationConsentReceipt, sameSmsVerificationConsentReceipt,
+  type SmsVerificationConsentReceipt } from "./sms-verification-consent.js";
 
 export type StoredUser = UserRecord & {
   passwordHash: string | null;
@@ -420,6 +422,8 @@ export type LifeLinksStore = {
   getContactVerificationAttempt(tokenHash: string, browserHash: string): Promise<ContactVerificationAttempt | null>;
   updateContactVerificationAttempt(attempt: ContactVerificationAttempt, expectedVersion: number): Promise<boolean>;
   reserveVerificationLimits(limits: VerificationLimit[]): Promise<boolean>;
+  recordSmsVerificationConsent(receipt: SmsVerificationConsentReceipt): Promise<boolean>;
+  purgeExpiredSmsVerificationConsent(): Promise<number>;
   finalizeVerifiedRegistration(input: FinalizeVerifiedRegistrationInput): Promise<StoredUser>;
   getPhoneUser(binding: PhoneBinding): Promise<StoredUser | null>;
   listPhoneBindings(ownerId: string): Promise<PhoneBinding[]>;
@@ -590,7 +594,8 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   private providerIdentities = new Map<string, { ownerId: string; identity: ProviderIdentityBinding }>();
   private providerSignInAttempts = new Map<string, ProviderSignInAttempt>();
   private contactVerificationAttempts = new Map<string, ContactVerificationAttempt>();
-  private verificationLimits = new Map<string, { count: number; expiresAt: number }>();
+  private verificationLimits = new Map<string, VerificationLimitReservation>();
+  private smsVerificationConsentReceipts = new Map<string, SmsVerificationConsentReceipt>();
   private phoneIdentities = new Map<string, { ownerId: string; binding: PhoneBinding }>();
   private sessions = new Map<string, SessionRecord>();
   private lifeLinks = new Map<string, StoredLifeLink>();
@@ -914,8 +919,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       const activeCount = [...this.verificationLimits.values()].filter(row => row.expiresAt > now).length;
       const next = limits.map(item => {
         const saved = this.verificationLimits.get(item.keyHash);
-        return { key: item.keyHash, max: item.max, row: saved && saved.expiresAt > now
-          ? { ...saved, count: saved.count + 1 } : { count: 1, expiresAt: now + item.windowMs },
+        return { key: item.keyHash, max: item.max, row: nextVerificationLimitReservation(item, saved, now),
           isNew: !saved || saved.expiresAt <= now };
       });
       if (next.some(item => item.row.count > item.max)
@@ -923,6 +927,30 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       for (const item of next) this.verificationLimits.set(item.key, item.row);
       return true;
     });
+  }
+
+  async recordSmsVerificationConsent(receipt: SmsVerificationConsentReceipt): Promise<boolean> {
+    assertSmsVerificationConsentReceipt(receipt);
+    return this.withLocks(["\u0000sms-verification-consent"], async () => {
+      this.pruneExpiredSmsVerificationConsent();
+      const saved = this.smsVerificationConsentReceipts.get(receipt.receiptHash);
+      if (saved) {
+        if (!sameSmsVerificationConsentReceipt(saved, receipt)) throw new ContactVerificationStateError("verification_unavailable");
+        return false;
+      }
+      this.smsVerificationConsentReceipts.set(receipt.receiptHash, { ...receipt });
+      return true;
+    });
+  }
+  async purgeExpiredSmsVerificationConsent(): Promise<number> {
+    return this.withLocks(["\u0000sms-verification-consent"], async () => this.pruneExpiredSmsVerificationConsent());
+  }
+  private pruneExpiredSmsVerificationConsent(): number {
+    let removed = 0;
+    for (const [key, receipt] of this.smsVerificationConsentReceipts) {
+      if (Date.parse(receipt.expiresAt) <= Date.now()) { this.smsVerificationConsentReceipts.delete(key); removed++; }
+    }
+    return removed;
   }
 
   async finalizeVerifiedRegistration(input: FinalizeVerifiedRegistrationInput): Promise<StoredUser> {

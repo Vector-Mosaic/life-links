@@ -6,9 +6,12 @@ import { invitationFingerprint, memberRegistrationInvitation, prepareMemberInvit
   type RegisterOwnerInput, type RegistrationInvitation } from "../src/registration.js";
 import { type ContactVerificationAttempt, type FinalizeVerifiedRegistrationInput,
   type PhoneBinding, type VerificationLimit } from "../src/contact-verification-state.js";
+import { createSmsVerificationConsentReceipt } from "../src/sms-verification-consent.js";
 
 export function contactVerificationStoreContract(getStore: () => LifeLinksStore) {
   const fingerprint = () => invitationFingerprint(randomUUID());
+  const consentReceipt = () => createSmsVerificationConsentReceipt({ receiptHash: fingerprint(), phoneHash: fingerprint(),
+    consentedAt: new Date().toISOString(), disclosureVersion: "life-links-sms-verification-v2" });
   const attempt = (changes: Partial<ContactVerificationAttempt> = {}): ContactVerificationAttempt => ({
     tokenHash: fingerprint(), browserHash: fingerprint(), addressHash: fingerprint(), channel: "email",
     intent: "register", phase: "send_pending", encryptedPayload: "synthetic-authenticated-ciphertext",
@@ -187,13 +190,42 @@ export function contactVerificationStoreContract(getStore: () => LifeLinksStore)
       expect(await store.reserveVerificationLimits([other])).toBe(false);
     });
 
+    it("bounds concurrent rolling reservations and spends mixed windows only when every limit admits them", async () => {
+      const store = getStore(), rolling: VerificationLimit = { keyHash: fingerprint(), max: 3,
+        windowMs: 24 * 60 * 60_000, windowType: "rolling" },
+        fixed: VerificationLimit = { keyHash: fingerprint(), max: 5, windowMs: 600_000 };
+      const results = await Promise.all(Array.from({ length: 10 }, () => store.reserveVerificationLimits([rolling, fixed])));
+      expect(results.filter(Boolean)).toHaveLength(3);
+      const fresh: VerificationLimit = { ...rolling, keyHash: fingerprint(), max: 1 };
+      expect(await store.reserveVerificationLimits([rolling, fresh])).toBe(false);
+      expect(await store.reserveVerificationLimits([fresh])).toBe(true);
+      expect(await store.reserveVerificationLimits([fresh])).toBe(false);
+      expect(await store.reserveVerificationLimits([fixed])).toBe(true);
+      expect(await store.reserveVerificationLimits([fixed])).toBe(true);
+      expect(await store.reserveVerificationLimits([fixed])).toBe(false);
+    });
+
     it("rejects invalid or duplicate budget keys without spending a valid budget", async () => {
       const store = getStore(), valid: VerificationLimit = { keyHash: fingerprint(), max: 1, windowMs: 600_000 };
       for (const limits of [[], [valid, valid], [valid, { ...valid, keyHash: fingerprint(), max: 0 }],
-        [valid, { ...valid, keyHash: "not-a-fingerprint" }]]) {
+        [valid, { ...valid, keyHash: "not-a-fingerprint" }],
+        [valid, { ...valid, keyHash: fingerprint(), windowType: "unsupported" as "rolling" }]]) {
         await expect(store.reserveVerificationLimits(limits)).rejects.toMatchObject({ code: "verification_unavailable" });
       }
       expect(await store.reserveVerificationLimits([valid])).toBe(true);
+    });
+
+    it("records an explicit SMS consent action once and refuses replacement or extended retention", async () => {
+      const store = getStore(), receipt = consentReceipt();
+      const results = await Promise.all(Array.from({ length: 10 }, () => store.recordSmsVerificationConsent(receipt)));
+      expect(results.filter(Boolean)).toHaveLength(1);
+      for (const change of [{ phoneHash: fingerprint() }, { expiresAt: new Date(Date.parse(receipt.expiresAt) + 1).toISOString() },
+        { phoneNumber: "+12025550123" }, { disclosureVersion: "life-links-sms-verification-v1" }]) {
+        await expect(store.recordSmsVerificationConsent({ ...receipt, ...change } as typeof receipt))
+          .rejects.toMatchObject({ code: "verification_unavailable" });
+      }
+      expect(await store.recordSmsVerificationConsent(receipt)).toBe(false);
+      expect(await store.recordSmsVerificationConsent({ ...receipt, receiptHash: fingerprint() })).toBe(true);
     });
 
     it("admits a public verified-email owner with private empty defaults and consumes the proof exactly once", async () => {

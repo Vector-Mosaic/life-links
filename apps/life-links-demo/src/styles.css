@@ -749,6 +749,10 @@ label[data-tooltip]:focus-within .tooltip-bubble::before {
   margin-top: 12px;
 }
 
+.public-information-contact {
+  font-style: normal;
+}
+
 .public-information-actions {
   margin-top: 32px;
 }

@@ -9662,7 +9662,7 @@
             "description": "Explicit agreement to receive SMS for this verification attempt only; no marketing subscription."
           },
           "smsConsentVersion": {
-            "const": "life-links-sms-verification-v1"
+            "const": "life-links-sms-verification-v2"
           },
           "invitationCode": {
             "type": "string",

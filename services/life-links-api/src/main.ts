@@ -17,6 +17,7 @@ import { CalendarProviderSubscriptionService, PostgresCalendarProviderSubscripti
   InMemoryCalendarProviderSubscriptionStore, type CalendarProviderSubscriptionStore } from "./calendar-provider-subscriptions.js";
 import { RemoteAgentState } from "./remote-agent-state.js";
 import { RemoteAgentAuth } from "./remote-agent-auth.js";
+import { startSmsConsentRetention } from "./sms-consent-retention.js";
 
 async function main() {
   const config = readConfig();
@@ -94,6 +95,7 @@ async function main() {
   });
   const calendarRuntime = calendarAuthorizationService ? new CalendarProviderRuntime(calendarProviderGateway, calendarAuthorizationService,
     logger, 60_000, calendarSubscriptionService, adapters.map((adapter) => adapter.providerKey)) : undefined;
+  const stopSmsConsentRetention = await startSmsConsentRetention(store, logger);
   const server = startLifeLinksServer({ store, config, logger, calendarProviderGateway, calendarAuthorizationService,
     calendarSubscriptionService, wakeCalendarRuntime: () => calendarRuntime?.wake(),
     remoteAgent: { state: remoteAgentState, auth: await RemoteAgentAuth.create(remoteAgentState, store, config, logger) } });
@@ -112,7 +114,7 @@ async function main() {
       // otherwise Server.close waits indefinitely while the pool closes early.
       const remoteClosing = server.closeRemoteAgent();
       const httpClosing = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-      await Promise.all([remoteClosing, httpClosing, calendarRuntime?.stop()]);
+      await Promise.all([remoteClosing, httpClosing, calendarRuntime?.stop(), stopSmsConsentRetention()]);
       await store.close();
     })();
     return stopping;

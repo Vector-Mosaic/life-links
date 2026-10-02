@@ -14,7 +14,8 @@ export type ContactVerificationAttempt = {
   version: number;
   checkCount: number;
 };
-export type VerificationLimit = { keyHash: string; max: number; windowMs: number };
+export type VerificationLimit = { keyHash: string; max: number; windowMs: number; windowType?: "rolling" };
+export type VerificationLimitReservation = { count: number; expiresAt: number; reservedAt: number[] };
 export type VerifiedContactConsumption = { tokenHash: string; browserHash: string; expectedVersion: number };
 export type PhoneBinding = {
   phoneHash: string;
@@ -94,9 +95,31 @@ export function assertVerificationLimits(limits: VerificationLimit[]): void {
       || new Set(limits.map(item => item?.keyHash)).size !== limits.length
       || limits.some(item => !validContactFingerprint(item?.keyHash) || !Number.isSafeInteger(item.max)
         || item.max < 1 || item.max > 1_000_000 || !Number.isSafeInteger(item.windowMs)
-        || item.windowMs < 1 || item.windowMs > 32 * 24 * 60 * 60_000)) {
+        || item.windowMs < 1 || item.windowMs > 32 * 24 * 60 * 60_000
+        || (item.windowType !== undefined && item.windowType !== "rolling"))) {
     throw new ContactVerificationStateError("verification_unavailable");
   }
+}
+/** Called under the store's reservation lock; proposals are committed only if every limit admits them. */
+export function nextVerificationLimitReservation(limit: VerificationLimit,
+  saved: VerificationLimitReservation | undefined, now: number): VerificationLimitReservation {
+  const active = saved && saved.expiresAt > now ? saved : undefined;
+  if (limit.windowType !== "rolling") {
+    return { count: active ? active.count + 1 : 1, expiresAt: active?.expiresAt ?? now + limit.windowMs, reservedAt: [] };
+  }
+  // A fixed-window count is not evidence of individual reservation times.
+  // Use a distinct key for a newly introduced rolling limit and fail closed
+  // if an active row does not contain its complete reservation history.
+  if (active && (active.reservedAt.length !== active.count
+      || active.reservedAt.some(time => !Number.isSafeInteger(time)))) {
+    throw new ContactVerificationStateError("verification_unavailable");
+  }
+  const reservedAt = (active?.reservedAt ?? []).filter(time => time > now - limit.windowMs);
+  reservedAt.push(now);
+  // Retain future reservations if the clock moved backwards; cleanup must not
+  // discard them before their full window has passed.
+  const expiresAt = reservedAt.reduce((latest, time) => Math.max(latest, time), now) + limit.windowMs;
+  return { count: reservedAt.length, expiresAt, reservedAt };
 }
 export function assertVerifiedRegistrationAttempt(attempt: ContactVerificationAttempt,
   input: FinalizeVerifiedRegistrationInput): void {

@@ -93,7 +93,7 @@ describe("Sign-in methods", () => {
     await act(async () => dialog().querySelector<HTMLInputElement>('input[name="smsConsent"]')!.click());
     await act(async () => button("Send code").click());
     expect(startPhoneVerification).toHaveBeenCalledExactlyOnceWith({ phoneNumber: "+12025550123", intent: "link", returnTo: "/collections",
-      smsConsent: true, smsConsentVersion: "life-links-sms-verification-v1" });
+      smsConsent: true, smsConsentVersion: "life-links-sms-verification-v2" });
     expect(button("Link Google").disabled).toBe(true); expect(button("Refresh sign-in methods").disabled).toBe(true);
     await act(async () => button("Link Google").click()); expect(startProviderSignIn).not.toHaveBeenCalled();
     await act(async () => resolve({ attemptToken: "synthetic_phone_attempt", expiresAt: new Date(Date.now() + 600_000).toISOString(), resendAfterSeconds: 60 }));

@@ -11,7 +11,7 @@ import { InMemoryLifeLinksStore } from "../src/store.js";
 export const origin = "https://verification.example.test";
 export const password = "synthetic-private-password";
 export const phoneNumber = "+12025550123";
-export const smsConsent = { smsConsent: true, smsConsentVersion: "life-links-sms-verification-v1" };
+export const smsConsent = { smsConsent: true, smsConsentVersion: "life-links-sms-verification-v2" };
 export function verificationFixture(options: { email?: boolean; phone?: boolean;
   store?: InMemoryLifeLinksStore; sessionSecret?: string; emailSenderConfig?: Partial<AgentCommunicationsVerificationEmailConfig> } = {}) {
   const store = options.store ?? new InMemoryLifeLinksStore(), events: LogEvent[] = [];

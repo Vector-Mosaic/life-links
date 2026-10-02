@@ -943,7 +943,7 @@ describe("Life Links OpenAPI v1", () => {
     expect(phoneStart.additionalProperties).toBe(false);
     const phoneStartFields = objectValue(phoneStart.properties, "phone start fields");
     expect(phoneStartFields.smsConsent).toEqual(expect.objectContaining({ const: true }));
-    expect(phoneStartFields.smsConsentVersion).toEqual({ const: "life-links-sms-verification-v1" });
+    expect(phoneStartFields.smsConsentVersion).toEqual({ const: "life-links-sms-verification-v2" });
     const code = objectValue(objectValue(schemas.ContactVerificationCodeRequest, "code request").properties, "code fields");
     expect(code.code).toMatchObject({ pattern: "^[0-9]{6}$", minLength: 6, maxLength: 6, writeOnly: true });
     expect(objectValue(schemas.ContactVerificationAttemptToken, "attempt token"))

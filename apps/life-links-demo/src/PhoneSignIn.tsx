@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Phone } from "lucide-react";
+import { LIFE_LINKS_SMS_VERIFICATION_CONSENT } from "@life-links/core";
 import { ApiError, completePhoneSignup, getRegistration, resendPhoneVerification, startPhoneVerification,
   verifyPhoneVerification, type VerificationAttempt } from "./api";
 import { clearPendingInvitation } from "./invitationLink";
@@ -135,7 +136,7 @@ export function PhoneSignIn({ intent, returnTo, invitationCode, enabled, disable
     try {
       const invitation = invitationCode?.trim() ?? "";
       const result = await startPhoneVerification({ phoneNumber: normalized, intent, returnTo: validateProviderReturnTo(returnTo),
-        smsConsent: true, smsConsentVersion: "life-links-sms-verification-v1",
+        smsConsent: true, smsConsentVersion: LIFE_LINKS_SMS_VERIFICATION_CONSENT.version,
         ...(intent === "register" && /^[A-Za-z0-9_-]{32,128}$/.test(invitation) ? { invitationCode: invitation } : {}) });
       if (!mounted.current) return;
       setPhoneNumber(normalized); acceptAttempt(result);
@@ -205,9 +206,10 @@ export function PhoneSignIn({ intent, returnTo, invitationCode, enabled, disable
       <div className="ll-form"><label className="ll-checkbox-label" htmlFor={`${id}-sms-consent`} style={{ alignItems: "flex-start" }}>
         <input id={`${id}-sms-consent`} name="smsConsent" type="checkbox" checked={smsConsent} disabled={frozen}
           onChange={event => setSmsConsent(event.target.checked)} onKeyDown={event => { if (event.key === "Enter") event.preventDefault(); }} />
-        <span>I agree to receive LifeLinks SMS verification codes for phone signup, sign-in or linking at this number.
-          {" "}Message frequency depends on my requests. Standard message and data rates may apply.
-          {" "}Reply STOP to stop texts or HELP for help. Support: <a href="mailto:justin@vmosaic.com">justin@vmosaic.com</a>.
+        <span>{LIFE_LINKS_SMS_VERIFICATION_CONSENT.permission}
+          {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.frequency}
+          {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.keywords} Support: <a href={`mailto:${LIFE_LINKS_SMS_VERIFICATION_CONSENT.supportEmail}`}>{LIFE_LINKS_SMS_VERIFICATION_CONSENT.supportEmail}</a>.
+          {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.retentionNotice}
           {" "}<a href="/terms">Terms</a> and <a href="/privacy">Privacy</a>.</span>
       </label></div>
       <button type="button" className="primary-button" disabled={frozen || !smsConsent} onClick={() => void sendCode()}>{busy ? "Sending code…" : "Send code"}</button>

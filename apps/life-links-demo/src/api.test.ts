@@ -58,14 +58,14 @@ describe("Life Links API error normalization", () => {
     const attempt = { attemptToken: "synthetic_phone_attempt", expiresAt: "2026-10-01T13:10:00.000Z", resendAfterSeconds: 60 };
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(attempt)));
     vi.stubGlobal("fetch", fetchMock);
-    const input = { phoneNumber: "+12025550123", intent, smsConsent: true, smsConsentVersion: "life-links-sms-verification-v1",
+    const input = { phoneNumber: "+12025550123", intent, smsConsent: true, smsConsentVersion: "life-links-sms-verification-v2",
       returnTo: "/life-links", ...(intent === "register" ? { invitationCode: "synthetic_optional_invitation" } : {}) } as const;
     expect(await startPhoneVerification(input)).toEqual(attempt);
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
     expect(calls).toHaveLength(1);
     expect(calls[0][0]).toBe("/api/auth/phone/start");
     expect(calls[0][1]).toMatchObject({ method: "POST", credentials: "include", body: JSON.stringify(input) });
-    expect(JSON.parse(calls[0][1].body as string)).toMatchObject({ smsConsent: true, smsConsentVersion: "life-links-sms-verification-v1" });
+    expect(JSON.parse(calls[0][1].body as string)).toMatchObject({ smsConsent: true, smsConsentVersion: "life-links-sms-verification-v2" });
     expect(new Headers(calls[0][1].headers).has("X-Life-Links-Actor")).toBe(false);
   });
 

@@ -1,3 +1,4 @@
+import { LIFE_LINKS_SMS_VERIFICATION_CONSENT } from "@life-links/core";
 import { LifeLinksGlyph } from "./owner/FieldLedgerPrimitives";
 import type { PublicInformationPage } from "./workspace/routes";
 
@@ -6,7 +7,8 @@ import type { PublicInformationPage } from "./workspace/routes";
 export const privacyParagraphs = [
   "LifeLinks helps you organize the information you choose to record about your possessions, projects, routines and calendar, and make it available to agents you authorize.",
   "We store your display name, account email when provided, and a password hash if you choose password sign-in, plus the content you save: records, notes, files, Collections, Routines, history and Calendar information. Session cookies keep you signed in. Operational metadata is used to run, troubleshoot and protect the service. LifeLinks is hosted on Railway.",
-  "New email/password accounts require an email verification code before account creation. Phone signup, sign-in and linking verify that you can receive a code at the number you supply. Verification messages pass through our configured email or text-message provider, which receives the destination and message needed to send the code. SMS verification is for the codes you request, not marketing messages. We do not sell or share mobile verification information with third parties for marketing or promotional purposes. Phone sign-in stores a stable sign-in identifier and a masked number for your account settings. Verification destinations, codes and SMS consent time/version are protected in encrypted verification attempts; expiry ends their use for verification, and later cleanup removes expired attempts rather than deleting them immediately at expiry. A phone-only account does not require an email address. Verification or linking a sign-in method does not grant access to your workspace to the delivery provider.",
+  "New email/password accounts require an email verification code before account creation. Phone signup, sign-in and linking verify that you can receive a code at the number you supply. Verification messages pass through our configured email or text-message provider, which receives the destination and message needed to send the code. SMS verification is for the codes you request, not marketing messages. We do not sell phone numbers, SMS opt-in data or consent records, or share them with third parties or affiliates for marketing or promotional purposes. Phone sign-in stores a stable sign-in identifier and a masked number for your account settings. Verification destinations, codes and SMS consent time/version are protected in temporary encrypted verification attempts; expiry ends their use for verification, and later cleanup removes expired attempts rather than deleting them immediately at expiry. A phone-only account does not require an email address. Verification or linking a sign-in method does not grant access to your workspace to the delivery provider.",
+  "Separately, we keep an SMS consent receipt with a keyed identifier for your phone number, the time you agreed and the disclosure version for 90 days from that consent. This receipt contains no full phone number or verification code. It is kept even if signup or message delivery does not complete; requesting a replacement code does not restart the 90 days. Expired receipts are removed by routine cleanup when the service starts, hourly while it is running, and before sending SMS verification codes. An outage or cleanup failure may delay removal, and backups may retain older copies.",
   "If you choose provider sign-in, LifeLinks uses the account identity and profile information you authorize the provider to share for account creation, sign-in or linking a sign-in method. We store the provider name and stable account identifier, along with the shared display name and available email. Identity-only sign-in consent does not grant calendar access or access for connected agents. Calendar connections and agent permissions are separate choices.",
   "Your workspace is private by default. If you explicitly make a QR-linked record public, its selected public information can be viewed through that link. Attachments remain access-controlled. Anyone using the shared demonstration account can access that account's data. Use a separate private account and test data when evaluating your own connections.",
   "Google and Microsoft calendar connections are optional. With your permission, LifeLinks reads account identity and available calendars, synchronizes calendars you select, and performs event changes you request or authorize within the provider's permissions. Calendar authorization credentials are stored encrypted on the server and are not given to connected agents. Disconnecting removes the saved credentials; it does not delete your original events at Google or Microsoft. Removing a LifeLinks calendar connection removes its local calendar projection. Provider-side consent may need to be revoked separately in your provider account settings.",
@@ -51,8 +53,36 @@ export function PublicInformation({ page }: { page: PublicInformationPage }) {
         <p>Connected agents can read, create, edit, move and remove supported records within their permissions and required confirmation controls. Browser WebMCP works through an open LifeLinks page. A separately authorized remote MCP connection can work with that page closed. Available tools depend on the connected client and granted access.</p>
         <h2>Explore or try your own account</h2>
         <p>The populated shared demo is for exploring examples. Use the credentials in your private evaluation instructions to sign in. To use your own information, agent or eligible calendar account, create a separate private account through an available signup method. New private accounts do not copy demo content.</p>
-        <p>LifeLinks is operated by Vector Mosaic. Contact <a href="mailto:justin@vmosaic.com">justin@vmosaic.com</a> for support.</p>
+        <section id="sms-verification" aria-labelledby="sms-verification-title">
+          <h2 id="sms-verification-title">SMS verification and consent</h2>
+          <p>Phone signup, sign-in and linking are prepared and awaiting carrier approval. Phone verification is not available yet. Once enabled, this is the opt-in flow:</p>
+          <ol>
+            <li>Choose <strong>Continue with phone</strong> when creating an account or signing in. To add a phone sign-in method to an existing account, choose <strong>Link phone number</strong> under Account → Sign-in methods.</li>
+            <li>Enter your phone number with its country code and explicitly check the SMS consent checkbox. The checkbox starts unchecked.</li>
+            <li>Choose <strong>Send code</strong> to request a six-digit SMS verification code.</li>
+            <li>Enter the code to verify your number. New users then add a display name to finish creating their account.</li>
+          </ol>
+          <p>The consent checkbox displays this disclosure:</p>
+          <blockquote>
+            {LIFE_LINKS_SMS_VERIFICATION_CONSENT.permission}
+            {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.frequency}
+            {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.keywords} Support: <a href={`mailto:${LIFE_LINKS_SMS_VERIFICATION_CONSENT.supportEmail}`}>{LIFE_LINKS_SMS_VERIFICATION_CONSENT.supportEmail}</a>.
+            {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.retentionNotice}
+            {" "}<a href="/terms">Terms</a> and <a href="/privacy">Privacy</a>.
+          </blockquote>
+        </section>
       </> : (page === "privacy" ? privacyParagraphs : termsParagraphs).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}
+      <section aria-labelledby="public-information-contact-title">
+        <h2 id="public-information-contact-title">Contact LifeLinks</h2>
+        <p>LifeLinks is operated by Vector Mosaic. For support, privacy questions or account requests, contact:</p>
+        <address className="public-information-contact">
+          <strong>Justin Sublette · Vector Mosaic</strong><br />
+          <a href="mailto:justin@vmosaic.com">justin@vmosaic.com</a><br />
+          16 Paddington Ct<br />
+          Naples, FL 34104<br />
+          United States
+        </address>
+      </section>
       <div className="public-information-actions">
         <a className="primary-button" href="/life-links">Open LifeLinks / sign in</a>
         <a href="/register">Create a private account</a>

@@ -38,6 +38,7 @@ describe("phone possession HTTP", () => {
   it("requires explicit versioned verification consent, an allowed destination and browser Origin before delivery", async () => {
     const ctx = verificationFixture();
     for (const patch of [{ smsConsent: undefined }, { smsConsent: false }, { smsConsentVersion: "old-version" },
+      { smsConsentVersion: "life-links-sms-verification-v1" },
       { phoneNumber: "2025550123" }, { phoneNumber: "+442071234567" }, { extra: true }]) {
       const response = await ctx.phoneStart(ctx.agent, "login", patch); expect(response.status).toBeGreaterThanOrEqual(400);
     }
@@ -100,8 +101,37 @@ describe("phone possession HTTP", () => {
     expect((await ctx.phoneComplete(token)).status).toBe(400);
   });
 
-  it("does not replay an unknown SMS send but accepts its original arrived code", async () => {
+  it("persists only the original minimal consent receipt before dispatch and reuses it for a resend", async () => {
+    const ctx = verificationFixture(), recorded = vi.spyOn(ctx.store, "recordSmsVerificationConsent");
+    const started = await ctx.phoneStart(), receipt = recorded.mock.calls[0][0];
+    expect(recorded).toHaveBeenCalledTimes(1);
+    expect(recorded.mock.invocationCallOrder[0]).toBeLessThan(ctx.smsSend.mock.invocationCallOrder[0]);
+    expect(await recorded.mock.results[0].value).toBe(true);
+    expect(Object.keys(receipt).sort()).toEqual(["consentedAt", "disclosureVersion", "expiresAt", "phoneHash", "receiptHash"]);
+    expect(receipt.receiptHash).toMatch(/^[a-f0-9]{64}$/); expect(receipt.phoneHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(receipt.disclosureVersion).toBe("life-links-sms-verification-v2");
+    expect(Date.parse(receipt.expiresAt) - Date.parse(receipt.consentedAt)).toBe(90 * 24 * 60 * 60_000);
+    expect(JSON.stringify(receipt)).not.toContain(phoneNumber);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 61_000);
+    const resent = await ctx.agent.post("/api/auth/phone/resend").set("Origin", origin).send({ attemptToken: started.body.attemptToken });
+    expect(resent.status).toBe(202); expect(recorded).toHaveBeenCalledTimes(2);
+    expect(recorded.mock.calls[1][0]).toEqual(receipt); expect(await recorded.mock.results[1].value).toBe(false);
+    expect(ctx.smsSend).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(ctx.events)).not.toContain(receipt.phoneHash);
+  });
+
+  it("blocks SMS transport when durable consent persistence fails without logging private diagnostics", async () => {
     const ctx = verificationFixture();
+    vi.spyOn(ctx.store, "recordSmsVerificationConsent").mockRejectedValueOnce(new Error("restricted consent database details"));
+    const started = await ctx.phoneStart();
+    expect(started.status).toBe(503); expect(started.body).toEqual({ error: "verification_unavailable" });
+    expect(ctx.smsSend).not.toHaveBeenCalled();
+    expect(JSON.stringify(ctx.events)).not.toContain("restricted consent database details");
+    expect(ctx.events.some(event => event.event === "life_links.verification.send_unknown")).toBe(false);
+  });
+
+  it("does not replay an unknown SMS send but accepts its original arrived code", async () => {
+    const ctx = verificationFixture(), recorded = vi.spyOn(ctx.store, "recordSmsVerificationConsent");
     ctx.smsSend.mockImplementationOnce(async input => { ctx.smsDeliveries.push({ ...input }); throw new SmsVerificationDeliveryError("unknown", "delivery_outcome_unknown"); });
     const started = await ctx.phoneStart();
     expect(started.status).toBe(202); expect((await ctx.agent.get("/api/me")).body.user).toBeNull();
@@ -110,8 +140,18 @@ describe("phone possession HTTP", () => {
     const resend = await ctx.agent.post("/api/auth/phone/resend").set("Origin", origin).send({ attemptToken: started.body.attemptToken });
     expect(resend.status).toBe(503); expect(resend.body).toEqual({ error: "send_outcome_unknown" });
     expect(ctx.smsSend).toHaveBeenCalledTimes(1);
+    expect(recorded).toHaveBeenCalledTimes(1);
+    expect(await ctx.store.recordSmsVerificationConsent(recorded.mock.calls[0][0])).toBe(false);
     expect((await ctx.phoneVerify(started.body.attemptToken)).body.status).toBe("profile_required");
     expect((await ctx.phoneComplete(started.body.attemptToken)).status).toBe(201);
+  });
+
+  it("keeps the original consent receipt when the provider rejects a code", async () => {
+    const ctx = verificationFixture(), recorded = vi.spyOn(ctx.store, "recordSmsVerificationConsent");
+    ctx.smsSend.mockRejectedValueOnce(new SmsVerificationDeliveryError("rejected", "delivery_rejected"));
+    expect((await ctx.phoneStart()).status).toBe(503);
+    expect(recorded).toHaveBeenCalledTimes(1); expect(ctx.smsSend).toHaveBeenCalledTimes(1);
+    expect(await ctx.store.recordSmsVerificationConsent(recorded.mock.calls[0][0])).toBe(false);
   });
 
   it("keeps a resend with unknown outcome under the same code, expiry and no-replay rule", async () => {
@@ -154,6 +194,28 @@ describe("phone possession HTTP", () => {
     expect((await ctx.phoneStart()).status).toBe(202);
     expect((await ctx.phoneStart(ctx.agent, "register", { phoneNumber: "+14165550123" })).status).toBe(429);
     expect(ctx.smsSend).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["accepted", "rejected", "unknown"] as const)("keeps the rolling recipient cap across UTC midnight after an %s send", async outcome => {
+    const ctx = verificationFixture(), first = Date.parse("2026-10-01T21:00:00.000Z");
+    const now = vi.spyOn(Date, "now").mockReturnValue(first);
+    for (let index = 0; index < 10; index++) {
+      now.mockReturnValue(first + index * 16 * 60_000);
+      if (index === 9 && outcome !== "accepted") ctx.smsSend.mockRejectedValueOnce(
+        new SmsVerificationDeliveryError(outcome, outcome === "unknown" ? "delivery_outcome_unknown" : "delivery_rejected"));
+      expect((await ctx.phoneStart()).status).toBe(index === 9 && outcome === "rejected" ? 503 : 202);
+    }
+    // Each attempt/quarter-hour budget has expired, but midnight cannot reset
+    // the recipient's rolling reservations, including unsuccessful deliveries.
+    now.mockReturnValue(Date.parse("2026-10-02T00:01:00.000Z"));
+    expect((await ctx.phoneStart()).status).toBe(429);
+    now.mockReturnValue(first + 24 * 60 * 60_000 - 1);
+    expect((await ctx.phoneStart()).status).toBe(429);
+    expect(ctx.smsSend).toHaveBeenCalledTimes(10);
+    now.mockReturnValue(first + 24 * 60 * 60_000);
+    expect((await ctx.phoneStart()).status).toBe(202);
+    expect((await ctx.phoneStart()).status).toBe(429);
+    expect(ctx.smsSend).toHaveBeenCalledTimes(11);
   });
 
   it("consumes one verified local attempt only once during concurrent completion", async () => {

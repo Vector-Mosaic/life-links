@@ -18,7 +18,7 @@ describe("phone verification entry", () => {
   const linked = vi.fn();
   const token = "synthetic_attempt_".padEnd(43, "x");
   const phoneNumber = "+15551234567";
-  const consent = { smsConsent: true, smsConsentVersion: "life-links-sms-verification-v1" };
+  const consent = { smsConsent: true, smsConsentVersion: "life-links-sms-verification-v2" };
   const makeAttempt = (resendAfterSeconds = 60): VerificationAttempt => ({
     attemptToken: token, expiresAt: new Date(Date.now() + 600_000).toISOString(), resendAfterSeconds
   });
@@ -105,6 +105,9 @@ describe("phone verification entry", () => {
     expect(container.textContent).toContain("Message frequency depends on my requests.");
     expect(container.textContent).toContain("Standard message and data rates may apply.");
     expect(container.textContent).toContain("Reply STOP to stop texts or HELP for help.");
+    expect(container.textContent).toContain("the consent time and disclosure version for 90 days.");
+    expect(container.textContent).toContain("It contains no full phone number or verification code.");
+    expect(container.textContent).toContain("Expired receipts are removed by routine cleanup.");
     expect(container.querySelector<HTMLAnchorElement>('a[href="mailto:justin@vmosaic.com"]')!.textContent).toBe("justin@vmosaic.com");
     expect(container.querySelector<HTMLAnchorElement>('a[href="/terms"]')!.textContent).toBe("Terms");
     expect(container.querySelector<HTMLAnchorElement>('a[href="/privacy"]')!.textContent).toBe("Privacy");

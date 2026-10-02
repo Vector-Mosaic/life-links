@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   COMPETITION_CAMPING_KIT_ID,
@@ -31,6 +31,7 @@ import { attachmentTextStoreContract } from "./attachment-text-store-contract.js
 import { registrationStoreContract } from "./registration-store-contract.js";
 import { providerSignInStoreContract } from "./provider-sign-in-store-contract.js";
 import { contactVerificationStoreContract } from "./contact-verification-store-contract.js";
+import { createSmsVerificationConsentReceipt, SMS_CONSENT_RETENTION_MS } from "../src/sms-verification-consent.js";
 
 describe("canonical Life Links store contract", () => {
   let store: InMemoryLifeLinksStore;
@@ -43,6 +44,21 @@ describe("canonical Life Links store contract", () => {
   registrationStoreContract(() => store);
   providerSignInStoreContract(() => store);
   contactVerificationStoreContract(() => store);
+
+  it("physically removes memory consent receipts at their 90-day boundary and refuses expired reuse", async () => {
+    const now = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const receipt = createSmsVerificationConsentReceipt({ receiptHash: "a".repeat(64), phoneHash: "b".repeat(64),
+        consentedAt: new Date(now).toISOString(), disclosureVersion: "life-links-sms-verification-v2" });
+      expect(await store.recordSmsVerificationConsent(receipt)).toBe(true);
+      clock.mockReturnValue(now + SMS_CONSENT_RETENTION_MS - 1);
+      expect(await store.purgeExpiredSmsVerificationConsent()).toBe(0);
+      clock.mockReturnValue(now + SMS_CONSENT_RETENTION_MS);
+      expect(await store.purgeExpiredSmsVerificationConsent()).toBe(1);
+      expect(await store.purgeExpiredSmsVerificationConsent()).toBe(0);
+      await expect(store.recordSmsVerificationConsent(receipt)).rejects.toMatchObject({ code: "verification_unavailable" });
+    } finally { clock.mockRestore(); }
+  });
 
   beforeEach(async () => {
     store = new InMemoryLifeLinksStore();

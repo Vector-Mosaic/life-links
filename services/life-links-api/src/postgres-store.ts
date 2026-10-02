@@ -225,11 +225,13 @@ import { assertProviderSignInAttempt, providerIdentityKey, validSignInFingerprin
   MAX_PROVIDER_SIGN_IN_ATTEMPTS, PROVIDER_SIGN_IN_EXPIRY_CLEANUP_LIMIT, ProviderSignInStateError,
   type ProviderIdentityBinding, type VerifiedProviderIdentity, type ProviderSignInAttempt } from "./provider-sign-in-state.js";
 import { assertContactVerificationAttempt, assertPhoneBinding, assertVerificationLimits, assertVerifiedRegistrationAttempt,
-  canUpdateContactVerificationAttempt, contactAttemptMatchesConsumption, phoneBindingKey, validContactFingerprint,
+  canUpdateContactVerificationAttempt, contactAttemptMatchesConsumption, nextVerificationLimitReservation, phoneBindingKey, validContactFingerprint,
   validVerifiedContactConsumption, ContactVerificationStateError, MAX_CONTACT_VERIFICATION_ATTEMPTS,
   MAX_VERIFICATION_LIMITS, VERIFICATION_EXPIRY_CLEANUP_LIMIT,
   type ContactVerificationAttempt, type PhoneBinding, type VerificationLimit, type VerifiedContactConsumption,
   type FinalizeVerifiedRegistrationInput, type FinalizeVerifiedPhoneLinkInput } from "./contact-verification-state.js";
+import { assertSmsVerificationConsentReceipt, sameSmsVerificationConsentReceipt,
+  type SmsVerificationConsentReceipt } from "./sms-verification-consent.js";
 
 type Queryable = Pick<Pool, "query">;
 type StoredLifeLink = Omit<LifeLinkRecord, "qrId" | "media">;
@@ -389,20 +391,48 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       const now = Date.parse(toIso(nowResult.rows[0].now));
       const rows = await client.query(`SELECT * FROM contact_verification_limits WHERE key_hash = ANY($1::text[]) FOR UPDATE`,
         [limits.map(item => item.keyHash)]);
-      const existing = new Map(rows.rows.map(row => [String(row.key_hash), { count: Number(row.count), expiresAt: Date.parse(toIso(row.expires_at)) }]));
+      const existing = new Map(rows.rows.map(row => [String(row.key_hash), { count: Number(row.count),
+        expiresAt: Date.parse(toIso(row.expires_at)), reservedAt: (row.reserved_at as Date[]).map(time => Date.parse(toIso(time))) }]));
       const active = await client.query("SELECT count(*)::int AS count FROM contact_verification_limits WHERE expires_at > $1", [new Date(now).toISOString()]);
       const next = limits.map(item => {
         const saved = existing.get(item.keyHash);
-        return { key: item.keyHash, max: item.max, row: saved && saved.expiresAt > now
-          ? { ...saved, count: saved.count + 1 } : { count: 1, expiresAt: now + item.windowMs },
+        return { key: item.keyHash, max: item.max, row: nextVerificationLimitReservation(item, saved, now),
           isNew: !saved || saved.expiresAt <= now };
       });
       if (next.some(item => item.row.count > item.max)
           || active.rows[0].count + next.filter(item => item.isNew).length > MAX_VERIFICATION_LIMITS) return false;
-      for (const item of next) await client.query(`INSERT INTO contact_verification_limits(key_hash,count,expires_at)
-        VALUES($1,$2,$3) ON CONFLICT(key_hash) DO UPDATE SET count=EXCLUDED.count,expires_at=EXCLUDED.expires_at`,
-        [item.key, item.row.count, new Date(item.row.expiresAt).toISOString()]);
+      for (const item of next) await client.query(`INSERT INTO contact_verification_limits(key_hash,count,expires_at,reserved_at)
+        VALUES($1,$2,$3,$4::timestamptz[]) ON CONFLICT(key_hash) DO UPDATE SET
+          count=EXCLUDED.count,expires_at=EXCLUDED.expires_at,reserved_at=EXCLUDED.reserved_at`,
+        [item.key, item.row.count, new Date(item.row.expiresAt).toISOString(), item.row.reservedAt.map(time => new Date(time).toISOString())]);
       return true;
+    }, null);
+  }
+
+  async recordSmsVerificationConsent(receipt: SmsVerificationConsentReceipt): Promise<boolean> {
+    assertSmsVerificationConsentReceipt(receipt);
+    return this.withTransaction(["sms-verification-consent"], async client => {
+      await client.query("DELETE FROM sms_verification_consent_receipts WHERE expires_at <= clock_timestamp()");
+      const rows = await client.query("SELECT * FROM sms_verification_consent_receipts WHERE receipt_hash=$1 FOR UPDATE", [receipt.receiptHash]);
+      if (rows.rows[0]) {
+        const row = rows.rows[0];
+        const saved: SmsVerificationConsentReceipt = { receiptHash: row.receipt_hash, phoneHash: row.phone_hash,
+          consentedAt: toIso(row.consented_at), disclosureVersion: row.disclosure_version, expiresAt: toIso(row.expires_at) };
+        if (!sameSmsVerificationConsentReceipt(saved, receipt)) throw new ContactVerificationStateError("verification_unavailable");
+        return false;
+      }
+      const inserted = await client.query(`INSERT INTO sms_verification_consent_receipts
+        (receipt_hash,phone_hash,consented_at,disclosure_version,expires_at)
+        SELECT $1,$2,$3::timestamptz,$4,$5::timestamptz WHERE $5::timestamptz > clock_timestamp()`,
+        [receipt.receiptHash, receipt.phoneHash, receipt.consentedAt, receipt.disclosureVersion, receipt.expiresAt]);
+      if (!inserted.rowCount) throw new ContactVerificationStateError("verification_unavailable");
+      return true;
+    }, null);
+  }
+  async purgeExpiredSmsVerificationConsent(): Promise<number> {
+    return this.withTransaction(["sms-verification-consent"], async client => {
+      const removed = await client.query("DELETE FROM sms_verification_consent_receipts WHERE expires_at <= clock_timestamp()");
+      return removed.rowCount ?? 0;
     }, null);
   }
 

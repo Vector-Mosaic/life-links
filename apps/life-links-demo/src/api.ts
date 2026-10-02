@@ -1,3 +1,4 @@
+import type { LIFE_LINKS_SMS_VERIFICATION_CONSENT } from "@life-links/core";
 import type {
   RecordSearchInput,
   RecordSearchPage,
@@ -398,7 +399,7 @@ export interface PhoneVerificationInput {
   phoneNumber: string;
   intent: "login" | "register" | "link";
   smsConsent: true;
-  smsConsentVersion: "life-links-sms-verification-v1";
+  smsConsentVersion: typeof LIFE_LINKS_SMS_VERIFICATION_CONSENT.version;
   invitationCode?: string;
   returnTo?: string;
 }
