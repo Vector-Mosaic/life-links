@@ -5,6 +5,7 @@ import { ApiError, completePhoneSignup, getRegistration, resendPhoneVerification
   verifyPhoneVerification, type VerificationAttempt } from "./api";
 import { clearPendingInvitation } from "./invitationLink";
 import { validateProviderReturnTo } from "./providerSignInLink";
+import { PhoneNumberEntry } from "./PhoneNumberEntry";
 
 export interface PhoneSignInProps {
   intent: "login" | "register" | "link";
@@ -198,22 +199,9 @@ export function PhoneSignIn({ intent, returnTo, invitationCode, enabled, disable
     {expired ? <>
       <p className="account-entry-help" role="status">This verification has expired. Start again to request a new code.</p>
       <button type="button" className="primary-button" disabled={frozen} onClick={restartVerification}>Start again</button>
-    </> : step === "number" ? <>
-      <label htmlFor={`${id}-phone`}><span>Phone number</span><input id={`${id}-phone`} name="phoneNumber" type="tel"
-        autoComplete="tel" placeholder="+1 555 123 4567" value={phoneNumber} disabled={frozen}
-        onChange={event => { setPhoneNumber(event.target.value); setSmsConsent(false); }} onKeyDown={event => { if (event.key === "Enter") event.preventDefault(); }} /></label>
-      <p className="account-entry-help">Include your country code. We'll send a six-digit verification code.</p>
-      <div className="ll-form"><label className="ll-checkbox-label" htmlFor={`${id}-sms-consent`} style={{ alignItems: "flex-start" }}>
-        <input id={`${id}-sms-consent`} name="smsConsent" type="checkbox" checked={smsConsent} disabled={frozen}
-          onChange={event => setSmsConsent(event.target.checked)} onKeyDown={event => { if (event.key === "Enter") event.preventDefault(); }} />
-        <span>{LIFE_LINKS_SMS_VERIFICATION_CONSENT.permission}
-          {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.frequency}
-          {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.keywords} Support: <a href={`mailto:${LIFE_LINKS_SMS_VERIFICATION_CONSENT.supportEmail}`}>{LIFE_LINKS_SMS_VERIFICATION_CONSENT.supportEmail}</a>.
-          {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.retentionNotice}
-          {" "}<a href="/terms">Terms</a> and <a href="/privacy">Privacy</a>.</span>
-      </label></div>
-      <button type="button" className="primary-button" disabled={frozen || !smsConsent} onClick={() => void sendCode()}>{busy ? "Sending code…" : "Send code"}</button>
-    </> : step === "code" ? <>
+    </> : step === "number" ? <PhoneNumberEntry phoneNumber={phoneNumber} smsConsent={smsConsent}
+      disabled={frozen} busy={busy} onPhoneNumberChange={setPhoneNumber} onSmsConsentChange={setSmsConsent}
+      onSendCode={() => void sendCode()} /> : step === "code" ? <>
       <p className="account-entry-help">Enter the six-digit verification code for {phoneNumber}.</p>
       <label htmlFor={`${id}-code`}><span>Verification code</span><input id={`${id}-code`} name="phoneVerificationCode"
         type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} disabled={frozen || expired}

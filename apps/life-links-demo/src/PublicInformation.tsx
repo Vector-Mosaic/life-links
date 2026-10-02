@@ -1,5 +1,6 @@
-import { LIFE_LINKS_SMS_VERIFICATION_CONSENT } from "@life-links/core";
+import { useState } from "react";
 import { LifeLinksGlyph } from "./owner/FieldLedgerPrimitives";
+import { PhoneNumberEntry } from "./PhoneNumberEntry";
 import type { PublicInformationPage } from "./workspace/routes";
 
 // Owner-approved public notices. Keep the wording aligned with the approved
@@ -26,12 +27,25 @@ export const termsParagraphs = [
 
 export function PublicInformationLinks() {
   return <nav className="public-information-links" aria-label="About LifeLinks">
-    <a href="/about">About</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a>
+    <a href="/home">Home</a><a href="/about">About</a><a href="/contact">Contact</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a>
   </nav>;
 }
 
+function PhoneConsentPreview() {
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [smsConsent, setSmsConsent] = useState(false);
+  return <div className="public-phone-entry">
+    <p className="account-entry-help" role="status">Form preview: sending is unavailable while carrier approval is pending. This view does not save your number or consent and cannot send a message.</p>
+    <div className="verification-entry" aria-label="Phone verification consent form preview">
+      <PhoneNumberEntry phoneNumber={phoneNumber} smsConsent={smsConsent}
+        onPhoneNumberChange={setPhoneNumber} onSmsConsentChange={setSmsConsent} />
+    </div>
+  </div>;
+}
+
 export function PublicInformation({ page }: { page: PublicInformationPage }) {
-  const title = page === "privacy" ? "Privacy notice" : page === "terms" ? "Evaluation terms" : "About LifeLinks";
+  const title = page === "home" ? "Your everyday context, connected." : page === "contact" ? "Contact LifeLinks"
+    : page === "privacy" ? "Privacy notice" : page === "terms" ? "Evaluation terms" : "About LifeLinks";
   return <main className="public-information-shell">
     <header className="public-information-header">
       <a className="ll-brand" href="/" aria-label="LifeLinks home">LifeLinks <LifeLinksGlyph /></a>
@@ -39,7 +53,7 @@ export function PublicInformation({ page }: { page: PublicInformationPage }) {
     </header>
     <article className="public-information-content" aria-labelledby="public-information-title">
       <h1 id="public-information-title">{title}</h1>
-      {page === "about" ? <>
+      {page === "about" || page === "home" ? <>
         <p>LifeLinks is a private-by-default context layer for everyday life. Save the information you want to remember, organize it in ways that make sense to you, and give your chosen AI agent permission to help maintain it.</p>
         <h2>One place for the pieces of your life</h2>
         <ul>
@@ -49,11 +63,15 @@ export function PublicInformation({ page }: { page: PublicInformationPage }) {
           <li><strong>My Calendar:</strong> view native events and selected Google or Outlook calendars together, with separate visibility and agent-permission controls.</li>
         </ul>
         <p>Search records across the app and keep relevant files alongside them. Use LifeLinks for camping gear, workshop tools, a 3D-printer filament inventory, makeup preferences, or other context you choose to record.</p>
+        {page === "home" && <div className="public-information-actions">
+          <a className="primary-button" href="/register">Create your free account</a>
+          <a href="/life-links">Sign in</a><a href="/about#sms-verification">Phone verification and consent</a>
+        </div>}
         <h2>Work with your agent</h2>
         <p>Connected agents can read, create, edit, move and remove supported records within their permissions and required confirmation controls. Browser WebMCP works through an open LifeLinks page. A separately authorized remote MCP connection can work with that page closed. Available tools depend on the connected client and granted access.</p>
         <h2>Explore or try your own account</h2>
         <p>The populated shared demo is for exploring examples. Use the credentials in your private evaluation instructions to sign in. To use your own information, agent or eligible calendar account, create a separate private account through an available signup method. New private accounts do not copy demo content.</p>
-        <section id="sms-verification" aria-labelledby="sms-verification-title">
+        {page === "about" && <section id="sms-verification" aria-labelledby="sms-verification-title">
           <h2 id="sms-verification-title">SMS verification and consent</h2>
           <p>Phone signup, sign-in and linking are prepared and awaiting carrier approval. Phone verification is not available yet. Once enabled, this is the opt-in flow:</p>
           <ol>
@@ -62,21 +80,16 @@ export function PublicInformation({ page }: { page: PublicInformationPage }) {
             <li>Choose <strong>Send code</strong> to request a six-digit SMS verification code.</li>
             <li>Enter the code to verify your number. New users then add a display name to finish creating their account.</li>
           </ol>
-          <p>The consent checkbox displays this disclosure:</p>
-          <blockquote>
-            {LIFE_LINKS_SMS_VERIFICATION_CONSENT.permission}
-            {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.frequency}
-            {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.keywords} Support: <a href={`mailto:${LIFE_LINKS_SMS_VERIFICATION_CONSENT.supportEmail}`}>{LIFE_LINKS_SMS_VERIFICATION_CONSENT.supportEmail}</a>.
-            {" "}{LIFE_LINKS_SMS_VERIFICATION_CONSENT.retentionNotice}
-            {" "}<a href="/terms">Terms</a> and <a href="/privacy">Privacy</a>.
-          </blockquote>
-        </section>
-      </> : (page === "privacy" ? privacyParagraphs : termsParagraphs).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}
+          <p>This is the same phone-number and consent entry used by the signup, sign-in and linking flows:</p>
+          <PhoneConsentPreview />
+        </section>}
+      </> : page === "contact" ? <p>We're here to help with your LifeLinks account, sign-in, verification messages and privacy questions. Email us using the contact details below. Do not send passwords or verification codes.</p>
+        : (page === "privacy" ? privacyParagraphs : termsParagraphs).map((paragraph) => <p key={paragraph}>{paragraph}</p>)}
       <section aria-labelledby="public-information-contact-title">
         <h2 id="public-information-contact-title">Contact LifeLinks</h2>
-        <p>LifeLinks is operated by Vector Mosaic. For support, privacy questions or account requests, contact:</p>
+        <p>LifeLinks is operated by Vector Mosaic Inc, a Delaware corporation. For support, privacy questions or account requests, contact:</p>
         <address className="public-information-contact">
-          <strong>Justin Sublette · Vector Mosaic</strong><br />
+          <strong>Justin Sublette · Vector Mosaic Inc</strong><br />
           <a href="mailto:justin@vmosaic.com">justin@vmosaic.com</a><br />
           16 Paddington Ct<br />
           Naples, FL 34104<br />

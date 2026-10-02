@@ -27,7 +27,7 @@ describe("public SMS opt-in information", () => {
     vi.unstubAllGlobals();
   });
 
-  it("explains the prepared flow and exact shared disclosure without activating phone verification", async () => {
+  it("shows the real unchecked consent entry without dispatch or private account bootstrap", async () => {
     await act(async () => root.render(<App />));
     const section = container.querySelector("#sms-verification");
     expect(section?.querySelector("h2")?.textContent).toBe("SMS verification and consent");
@@ -41,14 +41,39 @@ describe("public SMS opt-in information", () => {
     expect(steps?.[2].textContent).toContain("Send code");
     expect(steps?.[2].textContent).toContain("six-digit");
     expect(steps?.[3].textContent).toContain("display name");
-    const disclosure = section?.querySelector("blockquote");
+    const disclosure = section?.querySelector(".ll-checkbox-label span");
     const consent = LIFE_LINKS_SMS_VERIFICATION_CONSENT;
     expect(disclosure?.textContent?.replace(/\s+/g, " ").trim()).toBe(
       `${consent.permission} ${consent.frequency} ${consent.keywords} Support: ${consent.supportEmail}. ${consent.retentionNotice} Terms and Privacy.`);
     expect(disclosure?.querySelector('a[href="/terms"]')).not.toBeNull();
     expect(disclosure?.querySelector('a[href="/privacy"]')).not.toBeNull();
     expect(disclosure?.querySelector(`a[href="mailto:${consent.supportEmail}"]`)).not.toBeNull();
-    expect(section?.querySelector("input, button, form")).toBeNull();
+    const phone = section?.querySelector<HTMLInputElement>('input[name="phoneNumber"]');
+    const checkbox = section?.querySelector<HTMLInputElement>('input[name="smsConsent"]');
+    const send = section?.querySelector<HTMLButtonElement>("button");
+    expect(phone?.value).toBe(""); expect(checkbox?.checked).toBe(false);
+    expect(send?.textContent).toBe("Send code"); expect(send?.disabled).toBe(true);
+    await act(async () => { checkbox?.click(); send?.click(); });
+    expect(checkbox?.checked).toBe(true); expect(send?.disabled).toBe(true);
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(phone, "+12025550123"); phone?.dispatchEvent(new Event("input", { bubbles: true }));
+      phone?.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    expect(checkbox?.checked).toBe(false); expect(send?.disabled).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["home", "contact"])("keeps /%s public and connects the business pages", async page => {
+    window.history.replaceState(null, "", `/${page}`);
+    await act(async () => root.render(<App />));
+    expect(container.querySelector("h1")?.textContent).toBe(page === "home" ? "Your everyday context, connected." : "Contact LifeLinks");
+    for (const path of ["home", "about", "contact", "privacy", "terms"]) {
+      expect(container.querySelector(`nav a[href="/${path}"]`)).not.toBeNull();
+    }
+    expect(container.textContent).toContain("Vector Mosaic Inc, a Delaware corporation");
+    expect(container.textContent).toContain("16 Paddington Ct");
+    expect(container.querySelector('a[href="mailto:justin@vmosaic.com"]')).not.toBeNull();
     expect(fetch).not.toHaveBeenCalled();
   });
 });

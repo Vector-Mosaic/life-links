@@ -753,6 +753,18 @@ label[data-tooltip]:focus-within .tooltip-bubble::before {
   font-style: normal;
 }
 
+.public-phone-entry {
+  margin-top: 24px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface);
+}
+
+.public-phone-entry .verification-entry {
+  margin-bottom: 0;
+}
+
 .public-information-actions {
   margin-top: 32px;
 }

@@ -94,11 +94,12 @@ export function isRegistrationPath(pathname: string): boolean {
   return pathname.split("?")[0].replace(/\/$/, "") === "/register";
 }
 
-export type PublicInformationPage = "about" | "privacy" | "terms";
+export type PublicInformationPage = "home" | "about" | "contact" | "privacy" | "terms";
 
 export function publicInformationPageFromPath(pathname: string): PublicInformationPage | null {
   const path = pathname.split("?")[0].replace(/\/$/, "");
-  return path === "/about" ? "about" : path === "/privacy" ? "privacy" : path === "/terms" ? "terms" : null;
+  const pages: PublicInformationPage[] = ["home", "about", "contact", "privacy", "terms"];
+  return pages.find(page => path === `/${page}`) ?? null;
 }
 
 // Account entry may resume only an owned app route, never an external URL or an
