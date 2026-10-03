@@ -288,7 +288,8 @@ export function createRemoteMcpRouter(options: RemoteMcpRouterOptions): { router
       server.registerTool("confirm_change", {
         title: "Respond to Life Links confirmation", description: "App-only response to the exact displayed confirmation. Private proof is required; model arguments are not approval.",
         inputSchema: z.object({ previewId: z.string().min(1).max(256), challenge: z.string().min(1).max(256), decision: z.enum(["accept", "cancel"]) }).strict(),
-        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }, _meta: { ui: { visibility: ["app"] } }
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true,
+          openWorldHint: options.operations.some(operation => operation.confirmsPreparedChange && operation.openWorld) }, _meta: { ui: { visibility: ["app"] } }
       }, async (input, extra) => {
         if (!supportsConfirmationApp()) return failure("confirmation_invalid");
         try {

@@ -415,6 +415,23 @@ describe("remote MCP Streamable HTTP boundary", () => {
     expect(test.writes()).toBe(0); expect(test.approvals.approve).not.toHaveBeenCalled(); expect(test.approvals.complete).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("derives app-only confirmation's open-world hint from its applying operations (%s)", async (openWorld) => {
+    const test = await fixture({ operations: [
+      { name: "external_read", description: "Synthetic external read without confirmation", inputSchema: {},
+        readOnly: true, destructive: false, openWorld: true, execute: async () => text({ ok: true }) },
+      { name: "apply_selected_preview", description: "Synthetic exact-preview apply", inputSchema: { previewId: z.string() },
+        readOnly: false, destructive: true, idempotent: true, openWorld, confirmsPreparedChange: true,
+        matchesPreparedChange: () => true, execute: async () => text({ ok: true }) }
+    ] });
+    const { client } = await test.connect({ capabilities: appCapabilities });
+    const catalog = await client.listTools();
+    expect(catalog.tools.find(tool => tool.name === "confirm_change"))
+      .toMatchObject({ annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: openWorld },
+        _meta: { ui: { visibility: ["app"] } } });
+    expect(test.writes()).toBe(0);
+    expect(test.approvals.approve).not.toHaveBeenCalled();
+  });
+
   it("negotiates an app-only confirmation without exposing its challenge to the model, then applies the exact canonical change once", async () => {
     const test = await confirmationAppFixture();
     const { principal } = test;
@@ -435,14 +452,23 @@ describe("remote MCP Streamable HTTP boundary", () => {
       "routine_history", "record_routine_run", "query_calendar", "prepare_change", "apply_change"]) {
       expect(catalog.tools.some(tool => tool.name === name)).toBe(false);
     }
-    expect(catalog.tools.every(tool => tool.annotations?.openWorldHint === false)).toBe(true);
-    for (const name of ["inspect_record", "list_record_memberships", "list_routine_schedules", "query_native_calendar"]) {
+    expect(catalog.tools.filter(tool => tool.annotations?.openWorldHint).map(tool => tool.name).sort())
+      .toEqual(["sync_and_query_provider_calendar", "create_calendar_event", "update_calendar_event", "delete_provider_calendar_event", "confirm_change"].sort());
+    for (const name of ["inspect_record", "list_record_memberships", "list_routine_schedules", "query_native_calendar", "inspect_calendar_event"]) {
       expect(catalog.tools.find(tool => tool.name === name)?.annotations)
         .toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
     }
-    for (const name of ["update_record", "clear_record_qr", "update_routine_schedule", "sync_and_query_provider_calendar", "delete_records"]) {
+    for (const name of ["update_record", "clear_record_qr", "update_routine_schedule", "delete_native_calendar_event", "delete_records"]) {
       expect(catalog.tools.find(tool => tool.name === name)?.annotations)
         .toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false });
+    }
+    expect(catalog.tools.find(tool => tool.name === "prepare_provider_calendar_event_deletion")?.annotations)
+      .toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+    expect(catalog.tools.find(tool => tool.name === "create_calendar_event")?.annotations)
+      .toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true });
+    for (const name of ["sync_and_query_provider_calendar", "update_calendar_event", "delete_provider_calendar_event", "confirm_change"]) {
+      expect(catalog.tools.find(tool => tool.name === name)?.annotations)
+        .toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true });
     }
     expect(catalog.tools.find(tool => tool.name === "confirm_change")?._meta).toEqual({ ui: { visibility: ["app"] } });
     const resource = await client.readResource({ uri: CONFIRMATION_APP_URI });

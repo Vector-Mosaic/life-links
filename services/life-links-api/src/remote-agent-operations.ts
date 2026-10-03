@@ -690,9 +690,9 @@ function concreteRemoteOperations(shared: readonly RemoteAgentOperation[]): Remo
   };
   const expose = (from: string, name: string, description: string, inputSchema: z.ZodRawShape,
     mapInput: (input: Record<string, any>) => unknown, readOnly: boolean, destructive: boolean,
-    matchesPreparedChange?: (command: any) => boolean, confirmsPreparedChange = false) => {
+    openWorld = false, matchesPreparedChange?: (command: any) => boolean, confirmsPreparedChange = false) => {
     const operation = source(from);
-    result.push({ name, description, inputSchema, readOnly, destructive, openWorld: false,
+    result.push({ name, description, inputSchema, readOnly, destructive, openWorld,
       idempotent: operation.idempotent, matchesPreparedChange, confirmsPreparedChange,
       async execute(raw, context) {
         const input = z.object(inputSchema).strict().parse(raw);
@@ -706,9 +706,9 @@ function concreteRemoteOperations(shared: readonly RemoteAgentOperation[]): Remo
       }
     });
   };
-  const direct = (name: string, destructive = false) => {
+  const direct = (name: string, destructive = false, openWorld = false) => {
     const operation = source(name);
-    result.push({ ...operation, destructive, openWorld: false });
+    result.push({ ...operation, destructive, openWorld });
   };
   const command = (from: string, name: string, action: string, description: string, destructive = false) => {
     expose(from, name, description, branch(source(from).inputSchema.command, { action }),
@@ -779,10 +779,12 @@ function concreteRemoteOperations(shared: readonly RemoteAgentOperation[]): Remo
   expose("query_calendar", "query_native_calendar", "Read native Calendar event definitions in an inclusive local-date window. Recurrence is not silently persisted or expanded; follow every page.",
     calendarRead, input => ({ ...input, authority: "native" }), true, false);
   expose("query_calendar", "sync_and_query_provider_calendar", "Synchronize one already-connected Google/Outlook Calendar, replacing or tombstoning its cached projections from provider authority, then return a bounded date-window page. Does not write original provider events.",
-    { ...calendarRead, connectionId: id }, input => ({ ...input, authority: "provider" }), false, true);
+    { ...calendarRead, connectionId: id }, input => ({ ...input, authority: "provider" }), false, true, true);
   direct("inspect_calendar_event");
-  direct("create_calendar_event");
-  direct("update_calendar_event", true);
+  // The same public tool can dispatch to a selected provider Calendar, which
+  // may be shared or public. Owner binding does not close its external effects.
+  direct("create_calendar_event", false, true);
+  direct("update_calendar_event", true, true);
   direct("read_attachment");
   const image = source("read_attachment_image");
   const { options: _imageOptions, ...imageRead } = image.inputSchema;
@@ -809,7 +811,7 @@ function concreteRemoteOperations(shared: readonly RemoteAgentOperation[]): Remo
         command: { ...tags, ...(collectionTags ? { input: { ...collectionTags, ...input } } : input) } }), false, false);
     const removal = tags.operation !== "move" && collectionTags?.operation !== "move";
     expose("apply_change", applyName, `Apply the matching saved preview to ${description}. Required removal uses exact host confirmation; awaiting_confirmation is pending. Reuse the same previewId after uncertainty.`,
-      source("apply_change").inputSchema, input => input, false, true, matches, removal);
+      source("apply_change").inputSchema, input => input, false, true, tags.kind === "provider_calendar", matches, removal);
   };
   prepared("prepare_record_move", "apply_record_move", { kind: "life_links", operation: "move" }, "move the selected physical Life Links");
   prepared("prepare_record_deletion", "delete_records", { kind: "life_links", operation: "delete" }, "delete the selected physical Life Links and listed descendants/attachments");

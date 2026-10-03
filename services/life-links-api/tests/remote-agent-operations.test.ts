@@ -45,7 +45,7 @@ async function harness() {
 }
 
 describe("remote MCP semantic operations", () => {
-  it("publishes concrete operations with accurate closed-world annotations and no grouped executors", async () => {
+  it("publishes concrete operations with accurate effect annotations and no grouped executors", async () => {
     const h = await harness();
     const operations = createRemoteAgentOperations(h.deps);
     const reads = [
@@ -72,11 +72,13 @@ describe("remote MCP semantic operations", () => {
       "apply_record_move", "delete_records", "delete_collections", "delete_collection_contents", "move_collection_contents",
       "archive_routines", "delete_native_calendar_event", "delete_provider_calendar_event"
     ];
+    const external = ["sync_and_query_provider_calendar", "create_calendar_event", "update_calendar_event", "delete_provider_calendar_event"];
     expect(operations.map(operation => operation.name).sort()).toEqual([...reads, ...additive, ...destructive, ...prepares, ...applies].sort());
+    expect(operations.filter(operation => operation.openWorld).map(operation => operation.name).sort()).toEqual([...external].sort());
     for (const [names, readOnly, destructiveHint] of [[reads, true, false], [additive, false, false], [destructive, false, true],
       [prepares, false, false], [applies, false, true]] as const) {
       for (const name of names) expect(operations.find(operation => operation.name === name))
-        .toMatchObject({ readOnly, destructive: destructiveHint, openWorld: false, idempotent: true });
+        .toMatchObject({ readOnly, destructive: destructiveHint, openWorld: external.includes(name), idempotent: true });
     }
     for (const name of ["maintain_record", "manage_record_qr", "maintain_collection", "maintain_routine", "routine_schedule",
       "routine_history", "record_routine_run", "query_calendar", "prepare_change", "apply_change"]) {
