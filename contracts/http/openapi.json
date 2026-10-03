@@ -1007,6 +1007,64 @@
         }
       }
     },
+    "/.well-known/openai-apps-challenge": {
+      "get": {
+        "operationId": "getOpenAiAppsChallenge",
+        "summary": "Read the public OpenAI application domain proof",
+        "description": "Public, unauthenticated read of the exact OpenAI-issued domain-proof token from the fixed public challenge file. This intentionally public value is not an account credential and does not establish accepted provider verification. Only this exact filename is exposed; the route grants no general dotfile or directory access. Express implicitly serves HEAD through this GET handler with the same status, content headers and Content-Length as GET but no response body. A missing file returns an empty plain-text 404 response instead of the SPA shell.",
+        "tags": [
+          "operations"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The exact intentionally public provider-issued token as plain text, without a BOM, added newline, HTML or JSON wrapper. Content-Length is the token's byte length; HEAD retains that length without a body.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-cache"
+                }
+              }
+            },
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Exact provider-issued public domain-proof token; no BOM, added newline or wrapper. The current token is owned by the publication record, not hardcoded in this schema."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The public challenge file is absent. An empty plain-text response is returned for GET or HEAD; it never falls back to the SPA shell.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-cache"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
     "/.well-known/oauth-protected-resource": {
       "get": {
         "operationId": "getRemoteMcpResourceMetadata",

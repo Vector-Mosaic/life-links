@@ -456,7 +456,10 @@ export async function registerAccount(input: AccountRegistrationInput) {
 
 export async function logout() {
   try { return await apiFetch<void>("/api/auth/logout", { method: "POST" }); }
-  finally { await nativeRuntime()?.clearSession(); }
+  finally {
+    try { await nativeRuntime()?.clearSession(); }
+    catch { throw new ApiError(503, "native_logout_failed", {}); }
+  }
 }
 
 export function deleteAccount() {

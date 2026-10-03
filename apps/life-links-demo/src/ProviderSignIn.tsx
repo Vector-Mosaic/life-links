@@ -22,6 +22,8 @@ export function ProviderSignIn({ intent, returnTo, invitationCode, timeZone, dis
   const [providers, setProviders] = useState<SignInProvider[]>([]);
   const [starting, setStarting] = useState<SignInProviderId | null>(null);
   const [error, setError] = useState("");
+  const [discoveryError, setDiscoveryError] = useState(false);
+  const [discoveryAttempt, setDiscoveryAttempt] = useState(0);
   const pending = useRef(false);
   const mounted = useRef(false);
   const busyCallback = useRef(onBusyChange);
@@ -35,15 +37,16 @@ export function ProviderSignIn({ intent, returnTo, invitationCode, timeZone, dis
   useEffect(() => {
     let active = true;
     const abort = new AbortController();
+    setDiscoveryError(false);
     void getSignInProviders(abort.signal).then(result => {
       if (!active) return;
       setProviders(result.providers.filter(provider => {
         try { providerButtonLabel(provider.id); return true; }
         catch { return false; }
       }));
-    }).catch(() => { /* Email/password entry remains available. */ });
+    }).catch(() => { if (active) setDiscoveryError(true); });
     return () => { active = false; abort.abort(); };
-  }, []);
+  }, [discoveryAttempt]);
 
   async function start(provider: SignInProvider) {
     if (pending.current || disabled) return;
@@ -70,8 +73,13 @@ export function ProviderSignIn({ intent, returnTo, invitationCode, timeZone, dis
     }
   }
 
-  if (providers.length === 0) return null;
+  if (providers.length === 0 && !discoveryError) return null;
   return <div className="provider-sign-in" aria-label="Other sign-in methods">
+    {discoveryError && <div className="error-banner" role="alert">
+      <p>We couldn't load other sign-in methods. You can try again or use email and password.</p>
+      <button type="button" className="secondary-button" disabled={disabled || starting !== null}
+        onClick={() => setDiscoveryAttempt(attempt => attempt + 1)}>Try again</button>
+    </div>}
       <div className="provider-sign-in-buttons">
         {providers.map(provider => <button key={provider.id} type="button" className="secondary-button provider-sign-in-button"
           data-provider={provider.id}
@@ -82,6 +90,6 @@ export function ProviderSignIn({ intent, returnTo, invitationCode, timeZone, dis
         </button>)}
       </div>
     {error && <p className="error-banner" role="alert">{error}</p>}
-    <div className="provider-sign-in-divider" aria-hidden="true"><span>or</span></div>
+    {providers.length > 0 && <div className="provider-sign-in-divider" aria-hidden="true"><span>or</span></div>}
   </div>;
 }

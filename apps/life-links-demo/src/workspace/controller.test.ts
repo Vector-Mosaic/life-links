@@ -244,6 +244,87 @@ describe("LifeLinksWorkspaceController", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
+
+  it("clears private state immediately and deduplicates logout while holding anonymous entry", async () => {
+    const api = fakeApi(); const pending = deferred<void>();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    api.logout.mockReturnValueOnce(pending.promise);
+    const first = controller.logout(); const second = controller.logout();
+    expect(api.logout).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, loading: true, busy: false,
+      logoutFailed: false, links: [], rootLifeLinks: { items: [] },
+      agentConnection: disconnectedAgentConnection, routineWorkspace: { routines: [] },
+      calendarWorkspace: { calendars: [], selectedEvent: null } });
+    await controller.login(owner.email, "synthetic password");
+    expect(await controller.registerAccount({ displayName: "Owner", attemptToken: "synthetic_attempt",
+      password: "synthetic password", timeZone: "UTC" })).toBe(false);
+    expect(api.login).not.toHaveBeenCalled(); expect(api.registerAccount).not.toHaveBeenCalled();
+    pending.resolve(); await Promise.all([first, second]);
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, loading: false, logoutFailed: false });
+    await controller.login(owner.email, "synthetic password");
+    expect(controller.getSnapshot().currentUser?.id).toBe(owner.id);
+    controller.dispose();
+  });
+
+  it.each(["before", "after"] as const)("ignores an old boot owner returned %s logout settles", async timing => {
+    const api = fakeApi(); const me = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["getMe"]>>>();
+    const logout = deferred<void>(); api.getMe.mockReturnValueOnce(me.promise); api.logout.mockReturnValueOnce(logout.promise);
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    const boot = controller.start(); const ending = controller.logout();
+    if (timing === "after") { logout.resolve(); await ending; }
+    me.resolve({ user: owner, agentConnection: disconnectedAgentConnection, qrBaseUrl: "https://example.test" });
+    await boot;
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, loading: timing === "before", rootLifeLinks: { items: [] } });
+    logout.resolve(); await ending;
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, loading: false });
+    controller.dispose();
+  });
+
+  it("keeps a restarted boot behind logout and leaves its loading state to its own result", async () => {
+    const api = fakeApi(); const logout = deferred<void>();
+    const replacement = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["getMe"]>>>();
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start(); api.logout.mockReturnValueOnce(logout.promise);
+    const ending = controller.logout(); controller.dispose();
+    api.getMe.mockReturnValueOnce(replacement.promise); const restarted = controller.start();
+    expect(api.getMe).toHaveBeenCalledTimes(1);
+    logout.resolve(); await ending;
+    await vi.waitFor(() => expect(api.getMe).toHaveBeenCalledTimes(2));
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, loading: true });
+    replacement.resolve({ user: null, agentConnection: disconnectedAgentConnection, qrBaseUrl: "https://example.test" });
+    await restarted;
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, loading: false });
+    controller.dispose();
+  });
+
+  it("remembers failed native clearance across restart and allows only explicit logout retry", async () => {
+    const api = fakeApi(); const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start(); api.logout.mockRejectedValueOnce(new ApiError(503, "native_logout_failed", {}));
+    await controller.logout();
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, loading: true, logoutFailed: true });
+    await controller.login(owner.email, "synthetic password"); expect(api.login).not.toHaveBeenCalled();
+    controller.dispose(); await controller.start(); expect(api.getMe).toHaveBeenCalledTimes(1);
+    await controller.logout();
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, loading: false, logoutFailed: false });
+    expect(api.logout).toHaveBeenCalledTimes(2); controller.dispose();
+  });
+
+  it.each(["login", "register"] as const)("does not restore a late %s result after logout", async kind => {
+    const api = fakeApi(); api.getMe.mockResolvedValue({ user: null, agentConnection: disconnectedAgentConnection, qrBaseUrl: "https://example.test" });
+    const auth = deferred<Awaited<ReturnType<LifeLinksWorkspaceApi["login"]>>>();
+    api.login.mockReturnValueOnce(auth.promise); api.registerAccount.mockReturnValueOnce(auth.promise);
+    const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute("/life-links") });
+    await controller.start();
+    const authenticating = kind === "login" ? controller.login(owner.email, "synthetic password")
+      : controller.registerAccount({ displayName: "Owner", attemptToken: "synthetic_attempt", password: "synthetic password", timeZone: "UTC" });
+    await controller.logout();
+    auth.resolve({ user: owner, agentConnection: disconnectedAgentConnection, qrBaseUrl: "https://example.test" });
+    await authenticating;
+    expect(controller.getSnapshot()).toMatchObject({ currentUser: null, loading: false, busy: false, error: "", rootLifeLinks: { items: [] } });
+    expect(api.listLifeLinks).not.toHaveBeenCalled(); controller.dispose();
+  });
+
   it.each(["/about", "/privacy", "/terms"])("opens public %s without any owner/config bootstrap or private data reads", async (path) => {
     const api = fakeApi();
     const controller = new LifeLinksWorkspaceController({ api, route: new FakeRoute(path) });
@@ -3816,7 +3897,7 @@ function fakeApi() {
       qrBaseUrl: "https://example.test",
       agentConnection: disconnectedAgentConnection
     })),
-    login: vi.fn(async () => ({
+    login: vi.fn<LifeLinksWorkspaceApi["login"]>(async () => ({
       user: owner,
       qrBaseUrl: "https://example.test",
       agentConnection: disconnectedAgentConnection
@@ -3826,7 +3907,7 @@ function fakeApi() {
       qrBaseUrl: "https://example.test",
       agentConnection: disconnectedAgentConnection
     })),
-    logout: vi.fn(async () => undefined),
+    logout: vi.fn<LifeLinksWorkspaceApi["logout"]>(async () => undefined),
     connectAgent: vi.fn(async () => ({ agentConnection: connectedAgentConnection })),
     disconnectAgent: vi.fn(async () => ({ agentConnection: disconnectedAgentConnection })),
     listLinks: vi.fn(async () => ({ links: [link] })),

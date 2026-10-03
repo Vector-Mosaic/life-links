@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { DEFAULT_QR_BASE_URL, DEMO_PASSWORD } from "@life-links/core";
 import { createRemoteMcpRouter, type RemoteMcpRouterOptions } from "../src/remote-mcp.js";
-import { RemoteAgentAccessError, assertRemoteScope, runWithRemoteAgentPrincipal, currentRemoteAgentPrincipal, type RemoteAgentPrincipal, type RemoteApproval, type RemoteApprovalService } from "../src/remote-agent-principal.js";
+import { REMOTE_AGENT_SCOPES, RemoteAgentAccessError, assertRemoteScope, runWithRemoteAgentPrincipal, currentRemoteAgentPrincipal, type RemoteAgentPrincipal, type RemoteApproval, type RemoteApprovalService } from "../src/remote-agent-principal.js";
 import { createRemoteAgentOperations, type RemoteAgentOperation } from "../src/remote-agent-operations.js";
 import { InMemoryLifeLinksStore } from "../src/store.js";
 import { RecordSearchService } from "../src/record-search.js";
@@ -35,7 +35,7 @@ async function fixture(input: Partial<RemoteMcpRouterOptions> = {}, actor: Remot
   const grants = new Map<string, RemoteAgentPrincipal>([["synthetic-token", actor], ["foreign-token", { ...actor, ownerId: "other-owner", grantId: "other-grant" }],
     ["other-client-token", { ...actor, clientId: "other-client" }], ["new-grant-token", { ...actor, grantId: "replacement-grant" }]]);
   const receipts = new Map<string, RemoteApproval>();
-  const approval: RemoteApproval = { ...actor, id: "preview-one", operation: "delete", payload: { commandId: "command-one" }, effects,
+  const approval: RemoteApproval = { ...actor, id: "preview-one", operation: "delete", payload: { commandId: "command-one", command: { kind: "life_links", operation: "delete" } }, effects,
     status: "pending", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 600_000).toISOString() };
   receipts.set(approval.id, approval);
   const approvals: RemoteApprovalService = {
@@ -67,7 +67,8 @@ async function fixture(input: Partial<RemoteMcpRouterOptions> = {}, actor: Remot
       if (!commands.has(id)) { writes++; commands.set(id, text({ ok: true, writes })); }
       return commands.get(id)!;
     }
-  }, { name: "delete_records", description: "Delete exact confirmed preview", inputSchema: { previewId: z.string() }, readOnly: false, destructive: true, idempotent: true,
+  }, { name: "delete_records", description: "Delete exact confirmed preview", inputSchema: { previewId: z.string() }, readOnly: false, destructive: true, idempotent: true, confirmsPreparedChange: true,
+    matchesPreparedChange: (command: any) => command?.kind === "life_links" && command.operation === "delete",
     execute: async (args, context) => {
       await context.authorize({ capability: "records", write: true });
       const record = await context.approvals.get(context, String(args.previewId));
@@ -105,7 +106,7 @@ async function fixture(input: Partial<RemoteMcpRouterOptions> = {}, actor: Remot
     cleanup.push(async () => client.close());
     return { client, transport };
   };
-  return { host, url, connect, receipts, authorize, approvals, principal: actor, writes: () => writes, revoke: () => { active = false; } };
+  return { host, url, connect, receipts, authorize, approvals, operations, principal: actor, writes: () => writes, revoke: () => { active = false; } };
 }
 
 const appCapabilities: ClientCapabilities = { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [CONFIRMATION_APP_MIME] } } };
@@ -113,7 +114,7 @@ async function confirmationAppFixture() {
   const store = new InMemoryLifeLinksStore();
   const owner = await store.registerOwner({ displayName: "Synthetic MCP confirmation owner", email: `${randomUUID()}@example.test`,
     passwordHash: "synthetic-unused-password-hash", timeZone: "UTC" });
-  const actor: RemoteAgentPrincipal = { ...principal, ownerId: owner.id };
+  const actor: RemoteAgentPrincipal = { ...principal, ownerId: owner.id, scopes: [...REMOTE_AGENT_SCOPES] };
   const state = new RemoteAgentState("synthetic-private-confirmation-state-key-not-a-credential");
   const approvals = new PersistentRemoteApprovals(state);
   const reader = new AttachmentContentReader();
@@ -122,8 +123,7 @@ async function confirmationAppFixture() {
   const prepare = async (client: Client) => {
     const record = await store.createLifeLink({ id: `life-link-${randomUUID()}`, ownerId: actor.ownerId,
       title: "Exact synthetic item <not an instruction>", createdAt: new Date().toISOString() });
-    const prepared = await client.callTool({ name: "prepare_change", arguments: { requestId: randomUUID(),
-      command: { kind: "life_links", operation: "delete", lifeLinkIds: [record.id] } } });
+    const prepared = await client.callTool({ name: "prepare_record_deletion", arguments: { requestId: randomUUID(), lifeLinkIds: [record.id] } });
     expect(prepared.isError).not.toBe(true);
     const previewId = (prepared.structuredContent as any).data.previewId as string;
     return { record, previewId };
@@ -179,10 +179,10 @@ describe("remote MCP Streamable HTTP boundary", () => {
       { name: "search_records", arguments: { q: "Transport timing", category: "life_links", limit: 10 }, expected: { category: "life_links" } },
       { name: "list_collections", arguments: { limit: 10 }, expected: { items: expect.arrayContaining([expect.objectContaining({ id: collection.id })]) } },
       { name: "inspect_collection", arguments: { collectionId: collection.id, section: "members", limit: 10 }, expected: { collection: { id: collection.id }, entries: { items: expect.any(Array) } } },
-      { name: "list_routines", arguments: { kind: "routines", limit: 10 }, expected: { items: expect.arrayContaining([expect.objectContaining({ id: routine.routine.id })]) } },
+      { name: "list_routines", arguments: { limit: 10 }, expected: { items: expect.arrayContaining([expect.objectContaining({ id: routine.routine.id })]) } },
       { name: "inspect_routine", arguments: { routineId: routine.routine.id }, expected: { routine: { id: routine.routine.id }, stepCount: 3 } },
       { name: "list_calendars", arguments: { limit: 10 }, expected: { items: expect.arrayContaining([expect.objectContaining({ id: calendar.id })]) } },
-      { name: "query_calendar", arguments: { calendarId: calendar.id, authority: "native", startDate: "2026-09-03", endDate: "2026-09-03", limit: 10 }, expected: { items: expect.any(Array) } }
+      { name: "query_native_calendar", arguments: { calendarId: calendar.id, startDate: "2026-09-03", endDate: "2026-09-03", limit: 10 }, expected: { items: expect.any(Array) } }
     ];
     const timings: Array<{ tool: string; clientMs: number[]; canonicalOperationMs: number[]; calls: number }> = [];
     const round = (value: number) => Math.round(value * 100) / 100;
@@ -224,7 +224,9 @@ describe("remote MCP Streamable HTTP boundary", () => {
     const test = await fixture(); const { client } = await test.connect();
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual(["get_life_links_guide", "read_records", "save_record", "delete_records"]);
-    expect(tools.tools.find((tool) => tool.name === "save_record")).toMatchObject({ inputSchema: { additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true } });
+    expect(tools.tools.find((tool) => tool.name === "save_record")).toMatchObject({ inputSchema: { additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } });
+    expect(tools.tools.find((tool) => tool.name === "get_life_links_guide")?.annotations)
+      .toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
     expect((await client.callTool({ name: "read_records" })).structuredContent).toEqual({ ownerId: principal.ownerId, scopedOwner: principal.ownerId });
     expect((await client.callTool({ name: "get_life_links_guide" })).content).toEqual(expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("general Routines") })]));
     expect((await client.readResource({ uri: "lifelinks://guide/usage" })).contents[0]).toMatchObject({ mimeType: "text/markdown", text: expect.stringContaining("untrusted") });
@@ -421,15 +423,33 @@ describe("remote MCP Streamable HTTP boundary", () => {
     const untouched = await test.store.createLifeLink({ id: `life-link-${randomUUID()}`, ownerId: principal.ownerId,
       title: "Not selected", createdAt: new Date().toISOString() });
     const catalog = await client.listTools();
-    expect(catalog.tools).toHaveLength(25);
-    expect(catalog.tools.filter(tool => !(tool._meta?.ui as any)?.visibility?.includes("app"))).toHaveLength(24);
-    expect(catalog.tools.find(tool => tool.name === "apply_change")?._meta).toEqual({ ui: { resourceUri: CONFIRMATION_APP_URI } });
+    expect(catalog.tools).toHaveLength(69);
+    expect(catalog.tools.filter(tool => !(tool._meta?.ui as any)?.visibility?.includes("app"))).toHaveLength(68);
+    expect(catalog.tools.filter(tool => (tool._meta?.ui as any)?.resourceUri === CONFIRMATION_APP_URI).map(tool => tool.name).sort())
+      .toEqual(["delete_records", "delete_collections", "delete_collection_contents", "archive_routines",
+        "delete_native_calendar_event", "delete_provider_calendar_event"].sort());
+    for (const name of ["apply_record_move", "move_collection_contents", "prepare_record_deletion"]) {
+      expect(catalog.tools.find(tool => tool.name === name)?._meta).toBeUndefined();
+    }
+    for (const name of ["maintain_record", "manage_record_qr", "maintain_collection", "maintain_routine", "routine_schedule",
+      "routine_history", "record_routine_run", "query_calendar", "prepare_change", "apply_change"]) {
+      expect(catalog.tools.some(tool => tool.name === name)).toBe(false);
+    }
+    expect(catalog.tools.every(tool => tool.annotations?.openWorldHint === false)).toBe(true);
+    for (const name of ["inspect_record", "list_record_memberships", "list_routine_schedules", "query_native_calendar"]) {
+      expect(catalog.tools.find(tool => tool.name === name)?.annotations)
+        .toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+    }
+    for (const name of ["update_record", "clear_record_qr", "update_routine_schedule", "sync_and_query_provider_calendar", "delete_records"]) {
+      expect(catalog.tools.find(tool => tool.name === name)?.annotations)
+        .toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false });
+    }
     expect(catalog.tools.find(tool => tool.name === "confirm_change")?._meta).toEqual({ ui: { visibility: ["app"] } });
     const resource = await client.readResource({ uri: CONFIRMATION_APP_URI });
     expect(resource.contents).toMatchObject([{ uri: CONFIRMATION_APP_URI, mimeType: CONFIRMATION_APP_MIME, text: CONFIRMATION_APP_HTML }]);
     expect((resource.contents[0]._meta?.ui as any)?.csp).toEqual({ connectDomains: [], resourceDomains: [], frameDomains: [], baseUriDomains: [] });
 
-    const pending = await client.callTool({ name: "apply_change", arguments: { previewId } });
+    const pending = await client.callTool({ name: "delete_records", arguments: { previewId } });
     const approval = await test.approvals.get(principal, previewId);
     expect(pending.structuredContent).toEqual({ ok: true, status: "awaiting_confirmation", previewId, effects: approval.effects, expiresAt: approval.expiresAt });
     const proof = (pending._meta as any).lifeLinksConfirmation;
@@ -440,7 +460,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
     expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).not.toBeNull();
     // A second request can acquire the released canonical lock and returns the
     // same challenge/expiry, not a second approval or a suspended human wait.
-    expect(await client.callTool({ name: "apply_change", arguments: { previewId } })).toEqual(pending);
+    expect(await client.callTool({ name: "delete_records", arguments: { previewId } })).toEqual(pending);
     const next = await test.connect({ capabilities: appCapabilities });
     const accepted = await next.client.callTool({ name: "confirm_change", arguments: { ...proof, decision: "accept" } });
     expect(accepted.structuredContent).toMatchObject({ contentIsUntrusted: true, data: { previewId, status: "applied" } });
@@ -448,7 +468,47 @@ describe("remote MCP Streamable HTTP boundary", () => {
     expect(await test.store.getLifeLinkDetail(principal.ownerId, untouched.id)).not.toBeNull();
     expect((await test.approvals.get(principal, previewId)).uiChallenge).toBeUndefined();
     expect(await next.client.callTool({ name: "confirm_change", arguments: { ...proof, decision: "accept" } })).toEqual(accepted);
-    expect(await next.client.callTool({ name: "apply_change", arguments: { previewId } })).toEqual(accepted);
+    expect(await next.client.callTool({ name: "delete_records", arguments: { previewId } })).toEqual(accepted);
+  });
+
+  it("dispatches an app confirmation to the exact Collection removal instead of a different prepared operation", async () => {
+    const test = await confirmationAppFixture();
+    const { client } = await test.connect({ capabilities: appCapabilities });
+    const record = await test.store.createLifeLink({ id: `life-link-${randomUUID()}`, ownerId: test.principal.ownerId,
+      title: "Physical record survives Collection removal", createdAt: new Date().toISOString() });
+    let collection = await test.store.createCollection({ id: `collection-${randomUUID()}`, ownerId: test.principal.ownerId,
+      title: "Only this Collection", createdAt: new Date().toISOString() });
+    collection = (await test.store.addCollectionMember(test.principal.ownerId, {
+      collectionId: collection.id, lifeLinkId: record.id, expectedUpdatedAt: collection.updatedAt
+    }))!;
+    const prepared = await client.callTool({ name: "prepare_collection_deletion", arguments: { requestId: randomUUID(),
+      collections: [{ collectionId: collection.id, expectedUpdatedAt: collection.updatedAt }] } });
+    expect(prepared.isError).not.toBe(true);
+    const previewId = (prepared.structuredContent as any).data.previewId;
+    const applyRecords = vi.spyOn(test.store, "applyLifeLinkChange");
+    const applyCollection = vi.spyOn(test.store, "applyCollectionChange");
+    expect((await client.callTool({ name: "delete_records", arguments: { previewId } })).structuredContent)
+      .toMatchObject({ ok: false, code: "invalid_change_selection" });
+    const pending = await client.callTool({ name: "delete_collections", arguments: { previewId } });
+    const input = { ...(pending._meta as any).lifeLinksConfirmation, decision: "accept" };
+    const accepted = await client.callTool({ name: "confirm_change", arguments: input });
+    expect(accepted.structuredContent).toMatchObject({ data: { previewId, status: "applied" } });
+    expect(await client.callTool({ name: "confirm_change", arguments: input })).toEqual(accepted);
+    expect(applyCollection).toHaveBeenCalledTimes(1); expect(applyRecords).not.toHaveBeenCalled();
+    expect(await test.store.getCollection(test.principal.ownerId, collection.id)).toBeNull();
+    expect(await test.store.getLifeLinkDetail(test.principal.ownerId, record.id)).not.toBeNull();
+  });
+
+  it.each(["unmatched", "ambiguous"] as const)("refuses %s app dispatch without a generic apply fallback", async boundary => {
+    const test = await fixture();
+    if (boundary === "ambiguous") test.operations.push({ ...test.operations.find(operation => operation.name === "delete_records")!, name: "other_exact_removal" });
+    const { client } = await test.connect({ capabilities: appCapabilities });
+    const pending = await client.callTool({ name: "delete_records", arguments: { previewId: "preview-one" } });
+    if (boundary === "unmatched") test.receipts.get("preview-one")!.payload.command = { kind: "collections", input: { operation: "delete", scope: "collections" } };
+    expect(await client.callTool({ name: "confirm_change", arguments: { ...(pending._meta as any).lifeLinksConfirmation, decision: "accept" } }))
+      .toMatchObject({ isError: true, structuredContent: { code: "confirmation_invalid" } });
+    expect(test.writes()).toBe(0); expect(test.receipts.get("preview-one")!.status).toBe("pending");
+    expect(test.approvals.approve).not.toHaveBeenCalled(); expect(test.approvals.complete).not.toHaveBeenCalled();
   });
 
   it.each([{}, { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: ["text/html"] } } },
@@ -459,11 +519,11 @@ describe("remote MCP Streamable HTTP boundary", () => {
       const { client } = await test.connect({ capabilities });
       const { record, previewId } = await test.prepare(client);
       const catalog = await client.listTools();
-      expect(catalog.tools).toHaveLength(24);
+      expect(catalog.tools).toHaveLength(68);
       expect(catalog.tools.some(tool => tool.name === "confirm_change")).toBe(false);
-      expect(catalog.tools.find(tool => tool.name === "apply_change")?._meta).toBeUndefined();
+      expect(catalog.tools.find(tool => tool.name === "delete_records")?._meta).toBeUndefined();
       expect((await client.listResources()).resources.some(resource => resource.uri === CONFIRMATION_APP_URI)).toBe(false);
-      expect(await client.callTool({ name: "apply_change", arguments: { previewId } }))
+      expect(await client.callTool({ name: "delete_records", arguments: { previewId } }))
         .toMatchObject({ isError: true, structuredContent: { code: "confirmation_unavailable", reason: "form_not_advertised" } });
       expect(issue).not.toHaveBeenCalled(); expect((await test.approvals.get(principal, previewId)).status).toBe("pending");
       expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).not.toBeNull();
@@ -475,7 +535,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
     const answer = vi.fn(async (): Promise<ElicitResult> => ({ action: "accept", content: { approve: true } }));
     const { client } = await test.connect({ capabilities: { ...appCapabilities, elicitation: { form: {} } }, answer });
     const { record, previewId } = await test.prepare(client);
-    expect((await client.callTool({ name: "apply_change", arguments: { previewId } })).structuredContent)
+    expect((await client.callTool({ name: "delete_records", arguments: { previewId } })).structuredContent)
       .toMatchObject({ contentIsUntrusted: true, data: { previewId, status: "applied" } });
     expect(answer).toHaveBeenCalledTimes(1); expect(issue).not.toHaveBeenCalled();
     expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).toBeNull();
@@ -486,7 +546,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
     const { principal } = test;
     const { client } = await test.connect({ capabilities: appCapabilities });
     const { record, previewId } = await test.prepare(client);
-    const pending = await client.callTool({ name: "apply_change", arguments: { previewId } });
+    const pending = await client.callTool({ name: "delete_records", arguments: { previewId } });
     const proof = (pending._meta as any).lifeLinksConfirmation;
     for (const input of [{ previewId, decision: "accept" }, { ...proof, challenge: "x".repeat(43), decision: "accept" },
       { ...proof, decision: "accept", confirmed: true }]) {
@@ -497,7 +557,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
     expect(cancelled.structuredContent).toMatchObject({ contentIsUntrusted: true, data: { previewId, status: "cancelled" } });
     expect((await test.approvals.get(principal, previewId)).uiChallenge).toBeUndefined();
     expect(await client.callTool({ name: "confirm_change", arguments: { ...proof, decision: "cancel" } })).toEqual(cancelled);
-    expect(await client.callTool({ name: "apply_change", arguments: { previewId } })).toEqual(cancelled);
+    expect(await client.callTool({ name: "delete_records", arguments: { previewId } })).toEqual(cancelled);
     expect(approve).toHaveBeenCalledTimes(1); expect(await test.store.getLifeLinkDetail(principal.ownerId, record.id)).not.toBeNull();
   });
 
@@ -506,7 +566,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
     const { principal } = test;
     const owner = await test.connect({ capabilities: appCapabilities });
     const { record, previewId } = await test.prepare(owner.client);
-    const pending = await owner.client.callTool({ name: "apply_change", arguments: { previewId } });
+    const pending = await owner.client.callTool({ name: "delete_records", arguments: { previewId } });
     const other = await test.connect({ capabilities: appCapabilities, token });
     expect(await other.client.callTool({ name: "confirm_change", arguments: { ...(pending._meta as any).lifeLinksConfirmation, decision: "accept" } }))
       .toMatchObject({ isError: true, structuredContent: { code: "remote_approval_unavailable" } });
@@ -519,7 +579,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
     const { principal } = test;
     const { client } = await test.connect({ capabilities: appCapabilities });
     const { record, previewId } = await test.prepare(client);
-    const pending = await client.callTool({ name: "apply_change", arguments: { previewId } });
+    const pending = await client.callTool({ name: "delete_records", arguments: { previewId } });
     const input = { ...(pending._meta as any).lifeLinksConfirmation, decision: "accept" };
     vi.spyOn(test.approvals, "complete").mockRejectedValueOnce(new Error("synthetic response uncertainty"));
     expect((await client.callTool({ name: "confirm_change", arguments: input })).isError).toBe(true);
@@ -537,7 +597,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
     const { principal } = test;
     const { client } = await test.connect({ capabilities: appCapabilities });
     const { record, previewId } = await test.prepare(client);
-    const pending = await client.callTool({ name: "apply_change", arguments: { previewId } });
+    const pending = await client.callTool({ name: "delete_records", arguments: { previewId } });
     if (boundary === "expired") {
       const approval = await test.approvals.get(principal, previewId);
       await test.state.put("Approval", previewId, { ...approval, expiresAt: new Date(Date.now() - 1000).toISOString() }, 86400);

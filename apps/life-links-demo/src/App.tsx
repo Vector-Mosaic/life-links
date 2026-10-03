@@ -258,7 +258,10 @@ function LifeLinksApp() {
   }
 
   if (loading) {
-    return <div className="loading-shell">Loading Life Links...</div>;
+    return <div className="loading-shell">{snapshot.logoutFailed
+      ? <div><p role="alert">{error}</p><button type="button" className="primary-button"
+        onClick={() => void handleLogout()}>Try signing out again</button></div>
+      : "Loading Life Links..."}</div>;
   }
 
   if (isAccountDeletionPath(routePathname)) {

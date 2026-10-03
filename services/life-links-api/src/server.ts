@@ -2350,6 +2350,23 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
     });
   });
 
+  // The domain proof is one intentionally public file, not a dotfile directory.
+  // GET also handles HEAD; a missing proof must not masquerade as the SPA shell.
+  app.get(/^\/\.well-known\/openai-apps-challenge$/, (_request, response, next) => {
+    response.setHeader("Cache-Control", "no-cache");
+    response.type("text/plain");
+    response.sendFile(path.join(config.staticDistPath, ".well-known", "openai-apps-challenge"), { dotfiles: "allow" }, (error) => {
+      if (!error) return;
+      if ((error as { status?: number }).status === 404) {
+        response.status(404).end();
+        return;
+      }
+      // Other failures use the existing JSON error boundary, not proof text.
+      if (!response.headersSent) response.removeHeader("Content-Type");
+      next(error);
+    });
+  });
+
   app.use(express.static(config.staticDistPath, { fallthrough: true, index: false }));
   app.get(/^\/(?!api\/).*/, (request, response, next) => {
     if (redirectPreviousChallengeBrowserEntry(request, response, config)) return;
@@ -3575,8 +3592,12 @@ function redirectPreviousChallengeBrowserEntry(request: Request, response: Respo
   return true;
 }
 
-function sendClientApp(_request: Request, response: Response, _next: NextFunction, staticDistPath: string) {
-  const indexPath = path.join(staticDistPath, "index.html");
+function sendClientApp(request: Request, response: Response, _next: NextFunction, staticDistPath: string) {
+  const publicPage = request.path.match(/^\/(home|about|contact|privacy|terms)\/?$/)?.[1];
+  const publicPath = publicPage ? path.join(staticDistPath, `${publicPage}.html`) : null;
+  // Other routes retain the normal browser app. A source-only/dev service may
+  // still have only index.html; production builds emit every public document.
+  const indexPath = publicPath && fs.existsSync(publicPath) ? publicPath : path.join(staticDistPath, "index.html");
   if (fs.existsSync(indexPath)) {
     response.sendFile(indexPath);
     return;

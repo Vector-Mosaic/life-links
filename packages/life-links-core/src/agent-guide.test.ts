@@ -26,5 +26,10 @@ describe("curated agent guide", () => {
     const changes = AGENT_GUIDE_SECTIONS.find((section) => section.id === "changes-and-permissions")!.content;
     expect(changes).toContain("awaiting_confirmation means pending");
     expect(changes).toContain("Never call the app-only confirmation tool yourself");
+    expect(changes).toContain("prepare_record_deletion and delete_records");
+    expect(changes).not.toContain("apply_change");
+    const history = AGENT_GUIDE_SECTIONS.find((section) => section.id === "routines-and-history")!.content;
+    expect(history).toContain("inspect_routine_session");
+    expect(history).not.toContain("routine_history");
   });
 });

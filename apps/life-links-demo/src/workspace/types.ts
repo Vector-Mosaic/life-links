@@ -311,6 +311,7 @@ export type LifeLinksWorkspaceSnapshot = {
   guestView: boolean;
   scanMessage: ScanMessage;
   loading: boolean;
+  logoutFailed: boolean;
   busy: boolean;
   error: string;
   theme: ThemeMode;

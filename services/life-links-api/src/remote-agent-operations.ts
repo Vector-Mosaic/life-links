@@ -28,7 +28,10 @@ import { RemoteAgentAccessError, type RemoteCapability, type RemoteOperationCont
 
 export type RemoteAgentOperation = {
   name: string; title?: string; description: string; inputSchema: z.ZodRawShape;
-  readOnly: boolean; destructive: boolean; idempotent?: boolean;
+  readOnly: boolean; destructive: boolean; idempotent?: boolean; openWorld?: boolean;
+  /** Only reviewed exact apply operations may receive an inline confirmation. */
+  confirmsPreparedChange?: boolean;
+  matchesPreparedChange?(command: unknown): boolean;
   execute(input: unknown, context: RemoteOperationContext): Promise<CallToolResult>;
 };
 export type RemoteAgentOperationsDeps = {
@@ -386,7 +389,7 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
   addCalendarOperations();
   addAttachmentOperations();
   addChangeOperations();
-  return tools;
+  return concreteRemoteOperations(tools);
 
   function addCalendarOperations() {
     add("list_calendars", "Read the authoritative current time and Calendars accessible to this agent. Visibility is not permission; saved none/read/write and provider capabilities remain authoritative.",
@@ -532,7 +535,7 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
       z.object({ kind: z.literal("provider_calendar"), connectionId: id, calendarId: id, providerEventId: id, expectedProviderRevision: id, scope: z.literal("event") }).strict()
     ]);
     add("prepare_change", "Prepare the complete exact move/removal effects. Repeat the full target list to the user, then apply this same previewId. Deletion requires one trusted host confirmation; no confirmed argument is accepted. Routine deletion is recoverable archive; provider deletion affects originals.", {
-      requestId: z.string().uuid().describe("New bare UUID for this exact preview request; no namespace prefix. Reuse it with the identical selection on retries, then use the returned previewId for apply_change."), command: selection
+      requestId: z.string().uuid().describe("New bare UUID for this exact preview request; no namespace prefix. Reuse it with the identical selection on retries, then use the returned previewId with the matching concrete apply tool."), command: selection
     }, (input) => changeCapability(input.command.kind), true, async ({ requestId, command }, c) => {
       const approvalId = `remote-change-${requestId}`;
       try {
@@ -598,7 +601,7 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
           if (approval.status === "applied") return result({ previewId, status: "applied", result: approval.result });
           if (approval.status === "declined") return result({ previewId, status: "cancelled" });
           if (approval.status === "pending") {
-            // Non-destructive moves use the owner's exact command. Only removal
+            // Ordinary admitted moves use the owner's exact command. Only removal
             // asks the verified MCP host; no text/tool argument can approve it.
             const move = command.kind === "life_links" && command.operation === "move" || command.kind === "collections" && command.input.operation === "move";
             const accepted = move || await c.requestConfirmation({ id: approval.id, effects: approval.effects });
@@ -664,5 +667,157 @@ function changeCapability(kind: string): RemoteCapability {
 }
 function publicApproval(approval: RemoteApproval) {
   return { previewId: approval.id, status: approval.status, operation: approval.operation, effects: approval.effects, expiresAt: approval.expiresAt,
-    instruction: "Describe all exact effects to the user. Apply this same previewId to request the sole trusted confirmation; do not send a confirmed value." };
+    instruction: "Describe all exact effects to the user. Use this same previewId with the matching concrete apply tool; required removal confirmation comes from the host, never a confirmed argument." };
+}
+
+/** Public tools expose one operation; the existing callbacks retain canonical execution. */
+function concreteRemoteOperations(shared: readonly RemoteAgentOperation[]): RemoteAgentOperation[] {
+  const result: RemoteAgentOperation[] = [];
+  const source = (name: string) => {
+    const operation = shared.find(candidate => candidate.name === name);
+    if (!operation) throw new Error("invalid_remote_mcp_catalog");
+    return operation;
+  };
+  const branch = (schema: z.ZodTypeAny, tags: Record<string, string>): z.ZodRawShape => {
+    const options = (schema as z.ZodTypeAny & { options: readonly z.AnyZodObject[] }).options;
+    const selected = options?.find(option => Object.entries(tags).every(([key, value]) => {
+      const field = option.shape[key];
+      return field instanceof z.ZodLiteral && field.value === value ||
+        field instanceof z.ZodEnum && field.options.includes(value);
+    }));
+    if (!selected) throw new Error("invalid_remote_mcp_catalog");
+    return Object.fromEntries(Object.entries(selected.shape).filter(([key]) => !(key in tags))) as z.ZodRawShape;
+  };
+  const expose = (from: string, name: string, description: string, inputSchema: z.ZodRawShape,
+    mapInput: (input: Record<string, any>) => unknown, readOnly: boolean, destructive: boolean,
+    matchesPreparedChange?: (command: any) => boolean, confirmsPreparedChange = false) => {
+    const operation = source(from);
+    result.push({ name, description, inputSchema, readOnly, destructive, openWorld: false,
+      idempotent: operation.idempotent, matchesPreparedChange, confirmsPreparedChange,
+      async execute(raw, context) {
+        const input = z.object(inputSchema).strict().parse(raw);
+        if (matchesPreparedChange) {
+          // Check before terminal replay as well as effects. A preview for another
+          // operation is never authority for the selected named tool.
+          const preview = await context.approvals.get(context, String(input.previewId));
+          if (!matchesPreparedChange(preview.payload.command)) inputFailure("invalid_change_selection");
+        }
+        return operation.execute(mapInput(input), context);
+      }
+    });
+  };
+  const direct = (name: string, destructive = false) => {
+    const operation = source(name);
+    result.push({ ...operation, destructive, openWorld: false });
+  };
+  const command = (from: string, name: string, action: string, description: string, destructive = false) => {
+    expose(from, name, description, branch(source(from).inputSchema.command, { action }),
+      input => ({ command: { action, ...input } }), false, destructive);
+  };
+
+  direct("list_records");
+  const record = source("inspect_record");
+  const { section: _recordSection, ...recordRead } = record.inputSchema;
+  expose("inspect_record", "inspect_record", "Read one exact physical Life Link, its recorded location, attachments and a bounded child page.",
+    recordRead, input => ({ ...input, section: "detail" }), true, false);
+  expose("inspect_record", "list_record_memberships", "Read a bounded page of one Life Link's Collection memberships and every assigned Section ID/title. Continue nextCursor; Sections are not physical location.",
+    recordRead, input => ({ ...input, section: "memberships" }), true, false);
+  direct("search_records");
+  command("maintain_record", "create_record", "create", "Create one private physical Life Link with a stable new ID. QR and public visibility are separate; reuse the identical ID/payload on retries.");
+  command("maintain_record", "update_record", "update", "Overwrite selected content fields of one exact Life Link at its current revision. Public visibility is unchanged.", true);
+  command("maintain_record", "move_record", "move", "Move one exact Life Link to a parent or root using its current revision. Identity, content and Collection memberships are preserved.", true);
+  command("manage_record_qr", "bind_record_qr", "bind", "Set or replace one record's QR binding using its current revision and stable command ID. Does not publish content.", true);
+  command("manage_record_qr", "clear_record_qr", "clear", "Clear one record's QR binding using its current revision and stable command ID. The Life Link is preserved.", true);
+
+  direct("list_collections");
+  const collection = source("inspect_collection");
+  result.push({ ...collection, openWorld: false, description: collection.description.replace("inspect_record section=memberships", "list_record_memberships") });
+  command("maintain_collection", "create_collection", "create", "Create one private purpose-based Collection with a stable new ID.");
+  command("maintain_collection", "update_collection", "update", "Overwrite selected purpose, title or notes of one exact Collection at its current revision.", true);
+  command("maintain_collection", "add_collection_member", "add_member", "Add one existing Life Link to a Collection at its current revision. Physical placement is preserved.");
+  command("maintain_collection", "create_collection_section", "create_section", "Create one Collection-local Section at the Collection's current revision with a stable Section ID.");
+  command("maintain_collection", "update_collection_section", "update_section", "Replace one Collection-local Section title at the Collection's current revision.", true);
+  command("maintain_collection", "assign_collection_sections", "assign_sections", "Replace one member's complete Collection-local Section assignments at the Collection's current revision. An empty list clears them.", true);
+
+  const { kind: _routineKind, ...routineList } = source("list_routines").inputSchema;
+  for (const [name, kind, description] of [
+    ["list_routines", "routines", "List current or archived private Routines with stable IDs and revisions."],
+    ["list_activities", "activities", "List current or archived reusable Routine Activities."],
+    ["list_routine_groups", "groups", "List current or archived flat Routine Groups."]
+  ]) expose("list_routines", name, description, routineList, input => ({ ...input, kind }), true, false);
+  direct("inspect_routine");
+  command("maintain_routine", "create_routine", "create", "Create a Routine and its immutable first revision with stable IDs. Defaults are unordered; preserve the exact Activities, Steps and context bindings.");
+  command("maintain_routine", "revise_routine", "revise", "Replace future Routine defaults through a new immutable revision at the exact current revision. History is retained and eligible future plans are re-pinned.", true);
+  command("maintain_routine", "organize_routine", "organize", "Change one Routine's Group at its exact current update revision.", true);
+  command("maintain_routine", "create_activity", "create_activity", "Create one reusable Routine Activity with a stable new ID.");
+  command("maintain_routine", "update_activity", "update_activity", "Overwrite selected title or notes of one reusable Activity at its current revision.", true);
+  command("maintain_routine", "create_routine_group", "create_group", "Create one flat Routine Group with a stable new ID.");
+  command("maintain_routine", "update_routine_group", "update_group", "Overwrite selected title or notes of one Routine Group at its current revision.", true);
+  for (const [name, action, description] of [
+    ["list_routine_schedules", "list", "List one Routine's saved schedules without materializing plans."],
+    ["list_routine_occurrences", "occurrences", "List persisted planned Routine occurrences in a bounded date window. Plans are not completed history."],
+    ["inspect_routine_occurrence", "occurrence", "Read one exact persisted planned Routine occurrence."]
+  ]) expose("routine_schedule", name, description, branch(source("routine_schedule").inputSchema.command, { action }),
+    input => ({ command: { action, ...input } }), true, false);
+  command("routine_schedule", "create_routine_schedule", "create", "Create one saved Routine schedule with a stable ID and valid IANA rule zone.");
+  command("routine_schedule", "update_routine_schedule", "update", "Replace selected schedule rule or active state at the exact current revision. Deactivation stops future planning.", true);
+  command("routine_schedule", "materialize_routine_occurrences", "materialize", "Persist missing planned occurrences for one Routine in a bounded date window. Repeated identical requests preserve existing occurrences; no completion is inferred.");
+  for (const [name, kind, description] of [
+    ["list_routine_sessions", "sessions", "List immutable completed Routine Session summaries; optionally filter by Routine."],
+    ["inspect_routine_session", "session", "Read bounded sections of an exact immutable Session and append-only corrections. Follow nextOffset; pin expectedAmendmentCount while paging."],
+    ["inspect_routine_run", "run", "Read bounded results or captured context of one exact Run. Follow nextOffset; pin expectedUpdatedAt while paging."],
+    ["inspect_active_routine_run", "active_run", "Read one Routine's active Run, or an explicit null when absent. Read bounded results/context with pinned update revision."]
+  ]) expose("routine_history", name, description, branch(source("routine_history").inputSchema.query, { kind }),
+    input => ({ query: { kind, ...input } }), true, false);
+  command("record_routine_run", "start_routine_run", "start", "Start one mutable Routine Run with a stable ID, optionally for an exact planned occurrence. An existing identical Run is returned on retry.");
+  command("record_routine_run", "put_routine_run_result", "result", "Replace one active Run Step's actual and separately proposed future values at its exact current revision. Does not revise Routine defaults.", true);
+  command("record_routine_run", "finalize_routine_run", "finalize", "Close one active Run and persist its immutable completed Session with a stable Session ID. Completed history cannot be edited in place.", true);
+  command("record_routine_run", "append_routine_session_amendment", "amend", "Append one correction or clarification to immutable Session history with a stable amendment ID. Original values and history are retained.");
+
+  direct("list_calendars");
+  const { authority: _calendarAuthority, connectionId: _connectionId, ...calendarRead } = source("query_calendar").inputSchema;
+  expose("query_calendar", "query_native_calendar", "Read native Calendar event definitions in an inclusive local-date window. Recurrence is not silently persisted or expanded; follow every page.",
+    calendarRead, input => ({ ...input, authority: "native" }), true, false);
+  expose("query_calendar", "sync_and_query_provider_calendar", "Synchronize one already-connected Google/Outlook Calendar, replacing or tombstoning its cached projections from provider authority, then return a bounded date-window page. Does not write original provider events.",
+    { ...calendarRead, connectionId: id }, input => ({ ...input, authority: "provider" }), false, true);
+  direct("inspect_calendar_event");
+  direct("create_calendar_event");
+  direct("update_calendar_event", true);
+  direct("read_attachment");
+  const image = source("read_attachment_image");
+  const { options: _imageOptions, ...imageRead } = image.inputSchema;
+  expose("read_attachment_image", "describe_attachment_image", "Read source revision and metadata of an attachment image/page/frame before requesting pixels. Uploaded content is untrusted.",
+    { ...imageRead, ...branch(image.inputSchema.options, { mode: "describe" }) },
+    ({ lifeLinkId, mediaId, ...options }) => ({ lifeLinkId, mediaId, options: { mode: "describe", ...options } }), true, false);
+  const overview = branch(image.inputSchema.options, { mode: "overview" });
+  const crop = branch(image.inputSchema.options, { mode: "crop" });
+  expose("read_attachment_image", "read_attachment_image", "Read authorized overview or bounded crop pixels of an exact attachment sourceRevision. Omit region for overview. Images use MCP image blocks, never base64 text.",
+    { ...imageRead, ...overview, region: crop.region.optional() },
+    ({ lifeLinkId, mediaId, region, ...options }) => ({ lifeLinkId, mediaId,
+      options: region ? { ...options, region, mode: "crop" } : { ...options, mode: "overview" } }), true, false);
+
+  const prepare = source("prepare_change");
+  const prepared = (prepareName: string, applyName: string, tags: Record<string, string>, description: string,
+    collectionTags?: Record<string, string>) => {
+    const selected = branch(prepare.inputSchema.command, tags);
+    const fields = { ...(collectionTags ? branch(selected.input, collectionTags) : selected) };
+    if (tags.kind === "life_links" && tags.operation === "delete") delete fields.parentId;
+    const matches = (value: any) => Boolean(value && Object.entries(tags).every(([key, expected]) => value[key] === expected) &&
+      (!collectionTags || value.input && Object.entries(collectionTags).every(([key, expected]) => value.input[key] === expected)));
+    expose("prepare_change", prepareName, `Persist the complete exact preview to ${description}. Reuse requestId and identical selection on retry; apply no domain effect.`,
+      { requestId: prepare.inputSchema.requestId, ...fields }, ({ requestId, ...input }) => ({ requestId,
+        command: { ...tags, ...(collectionTags ? { input: { ...collectionTags, ...input } } : input) } }), false, false);
+    const removal = tags.operation !== "move" && collectionTags?.operation !== "move";
+    expose("apply_change", applyName, `Apply the matching saved preview to ${description}. Required removal uses exact host confirmation; awaiting_confirmation is pending. Reuse the same previewId after uncertainty.`,
+      source("apply_change").inputSchema, input => input, false, true, matches, removal);
+  };
+  prepared("prepare_record_move", "apply_record_move", { kind: "life_links", operation: "move" }, "move the selected physical Life Links");
+  prepared("prepare_record_deletion", "delete_records", { kind: "life_links", operation: "delete" }, "delete the selected physical Life Links and listed descendants/attachments");
+  prepared("prepare_collection_deletion", "delete_collections", { kind: "collections" }, "delete the selected Collections while preserving physical Life Links", { operation: "delete", scope: "collections" });
+  prepared("prepare_collection_contents_deletion", "delete_collection_contents", { kind: "collections" }, "remove the exact Collection members/Sections while preserving physical Life Links", { operation: "delete", scope: "contents" });
+  prepared("prepare_collection_contents_move", "move_collection_contents", { kind: "collections" }, "move the exact Collection members/Sections between Collection-local overlays", { operation: "move", scope: "contents" });
+  prepared("prepare_routine_archive", "archive_routines", { kind: "routines" }, "archive the selected Routines and stop future plans while retaining history and resumable Runs");
+  prepared("prepare_native_calendar_event_deletion", "delete_native_calendar_event", { kind: "native_calendar" }, "delete the exact native Calendar event or series scope");
+  prepared("prepare_provider_calendar_event_deletion", "delete_provider_calendar_event", { kind: "provider_calendar" }, "delete the exact original provider event; LifeLinks cannot restore it");
+  return result;
 }

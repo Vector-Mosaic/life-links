@@ -364,11 +364,30 @@ function implementedApplicationOperations(serverSource: string): string[] {
   const allRegistrations = [
     ...serverSource.matchAll(/app\.(get|post|patch|delete|put|head|options)\(/g)
   ];
+  const serverFile = ts.createSourceFile(serverPath, serverSource, ts.ScriptTarget.Latest, true);
+  const nonLiteralRegistrations: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.expression.getText(serverFile) === "app"
+      && ["get", "post", "patch", "delete", "put", "head", "options"].includes(node.expression.name.text)) {
+      const route = node.arguments[0];
+      if (!route || !ts.isStringLiteralLike(route)) {
+        nonLiteralRegistrations.push(`${node.expression.name.text.toUpperCase()} ${route?.getText(serverFile)}`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(serverFile);
+  // Only these reviewed expressions are admitted. The fixed public proof is
+  // still inventoried below; the generic browser fallback has no API schema.
+  expect(nonLiteralRegistrations).toEqual([
+    "GET /^\\/\\.well-known\\/openai-apps-challenge$/",
+    "GET /^\\/(?!api\\/).*/"
+  ]);
   expect(
     allRegistrations.length,
-    "every HTTP route registration must be a literal route or the one reviewed non-API browser fallback"
-  ).toBe(literalRegistrations.length + 1);
-  expect(serverSource).toContain("app.get(/^\\/(?!api\\/).*/,");
+    "every HTTP route registration must be literal or one of the exact reviewed expressions"
+  ).toBe(literalRegistrations.length + nonLiteralRegistrations.length);
   expect(serverSource).toContain('import { createCalendarConnectionRouter } from "./calendar-connections.js"');
   expect(serverSource).toContain("app.use(createCalendarConnectionRouter(");
   const routerSource = readSource(calendarConnectionRouterPath);
@@ -440,6 +459,7 @@ function implementedApplicationOperations(serverSource: string): string[] {
     ...nativeRegistrations,
     ...deletionRegistrations,
     ...remoteApplicationOperations(serverSource),
+    "GET /.well-known/openai-apps-challenge",
     "GET /qr/{qrId}"
   ].sort();
 }
@@ -665,6 +685,32 @@ describe("Life Links OpenAPI v1", () => {
     const operationIds = [...contractOperations(document).values()].map((operation) => operation.operationId);
     expect(new Set(operationIds).size).toBe(published.length);
     expect(operationIds.every((operationId) => typeof operationId === "string" && operationId.length > 0)).toBe(true);
+  });
+
+  it("publishes the exact public plain-text domain proof and missing-file behavior", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operation = contractOperations(document).get("GET /.well-known/openai-apps-challenge")!;
+    expect(operation.operationId).toBe("getOpenAiAppsChallenge");
+    expect(operation.security).toEqual([]);
+    expect(operation).not.toHaveProperty("requestBody");
+    expect(String(operation.description)).toContain("HEAD");
+    expect(String(operation.description)).toContain("no response body");
+    expect(String(operation.description)).toContain("dotfile");
+    const success = responseFor(document, operation, "200");
+    const successContent = objectValue(success.content, "public domain proof content");
+    expect(Object.keys(successContent)).toEqual(["text/plain"]);
+    const schema = objectValue(objectValue(successContent["text/plain"], "plain-text proof").schema, "proof schema");
+    expect(schema).toMatchObject({ type: "string", minLength: 1 });
+    expect(schema).not.toHaveProperty("const");
+    expect(schema).not.toHaveProperty("enum");
+    expect(schema).not.toHaveProperty("example");
+    const cacheHeader = objectValue(objectValue(success.headers, "proof headers")["Cache-Control"], "proof cache header");
+    expect(cacheHeader.schema).toEqual({ type: "string", const: "no-cache" });
+    const missing = responseFor(document, operation, "404");
+    expect(missing).not.toHaveProperty("content");
+    const missingCache = objectValue(objectValue(missing.headers, "missing proof headers")["Cache-Control"], "missing proof cache header");
+    expect(missingCache.schema).toEqual({ type: "string", const: "no-cache" });
+    expect(objectValue(operation.responses, "proof responses")["500"]).toEqual({ $ref: "#/components/responses/InternalError" });
   });
 
   it("publishes the safe runtime release-identity fields on health, readiness, and version", () => {

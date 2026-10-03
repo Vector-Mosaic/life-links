@@ -61,13 +61,35 @@ describe("provider sign-in entry", () => {
     expect(navigate).toHaveBeenCalledWith("https://appleid.apple.com/auth/authorize");
   });
 
-  it("hides unconfigured options and discovery failures without disrupting email entry", async () => {
+  it("hides successfully unconfigured options", async () => {
     vi.mocked(getSignInProviders).mockResolvedValue({ providers: [] });
     await render(); expect(container.textContent).toBe("");
-    await act(async () => root.unmount()); root = createRoot(container);
+  });
+
+  it("offers one explicit retry after discovery fails without starting authentication", async () => {
     vi.mocked(getSignInProviders).mockRejectedValue(new Error("network unavailable"));
-    await render(); expect(container.textContent).toBe("");
+    await render();
+    expect(container.querySelector("[role=alert]")?.textContent).toContain("We couldn't load other sign-in methods.");
+    expect(getSignInProviders).toHaveBeenCalledTimes(1);
+    expect(startProviderSignIn).not.toHaveBeenCalled();
+    vi.mocked(getSignInProviders).mockResolvedValue({ providers: [{ id: "google", label: "Google" }] });
+    await click();
+    expect(getSignInProviders).toHaveBeenCalledTimes(2);
     expect(container.querySelector("[role=alert]")).toBeNull();
+    expect(container.querySelector('[data-provider="google"]')?.textContent).toBe("Continue with Google");
+    expect(startProviderSignIn).not.toHaveBeenCalled();
+  });
+
+  it("aborts discovery and ignores its late result after the entry unmounts", async () => {
+    let resolve!: (value: Awaited<ReturnType<typeof getSignInProviders>>) => void;
+    vi.mocked(getSignInProviders).mockReturnValue(new Promise(complete => { resolve = complete; }));
+    await render();
+    const signal = vi.mocked(getSignInProviders).mock.calls[0][0]!;
+    await act(async () => root.unmount()); root = createRoot(container);
+    expect(signal.aborted).toBe(true);
+    await act(async () => resolve({ providers: [{ id: "google", label: "Google" }] }));
+    expect(container.textContent).toBe("");
+    expect(startProviderSignIn).not.toHaveBeenCalled();
   });
 
   it("rejects a changed provider destination without navigating", async () => {

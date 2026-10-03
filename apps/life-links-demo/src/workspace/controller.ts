@@ -637,6 +637,8 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   private unsubscribeRoute: (() => void) | null = null;
   private active = false;
   private authenticationPending = false;
+  private logoutOperation: Promise<void> | null = null;
+  private logoutBlocked = false;
   private lifecycle = 0;
   private navigationRevision = 0;
   private ownerRevision = 0;
@@ -722,6 +724,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         detail: "No scan yet."
       },
       loading: true,
+      logoutFailed: false,
       busy: false,
       error: "",
       theme: initialTheme(),
@@ -2866,6 +2869,16 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     this.unsubscribeRoute = this.route.subscribe(() => {
       void this.handlePopState();
     });
+    if (this.logoutBlocked) {
+      this.update({ loading: true, logoutFailed: true,
+        error: "We couldn't finish signing out on this device. Try signing out again." });
+      return;
+    }
+    if (this.logoutOperation) {
+      this.update({ loading: true });
+      await this.logoutOperation;
+      if (!this.isCurrent(lifecycle) || this.logoutBlocked) return;
+    }
     await this.boot(lifecycle);
   }
 
@@ -4302,40 +4315,46 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async login(email: string, password: string) {
-    if (this.authenticationPending) return;
+    if (this.authenticationPending || this.logoutOperation || this.logoutBlocked) return;
     this.authenticationPending = true;
+    const lifecycle = this.lifecycle;
     this.update({ busy: true, error: "" });
     try {
       const result = await this.api.login(email, password);
+      if (lifecycle !== this.lifecycle) return;
       await this.initializeAuthenticatedSession(result);
     } catch (loginError) {
-      this.update({ error: messageFromError(loginError) });
+      if (lifecycle === this.lifecycle) this.update({ error: messageFromError(loginError) });
     } finally {
       this.authenticationPending = false;
-      this.update({ busy: false });
+      if (lifecycle === this.lifecycle) this.update({ busy: false });
     }
   }
 
   async registerAccount(input: Parameters<typeof registerAccount>[0]): Promise<boolean> {
-    if (this.authenticationPending) return false;
+    if (this.authenticationPending || this.logoutOperation || this.logoutBlocked) return false;
     if (this.snapshot.currentUser) {
       this.update({ error: "Sign out before creating a separate private account." });
       return false;
     }
     this.authenticationPending = true;
+    const lifecycle = this.lifecycle;
     this.update({ busy: true, error: "" });
     try {
       const result = await this.api.registerAccount(input);
+      // A completed creation remains a creation even if logout retired its UI.
+      if (lifecycle !== this.lifecycle) return true;
       // The account already exists once this request succeeds. A failed initial
       // library read must not offer another account-creation submission. The UI
       // completes navigation and normal startup can retry that read safely.
       try {
         await this.initializeAuthenticatedSession(result);
       } catch {
-        this.update({ error: "Your account was created. Reopen your workspace to finish loading it." });
+        if (lifecycle === this.lifecycle) this.update({ error: "Your account was created. Reopen your workspace to finish loading it." });
       }
       return true;
     } catch (issue) {
+      if (lifecycle !== this.lifecycle) return false;
       const code = issue instanceof ApiError ? issue.code : "";
       const messages: Record<string, string> = {
         invalid_verification: "Verify your email with the latest code before creating your account.",
@@ -4349,7 +4368,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       return false;
     } finally {
       this.authenticationPending = false;
-      this.update({ busy: false });
+      if (lifecycle === this.lifecycle) this.update({ busy: false });
     }
   }
 
@@ -4382,6 +4401,9 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   async logout() {
+    if (this.logoutOperation) return this.logoutOperation;
+    const lifecycle = ++this.lifecycle;
+    this.logoutBlocked = false;
     this.cancelRecordSearch();
     this.invalidateWorkspaceAgentChanges();
     this.confirmAgentChange(false);
@@ -4400,11 +4422,19 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     this.pendingCreateIds.clear();
     this.pendingQrBindings.clear();
     this.pendingGeneratedQrs.clear();
-    const logoutRequest = this.api.logout().catch(() => undefined);
+    let localClearFailed = false;
+    const logoutRequest = this.api.logout().catch(issue => {
+      localClearFailed = issue instanceof ApiError && issue.code === "native_logout_failed";
+    });
+    this.logoutOperation = logoutRequest;
     const nextRoute = classifyLifeLinksRoute(this.route.pathname(), false);
     this.update({
       ...emptyFieldLedgerState(),
       currentUser: null,
+      loading: true,
+      logoutFailed: false,
+      busy: false,
+      error: "",
       agentConnection: { connected: false, connectedAt: null, toolCatalogId: null },
       links: [],
       editingId: null,
@@ -4421,6 +4451,17 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       routeLifeLinkId: nextRoute.lifeLinkId
     });
     await logoutRequest;
+    if (this.logoutOperation !== logoutRequest) return;
+    this.logoutOperation = null;
+    this.logoutBlocked = localClearFailed;
+    // Native logout rotates request/session custody in its finally block. Entry
+    // must mount after that work, while private presentation clears immediately.
+    if (localClearFailed && this.active) {
+      this.update({ loading: true, logoutFailed: true,
+        error: "We couldn't finish signing out on this device. Try signing out again." });
+    } else if (this.isCurrent(lifecycle)) {
+      this.update({ loading: false, logoutFailed: false });
+    }
   }
 
   async connectAgent() {
