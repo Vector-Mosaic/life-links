@@ -17,6 +17,8 @@ const passwordPath = path.resolve(testDirectory, "../src/password.ts");
 const serverPath = path.resolve(testDirectory, "../src/server.ts");
 const providerSignInRouterPath = path.resolve(testDirectory, "../src/provider-sign-in.ts");
 const contactVerificationRouterPath = path.resolve(testDirectory, "../src/contact-verification.ts");
+const nativeAuthRouterPath = path.resolve(testDirectory, "../src/native-auth.ts");
+const accountDeletionRouterPath = path.resolve(testDirectory, "../src/account-deletion.ts");
 const calendarConnectionRouterPath = path.resolve(testDirectory, "../src/calendar-connections.ts");
 const calendarNotificationRouterPath = path.resolve(testDirectory, "../src/calendar-provider-subscriptions.ts");
 const remoteAuthRouterPath = path.resolve(testDirectory, "../src/remote-agent-auth.ts");
@@ -26,6 +28,7 @@ const webClientPath = path.resolve(testDirectory, "../../../apps/life-links-demo
 const webControllerPath = path.resolve(testDirectory, "../../../apps/life-links-demo/src/workspace/controller.ts");
 
 const EXPECTED_WEB_CLIENT_OPERATIONS = [
+  "DELETE /api/account",
   "GET /api/account-invitations",
   "POST /api/account-invitations",
   "DELETE /api/account-invitations/{invitationId}",
@@ -382,7 +385,7 @@ function implementedApplicationOperations(serverSource: string): string[] {
     .toEqual(["POST /api/calendar-notifications/microsoft"]);
   expect(literalRegistrations).toContain("POST /api/calendar-notifications/microsoft");
   expect(serverSource).toContain('import { createProviderSignInRouters } from "./provider-sign-in.js"');
-  expect(serverSource).toContain("const providerSignIn = createProviderSignInRouters(");
+  expect(serverSource).toContain("providerSignIn = createProviderSignInRouters(");
   expect(serverSource).toContain("app.use(providerSignIn.callbacks)");
   expect(serverSource).toContain("app.use(providerSignIn.routes)");
   expect(serverSource.indexOf("app.use(providerSignIn.callbacks)"))
@@ -406,11 +409,36 @@ function implementedApplicationOperations(serverSource: string): string[] {
     .toHaveLength(verificationRegistrations.length);
   expect(verificationRegistrations).toHaveLength(8);
   expect(literalRegistrations).not.toContain("POST /api/auth/register");
+  expect(serverSource).toContain('import { createNativeAuthBoundary } from "./native-auth.js"');
+  expect(serverSource).toContain("const nativeAuth = createNativeAuthBoundary(");
+  expect(serverSource).toContain("app.use(nativeAuth.routes)");
+  expect(serverSource.indexOf("app.use(nativeAuth.routes)"))
+    .toBeGreaterThan(serverSource.indexOf("app.use(originGuard(config, logger))"));
+  const nativeSource = readSource(nativeAuthRouterPath);
+  const nativeRegistrations = [...nativeSource.matchAll(/routes\.(get|post|patch|put|delete)\(\s*"([^"]+)"/g)]
+    .map((match) => `${match[1].toUpperCase()} ${expressRouteToOpenApi(match[2])}`);
+  expect([...nativeSource.matchAll(/routes\.(get|post|patch|put|delete|head|options)\(/g)])
+    .toHaveLength(nativeRegistrations.length);
+  expect(nativeRegistrations.sort()).toEqual([
+    "GET /api/auth/native/launch", "POST /api/auth/native/exchange", "POST /api/auth/native/start"
+  ]);
+  expect(serverSource).toContain('from "./account-deletion.js"');
+  expect(serverSource).toContain("app.use(createAccountDeletionRouter(");
+  expect(serverSource.indexOf("app.use(createAccountDeletionRouter("))
+    .toBeGreaterThan(serverSource.indexOf("app.use(originGuard(config, logger))"));
+  const deletionSource = readSource(accountDeletionRouterPath);
+  const deletionRegistrations = [...deletionSource.matchAll(/router\.(get|post|patch|put|delete)\(\s*"([^"]+)"/g)]
+    .map((match) => `${match[1].toUpperCase()} ${expressRouteToOpenApi(match[2])}`);
+  expect([...deletionSource.matchAll(/router\.(get|post|patch|put|delete|head|options)\(/g)])
+    .toHaveLength(deletionRegistrations.length);
+  expect(deletionRegistrations).toEqual(["DELETE /api/account"]);
   return [
     ...literalRegistrations,
     ...connectionRegistrations,
     ...providerRegistrations,
     ...verificationRegistrations,
+    ...nativeRegistrations,
+    ...deletionRegistrations,
     ...remoteApplicationOperations(serverSource),
     "GET /qr/{qrId}"
   ].sort();
@@ -515,6 +543,26 @@ function clientOperations(filePath: string, callName: "apiFetch" | "request"): s
   return [...new Set(operations)].sort();
 }
 
+function downloadPathFromExpression(expression: ts.Expression): string | null {
+  const inlinePath = operationPathFromExpression(expression);
+  if (inlinePath || !ts.isIdentifier(expression)) return inlinePath;
+  // The shared controller gives the web download and native share operation
+  // the same local constant. Resolve that binding without guessing its value.
+  for (let scope = expression.parent; scope; scope = scope.parent) {
+    if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue;
+    for (const statement of scope.statements) {
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name) || declaration.name.text !== expression.text) continue;
+        if (!(statement.declarationList.flags & ts.NodeFlags.Const) || !declaration.initializer ||
+          declaration.pos >= expression.pos) return null;
+        return operationPathFromExpression(declaration.initializer);
+      }
+    }
+  }
+  return null;
+}
+
 function directBrowserDownloads(filePath: string): string[] {
   const source = readSource(filePath);
   const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -525,7 +573,7 @@ function directBrowserDownloads(filePath: string): string[] {
       node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       node.left.getText(sourceFile) === "window.location.href"
     ) {
-      const route = operationPathFromExpression(node.right);
+      const route = downloadPathFromExpression(node.right);
       if (route?.startsWith("/api/")) {
         operations.push(`GET ${route}`);
       }
@@ -603,7 +651,12 @@ describe("Life Links OpenAPI v1", () => {
     const published = [...contractOperations(document).keys()].sort();
     const implemented = implementedApplicationOperations(readSource(serverPath));
     expect(published).toEqual(implemented);
-    expect(published).toHaveLength(144);
+    // Exact source/contract equality owns coverage. These four additions must
+    // be present; a stale total must not substitute for the route inventory.
+    expect(published).toEqual(expect.arrayContaining([
+      "POST /api/auth/native/start", "GET /api/auth/native/launch",
+      "POST /api/auth/native/exchange", "DELETE /api/account"
+    ]));
     expect(published).toEqual(expect.arrayContaining(["GET /healthz", "GET /readyz", "GET /version"]));
     expect(document.tags).not.toContainEqual({ name: "projects" });
     const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
@@ -658,6 +711,10 @@ describe("Life Links OpenAPI v1", () => {
   it("keeps the supported web client inside the published operation surface", () => {
     const operations = contractOperations(parseStrictJson(readSource(contractPath)));
     const publishedShapes = new Set([...operations.keys()].map(operationShape));
+    // apiFetch is the maintained shared web consumer. Native provider handoff
+    // calls belong to life-links-mobile/src/nativeRuntime.ts and its separate
+    // native consumer tests; this public web projection does not contain that
+    // app. Ordinary native product requests still reuse this shared API client.
     const webOperations = clientOperations(webClientPath, "apiFetch");
     const downloads = directBrowserDownloads(webControllerPath);
     expect(webOperations).toEqual(EXPECTED_WEB_CLIENT_OPERATIONS);
@@ -844,6 +901,14 @@ describe("Life Links OpenAPI v1", () => {
         expect(String(operation.description)).toContain("one-use state");
         continue;
       }
+      if (key === "POST /api/auth/native/start" || key === "POST /api/auth/native/exchange") {
+        expect(operation.security).toEqual([]);
+        expect(parameters).toContainEqual({ $ref: "#/components/parameters/BrowserOrigin" });
+        expect(String(operation.description)).toContain("OS HTTP transport");
+        expect(String(operation.description)).toContain("no Origin, Referer or Fetch Metadata");
+        expect(objectValue(operation.responses, `${key} responses`)).toHaveProperty("403");
+        continue;
+      }
       expect(parameters, `${key} must describe browser Origin enforcement`).toContainEqual({
         $ref: "#/components/parameters/BrowserOrigin"
       });
@@ -881,7 +946,19 @@ describe("Life Links OpenAPI v1", () => {
     expect(Object.keys(objectValue(provider.properties, "provider metadata fields"))).toEqual(["id", "label"]);
     const completion = objectValue(schemas.ProviderCompletionResponse, "completion");
     expect(completion.additionalProperties).toBe(false);
-    expect(Object.keys(objectValue(completion.properties, "completion fields"))).toEqual(["returnTo"]);
+    expect(completion.required).toEqual(["returnTo"]);
+    const completionFields = objectValue(completion.properties, "completion fields");
+    expect(Object.keys(completionFields)).toEqual([
+      "returnTo", "nativeCallbackUrl", "user", "agentConnection", "qrBaseUrl", "sessionToken"
+    ]);
+    expect(completionFields.nativeCallbackUrl).toMatchObject({
+      pattern: "^lifelinks://auth/callback\\?code=[A-Za-z0-9_-]{43}$"
+    });
+    expect(String(objectValue(completionFields.nativeCallbackUrl, "native callback").description)).toContain("S256 verifier");
+    expect(completionFields.user).toEqual({ $ref: "#/components/schemas/User" });
+    expect(completionFields.agentConnection).toEqual({ $ref: "#/components/schemas/AgentConnection" });
+    expect(completionFields.sessionToken).toMatchObject({ type: "string", readOnly: true, minLength: 32, maxLength: 256 });
+    expect(String(objectValue(completionFields.sessionToken, "native session").description)).toContain("native");
     const startSchema = objectValue(schemas.ProviderSignInStartRequest, "start request");
     expect(startSchema.additionalProperties).toBe(false);
     expect(startSchema.required).toEqual(["intent"]);
@@ -951,6 +1028,31 @@ describe("Life Links OpenAPI v1", () => {
     const phoneComplete = objectValue(schemas.PhoneSignupCompleteRequest, "phone completion");
     expect(phoneComplete.required).toEqual(["attemptToken", "displayName"]);
     expect(phoneComplete.additionalProperties).toBe(false);
+    for (const schemaName of [
+      "RegistrationRequest", "EmailVerificationStartRequest", "PhoneVerificationStartRequest",
+      "ContactVerificationResendRequest", "ContactVerificationCodeRequest", "PhoneSignupCompleteRequest"
+    ]) {
+      const requestSchema = objectValue(schemas[schemaName], schemaName);
+      const client = objectValue(objectValue(requestSchema.properties, `${schemaName} fields`).client, `${schemaName} client`);
+      expect(requestSchema.additionalProperties).toBe(false);
+      expect(requestSchema.required, `${schemaName} preserves browser callers`).not.toContain("client");
+      expect(client.const).toBe("native");
+      expect(String(client.description)).toContain("without Origin, Referer or Fetch Metadata");
+    }
+    const attemptResponse = objectValue(schemas.ContactVerificationAttemptResponse, "attempt response");
+    expect(attemptResponse.additionalProperties).toBe(false);
+    expect(attemptResponse.required).not.toContain("verificationBinding");
+    const verificationBinding = objectValue(objectValue(attemptResponse.properties, "attempt fields").verificationBinding,
+      "native verification binding");
+    expect(verificationBinding).toMatchObject({ type: "string", pattern: "^[A-Za-z0-9_-]{43}$", minLength: 43, maxLength: 43 });
+    expect(String(verificationBinding.description)).toContain("keep in memory");
+    expect(String(verificationBinding.description)).toContain("X-LifeLinks-Verification");
+    expect(String(verificationBinding.description)).toContain("No cookie/URL/log/persistent storage");
+    const parameters = objectValue(objectValue(document.components, "components").parameters, "parameters");
+    const verificationCookie = objectValue(parameters.ContactVerificationBrowser, "verification cookie");
+    expect(verificationCookie).toMatchObject({ name: "life_links_contact_verification", in: "cookie", required: false });
+    expect(String(verificationCookie.description)).toContain("Mandatory original HttpOnly cookie for browser flow");
+    expect(String(verificationCookie.description)).toContain("the two modes cannot transfer attempts");
     const user = objectValue(schemas.User, "user");
     expect(user.required).toContain("email");
     expect(objectValue(user.properties, "user fields").email).toMatchObject({ type: ["string", "null"] });
@@ -978,6 +1080,11 @@ describe("Life Links OpenAPI v1", () => {
       if (!route.endsWith("/start")) {
         expect(operation.parameters).toContainEqual({ $ref: "#/components/parameters/ContactVerificationBrowser" });
       }
+      expect(operation.parameters).toContainEqual(expect.objectContaining({
+        name: "X-LifeLinks-Verification", in: "header", required: false,
+        schema: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" }
+      }));
+      expect(String(operation.description)).toContain("client:native without browser headers");
       const limited = responseFor(document, operation, "429");
       expect(String(limited.description)).toContain("without retryAfterSeconds or Retry-After");
       expect(objectValue(objectValue(limited.content, "limited content")["application/json"], "limited JSON").schema)
@@ -985,6 +1092,9 @@ describe("Life Links OpenAPI v1", () => {
     }
     expect(operations.get("POST /api/auth/register")?.parameters)
       .toContainEqual({ $ref: "#/components/parameters/ContactVerificationBrowser" });
+    expect(operations.get("POST /api/auth/register")?.parameters).toContainEqual(expect.objectContaining({
+      name: "X-LifeLinks-Verification", in: "header", required: false
+    }));
     expect(String(operationById(operations, "startLifeLinksEmailVerification").description)).toContain("unknown email-send outcome");
     const emailResendOperation = operationById(operations, "resendLifeLinksEmailVerification");
     expect(String(emailResendOperation.description)).toContain("original keyed Agent Communications sender context");
@@ -999,8 +1109,144 @@ describe("Life Links OpenAPI v1", () => {
     expect(String(responseFor(document, phoneResendOperation, "503").description)).toContain("no network call, code replacement or new operation");
     expect(String(operationById(operations, "verifyLifeLinksPhone").description)).toContain("checked locally");
     expect(String(objectValue(phoneStartFields.phoneNumber, "phone destination").description)).toContain("a +1 prefix alone is insufficient");
-    expect(objectValue(objectValue(schemas.PhoneVerificationResponse, "phone result").properties, "phone result fields").status)
+    const phoneResultFields = objectValue(objectValue(schemas.PhoneVerificationResponse, "phone result").properties, "phone result fields");
+    expect(phoneResultFields.status)
       .toEqual({ type: "string", enum: ["signed_in", "linked", "profile_required"] });
+    for (const resultName of ["PhoneVerificationResponse", "ProviderCompletionResponse", "LoginResponse"]) {
+      const result = objectValue(schemas[resultName], resultName);
+      const fields = objectValue(result.properties, `${resultName} fields`);
+      expect(fields.user).toEqual({ $ref: "#/components/schemas/User" });
+      expect(fields.agentConnection).toEqual({ $ref: "#/components/schemas/AgentConnection" });
+      expect(fields.qrBaseUrl).toEqual({ type: "string", format: "uri" });
+      expect(fields.sessionToken).toMatchObject({ type: "string", readOnly: true, minLength: 32, maxLength: 256 });
+      expect(result.required, `${resultName} browser response has no bearer`).not.toContain("sessionToken");
+      expect(String(objectValue(fields.sessionToken, `${resultName} session`).description)).toContain("native");
+    }
+  });
+
+  it("binds native provider and Calendar returns to the fixed app URI and an app-held S256 verifier", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    const start = operationById(operations, "startNativeAuthentication");
+    const launch = operationById(operations, "launchNativeAuthentication");
+    const exchange = operationById(operations, "exchangeNativeAuthentication");
+    for (const operation of [start, launch, exchange]) expect(operation.security).toEqual([]);
+    for (const [operation, requestName, responseName] of [
+      [start, "NativeAuthStartRequest", "NativeAuthStartResponse"],
+      [exchange, "NativeAuthExchangeRequest", "NativeAuthExchangeResponse"]
+    ] as const) {
+      const request = objectValue(operation.requestBody, `${requestName} body`);
+      expect(request.required).toBe(true);
+      expect(objectValue(objectValue(request.content, "request content")["application/json"], "JSON request").schema)
+        .toEqual({ $ref: `#/components/schemas/${requestName}` });
+      const response = responseFor(document, operation, "200");
+      expect(objectValue(objectValue(response.content, "response content")["application/json"], "JSON response").schema)
+        .toEqual({ $ref: `#/components/schemas/${responseName}` });
+      expect(response.headers).toMatchObject({
+        "Cache-Control": { schema: { const: "private, no-store" } },
+        "Referrer-Policy": { schema: { const: "no-referrer" } }
+      });
+    }
+    const startRequest = objectValue(schemas.NativeAuthStartRequest, "native start");
+    const startFields = objectValue(startRequest.properties, "native start fields");
+    expect(startRequest).toMatchObject({ additionalProperties: false, required: ["client", "intent", "codeChallenge", "redirectUri"] });
+    expect(startFields.client).toEqual({ const: "native" });
+    expect(startFields.redirectUri).toEqual({ const: "lifelinks://auth/callback" });
+    expect(startFields.codeChallenge).toEqual({ type: "string", pattern: "^[A-Za-z0-9_-]{43}$" });
+    expect(startFields.returnTo).toEqual({ $ref: "#/components/schemas/ProviderReturnTo" });
+    expect(startRequest.oneOf).toEqual([
+      { required: ["provider"], properties: { intent: { enum: ["login", "register", "link"] } },
+        not: { anyOf: [{ required: ["calendarProvider"] }, { required: ["reconnectConnectionId"] }] } },
+      { required: ["calendarProvider"], properties: { intent: { const: "calendar" } }, not: { required: ["provider"] } }
+    ]);
+    expect(String(start.description)).toContain("no Origin, Referer or Fetch Metadata");
+    expect(String(start.description)).toContain("Link/Calendar require the current native bearer");
+    expect(String(start.description)).toContain("system browser");
+    const launchParameters = (launch.parameters as JsonObject[]).filter(parameter => parameter.$ref !== "#/components/parameters/XRequestId");
+    expect(launchParameters).toEqual([expect.objectContaining({
+      name: "ticket", in: "query", required: true, schema: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$" }
+    })]);
+    const redirect = responseFor(document, launch, "303");
+    expect(redirect).not.toHaveProperty("content");
+    expect(redirect.headers).toMatchObject({
+      Location: { schema: { type: "string", format: "uri" } },
+      "Cache-Control": { schema: { const: "private, no-store" } },
+      "Referrer-Policy": { schema: { const: "no-referrer" } }
+    });
+    const exchangeRequest = objectValue(schemas.NativeAuthExchangeRequest, "native exchange");
+    const exchangeFields = objectValue(exchangeRequest.properties, "native exchange fields");
+    expect(exchangeRequest).toMatchObject({ additionalProperties: false, required: ["client", "code", "codeVerifier"] });
+    expect(Object.keys(exchangeFields)).toEqual(["client", "code", "codeVerifier"]);
+    expect(exchangeFields.client).toEqual({ const: "native" });
+    expect(exchangeFields.code).toEqual({ type: "string", pattern: "^[A-Za-z0-9_-]{43}$", writeOnly: true });
+    expect(exchangeFields.codeVerifier).toEqual({
+      type: "string", minLength: 43, maxLength: 128, pattern: "^[A-Za-z0-9._~-]{43,128}$", writeOnly: true
+    });
+    expect((exchange.parameters as JsonObject[]).every(parameter => parameter.in !== "query")).toBe(true);
+    expect(String(exchange.description)).toContain("verifier is never in a URL");
+    expect(String(exchange.description)).toContain("Wrong verifier cannot consume another binding");
+    expect(String(exchange.description)).toContain("expires after one minute");
+    expect(String(exchange.description)).toContain("rechecking its session");
+    const result = objectValue(schemas.NativeAuthExchangeResponse, "native exchange result");
+    const resultFields = objectValue(result.properties, "native result fields");
+    expect(result).toMatchObject({ additionalProperties: false, required: ["status", "user", "agentConnection", "qrBaseUrl", "returnTo"] });
+    expect(resultFields.status).toEqual({ enum: ["signed_in", "linked", "calendar_authorized"] });
+    expect(resultFields.user).toEqual({ $ref: "#/components/schemas/User" });
+    expect(resultFields.agentConnection).toEqual({ $ref: "#/components/schemas/AgentConnection" });
+    expect(resultFields.returnTo).toEqual({ $ref: "#/components/schemas/ProviderReturnTo" });
+    expect(resultFields.sessionToken).toMatchObject({ type: "string", readOnly: true, minLength: 32, maxLength: 256 });
+    expect(result.oneOf).toEqual([
+      { properties: { status: { const: "signed_in" } }, required: ["sessionToken"], not: { required: ["calendarAuthorizationId"] } },
+      { properties: { status: { const: "linked" } }, not: { anyOf: [{ required: ["sessionToken"] }, { required: ["calendarAuthorizationId"] }] } },
+      { properties: { status: { const: "calendar_authorized" } }, required: ["calendarAuthorizationId"], not: { required: ["sessionToken"] } }
+    ]);
+  });
+
+  it("requires explicit human account deletion and reports protected Apple cleanup without exposing credentials", () => {
+    const document = parseStrictJson(readSource(contractPath));
+    const operations = contractOperations(document);
+    const schemas = objectValue(objectValue(document.components, "components").schemas, "schemas");
+    const deletion = operationById(operations, "deleteLifeLinksAccount");
+    expect(operations.get("DELETE /api/account")).toBe(deletion);
+    expect(deletion.security).toEqual([{ CookieSession: [] }, { BearerSession: [] }]);
+    expect(deletion.parameters).toContainEqual({ $ref: "#/components/parameters/BrowserOrigin" });
+    const request = objectValue(deletion.requestBody, "deletion request");
+    expect(request.required).toBe(true);
+    expect(objectValue(objectValue(request.content, "deletion request content")["application/json"], "deletion JSON").schema)
+      .toEqual({ $ref: "#/components/schemas/AccountDeletionRequest" });
+    expect(objectValue(schemas.AccountDeletionRequest, "deletion confirmation")).toEqual({
+      type: "object", additionalProperties: false, required: ["confirmation"], properties: { confirmation: { const: "DELETE" } }
+    });
+    const result = objectValue(schemas.AccountDeletionResponse, "deletion result");
+    expect(result).toMatchObject({ type: "object", additionalProperties: false, required: ["status", "appleRevocation"] });
+    expect(Object.keys(objectValue(result.properties, "deletion result fields"))).toEqual(["status", "appleRevocation"]);
+    expect(result.properties).toEqual({
+      status: { const: "deleted" }, appleRevocation: { enum: ["complete", "pending", "not_required", "manual_required"] }
+    });
+    const response = responseFor(document, deletion, "200");
+    expect(objectValue(objectValue(response.content, "deletion response content")["application/json"], "deletion result JSON").schema)
+      .toEqual({ $ref: "#/components/schemas/AccountDeletionResponse" });
+    const cacheHeader = objectValue(objectValue(response.headers, "deletion headers")["Cache-Control"], "deletion cache header");
+    const cacheSchema = objectValue(cacheHeader.schema, "deletion cache schema");
+    const cacheDirectives = typeof cacheSchema.const === "string" ? [cacheSchema.const] : cacheSchema.enum as string[];
+    expect(cacheDirectives.length).toBeGreaterThan(0);
+    for (const directive of cacheDirectives) expect(directive).toContain("no-store");
+    expect(objectValue(deletion.responses, "deletion responses")).toEqual(expect.objectContaining({
+      "400": expect.any(Object), "401": expect.any(Object), "403": expect.any(Object), "409": expect.any(Object),
+      "429": expect.any(Object), "503": expect.any(Object)
+    }));
+    const errorSchema = objectValue(schemas.AccountDeletionErrorResponse, "deletion error");
+    expect(errorSchema).toMatchObject({ type: "object", additionalProperties: false, required: ["error"] });
+    expect(Object.keys(objectValue(errorSchema.properties, "deletion error fields"))).toEqual(["error", "reason"]);
+    const pendingResponse = responseFor(document, deletion, "409");
+    expect(String(pendingResponse.description)).toContain("account_deletion_pending");
+    expect(objectValue(objectValue(pendingResponse.content, "deletion pending content")["application/json"], "deletion pending JSON").schema)
+      .toEqual({ $ref: "#/components/schemas/AccountDeletionErrorResponse" });
+    expect(String(deletion.description)).toContain("no page/remote MCP");
+    expect(String(deletion.description)).toContain("Calendar safe cleanup precedes local owner erasure");
+    expect(String(deletion.description)).toContain("preserves QR inventory/URLs and external events");
+    expect(String(deletion.description)).toContain("protected server-only");
   });
 
   it("separates delegated MCP transport, OAuth discovery and owner connection management", () => {

@@ -16,6 +16,7 @@ export type SeedProfile = "legacy-demo" | "competition";
 export type LifeLinksConfig = {
   contactVerification?: ContactVerificationConfig;
   providerSignIn?: ProviderSignInConfig[];
+  providerRevocationEncryptionKey?: string;
   memberInvitationsEnabled?: boolean;
   registration?: RegistrationInvitation;
   attachmentRuntime?: AttachmentNativeRuntime;
@@ -101,9 +102,16 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): LifeLinksConfi
     throw new Error("Contact verification requires an explicit SESSION_SECRET of 32–4096 bytes without control characters.");
   }
 
+  const providerSignIn = readProviderSignInConfig(env, qrBaseUrl);
+  const providerRevocationEncryptionKey = env.LIFE_LINKS_PROVIDER_REVOCATION_ENCRYPTION_KEY;
+  if ((providerSignIn.some(provider => provider.id === "apple") || providerRevocationEncryptionKey !== undefined) &&
+    (!providerRevocationEncryptionKey || Buffer.from(providerRevocationEncryptionKey, "base64").length !== 32 ||
+      Buffer.from(providerRevocationEncryptionKey, "base64").toString("base64") !== providerRevocationEncryptionKey)) {
+    throw new Error("Apple sign-in requires stable provider revocation encryption custody.");
+  }
   return {
-    contactVerification,
-    providerSignIn: readProviderSignInConfig(env, qrBaseUrl),
+    contactVerification, providerRevocationEncryptionKey,
+    providerSignIn,
     memberInvitationsEnabled: env.LIFE_LINKS_MEMBER_INVITATIONS_ENABLED !== "false",
     registration: readRegistrationConfig(env),
     microsoftCalendar: readMicrosoftCalendarConfig(env, storeMode),

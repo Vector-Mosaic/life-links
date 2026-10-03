@@ -224,6 +224,9 @@ import { assertRegistrationInvitation, prepareRegisteredOwner, prepareRegistered
 import { assertProviderSignInAttempt, providerIdentityKey, validSignInFingerprint,
   MAX_PROVIDER_SIGN_IN_ATTEMPTS, PROVIDER_SIGN_IN_EXPIRY_CLEANUP_LIMIT, ProviderSignInStateError,
   type ProviderIdentityBinding, type VerifiedProviderIdentity, type ProviderSignInAttempt } from "./provider-sign-in-state.js";
+import { AccountDeletionError, assertProviderRevocationCustody, isSharedDemoAccount,
+  type AccountDeletionInput, type AccountDeletionResult, type ProviderRevocationCustody,
+  type ProviderRevocationCleanup } from "./account-deletion-state.js";
 import { assertContactVerificationAttempt, assertPhoneBinding, assertVerificationLimits, assertVerifiedRegistrationAttempt,
   canUpdateContactVerificationAttempt, contactAttemptMatchesConsumption, nextVerificationLimitReservation, phoneBindingKey, validContactFingerprint,
   validVerifiedContactConsumption, ContactVerificationStateError, MAX_CONTACT_VERIFICATION_ATTEMPTS,
@@ -267,15 +270,16 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
 
   async registerProviderOwner(input: RegisterProviderOwnerInput): Promise<StoredUser> {
     providerIdentityKey(input.identity);
-    return this.registerPreparedOwner(input.invitation, prepareRegisteredProviderOwner(input), input.identity);
+    if (input.revocationCustody) assertProviderRevocationCustody(input.revocationCustody);
+    return this.registerPreparedOwner(input.invitation, prepareRegisteredProviderOwner(input), input.identity, input.revocationCustody);
   }
 
   private async registerPreparedOwner(invitation: RegistrationInvitation | undefined,
-    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding): Promise<StoredUser> {
+    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding, revocationCustody?: ProviderRevocationCustody): Promise<StoredUser> {
     const keys = invitation ? [`registration-invitation:${invitation.fingerprint}`] : [];
     if (identity) keys.push(`provider-sign-in-identity:${providerIdentityKey(identity)}`);
     try {
-      return await this.withTransaction(keys, client => this.insertPreparedOwner(client, invitation, prepared, identity), null);
+      return await this.withTransaction(keys, client => this.insertPreparedOwner(client, invitation, prepared, identity, revocationCustody), null);
     } catch (error) {
       // Do not propagate PostgreSQL's duplicate-value detail (which contains the email).
       if ((error as { code?: string })?.code === "23505") throw new RegistrationAdmissionError("registration_failed");
@@ -284,9 +288,10 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
   }
 
   private async insertPreparedOwner(client: PoolClient, invitation: RegistrationInvitation | undefined,
-    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding): Promise<StoredUser> {
+    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding, revocationCustody?: ProviderRevocationCustody): Promise<StoredUser> {
     const { user, calendar } = prepared;
     if (identity) {
+      await assertNoPendingProviderRevocation(client, identity);
       const saved = await client.query(
         `SELECT owner_id FROM provider_sign_in_identities WHERE provider=$1 AND issuer=$2 AND client_id=$3 AND subject=$4`,
         [identity.provider, identity.issuer, identity.clientId, identity.subject]);
@@ -312,8 +317,9 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     if (identity) await client.query(
       `INSERT INTO provider_sign_in_identities(provider,issuer,client_id,subject,owner_id,created_at) VALUES($1,$2,$3,$4,$5,$6)`,
       [identity.provider, identity.issuer, identity.clientId, identity.subject, user.id, user.createdAt]);
+    if (identity && revocationCustody) await retainPostgresProviderRevocationCustody(client, user.id, identity, revocationCustody.encryptedPayload);
     if (invitation) {
-      await client.query("INSERT INTO account_registrations(user_id,invitation_fingerprint,created_at) VALUES($1,$2,$3)",
+      await client.query("INSERT INTO account_registrations(receipt_id,user_id,invitation_fingerprint,created_at) VALUES($1,$1,$2,$3)",
         [user.id, invitation.fingerprint, user.createdAt]);
       if (invitation.memberInvitationId) {
         await client.query("UPDATE member_invitations SET redeemed_at=$2 WHERE id=$1", [invitation.memberInvitationId, user.createdAt]);
@@ -326,7 +332,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     assertContactVerificationAttempt(attempt);
     if (attempt.version !== 1 || attempt.phase === "consumed") throw new ContactVerificationStateError("verification_unavailable");
     try {
-      await this.withTransaction(["contact-verification-attempts"], async client => {
+      await this.withTransaction([...(attempt.ownerId ? [`owner:${attempt.ownerId}`] : []), "contact-verification-attempts"], async client => {
         await client.query(`DELETE FROM contact_verification_attempts WHERE token_hash IN
           (SELECT token_hash FROM contact_verification_attempts WHERE expires_at <= clock_timestamp()
            ORDER BY expires_at,token_hash LIMIT $1)`, [VERIFICATION_EXPIRY_CLEANUP_LIMIT]);
@@ -337,10 +343,10 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
           AND expires_at > clock_timestamp() LIMIT 1`, [attempt.channel, attempt.addressHash]);
         if (unresolved.rowCount) throw new ContactVerificationStateError("verification_unavailable");
         await client.query(`INSERT INTO contact_verification_attempts
-          (token_hash,browser_hash,address_hash,channel,intent,phase,encrypted_payload,expires_at,resend_at,version,check_count)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+          (token_hash,browser_hash,address_hash,channel,intent,phase,encrypted_payload,expires_at,resend_at,version,check_count,owner_id)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
           [attempt.tokenHash, attempt.browserHash, attempt.addressHash, attempt.channel, attempt.intent, attempt.phase,
-            attempt.encryptedPayload, attempt.expiresAt, attempt.resendAt, attempt.version, attempt.checkCount]);
+            attempt.encryptedPayload, attempt.expiresAt, attempt.resendAt, attempt.version, attempt.checkCount, attempt.ownerId ?? null]);
       }, null);
     } catch (error) {
       if ((error as { code?: string })?.code === "23505") throw new ContactVerificationStateError("verification_unavailable");
@@ -529,24 +535,30 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       clientId: String(row.client_id), subject: String(row.subject) }));
   }
 
-  async linkProviderIdentity(ownerId: string, identity: VerifiedProviderIdentity): Promise<void> {
+  async linkProviderIdentity(ownerId: string, identity: VerifiedProviderIdentity, revocationCustody?: ProviderRevocationCustody, sessionTokenHash?: string): Promise<void> {
     const key = providerIdentityKey(identity);
-    await this.withTransaction([`provider-sign-in-identity:${key}`], async client => {
+    if (revocationCustody) assertProviderRevocationCustody(revocationCustody);
+    await this.withTransaction([`owner:${ownerId}`, `provider-sign-in-identity:${key}`], async client => {
       const owner = await client.query("SELECT id FROM users WHERE id=$1", [ownerId]);
       if (!owner.rowCount) throw new ProviderSignInStateError("provider_sign_in_unavailable");
+      if (sessionTokenHash && !(await client.query(
+        "SELECT 1 FROM sessions WHERE token_hash=$1 AND user_id=$2 AND expires_at>clock_timestamp() FOR SHARE",
+        [sessionTokenHash, ownerId])).rowCount) throw new ProviderSignInStateError("provider_sign_in_unavailable");
+      await assertNoPendingProviderRevocation(client, identity);
       const result = await client.query(
         `INSERT INTO provider_sign_in_identities(provider,issuer,client_id,subject,owner_id,created_at) VALUES($1,$2,$3,$4,$5,$6)
          ON CONFLICT(provider,issuer,client_id,subject) DO UPDATE SET owner_id=EXCLUDED.owner_id
          WHERE provider_sign_in_identities.owner_id=EXCLUDED.owner_id RETURNING owner_id`,
         [identity.provider, identity.issuer, identity.clientId, identity.subject, ownerId, new Date().toISOString()]);
       if (!result.rowCount) throw new ProviderSignInStateError("provider_identity_conflict");
+      if (revocationCustody) await retainPostgresProviderRevocationCustody(client, ownerId, identity, revocationCustody.encryptedPayload);
     }, null);
   }
 
   async saveProviderSignInAttempt(attempt: ProviderSignInAttempt): Promise<void> {
     assertProviderSignInAttempt(attempt);
     try {
-      await this.withTransaction(["provider-sign-in-attempts"], async client => {
+      await this.withTransaction([...(attempt.ownerId ? [`owner:${attempt.ownerId}`] : []), "provider-sign-in-attempts"], async client => {
         await client.query(
           `DELETE FROM provider_sign_in_attempts WHERE state_hash IN
            (SELECT state_hash FROM provider_sign_in_attempts WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT $1)`,
@@ -554,8 +566,8 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
         const active = await client.query("SELECT count(*)::int AS count FROM provider_sign_in_attempts WHERE expires_at > clock_timestamp()");
         if (active.rows[0].count >= MAX_PROVIDER_SIGN_IN_ATTEMPTS) throw new ProviderSignInStateError("provider_sign_in_unavailable");
         await client.query(
-          `INSERT INTO provider_sign_in_attempts(state_hash,browser_hash,provider,encrypted_payload,expires_at) VALUES($1,$2,$3,$4,$5)`,
-          [attempt.stateHash, attempt.browserHash, attempt.provider, attempt.encryptedPayload, attempt.expiresAt]);
+          `INSERT INTO provider_sign_in_attempts(state_hash,browser_hash,provider,encrypted_payload,expires_at,owner_id) VALUES($1,$2,$3,$4,$5,$6)`,
+          [attempt.stateHash, attempt.browserHash, attempt.provider, attempt.encryptedPayload, attempt.expiresAt, attempt.ownerId ?? null]);
       }, null);
     } catch (error) {
       if ((error as { code?: string })?.code === "23505") throw new ProviderSignInStateError("provider_sign_in_unavailable");
@@ -580,7 +592,7 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
   }
 
   async createMemberInvitation(invitation: MemberInvitation): Promise<MemberInvitationView> {
-    return this.withTransaction([`member-invitations:${invitation.ownerId}`], async client => {
+    return this.withTransaction([`owner:${invitation.ownerId}`, `member-invitations:${invitation.ownerId}`], async client => {
       const pending = await client.query(
         `SELECT count(*)::int AS count FROM member_invitations WHERE owner_id=$1
          AND revoked_at IS NULL AND redeemed_at IS NULL AND clock_timestamp() < expires_at`, [invitation.ownerId]);
@@ -623,6 +635,92 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
     return result.rows[0] ? mapUser(result.rows[0]) : null;
   }
 
+  async retainProviderRevocationCustody(ownerId: string, identity: ProviderIdentityBinding, encryptedPayload: string): Promise<void> {
+    assertProviderRevocationCustody({ encryptedPayload });
+    await this.withTransaction([`owner:${ownerId}`, `provider-sign-in-identity:${providerIdentityKey(identity)}`], async client => {
+      await retainPostgresProviderRevocationCustody(client, ownerId, identity, encryptedPayload);
+    }, null);
+  }
+
+  async listProviderRevocationCleanup(limit: number): Promise<ProviderRevocationCleanup[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("invalid_cleanup_limit");
+    const result = await this.pool.query("SELECT * FROM provider_sign_in_revocation_cleanup ORDER BY created_at,id LIMIT $1", [limit]);
+    return result.rows.map(row => ({ id: row.id, identity: { provider: row.provider, issuer: row.issuer,
+      clientId: row.client_id, subject: row.subject }, encryptedPayload: row.encrypted_payload, createdAt: toIso(row.created_at) }));
+  }
+
+  async deleteProviderRevocationCleanup(id: string): Promise<void> {
+    await this.pool.query("DELETE FROM provider_sign_in_revocation_cleanup WHERE id=$1", [id]);
+  }
+
+  async deleteAccount(input: AccountDeletionInput): Promise<AccountDeletionResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Grant admission and purge share this barrier. Existing operations hold
+      // a Grant read lease before the canonical owner lock, so deletion does too.
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`remote-owner-lifecycle:${input.ownerId}`]);
+      const grants = await client.query("SELECT id_hash FROM remote_agent_protocol_state WHERE kind='Grant' AND owner_id=$1 ORDER BY id_hash FOR UPDATE", [input.ownerId]);
+      await lockKeys(client, [`owner:${input.ownerId}`]);
+      await lockKeys(client, ["contact-verification-attempts", "provider-sign-in-attempts"]);
+      const owner = await client.query("SELECT id FROM users WHERE id=$1 FOR UPDATE", [input.ownerId]);
+      const session = await client.query("SELECT 1 FROM sessions WHERE user_id=$1 AND token_hash=$2 AND expires_at>clock_timestamp() FOR UPDATE",
+        [input.ownerId, input.sessionTokenHash]);
+      if (!owner.rowCount || !session.rowCount) throw new AccountDeletionError("authentication_required", "session_required");
+      if (isSharedDemoAccount(input.ownerId)) {
+        throw new AccountDeletionError("account_deletion_unavailable", "shared_demo_account");
+      }
+      const identities = await client.query("SELECT * FROM provider_sign_in_identities WHERE owner_id=$1 FOR UPDATE", [input.ownerId]);
+      const phones = await client.query("SELECT phone_hash FROM phone_sign_in_identities WHERE owner_id=$1 FOR UPDATE", [input.ownerId]);
+      await lockKeys(client, [...identities.rows.map(row => `provider-sign-in-identity:${providerIdentityKey({ provider: row.provider, issuer: row.issuer, clientId: row.client_id, subject: row.subject })}`),
+        ...phones.rows.map(row => `phone-sign-in-identity:${row.phone_hash}`)]);
+      const connections = await client.query("SELECT * FROM calendar_provider_connections WHERE owner_id=$1 ORDER BY connection_id FOR UPDATE", [input.ownerId]);
+      const outbox = await client.query("SELECT * FROM calendar_provider_outbox WHERE owner_id=$1 ORDER BY command_id FOR UPDATE", [input.ownerId]);
+      if (outbox.rows.some(row => row.lease_owner !== null || row.status === "processing" || (row.status === "pending" && row.dispatch_evidence !== null))) {
+        throw new AccountDeletionError("account_deletion_pending", "calendar_write_in_progress");
+      }
+      if (connections.rows.some(row => row.status !== "disconnected" || row.credential_handle !== null)) {
+        throw new AccountDeletionError("account_deletion_pending", "calendar_cleanup_pending");
+      }
+      const credentials = await client.query("SELECT * FROM provider_sign_in_revocation_credentials WHERE owner_id=$1 FOR UPDATE", [input.ownerId]);
+      const cleanupIds: string[] = [];
+      for (const row of credentials.rows) {
+        const id = randomUUID(); cleanupIds.push(id);
+        await client.query(`INSERT INTO provider_sign_in_revocation_cleanup(id,provider,issuer,client_id,subject,encrypted_payload,created_at)
+          VALUES($1,$2,$3,$4,$5,$6,clock_timestamp())`, [id,row.provider,row.issuer,row.client_id,row.subject,row.encrypted_payload]);
+      }
+      const apple = identities.rows.filter(row => row.provider === "apple");
+      const missingApple = apple.some(row => !credentials.rows.some(credential => credential.provider === row.provider
+        && credential.issuer === row.issuer && credential.client_id === row.client_id && credential.subject === row.subject));
+      await client.query("INSERT INTO deleted_account_ids(id,deleted_at) VALUES($1,clock_timestamp())", [input.ownerId]);
+      await client.query("SET LOCAL life_links.allow_calendar_delete='on'");
+      await client.query("SET LOCAL life_links.allow_routine_delete='on'");
+      // Delete inverses first: erasure must not retain restorable copies of data.
+      const purgeTables = ["life_link_change_previews", "saved_changes", "life_link_change_receipts", "claim_events",
+        "calendar_provider_webhook_hints", "calendar_provider_outbox", "calendar_provider_event_tombstone_history",
+        "calendar_provider_event_tombstones", "calendar_provider_event_projection_revisions", "calendar_provider_event_projections",
+        "calendar_provider_sync_states", "calendar_provider_bindings", "calendar_provider_connections", "calendar_provider_secrets",
+        "calendar_event_tombstones", "calendar_event_subject_links", "calendar_event_revisions", "calendar_events", "calendars",
+        "routine_session_amendments", "routine_session_step_results", "routine_sessions", "routine_runs", "routine_occurrences",
+        "routine_schedules", "routine_context_bindings", "routine_steps", "routine_revisions", "routines", "routine_activities",
+        "routine_groups", "collections", "link_media"];
+      for (const table of purgeTables) await client.query(`DELETE FROM ${table} WHERE owner_id=$1`, [input.ownerId]);
+      await client.query("DELETE FROM life_link_qr_bindings b USING life_links ll WHERE b.life_link_id=ll.id AND ll.owner_id=$1", [input.ownerId]);
+      await client.query("UPDATE life_links SET parent_id=NULL WHERE owner_id=$1", [input.ownerId]);
+      await client.query("DELETE FROM life_links WHERE owner_id=$1", [input.ownerId]);
+      // qr_codes.batch_id SET NULL retains every identity and printed URL,
+      // including codes from this owner's batch bound to a different owner.
+      await client.query("DELETE FROM export_batches WHERE created_by=$1", [input.ownerId]);
+      await client.query(`DELETE FROM remote_agent_protocol_state WHERE kind<>'Client' AND
+        (owner_id=$1 OR grant_hash=ANY($2::text[]) OR (kind='Grant' AND id_hash=ANY($2::text[])))`,
+        [input.ownerId,grants.rows.map(row => row.id_hash)]);
+      await client.query("DELETE FROM users WHERE id=$1", [input.ownerId]);
+      await client.query("COMMIT");
+      return { appleRevocation: missingApple ? "manual_required" : apple.length ? "pending" : "not_required", revocationCleanupIds: cleanupIds };
+    } catch (error) { await client.query("ROLLBACK"); throw error; }
+    finally { client.release(); }
+  }
+
   async connectAgent(
     userId: string,
     toolCatalogId: AgentToolCatalogId = "life-links-page-webmcp-v1"
@@ -657,10 +755,10 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       expiresAt,
       createdAt: new Date().toISOString()
     };
-    await this.pool.query(
+    await this.withTransaction([`owner:${userId}`], async client => { await client.query(
       "INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES ($1, $2, $3, $4, $5)",
       [session.id, session.userId, session.tokenHash, session.expiresAt, session.createdAt]
-    );
+    ); }, null);
     return session;
   }
 
@@ -2634,6 +2732,9 @@ export class PostgresLifeLinksStore implements LifeLinksStore {
       await client.query("BEGIN");
       await lockKeys(client, keys);
       const ownerId = keys.find((key) => key.startsWith("owner:"))?.slice(6);
+      if (ownerId && !(await client.query("SELECT 1 FROM users WHERE id=$1 FOR SHARE", [ownerId])).rowCount) {
+        throw new AccountDeletionError("authentication_required", "session_required");
+      }
       const before = ownerId && label ? await loadOwnerContentRows(client, ownerId) : null;
       const value = await work(client);
       if (before && ownerId && label) await recordOwnerChange(client, ownerId, label, before);
@@ -3893,12 +3994,35 @@ function mapContactVerificationAttempt(row: Record<string, unknown>): ContactVer
   return { tokenHash: String(row.token_hash), browserHash: String(row.browser_hash), addressHash: String(row.address_hash),
     channel: String(row.channel) as ContactVerificationAttempt["channel"], intent: String(row.intent) as ContactVerificationAttempt["intent"],
     phase: String(row.phase) as ContactVerificationAttempt["phase"], encryptedPayload: String(row.encrypted_payload),
-    expiresAt: toIso(row.expires_at), resendAt: toIso(row.resend_at), version: Number(row.version), checkCount: Number(row.check_count) };
+    expiresAt: toIso(row.expires_at), resendAt: toIso(row.resend_at), version: Number(row.version), checkCount: Number(row.check_count),
+    ...(row.owner_id == null ? {} : { ownerId: String(row.owner_id) }) };
 }
 
 function mapProviderSignInAttempt(row: Record<string, unknown>): ProviderSignInAttempt {
   return { stateHash: String(row.state_hash), browserHash: String(row.browser_hash), provider: String(row.provider),
-    encryptedPayload: String(row.encrypted_payload), expiresAt: toIso(row.expires_at) };
+    encryptedPayload: String(row.encrypted_payload), expiresAt: toIso(row.expires_at),
+    ...(row.owner_id == null ? {} : { ownerId: String(row.owner_id) }) };
+}
+
+async function retainPostgresProviderRevocationCustody(client: PoolClient, ownerId: string,
+  identity: ProviderIdentityBinding, encryptedPayload: string): Promise<void> {
+  assertProviderRevocationCustody({ encryptedPayload });
+  const result = await client.query(`INSERT INTO provider_sign_in_revocation_credentials
+    (provider,issuer,client_id,subject,owner_id,encrypted_payload)
+    SELECT provider,issuer,client_id,subject,owner_id,$6 FROM provider_sign_in_identities
+      WHERE provider=$1 AND issuer=$2 AND client_id=$3 AND subject=$4 AND owner_id=$5
+    ON CONFLICT(provider,issuer,client_id,subject) DO UPDATE SET encrypted_payload=EXCLUDED.encrypted_payload
+      WHERE provider_sign_in_revocation_credentials.owner_id=EXCLUDED.owner_id RETURNING owner_id`,
+    [identity.provider,identity.issuer,identity.clientId,identity.subject,ownerId,encryptedPayload]);
+  if (!result.rowCount) throw new ProviderSignInStateError("provider_sign_in_unavailable");
+}
+
+async function assertNoPendingProviderRevocation(client: PoolClient, identity: ProviderIdentityBinding): Promise<void> {
+  if ((await client.query(`SELECT 1 FROM provider_sign_in_revocation_cleanup
+    WHERE provider=$1 AND issuer=$2 AND client_id=$3 AND subject=$4 LIMIT 1`,
+    [identity.provider,identity.issuer,identity.clientId,identity.subject])).rowCount) {
+    throw new ProviderSignInStateError("provider_sign_in_unavailable");
+  }
 }
 
 function mapUser(row: Record<string, unknown>): StoredUser {

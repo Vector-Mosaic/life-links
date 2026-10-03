@@ -33,6 +33,7 @@ import {
 import { LifeLinkEditor } from "./owner/LifeLinkEditor";
 import { LifeLinksGlyph } from "./owner/FieldLedgerPrimitives";
 import { OwnerWorkspace } from "./owner/OwnerWorkspace";
+import { AccountDeletionPage } from "./owner/AccountDeletionDialog";
 import { ContextFields } from "./owner/LifeLinkDetail";
 import { AttachmentList } from "./owner/AttachmentList";
 import { RichBodyRenderer } from "./richBody";
@@ -40,11 +41,12 @@ import { Tooltip } from "./ui/Tooltip";
 import { AccountCreationLink, AccountRegistration } from "./AccountRegistration";
 import { PublicInformation, PublicInformationLinks } from "./PublicInformation";
 import { LifeLinksWorkspaceProvider, useLifeLinksWorkspace } from "./workspace/LifeLinksWorkspaceProvider";
-import { classifyLifeLinksRoute, isRegistrationPath, publicInformationPageFromPath } from "./workspace/routes";
+import { classifyLifeLinksRoute, isAccountDeletionPath, isRegistrationPath, publicInformationPageFromPath } from "./workspace/routes";
 import { completeProviderLink, getRemoteAgentConnections } from "./api";
 import { ProviderSignIn } from "./ProviderSignIn";
 import { PhoneSignIn } from "./PhoneSignIn";
 import { clearPendingProviderLink, clearProviderSignInError, providerSignInErrorMessage, readPendingProviderLink, readProviderSignInError, validateProviderReturnTo } from "./providerSignInLink";
+import { followNativeCallback, nativeRuntime, navigateAccountReturn } from "./platform";
 
 type Html5QrcodeScanner = InstanceType<typeof import("html5-qrcode").Html5Qrcode>;
 
@@ -67,7 +69,7 @@ export function useProviderLinkContinuation(loading: boolean, onError: (message:
     // checks the original owner/session against this page's normal cookie.
     clearPendingProviderLink();
     void completeProviderLink(linkToken).then(result => {
-      if (mounted.current) onNavigate(validateProviderReturnTo(result.returnTo));
+      if (mounted.current && !followNativeCallback(result.nativeCallbackUrl)) onNavigate(validateProviderReturnTo(result.returnTo));
     }).catch(() => {
       if (mounted.current) onError("We couldn't confirm that sign-in method was linked. Open Sign-in methods to check before trying again.");
     });
@@ -91,7 +93,25 @@ function LifeLinksApp() {
   } = snapshot; const [agentActivities, setAgentActivities] = useState<AgentActivityEntry[]>([]);
   const agentActivityEligibleRef = useRef(false);
   const [providerSignInError, setProviderSignInError] = useState(() => providerSignInErrorMessage(readProviderSignInError()));
+  const [deletionReceipt, setDeletionReceipt] = useState<"complete" | "pending" | "not_required" | "manual_required" | null>(null);
+  useEffect(() => { if (currentUser) setDeletionReceipt(null); }, [currentUser?.id]);
   useProviderLinkContinuation(loading, setProviderSignInError);
+  useEffect(() => {
+    const failed = () => setProviderSignInError("Sign-in could not be completed. You can start again when you're ready.");
+    const linkFailed = () => setProviderSignInError("That link could not be opened. Try again or check that the required app is installed.");
+    const deleted = (event: Event) => {
+      const receipt = (event as CustomEvent).detail;
+      if (["complete", "pending", "not_required", "manual_required"].includes(receipt)) {
+        setDeletionReceipt(receipt);
+        window.history.replaceState({}, "", "/delete-account");
+        window.dispatchEvent(new PopStateEvent("popstate"));
+      }
+    };
+    window.addEventListener("lifelinks-native-auth-error", failed);
+    window.addEventListener("lifelinks-native-link-error", linkFailed);
+    window.addEventListener("lifelinks-account-deleted", deleted);
+    return () => { window.removeEventListener("lifelinks-native-auth-error", failed); window.removeEventListener("lifelinks-native-link-error", linkFailed); window.removeEventListener("lifelinks-account-deleted", deleted); };
+  }, []);
   const ownerWorkspaceHeadingRef = useRef<HTMLHeadingElement>(null);
   const currentOwnerIdRef = useRef<string | null>(currentUser?.id ?? null);
   const remoteAuthorizationRequestRef = useRef(0);
@@ -241,10 +261,14 @@ function LifeLinksApp() {
     return <div className="loading-shell">Loading Life Links...</div>;
   }
 
+  if (isAccountDeletionPath(routePathname)) {
+    return <AccountDeletionPage user={currentUser} receipt={deletionReceipt} onDeleted={handleLogout} />;
+  }
+
   if (isRegistrationPath(routePathname)) {
     return <AccountRegistration pathname={routePathname} currentUser={currentUser} busy={busy} error={error || providerSignInError}
       onRegister={(input) => controller.registerAccount(input)} onLogout={handleLogout}
-      onComplete={(path) => window.location.assign(path)} />;
+      onComplete={navigateAccountReturn} />;
   }
 
   if (route.surface === "public-qr") {
@@ -634,10 +658,19 @@ function ScannerPanel({
   const scannerRef = useRef<Html5QrcodeScanner | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState("");
-  const cameraSupported = typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia);
+  const deviceScanner = nativeRuntime();
+  const cameraSupported = Boolean(deviceScanner) || (typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia));
 
   async function startCamera() {
     setCameraError("");
+    if (deviceScanner) {
+      if (cameraActive) return;
+      setCameraActive(true);
+      try { onDecoded(await deviceScanner.scanQr()); }
+      catch { setCameraError("Scanning was cancelled or the camera is unavailable. You can enter the QR code or URL below."); }
+      finally { setCameraActive(false); }
+      return;
+    }
     if (scannerRef.current) {
       return;
     }
@@ -684,11 +717,12 @@ function ScannerPanel({
       <div className="button-row">
         {cameraSupported && <button
           className="primary-button"
+          disabled={Boolean(deviceScanner) && cameraActive}
           onClick={cameraActive ? stopCamera : startCamera}
           data-tooltip={cameraActive ? "Stop the browser camera scanner." : "Start the browser camera scanner."}
         >
           <Camera size={18} />
-          <span>{cameraActive ? "Stop" : "Camera"}</span>
+          <span>{deviceScanner ? cameraActive ? "Scanning…" : "Scan QR code" : cameraActive ? "Stop" : "Camera"}</span>
           <Tooltip text={cameraActive ? "Stop the browser camera scanner." : "Start the browser camera scanner."} />
         </button>}
         {targetId && sampleLinks.length > 0 && (

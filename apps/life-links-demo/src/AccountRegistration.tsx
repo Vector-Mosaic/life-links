@@ -8,6 +8,7 @@ import { ProviderSignIn } from "./ProviderSignIn";
 import { EmailRegistration } from "./EmailRegistration";
 import { PhoneSignIn } from "./PhoneSignIn";
 import { clearPendingProviderSignup, readPendingProviderSignup, providerSignInErrorMessage, validateProviderReturnTo } from "./providerSignInLink";
+import { followNativeCallback } from "./platform";
 
 function browserTimeZone(): string {
   try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }
@@ -133,7 +134,7 @@ function ProviderSignupContinuation({ signupToken, busy, error, onComplete }: {
       const result = await completeProviderSignup({ signupToken, displayName: name, timeZone: browserTimeZone() });
       if (!mounted.current) return;
       clearPendingProviderSignup(); clearPendingInvitation();
-      onComplete(validateProviderReturnTo(result.returnTo));
+      if (!followNativeCallback(result.nativeCallbackUrl)) onComplete(validateProviderReturnTo(result.returnTo));
     } catch (cause) {
       if (mounted.current) setFormError(cause instanceof ApiError && providerSignInErrorMessage(cause.code) ||
         "We couldn't confirm account creation. Try signing in before submitting again.");

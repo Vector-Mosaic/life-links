@@ -2,12 +2,12 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { ConfidentialClientApplication, type INetworkModule, type NetworkRequestOptions } from "@azure/msal-node";
 import { CodeChallengeMethod, OAuth2Client } from "google-auth-library";
 import { decodeJwt, importPKCS8, SignJWT, type JWTPayload } from "jose";
-import { contactEmail, object, optionalString, postForm, requestJson, requiredString } from "./http.js";
+import { contactEmail, object, optionalString, postForm, postFormEmpty, requestJson, requiredString } from "./http.js";
 import { IdentityTokenVerifier } from "./oidc.js";
-import { ProviderSignInError, type ProviderAdapter, type ProviderId, type ProviderSignInConfig, type ProviderTransaction, type VerifiedProviderIdentity } from "./types.js";
+import { ProviderSignInError, type ProviderAdapter, type ProviderId, type ProviderRedemption, type ProviderRevocationCredential, type ProviderSignInConfig, type ProviderTransaction, type VerifiedProviderIdentity } from "./types.js";
 
 export { ProviderSignInError } from "./types.js";
-export type { ProviderAdapter, ProviderId, ProviderSignInConfig, ProviderTransaction, VerifiedProviderIdentity } from "./types.js";
+export type { ProviderAdapter, ProviderId, ProviderRedemption, ProviderRevocationCredential, ProviderSignInConfig, ProviderTransaction, VerifiedProviderIdentity } from "./types.js";
 
 const IDENTITY_SCOPES = ["openid", "profile", "email"];
 const GOOGLE_ISSUER = "https://accounts.google.com";
@@ -208,12 +208,14 @@ function microsoft(config: Extract<ProviderSignInConfig, { id: "microsoft" }>): 
 
 function apple(config: Extract<ProviderSignInConfig, { id: "apple" }>): ProviderAdapter {
   const verifier = new IdentityTokenVerifier();
-  return safeAdapter(config.id, "Apple", "form_post", async (transaction) => authorization(`${APPLE_ISSUER}/auth/authorize`, config, transaction, ["name", "email"], false, { nonce: transaction.nonce, response_mode: "form_post" }), async ({ callbackUrl, transaction }) => {
-    const code = callbackCode(config, callbackUrl, transaction);
+  async function clientSecret(): Promise<string> {
     const key = await importPKCS8(config.privateKeyPem, "ES256");
-    const secret = await new SignJWT({}).setProtectedHeader({ alg: "ES256", kid: config.keyId }).setIssuer(config.teamId).setAudience(APPLE_ISSUER).setSubject(config.clientId).setIssuedAt().setExpirationTime("5m").sign(key);
+    return new SignJWT({}).setProtectedHeader({ alg: "ES256", kid: config.keyId }).setIssuer(config.teamId).setAudience(APPLE_ISSUER).setSubject(config.clientId).setIssuedAt().setExpirationTime("5m").sign(key);
+  }
+  async function exchange({ callbackUrl, transaction }: { callbackUrl: URL; transaction: ProviderTransaction }): Promise<ProviderRedemption> {
+    const code = callbackCode(config, callbackUrl, transaction);
     const body = tokenBody(config, code, transaction, false);
-    body.set("client_secret", secret);
+    body.set("client_secret", await clientSecret());
     const tokens = await postForm(`${APPLE_ISSUER}/auth/token`, body);
     const payload = await verifier.verify({ idToken: requiredString(tokens.id_token, 32_768), issuer: APPLE_ISSUER, clientId: config.clientId, nonce: transaction.nonce, jwksUrl: `${APPLE_ISSUER}/auth/keys` });
     const result = identity(config, APPLE_ISSUER, payload, payload.email_verified === true || payload.email_verified === "true");
@@ -225,8 +227,35 @@ function apple(config: Extract<ProviderSignInConfig, { id: "apple" }>): Provider
         result.displayName = optionalString([optionalString(name.firstName, 128), optionalString(name.lastName, 128)].filter(Boolean).join(" "));
       } catch { /* Missing or malformed optional profile data does not change a verified identity. */ }
     }
-    return result;
-  });
+    // Return custody only after the exact identity has passed all token checks.
+    // Prefer the durable refresh token; access tokens are a bounded fallback.
+    const refreshToken = tokens.refresh_token === undefined ? null : requiredString(tokens.refresh_token);
+    const accessToken = tokens.access_token === undefined ? null : requiredString(tokens.access_token);
+    const token = refreshToken ?? accessToken;
+    const revocationCredential: ProviderRevocationCredential | null = token === null ? null : {
+      provider: "apple", issuer: result.issuer, clientId: result.clientId, subject: result.subject,
+      token, tokenTypeHint: refreshToken === null ? "access_token" : "refresh_token",
+    };
+    return { identity: result, revocationCredential };
+  }
+  const adapter = safeAdapter(config.id, "Apple", "form_post", async (transaction) => authorization(`${APPLE_ISSUER}/auth/authorize`, config, transaction, ["name", "email"], false, { nonce: transaction.nonce, response_mode: "form_post" }), async (input) => (await exchange(input)).identity);
+  return {
+    ...adapter,
+    async redeemWithCustody(input) {
+      try { return await exchange(input); } catch { throw new ProviderSignInError(); }
+    },
+    async revoke(credential) {
+      try {
+        // Snapshot before signing/network awaits so caller mutations cannot redirect custody.
+        const selected = { ...credential };
+        if (selected.provider !== "apple" || selected.issuer !== APPLE_ISSUER || selected.clientId !== config.clientId || !["refresh_token", "access_token"].includes(selected.tokenTypeHint)) throw new ProviderSignInError();
+        requiredString(selected.subject, 255);
+        const token = requiredString(selected.token);
+        const body = new URLSearchParams({ client_id: config.clientId, client_secret: await clientSecret(), token, token_type_hint: selected.tokenTypeHint });
+        await postFormEmpty(`${APPLE_ISSUER}/auth/revoke`, body);
+      } catch { throw new ProviderSignInError("revocation_failed"); }
+    },
+  };
 }
 
 function github(config: Extract<ProviderSignInConfig, { id: "github" }>): ProviderAdapter {

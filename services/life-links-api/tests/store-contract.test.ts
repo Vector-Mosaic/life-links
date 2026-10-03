@@ -31,6 +31,7 @@ import { attachmentTextStoreContract } from "./attachment-text-store-contract.js
 import { registrationStoreContract } from "./registration-store-contract.js";
 import { providerSignInStoreContract } from "./provider-sign-in-store-contract.js";
 import { contactVerificationStoreContract } from "./contact-verification-store-contract.js";
+import { accountDeletionStoreContract } from "./account-deletion-store-contract.js";
 import { createSmsVerificationConsentReceipt, SMS_CONSENT_RETENTION_MS } from "../src/sms-verification-consent.js";
 
 describe("canonical Life Links store contract", () => {
@@ -44,6 +45,7 @@ describe("canonical Life Links store contract", () => {
   registrationStoreContract(() => store);
   providerSignInStoreContract(() => store);
   contactVerificationStoreContract(() => store);
+  accountDeletionStoreContract(() => store);
 
   it("physically removes memory consent receipts at their 90-day boundary and refuses expired reuse", async () => {
     const now = Date.now(), clock = vi.spyOn(Date, "now").mockReturnValue(now);

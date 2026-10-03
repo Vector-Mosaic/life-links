@@ -604,7 +604,11 @@ export function createRemoteAgentOperations(deps: RemoteAgentOperationsDeps): re
             const accepted = move || await c.requestConfirmation({ id: approval.id, effects: approval.effects });
             await admit(c, capability, true);
             approval = await c.approvals.approve(c, approval.id, accepted);
-            if (!accepted) return result({ previewId, status: "cancelled" });
+            // A prompt releases its receipt mutex. Another exact request can
+            // finish or decline while the human decides; re-read terminal
+            // state under the reacquired mutex before any canonical effect.
+            if (approval.status === "applied") return result({ previewId, status: "applied", result: approval.result });
+            if (approval.status === "declined" || !accepted) return result({ previewId, status: "cancelled" });
           }
           let applied: unknown;
           if (command.kind === "life_links") {

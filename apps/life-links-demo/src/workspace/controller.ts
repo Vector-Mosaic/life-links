@@ -1,4 +1,5 @@
 import QRCode from "qrcode";
+import { nativeRuntime, providerDestination } from "../platform";
 import { LIFE_LINKS_SEARCH_TOOL_CATALOG_ID } from "../agent/searchToolHandlers";
 import { collectRecordSearchPage, emptyRecordSearch } from "./recordSearch";
 import {
@@ -1744,6 +1745,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
     signal?.throwIfAborted();
     if (!sameOwner()) throw new Error("The signed-in account changed.");
     const destination = new URL(response.authorizationUrl);
+    if (nativeRuntime()) {
+      const admitted = providerDestination(provider, response.authorizationUrl);
+      if (!admitted) throw new Error("The server returned an unsupported app sign-in destination.");
+      return admitted;
+    }
     const expectedHost = provider === "microsoft" ? "login.microsoftonline.com" : "accounts.google.com";
     if (destination.protocol !== "https:" || destination.hostname !== expectedHost || destination.port || destination.username || destination.password) {
       throw new Error(`The server returned an unsupported ${provider === "microsoft" ? "Outlook" : "Google"} sign-in destination.`);
@@ -4704,7 +4710,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
         margin: 2,
         scale: 8
       });
-      downloadBlob(new Blob([svg], { type: "image/svg+xml" }), `${qrId}.svg`);
+      await downloadBlob(new Blob([svg], { type: "image/svg+xml" }), `${qrId}.svg`);
       return;
     }
     const dataUrl = await QRCode.toDataURL(url, {
@@ -4712,14 +4718,15 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       margin: 2,
       scale: 10
     });
-    downloadBlob(dataUrlToBlob(dataUrl), `${qrId}.png`);
+    await downloadBlob(dataUrlToBlob(dataUrl), `${qrId}.png`);
   }
 
   downloadCsv(ids?: string[]) {
     const scoped = ids?.length
       ? ids.map((id) => this.snapshot.links.find((link) => link.id === id)).filter(Boolean)
       : this.snapshot.links;
-    downloadBlob(new Blob([linksToCsv(scoped as LinkRecord[])], { type: "text/csv" }), "life-links-qr-map.csv");
+    void downloadBlob(new Blob([linksToCsv(scoped as LinkRecord[])], { type: "text/csv" }), "life-links-qr-map.csv")
+      .catch(() => this.update({ error: "The QR map could not be saved or shared. Try again." }));
   }
 
   downloadZip() {
@@ -4733,7 +4740,11 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
       });
       return;
     }
-    window.location.href = `/api/qr-batches/${encodeURIComponent(this.snapshot.lastBatchId)}.zip`;
+    const path = `/api/qr-batches/${encodeURIComponent(this.snapshot.lastBatchId)}.zip`;
+    const native = nativeRuntime();
+    if (native) void native.shareDownload(path, `life-links-${this.snapshot.lastBatchId}.zip`)
+      .catch(() => this.update({ error: "The QR batch could not be saved or shared. Try again." }));
+    else window.location.href = path;
   }
 
   private currentAgentOwnerId() {
@@ -5121,7 +5132,7 @@ export class LifeLinksWorkspaceController implements LifeLinksWorkspaceActions {
   }
 
   private async boot(lifecycle: number) {
-    if (publicInformationPageFromPath(this.route.pathname())) {
+    if (publicInformationPageFromPath(this.route.pathname()) && !nativeRuntime()) {
       this.update({ loading: false });
       return;
     }
@@ -5897,7 +5908,9 @@ function dataUrlToBlob(dataUrl: string): Blob {
   return new Blob([bytes], { type: mimeType });
 }
 
-function downloadBlob(blob: Blob, filename: string) {
+async function downloadBlob(blob: Blob, filename: string): Promise<void> {
+  const native = nativeRuntime();
+  if (native) { await native.shareBlob(blob, filename); return; }
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;

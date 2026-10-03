@@ -9,17 +9,23 @@ import type { LifeLinksStore, StoredUser } from "./store.js";
 import { invitationFingerprint, matchesRegistrationInvitation, memberRegistrationInvitation,
   RegistrationAdmissionError, validInvitationCode } from "./registration.js";
 import type { Logger } from "./logger.js";
+import type { NativeAuthContext, NativePendingLink } from "./native-auth.js";
+import type { ProviderRevocationService } from "./provider-revocation.js";
 
 const BROWSER_COOKIE = "life_links_sign_in_browser";
 const LIFETIME = 10 * 60_000;
 type AuthRequest = Request & { user?: StoredUser; sessionTokenHash?: string; authTransport?: string; requestId?: string };
 type Payload = { phase: "authorize" | "signup" | "link"; provider: string; expiresAt: number; returnTo: string;
   transaction?: ProviderTransaction; intent?: "login" | "register" | "link"; invitationCode?: string;
+  nativeAuth?: NativeAuthContext; revocationCustody?: { encryptedPayload: string };
   timeZone: string; ownerId?: string; sessionHash?: string; identity?: VerifiedProviderIdentity };
 
 /** Product policy stays here; the shared package owns only verified provider exchanges. */
 export function createProviderSignInRouters(options: { store: LifeLinksStore; config: LifeLinksConfig; logger: Logger;
-  adapters?: ProviderAdapter[]; issueSession(user: StoredUser, response: Response): Promise<void> }) {
+  adapters?: ProviderAdapter[]; revocation?: ProviderRevocationService;
+  validateNativeContext?(context: NativeAuthContext): Promise<void>;
+  nativeCompletionUrl?(context: NativeAuthContext, user?: StoredUser, calendarAuthorizationId?: string, error?: string, pendingLink?: NativePendingLink): Promise<string>;
+  issueSession(user: StoredUser, response: Response): Promise<string | void> }) {
   const { store, config, logger, issueSession } = options;
   const adapters = options.adapters ?? createProviderAdapters(config.providerSignIn ?? []);
   const callbacks = Router(); const routes = Router();
@@ -54,6 +60,7 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
     cipher.setAAD(Buffer.from(`${stateHash}:${browserHash}`));
     const ciphertext = Buffer.concat([cipher.update(JSON.stringify(payload), "utf8"), cipher.final()]);
     await store.saveProviderSignInAttempt({ stateHash, browserHash, provider: payload.provider,
+      ...(payload.ownerId ? { ownerId: payload.ownerId } : {}),
       encryptedPayload: Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]).toString("base64url"), expiresAt: new Date(payload.expiresAt).toISOString() });
   }
   async function read(rawToken: unknown, request: Request, consume: boolean): Promise<Payload> {
@@ -76,9 +83,9 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
     return accepted && await store.registrationAvailable(accepted) ? accepted : null;
   }
   async function registerPublicOwner(identity: VerifiedProviderIdentity, displayName: string, email: string | null,
-    timeZone: string, invitationCode?: string) {
+    timeZone: string, invitationCode?: string, revocationCustody?: { encryptedPayload: string }) {
     const accepted = await invitation(invitationCode);
-    const input = { identity, displayName, email, timeZone };
+    const input = { identity, displayName, email, timeZone, ...(revocationCustody ? { revocationCustody } : {}) };
     try {
       return await store.registerProviderOwner({ ...input, ...(accepted ? { invitation: accepted } : {}) });
     } catch (error) {
@@ -125,7 +132,7 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
       phone: { enabled: Boolean(config.contactVerification?.phone), linked: phoneBindings.length > 0,
         maskedNumber: phoneBindings[0]?.maskedNumber ?? null } });
   });
-  routes.post("/api/auth/providers/:provider/start", async (request: AuthRequest, response) => {
+  async function start(request: AuthRequest, response: Response, nativeAuth?: NativeAuthContext) {
     noStore(response); if (!budget(request, response)) return;
     const provider = adapterFor(String(request.params.provider));
     if (!provider) { response.status(404).json({ error: "provider_unavailable" }); return; }
@@ -134,20 +141,28 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
       if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some(name => !["intent", "returnTo", "invitationCode", "timeZone"].includes(name))) throw new Error();
       const intent = body.intent;
       if (!["login", "register", "link"].includes(intent)) throw new Error();
-      if (intent === "link" && (!request.user || request.authTransport !== "cookie" || !request.sessionTokenHash)) { response.status(401).json({ error: "authentication_required" }); return; }
+      if (intent === "link" && !nativeAuth && (!request.user || request.authTransport !== "cookie" || !request.sessionTokenHash)) { response.status(401).json({ error: "authentication_required" }); return; }
       if (intent === "register" && request.user) { response.status(409).json({ error: "sign_out_required" }); return; }
       if (provider.responseMode === "form_post" && !config.secureCookies) throw new Error();
       const returnTo = returnPath(body.returnTo), timeZone = normalizeCalendarIanaTimeZone(body.timeZone ?? "UTC");
       const transaction = createProviderTransaction(), browser = randomBytes(32).toString("base64url");
       const authorizationUrl = await provider.authorizationUrl(transaction);
-      await save(transaction.state, browser, { phase: "authorize", provider: provider.id, transaction, intent, returnTo, timeZone,
+      await save(transaction.state, browser, { phase: "authorize", provider: provider.id, transaction, intent, returnTo, timeZone, ...(nativeAuth ? { nativeAuth } : {}),
         expiresAt: Date.now() + LIFETIME, ...(intent !== "link" && validInvitationCode(body.invitationCode) ? { invitationCode: body.invitationCode } : {}),
-        ...(intent === "link" ? { ownerId: request.user!.id, sessionHash: request.sessionTokenHash } : {}) });
+        ...(intent === "link" ? { ownerId: nativeAuth?.ownerId ?? request.user!.id, sessionHash: nativeAuth?.sessionHash ?? request.sessionTokenHash } : {}) });
       setBrowser(response, browser, provider.responseMode === "form_post");
       safeEvent(request, "life_links.sign_in.started", provider.id);
-      response.json({ authorizationUrl });
-    } catch { response.status(400).json({ error: "invalid_sign_in_request" }); }
-  });
+      if (nativeAuth) response.redirect(303, authorizationUrl);
+      else response.json({ authorizationUrl });
+    } catch {
+      if (nativeAuth && options.nativeCompletionUrl) {
+        try { response.redirect(303, await options.nativeCompletionUrl(nativeAuth, undefined, undefined, "signin_failed")); }
+        catch { response.status(400).json({ error: "invalid_native_auth" }); }
+      }
+      else response.status(400).json({ error: "invalid_sign_in_request" });
+    }
+  }
+  routes.post("/api/auth/providers/:provider/start", (request: AuthRequest, response) => start(request, response));
   async function callback(request: AuthRequest, response: Response) {
     noStore(response); let payload: Payload | undefined;
     try {
@@ -156,30 +171,49 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
       if (!values || Object.values(values).some(value => typeof value !== "string" || value.length > 32768)) throw new Error();
       payload = await read(values.state, request, true);
       if (payload.phase !== "authorize" || payload.provider !== provider.id || !payload.transaction || !payload.intent) throw new Error();
-      if (values.error) { fail(response, payload.returnTo); return; }
+      if (payload.nativeAuth) await options.validateNativeContext?.(payload.nativeAuth);
+      if (values.error) {
+        if (payload.nativeAuth && options.nativeCompletionUrl) {
+          clearBrowser(response); response.redirect(303, await options.nativeCompletionUrl(payload.nativeAuth, undefined, undefined, "signin_failed"));
+        } else fail(response, payload.returnTo);
+        return;
+      }
       const callbackUrl = new URL(`/api/auth/providers/${provider.id}/callback`, config.qrBaseUrl);
       for (const [name, value] of Object.entries(values)) callbackUrl.searchParams.set(name, String(value));
-      const identity = await provider.redeem({ callbackUrl, transaction: payload.transaction });
+      const redemption = provider.redeemWithCustody ? await provider.redeemWithCustody({ callbackUrl, transaction: payload.transaction }) :
+        { identity: await provider.redeem({ callbackUrl, transaction: payload.transaction }), revocationCredential: null };
+      const identity = redemption.identity;
+      if (redemption.revocationCredential && !options.revocation) throw new Error();
+      const revocationCustody = redemption.revocationCredential ? options.revocation!.seal(identity, redemption.revocationCredential) : undefined;
       if (identity.provider !== provider.id) throw new Error();
       if (payload.intent === "link") {
         const session = payload.sessionHash ? await store.getSessionByTokenHash(payload.sessionHash) : null;
         if (!session || session.user.id !== payload.ownerId) throw new Error();
+        if (payload.nativeAuth && options.nativeCompletionUrl) {
+          // OAuth verifies the subject; only the app possessing its PKCE verifier
+          // may commit that subject to the original live owner session.
+          clearBrowser(response);
+          response.redirect(303, await options.nativeCompletionUrl(payload.nativeAuth, session.user, undefined, undefined,
+            { identity, ...(revocationCustody ? { revocationCustody } : {}) })); return;
+        }
         // Apple's cross-site form POST omits the normal SameSite=Lax session.
         // Continue on our origin before requiring that original session again.
         if (request.method === "POST" && provider.responseMode === "form_post" && !request.user) {
           const token = randomBytes(32).toString("base64url");
           await save(token, browserValue(request), { phase: "link", provider: provider.id, identity,
             ownerId: payload.ownerId, sessionHash: payload.sessionHash, returnTo: payload.returnTo,
-            timeZone: payload.timeZone, expiresAt: Date.now() + LIFETIME });
+            nativeAuth: payload.nativeAuth, revocationCustody, timeZone: payload.timeZone, expiresAt: Date.now() + LIFETIME });
           response.redirect(303, `/#link=${token}`); return;
         }
         if (request.authTransport !== "cookie" || request.sessionTokenHash !== payload.sessionHash ||
             request.user?.id !== payload.ownerId) throw new Error();
-        await store.linkProviderIdentity(session.user.id, identity);
+        await store.linkProviderIdentity(session.user.id, identity, revocationCustody, payload.sessionHash);
         safeEvent(request, "life_links.sign_in.linked", provider.id, session.user.id);
-        clearBrowser(response); response.redirect(303, payload.returnTo); return;
+        clearBrowser(response); response.redirect(303, payload.nativeAuth && options.nativeCompletionUrl ?
+          await options.nativeCompletionUrl(payload.nativeAuth, session.user) : payload.returnTo); return;
       }
       let user = await store.getProviderUser(identity);
+      const returningOwner = Boolean(user);
       if (!user) {
         if (request.user) throw new Error();
         // Provider subject authentication admits the owner independently of
@@ -189,16 +223,23 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
         if (!displayName || (request.method === "POST" && provider.responseMode === "form_post")) {
           const token = randomBytes(32).toString("base64url");
           await save(token, browserValue(request), { phase: "signup", provider: provider.id, identity, returnTo: payload.returnTo,
-            invitationCode: payload.invitationCode, timeZone: payload.timeZone, expiresAt: Date.now() + LIFETIME });
+            invitationCode: payload.invitationCode, timeZone: payload.timeZone, nativeAuth: payload.nativeAuth, revocationCustody, expiresAt: Date.now() + LIFETIME });
           response.redirect(303, `/register#signup=${token}`); return;
         }
-        user = await registerPublicOwner(identity, displayName, email, payload.timeZone, payload.invitationCode);
+        user = await registerPublicOwner(identity, displayName, email, payload.timeZone, payload.invitationCode, revocationCustody);
       }
-      await issueSession(user, response); clearBrowser(response);
+      if (revocationCustody && returningOwner) await store.retainProviderRevocationCustody(user.id, identity, revocationCustody.encryptedPayload);
+      if (!payload.nativeAuth) await issueSession(user, response); clearBrowser(response);
       safeEvent(request, "life_links.sign_in.completed", provider.id, user.id);
-      response.redirect(303, payload.returnTo);
+      response.redirect(303, payload.nativeAuth && options.nativeCompletionUrl ? await options.nativeCompletionUrl(payload.nativeAuth, user) : payload.returnTo);
     } catch (error) {
       safeEvent(request, "life_links.sign_in.failed", String(request.params.provider));
+      if (payload?.nativeAuth && options.nativeCompletionUrl) {
+        clearBrowser(response);
+        try { response.redirect(303, await options.nativeCompletionUrl(payload.nativeAuth, undefined, undefined, "signin_failed")); }
+        catch { response.status(400).json({ error: "invalid_native_auth" }); }
+        return;
+      }
       fail(response, payload?.returnTo, payload?.intent === "link" ? "link_failed" : error instanceof RegistrationAdmissionError && error.code === "registration_failed" ? "signup_failed" : "signin_failed");
     }
   }
@@ -210,13 +251,15 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
       if (!request.body || Object.keys(request.body).some(name => name !== "linkToken") ||
           request.authTransport !== "cookie" || !request.user || !request.sessionTokenHash) throw new Error();
       const payload = await read(request.body.linkToken, request, true);
+      if (payload.nativeAuth) await options.validateNativeContext?.(payload.nativeAuth);
       if (payload.phase !== "link" || !payload.identity || request.sessionTokenHash !== payload.sessionHash ||
           request.user.id !== payload.ownerId) throw new Error();
       const session = await store.getSessionByTokenHash(payload.sessionHash);
       if (!session || session.user.id !== payload.ownerId) throw new Error();
-      await store.linkProviderIdentity(session.user.id, payload.identity);
+      await store.linkProviderIdentity(session.user.id, payload.identity, payload.revocationCustody, payload.sessionHash);
       safeEvent(request, "life_links.sign_in.linked", payload.provider, session.user.id);
-      clearBrowser(response); response.json({ returnTo: payload.returnTo });
+      clearBrowser(response); response.json({ returnTo: payload.returnTo,
+        ...(payload.nativeAuth && options.nativeCompletionUrl ? { nativeCallbackUrl: await options.nativeCompletionUrl(payload.nativeAuth, session.user) } : {}) });
     } catch { response.status(400).json({ error: "invalid_sign_in_request" }); }
   });
   routes.post("/api/auth/provider-signup/details", async (request, response) => {
@@ -225,6 +268,7 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
       if (Object.keys(request.body ?? {}).some(name => name !== "signupToken")) throw new Error();
       const payload = await read(request.body?.signupToken, request, false);
       if (payload.phase !== "signup" || !payload.identity) throw new Error();
+      if (payload.nativeAuth) await options.validateNativeContext?.(payload.nativeAuth);
       response.json({ email: profile(payload.identity.email, true), displayName: profile(payload.identity.displayName) });
     } catch { response.status(400).json({ error: "invalid_sign_in_request" }); }
   });
@@ -238,11 +282,21 @@ export function createProviderSignInRouters(options: { store: LifeLinksStore; co
       if (!displayName) throw new Error();
       const payload = await read(body.signupToken, request, true);
       if (payload.phase !== "signup" || !payload.identity) throw new Error();
-      const user = await registerPublicOwner(payload.identity, displayName, accountEmail(payload.identity), timeZone, payload.invitationCode);
-      await issueSession(user, response); clearBrowser(response);
+      if (payload.nativeAuth) await options.validateNativeContext?.(payload.nativeAuth);
+      const user = await registerPublicOwner(payload.identity, displayName, accountEmail(payload.identity), timeZone, payload.invitationCode, payload.revocationCustody);
+      if (!payload.nativeAuth) await issueSession(user, response); clearBrowser(response);
       safeEvent(request, "life_links.sign_in.completed", payload.provider, user.id);
-      response.status(201).json({ returnTo: payload.returnTo });
+      response.status(201).json({ returnTo: payload.returnTo,
+        ...(payload.nativeAuth && options.nativeCompletionUrl ? { nativeCallbackUrl: await options.nativeCompletionUrl(payload.nativeAuth, user) } : {}) });
     } catch (error) { response.status(error instanceof RegistrationAdmissionError ? 409 : 400).json({ error: error instanceof RegistrationAdmissionError ? "signup_failed" : "invalid_sign_in_request" }); }
   });
-  return { callbacks, routes };
+  return { callbacks, routes, async startNative(request: AuthRequest, response: Response,
+    launch: NativeAuthContext & { provider?: string; invitationCode?: string; timeZone?: string }) {
+    request.params.provider = launch.provider!;
+    request.body = { intent: launch.intent, returnTo: launch.returnTo,
+      ...(launch.invitationCode !== undefined ? { invitationCode: launch.invitationCode } : {}),
+      ...(launch.timeZone !== undefined ? { timeZone: launch.timeZone } : {}) };
+    await start(request, response, { intent: launch.intent, returnTo: launch.returnTo, codeChallenge: launch.codeChallenge,
+      expiresAt: launch.expiresAt, ownerId: launch.ownerId, sessionHash: launch.sessionHash });
+  } };
 }

@@ -13,6 +13,7 @@ export type ContactVerificationAttempt = {
   resendAt: string;
   version: number;
   checkCount: number;
+  ownerId?: string | null;
 };
 export type VerificationLimit = { keyHash: string; max: number; windowMs: number; windowType?: "rolling" };
 export type VerificationLimitReservation = { count: number; expiresAt: number; reservedAt: number[] };
@@ -57,6 +58,10 @@ export function assertContactVerificationAttempt(attempt: ContactVerificationAtt
       || !Number.isInteger(attempt.checkCount) || attempt.checkCount < 0 || attempt.checkCount > 5) {
     throw new ContactVerificationStateError("verification_unavailable");
   }
+  if (attempt.ownerId !== undefined && attempt.ownerId !== null
+      && (typeof attempt.ownerId !== "string" || !attempt.ownerId || attempt.ownerId.length > 128)) {
+    throw new ContactVerificationStateError("verification_unavailable");
+  }
 }
 export function canUpdateContactVerificationAttempt(saved: ContactVerificationAttempt, next: ContactVerificationAttempt,
   expectedVersion: number): boolean {
@@ -64,7 +69,8 @@ export function canUpdateContactVerificationAttempt(saved: ContactVerificationAt
     && Number.isSafeInteger(expectedVersion) && expectedVersion > 0
     && saved.phase !== "consumed" && next.phase !== "consumed" && Date.parse(saved.expiresAt) > Date.now()
     && saved.tokenHash === next.tokenHash && saved.browserHash === next.browserHash && saved.addressHash === next.addressHash
-    && saved.channel === next.channel && saved.intent === next.intent && saved.expiresAt === next.expiresAt;
+    && saved.channel === next.channel && saved.intent === next.intent && saved.expiresAt === next.expiresAt
+    && (saved.ownerId ?? null) === (next.ownerId ?? null);
 }
 export function validVerifiedContactConsumption(input: VerifiedContactConsumption): boolean {
   return validContactFingerprint(input?.tokenHash) && validContactFingerprint(input?.browserHash)

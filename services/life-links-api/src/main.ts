@@ -99,6 +99,15 @@ async function main() {
   const server = startLifeLinksServer({ store, config, logger, calendarProviderGateway, calendarAuthorizationService,
     calendarSubscriptionService, wakeCalendarRuntime: () => calendarRuntime?.wake(),
     remoteAgent: { state: remoteAgentState, auth: await RemoteAgentAuth.create(remoteAgentState, store, config, logger) } });
+  // Bounded outstanding deletion cleanup lives with this API process. It never
+  // restores local accounts and retains no provider token in diagnostics.
+  let revocationCleanup: Promise<void> | undefined;
+  const drainRevocation = () => revocationCleanup ??= server.drainProviderRevocationCleanup().catch(() => {
+    logger.warn("life_links.account_deletion.revocation_pending", { reason: "provider_revocation_pending" });
+  }).finally(() => { revocationCleanup = undefined; });
+  await drainRevocation();
+  const revocationTimer = setInterval(() => { void drainRevocation(); }, 60 * 60_000);
+  revocationTimer.unref();
   calendarRuntime?.start();
   logger.info("life_links.server.started", {
     host: config.host,
@@ -112,6 +121,8 @@ async function main() {
     stopping ??= (async () => {
       // Abort remote operations and close their SSE streams before HTTP drain;
       // otherwise Server.close waits indefinitely while the pool closes early.
+      clearInterval(revocationTimer);
+      await revocationCleanup;
       const remoteClosing = server.closeRemoteAgent();
       const httpClosing = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       await Promise.all([remoteClosing, httpClosing, calendarRuntime?.stop(), stopSmsConsentRetention()]);

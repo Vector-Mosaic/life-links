@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, getAccountSignInMethods, startProviderSignIn, type SignInProviderId } from "../api";
-import { providerAuthorizationUrl, providerSignInErrorMessage, validateProviderReturnTo } from "../providerSignInLink";
+import { providerSignInErrorMessage, validateProviderReturnTo } from "../providerSignInLink";
 import { Dialog } from "./FieldLedgerPrimitives";
 import { PhoneSignIn } from "../PhoneSignIn";
+import { openAccountBrowser, providerDestination } from "../platform";
 
-export function SignInMethodsDialog({ onClose, onNavigate = url => window.location.assign(url) }: {
+export function SignInMethodsDialog({ onClose, onNavigate = openAccountBrowser }: {
   onClose(): void; onNavigate?(url: string): void;
 }) {
   const [providers, setProviders] = useState<Array<{ id: SignInProviderId; label: string; linked: boolean }>>([]);
@@ -37,7 +38,7 @@ export function SignInMethodsDialog({ onClose, onNavigate = url => window.locati
     try {
       const result = await startProviderSignIn(provider.id, { intent: "link", returnTo: validateProviderReturnTo(window.location.pathname) });
       if (!mounted.current) return;
-      const url = providerAuthorizationUrl(provider.id, result.authorizationUrl);
+      const url = providerDestination(provider.id, result.authorizationUrl);
       if (!url) throw new Error("Invalid provider destination.");
       onNavigate(url);
     } catch (cause) {

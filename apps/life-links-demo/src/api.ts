@@ -81,6 +81,7 @@ import { ATTACHMENT_IMAGE_MAX_BASE64_CHARS, MAX_LIFE_LINK_TOOL_OUTPUT_BYTES } fr
 import { validateAttachmentImageResult } from "./attachmentImage";
 import { validateAttachmentTranscript } from "./attachmentTranscript";
 import type { ProviderId } from "@vmosaic/provider-sign-in/client";
+import { nativeRuntime, platformFetch } from "./platform";
 
 export async function previewCollectionChange(input: CollectionChangeInput, signal?: AbortSignal, actor?: CalendarActor): Promise<CollectionChangePreview> {
   const { preview } = await apiFetch<{ preview: CollectionChangePreview }>("/api/collections/changes/preview", { method: "POST", body: JSON.stringify(input), signal, headers: calendarActorHeaders(actor) });
@@ -169,14 +170,14 @@ export type CalendarClock = {
 
 async function apiFetch<T>(path: string, init: RequestInit = {}, maxResponseBytes?: number): Promise<T> {
   const bodyIsFormData = init.body instanceof FormData;
-  const response = await fetch(path, {
+  const response = await platformFetch(path, {
     credentials: "include",
     ...init,
     headers: {
       ...(bodyIsFormData ? {} : { "Content-Type": "application/json" }),
       ...(init.headers ?? {})
     }
-  });
+  }, maxResponseBytes);
 
   if (!response.ok) {
     const body: unknown = await response.json().catch(() => ({}));
@@ -324,6 +325,8 @@ export function getSignInProviders(signal?: AbortSignal) {
 }
 
 export function startProviderSignIn(provider: SignInProviderId, input: ProviderSignInInput) {
+  const native = nativeRuntime();
+  if (native) return native.startBrowserFlow({ provider, ...input }).then(authorizationUrl => ({ authorizationUrl }));
   return apiFetch<{ authorizationUrl: string }>(`/api/auth/providers/${encodeURIComponent(provider)}/start`, {
     method: "POST", body: JSON.stringify(input)
   });
@@ -342,13 +345,13 @@ export interface ProviderSignupInput {
 }
 
 export function completeProviderSignup(input: ProviderSignupInput) {
-  return apiFetch<{ returnTo: string }>("/api/auth/provider-signup/complete", {
+  return apiFetch<{ returnTo: string; nativeCallbackUrl?: string }>("/api/auth/provider-signup/complete", {
     method: "POST", body: JSON.stringify(input)
   });
 }
 
 export function completeProviderLink(linkToken: string) {
-  return apiFetch<{ returnTo: string }>("/api/auth/provider-link/complete", {
+  return apiFetch<{ returnTo: string; nativeCallbackUrl?: string }>("/api/auth/provider-link/complete", {
     method: "POST", body: JSON.stringify({ linkToken })
   });
 }
@@ -452,7 +455,13 @@ export async function registerAccount(input: AccountRegistrationInput) {
 }
 
 export async function logout() {
-  return apiFetch<void>("/api/auth/logout", { method: "POST" });
+  try { return await apiFetch<void>("/api/auth/logout", { method: "POST" }); }
+  finally { await nativeRuntime()?.clearSession(); }
+}
+
+export function deleteAccount() {
+  return apiFetch<{ status: "deleted"; appleRevocation: "complete" | "pending" | "not_required" | "manual_required" }>(
+    "/api/account", { method: "DELETE", body: JSON.stringify({ confirmation: "DELETE" }) });
 }
 
 export async function connectAgent(toolCatalogId: ApiAgentToolCatalogId = "life-links-page-webmcp-v1") {
@@ -786,12 +795,16 @@ export function listCalendarProviders(signal?: AbortSignal) {
 }
 
 export function authorizeMicrosoftCalendar(reconnectConnectionId?: string, signal?: AbortSignal) {
+  const native = nativeRuntime();
+  if (native) { signal?.throwIfAborted(); return native.startBrowserFlow({ calendarProvider: "microsoft", intent: "calendar", returnTo: "/calendar", reconnectConnectionId }).then(authorizationUrl => ({ authorizationUrl })); }
   return apiFetch<{ authorizationUrl: string }>("/api/calendar-providers/microsoft/authorize", {
     method: "POST", body: JSON.stringify(reconnectConnectionId ? { reconnectConnectionId } : {}), signal
   });
 }
 
 export function authorizeGoogleCalendar(reconnectConnectionId?: string, signal?: AbortSignal) {
+  const native = nativeRuntime();
+  if (native) { signal?.throwIfAborted(); return native.startBrowserFlow({ calendarProvider: "google", intent: "calendar", returnTo: "/calendar", reconnectConnectionId }).then(authorizationUrl => ({ authorizationUrl })); }
   return apiFetch<{ authorizationUrl: string }>("/api/calendar-providers/google/authorize", {
     method: "POST", body: JSON.stringify(reconnectConnectionId ? { reconnectConnectionId } : {}), signal
   });

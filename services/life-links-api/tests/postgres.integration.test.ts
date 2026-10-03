@@ -48,7 +48,8 @@ import { attachmentTextStoreContract } from "./attachment-text-store-contract.js
 import { registrationStoreContract } from "./registration-store-contract.js";
 import { providerSignInStoreContract } from "./provider-sign-in-store-contract.js";
 import { contactVerificationStoreContract } from "./contact-verification-store-contract.js";
-import { CalendarProviderGateway, calendarProviderCredentialHandle } from "../src/calendar-provider-gateway.js";
+import { accountDeletionStoreContract } from "./account-deletion-store-contract.js";
+import { CalendarProviderGateway, calendarProviderCredentialHandle, ProviderTransientError } from "../src/calendar-provider-gateway.js";
 import { PostgresCalendarProviderStateStore } from "../src/calendar-provider-postgres.js";
 import { DeterministicFakeCalendarProviderAdapter } from "../src/calendar-provider-fake.js";
 import { CalendarSecretCipher, PostgresCalendarSecretStore } from "../src/calendar-secret-store.js";
@@ -99,6 +100,7 @@ describe("Life Links Postgres integration", () => {
   registrationStoreContract(() => store);
   providerSignInStoreContract(() => store);
   contactVerificationStoreContract(() => store);
+  accountDeletionStoreContract(() => store);
 
   it("retains only the minimal original SMS consent receipt across stores and physically purges expired rows", async () => {
     const receipt = createSmsVerificationConsentReceipt({ receiptHash: invitationFingerprint(randomUUID()),
@@ -228,15 +230,20 @@ describe("Life Links Postgres integration", () => {
       expect(await second.store.registrationAvailable(invitation)).toBe(false);
       const ledger = await postgresPool.query("SELECT * FROM account_registrations WHERE invitation_fingerprint=$1", [invitation.fingerprint]);
       expect(ledger.rows).toHaveLength(1);
-      expect(Object.keys(ledger.rows[0]).sort()).toEqual(["created_at", "invitation_fingerprint", "user_id"]);
+      expect(Object.keys(ledger.rows[0]).sort()).toEqual(["created_at", "invitation_fingerprint", "receipt_id", "user_id"]);
       const admitted = results.find(result => result.status === "fulfilled");
       if (admitted?.status !== "fulfilled") throw new Error("Missing admitted owner");
       expect(ledger.rows[0].user_id).toBe(admitted.value.id);
+      expect(ledger.rows[0].receipt_id).toBe(admitted.value.id);
       // A database-side calendar failure must roll back both the user and spent slot.
       const blockedEmail = `${randomUUID()}@example.test`;
       const fresh = { ...base, invitation: { ...invitation, fingerprint: invitationFingerprint(randomUUID()) } };
+      // A deleted owner's spent receipt keeps a NULL user association. Include
+      // one explicitly so the injected failure remains faithful in isolation.
+      await postgresPool.query(`INSERT INTO account_registrations(receipt_id,user_id,invitation_fingerprint,created_at)
+        VALUES($1,NULL,$2,clock_timestamp())`, [randomUUID(),invitationFingerprint(randomUUID())]);
       await postgresPool.query(`CREATE FUNCTION reject_test_registration_calendar() RETURNS trigger AS $$
-        BEGIN IF NEW.title = 'My Calendar' AND NEW.owner_id NOT IN (SELECT user_id FROM account_registrations)
+        BEGIN IF NEW.title = 'My Calendar' AND NOT EXISTS (SELECT 1 FROM account_registrations WHERE user_id=NEW.owner_id)
           THEN RAISE EXCEPTION 'synthetic registration calendar failure'; END IF; RETURN NEW; END;
         $$ LANGUAGE plpgsql`);
       await postgresPool.query("CREATE TRIGGER reject_test_registration_calendar BEFORE INSERT ON calendars FOR EACH ROW EXECUTE FUNCTION reject_test_registration_calendar()");
@@ -292,9 +299,13 @@ describe("Life Links Postgres integration", () => {
       await store.connectAgent(ownerId, "life-links-workspace-v3");
       const revoker = await postgresPool.connect();
       const operationClient = await postgresPool.connect();
+      const operationPid = Number((await operationClient.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+      const revokerPid = Number((await revoker.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
       const realQuery = operationClient.query;
+      let ownerReadReached = false;
       let grantReadReached = false;
       const querySpy = vi.spyOn(operationClient, "query").mockImplementation((...args: unknown[]) => {
+        if (args[0] === "SELECT 1 FROM users WHERE id=$1 FOR SHARE") ownerReadReached = true;
         if (typeof args[0] === "string" && args[0].includes("agent_tool_catalog_id FROM users") && args[0].includes("FOR SHARE")) grantReadReached = true;
         return Reflect.apply(realQuery, operationClient, args);
       });
@@ -308,9 +319,19 @@ describe("Life Links Postgres integration", () => {
         await revoker.query("BEGIN");
         await revoker.query("UPDATE users SET agent_connected_at=NULL,agent_tool_catalog_id=NULL WHERE id=$1", [ownerId]);
         pending = mutate().then((value) => ({ value }), (error: unknown) => ({ error }));
-        await vi.waitFor(() => expect(grantReadReached).toBe(true), { timeout: 3_000, interval: 10 });
+        // Live-owner admission now locks the owner before reading its Workspace
+        // permission. Observe that first row wait, then require the permission
+        // read to see the committed revocation before any canonical mutation.
+        await vi.waitFor(async () => {
+          expect(ownerReadReached).toBe(true);
+          const blocked = await postgresPool.query(`SELECT 1 FROM pg_stat_activity WHERE pid=$1
+            AND $2::integer=ANY(pg_blocking_pids(pid))`, [operationPid,revokerPid]);
+          expect(blocked.rowCount).toBeGreaterThan(0);
+        }, { timeout: 3_000, interval: 10 });
+        expect(grantReadReached).toBe(false);
         await revoker.query("COMMIT");
         expect(await pending).toMatchObject({ error: { code: "agent_access_denied" } });
+        expect(grantReadReached).toBe(true);
       } finally {
         await revoker.query("ROLLBACK");
         if (pending) await pending;
@@ -417,7 +438,8 @@ describe("Life Links Postgres integration", () => {
     const suffix = randomUUID();
     const clientId = `synthetic-retained-client-${suffix}`;
     const grantId = `synthetic-prune-grant-${suffix}`;
-    const ownerId = `synthetic-prune-owner-${suffix}`;
+    const ownerId = (await store.registerOwner({displayName:"Synthetic protocol owner",email:`${randomUUID()}@example.test`,
+      passwordHash:"synthetic-store-password-hash",timeZone:"UTC"})).id;
     const now = Date.now();
     const clock = vi.spyOn(Date, "now").mockReturnValue(now);
     try {
@@ -438,6 +460,9 @@ describe("Life Links Postgres integration", () => {
       clock.mockRestore();
       await state.revokeGrant(grantId);
       await state.remove("Client", clientId);
+      const tokenHash = randomUUID();
+      await store.createSession(ownerId,tokenHash,new Date(Date.now()+60_000).toISOString());
+      await store.deleteAccount({ownerId,sessionTokenHash:tokenHash});
     }
   });
 
@@ -446,7 +471,8 @@ describe("Life Links Postgres integration", () => {
     const first = new RemoteAgentState(secret, postgresPool);
     const restarted = new RemoteAgentState(secret, postgresPool);
     const suffix = randomUUID();
-    const ownerId = `synthetic-remote-owner-${suffix}`;
+    const ownerId = (await store.registerOwner({displayName:"Synthetic protocol owner",email:`${randomUUID()}@example.test`,
+      passwordHash:"synthetic-store-password-hash",timeZone:"UTC"})).id;
     const grantId = `synthetic-remote-grant-${suffix}`;
     const clientId = `synthetic-private-client-${suffix}`;
     const code = `synthetic-private-code-${suffix}`;
@@ -478,6 +504,9 @@ describe("Life Links Postgres integration", () => {
     } finally {
       await first.revokeGrant(grantId);
       await first.remove("Client", clientId);
+      const tokenHash = randomUUID();
+      await store.createSession(ownerId,tokenHash,new Date(Date.now()+60_000).toISOString());
+      await store.deleteAccount({ownerId,sessionTokenHash:tokenHash});
     }
   });
 
@@ -524,18 +553,223 @@ describe("Life Links Postgres integration", () => {
     }
   });
 
+  it("finishes an admitted child write before queued owner erasure and refuses stale protocol admission", async () => {
+    const owner = await store.registerOwner({displayName:"Synthetic deletion concurrency owner",email:`${randomUUID()}@example.test`,
+      passwordHash:"synthetic-store-password-hash",timeZone:"UTC"});
+    const tokenHash = invitationFingerprint(randomUUID());
+    await store.createSession(owner.id,tokenHash,new Date(Date.now()+60_000).toISOString());
+    // A test-owned statement timeout makes a lock inversion fail rather than
+    // leaving the isolated schema's cleanup waiting indefinitely.
+    const protocolPool = new Pool({connectionString:requireTestDatabaseUrl(),max:6,
+      options:`-c search_path=${schemaName} -c statement_timeout=5000`});
+    const state = new RemoteAgentState("synthetic-remote-postgres-key",protocolPool);
+    const clientId = `synthetic-delete-client-${randomUUID()}`, grantId = `synthetic-delete-grant-${randomUUID()}`;
+    const otherGrant = `synthetic-preserved-grant-${randomUUID()}`, receiptId = randomUUID(), newChildId = randomUUID();
+    await state.put("Client",clientId,{client_id:clientId});
+    await state.put("Grant",grantId,{accountId:owner.id,clientId},3_600);
+    await state.put("Grant",otherGrant,{accountId:DEMO_OWNER_ID,clientId},3_600);
+    const approvals = new PersistentRemoteApprovals(state);
+    const principal: RemoteAgentPrincipal = {ownerId:owner.id,clientId,grantId,scopes:["records:read","records:write"],expiresAt:Date.now()+3_600_000};
+    await approvals.prepare(principal,{id:receiptId,operation:"remove",payload:{commandId:randomUUID()},effects:{removed:["synthetic"]}});
+    let releaseChild!:()=>void, enterOperation!:()=>void;
+    const childRelease = new Promise<void>(resolve=>{releaseChild=resolve;});
+    const entered = new Promise<void>(resolve=>{enterOperation=resolve;});
+    const operation = state.locked("Grant",grantId,()=>approvals.locked(principal,receiptId,async()=>{
+      enterOperation(); await childRelease;
+      await approvals.approve(principal,receiptId,true);
+      expect(await approvals.get(principal,receiptId)).toMatchObject({status:"approved"});
+      await approvals.complete(principal,receiptId,{removedIds:["synthetic"]});
+      expect(await approvals.get(principal,receiptId)).toMatchObject({status:"applied",result:{removedIds:["synthetic"]}});
+      await state.put("AuthorizationCode",newChildId,{accountId:owner.id,grantId},60);
+      await state.consume("AuthorizationCode",newChildId);
+      expect(await state.get("AuthorizationCode",newChildId)).toMatchObject({accountId:owner.id,grantId});
+      expect((await state.get("AuthorizationCode",newChildId))?.consumed).toBeTypeOf("number");
+    }),true).then(()=>({ok:true}),(error:unknown)=>({error}));
+    let deletion: Promise<unknown>|undefined;
+    try {
+      await entered;
+      deletion = store.deleteAccount({ownerId:owner.id,sessionTokenHash:tokenHash});
+      await vi.waitFor(async()=>{
+        const waiting=await postgresPool.query(`SELECT 1 FROM pg_stat_activity WHERE datname=current_database()
+          AND query=$1 AND wait_event_type='Lock'`,
+          ["SELECT id_hash FROM remote_agent_protocol_state WHERE kind='Grant' AND owner_id=$1 ORDER BY id_hash FOR UPDATE"]);
+        expect(waiting.rowCount).toBeGreaterThan(0);
+      },{timeout:3_000,interval:10});
+      const lateGrant = state.put("Grant",`synthetic-late-grant-${randomUUID()}`,{accountId:owner.id,clientId},60)
+        .then(()=>({ok:true}),(error:unknown)=>({error}));
+      releaseChild();
+      expect(await operation).toEqual({ok:true});
+      await deletion;
+      await expect(postgresPool.query("INSERT INTO users(id,email,display_name,password_hash,created_at) VALUES($1,$2,$3,$4,clock_timestamp())",
+        [owner.id,`${randomUUID()}@example.test`,"Retired identity resurrection","synthetic-store-password-hash"]))
+        .rejects.toMatchObject({code:"23503"});
+      expect(await lateGrant).toHaveProperty("error");
+      expect(await state.get("Grant",grantId)).toBeUndefined();
+      expect(await state.get("Approval",receiptId)).toBeUndefined();
+      expect(await state.get("AuthorizationCode",newChildId)).toBeUndefined();
+      expect(await store.getSessionByTokenHash(tokenHash)).toBeNull();
+      expect(await state.get("Client",clientId)).toEqual({client_id:clientId});
+      expect(await state.get("Grant",otherGrant)).toMatchObject({accountId:DEMO_OWNER_ID});
+      await expect(state.put("Approval",randomUUID(),{ownerId:owner.id,grantId},60)).rejects.toThrow();
+      await expect(state.locked("Grant",grantId,async()=>"stale operation",true)).rejects.toThrow("remote_agent_connection_revoked");
+    } finally {
+      releaseChild(); await Promise.allSettled([operation,...(deletion ? [deletion] : [])]);
+      await state.revokeGrant(grantId); await state.revokeGrant(otherGrant); await state.remove("Client",clientId);
+      if (await store.getUserById(owner.id)) await store.deleteAccount({ownerId:owner.id,sessionTokenHash:tokenHash});
+      await protocolPool.end();
+    }
+  },15_000);
+
+  it("preserves committed approval when a canonical effect completes before a later operation failure", async () => {
+    const owner = await store.registerOwner({displayName:"Synthetic approval recovery owner",email:`${randomUUID()}@example.test`,
+      passwordHash:"synthetic-store-password-hash",timeZone:"UTC"});
+    const tokenHash = invitationFingerprint(randomUUID());
+    await store.createSession(owner.id,tokenHash,new Date(Date.now()+60_000).toISOString());
+    const state = new RemoteAgentState("synthetic-remote-postgres-key",postgresPool), approvals = new PersistentRemoteApprovals(state);
+    const principal: RemoteAgentPrincipal = {ownerId:owner.id,clientId:randomUUID(),grantId:randomUUID(),
+      scopes:["records:read","records:write"],expiresAt:Date.now()+3_600_000};
+    await state.put("Client",principal.clientId,{client_id:principal.clientId});
+    await state.put("Grant",principal.grantId,{accountId:owner.id,clientId:principal.clientId},3_600);
+    const preview = await approvals.prepare(principal,{operation:"remove",payload:{commandId:randomUUID()},effects:{removed:["synthetic"]}});
+    const linkId = randomUUID(), failure = new Error("Synthetic response failure after canonical commit");
+    try {
+      const pending = new Error("Synthetic pending application confirmation");
+      await expect(state.locked("Grant",principal.grantId,()=>approvals.locked(principal,preview.id,async()=>{
+        await approvals.issueUiChallenge(principal,preview.id); throw pending;
+      }),true)).rejects.toBe(pending);
+      expect(await approvals.get(principal,preview.id)).toMatchObject({status:"pending",uiChallenge:expect.any(String)});
+      await expect(state.locked("Grant",principal.grantId,()=>approvals.locked(principal,preview.id,async()=>{
+        await approvals.approve(principal,preview.id,true);
+        await store.createLifeLink({id:linkId,ownerId:owner.id,title:"Committed synthetic effect",createdAt:new Date().toISOString()});
+        throw failure;
+      }),true)).rejects.toBe(failure);
+      expect(await store.getLifeLinkDetail(owner.id,linkId)).not.toBeNull();
+      expect(await approvals.get(principal,preview.id)).toMatchObject({status:"approved"});
+      await state.locked("Grant",principal.grantId,()=>approvals.locked(principal,preview.id,()=>
+        approvals.complete(principal,preview.id,{retainedEffectId:linkId})),true);
+      expect(await approvals.get(principal,preview.id)).toMatchObject({status:"applied",result:{retainedEffectId:linkId}});
+    } finally {
+      await store.deleteAccount({ownerId:owner.id,sessionTokenHash:tokenHash});
+      await state.remove("Client",principal.clientId);
+    }
+  });
+
+  it("allows owner erasure while a form prompt and a same-preview operation overlap", async () => {
+    const owner = await store.registerOwner({displayName:"Synthetic prompt concurrency owner",email:`${randomUUID()}@example.test`,
+      passwordHash:"synthetic-store-password-hash",timeZone:"UTC"});
+    const tokenHash = invitationFingerprint(randomUUID());
+    await store.createSession(owner.id,tokenHash,new Date(Date.now()+60_000).toISOString());
+    const protocolPool = new Pool({connectionString:requireTestDatabaseUrl(),max:9,
+      options:`-c search_path=${schemaName} -c statement_timeout=5000`});
+    const state = new RemoteAgentState("synthetic-remote-postgres-key",protocolPool), approvals = new PersistentRemoteApprovals(state);
+    const principal: RemoteAgentPrincipal = {ownerId:owner.id,clientId:randomUUID(),grantId:randomUUID(),
+      scopes:["records:read","records:write"],expiresAt:Date.now()+3_600_000};
+    await state.put("Client",principal.clientId,{client_id:principal.clientId});
+    await state.put("Grant",principal.grantId,{accountId:owner.id,clientId:principal.clientId},3_600);
+    const preview = await approvals.prepare(principal,{operation:"remove",payload:{commandId:randomUUID()},effects:{removed:["synthetic"]}});
+    let enterPrompt!:()=>void, releasePrompt!:()=>void, enterSecond!:()=>void, releaseSecond!:()=>void;
+    const enteredPrompt = new Promise<void>(resolve=>{enterPrompt=resolve;});
+    const promptRelease = new Promise<void>(resolve=>{releasePrompt=resolve;});
+    const enteredSecond = new Promise<void>(resolve=>{enterSecond=resolve;});
+    const secondRelease = new Promise<void>(resolve=>{releaseSecond=resolve;});
+    const waitForPhase = async (entered:Promise<void>,operation:Promise<unknown>) => {
+      let phaseTimeout:ReturnType<typeof setTimeout>|undefined;
+      try {
+        await Promise.race([entered,operation.then(()=>{throw new Error("Protocol operation ended before its expected phase");}),
+          new Promise<never>((_,reject)=>{phaseTimeout=setTimeout(()=>reject(new Error("Protocol phase timed out")),6_000);})]);
+      } finally { if(phaseTimeout) clearTimeout(phaseTimeout); }
+    };
+    let dispatched = false;
+    const prompting = state.locked("Grant",principal.grantId,()=>approvals.locked(principal,preview.id,async()=>{
+      await state.withoutGrantLease(async()=>{enterPrompt(); await promptRelease;});
+      dispatched = true;
+    }),true).then(()=>({ok:true}),(error:unknown)=>({error}));
+    let second: Promise<unknown>|undefined, deletion: Promise<unknown>|undefined;
+    try {
+      await waitForPhase(enteredPrompt,prompting);
+      second = state.locked("Grant",principal.grantId,()=>approvals.locked(principal,preview.id,async()=>{
+        enterSecond(); await secondRelease; await approvals.approve(principal,preview.id,false);
+      }),true);
+      await waitForPhase(enteredSecond,second);
+      deletion = store.deleteAccount({ownerId:owner.id,sessionTokenHash:tokenHash});
+      await vi.waitFor(async()=>{
+        const waiting=await postgresPool.query(`SELECT 1 FROM pg_stat_activity WHERE datname=current_database()
+          AND query=$1 AND wait_event_type='Lock'`,
+          ["SELECT id_hash FROM remote_agent_protocol_state WHERE kind='Grant' AND owner_id=$1 ORDER BY id_hash FOR UPDATE"]);
+        expect(waiting.rowCount).toBeGreaterThan(0);
+      },{timeout:3_000,interval:10});
+      // A queued writer does not prove erasure has completed: compatible
+      // Grant readers can still be admitted. Keep the human prompt suspended
+      // until the overlapping operation and actual deletion have both finished.
+      releaseSecond();
+      await second; await deletion;
+      expect(await store.getUserById(owner.id)).toBeNull();
+      expect(await state.get("Grant",principal.grantId)).toBeUndefined();
+      expect(dispatched).toBe(false);
+      releasePrompt();
+      expect(await prompting).toMatchObject({error:expect.objectContaining({code:"remote_agent_connection_revoked"})});
+      expect(dispatched).toBe(false);
+    } finally {
+      releasePrompt(); releaseSecond();
+      await Promise.allSettled([prompting,...(second ? [second] : []),...(deletion ? [deletion] : [])]);
+      await state.revokeGrant(principal.grantId); await state.remove("Client",principal.clientId);
+      if(await store.getUserById(owner.id)) await store.deleteAccount({ownerId:owner.id,sessionTokenHash:tokenHash});
+      await protocolPool.end();
+    }
+  },15_000);
+
+  it("refuses uncertain Calendar erasure, then removes local provider data without deleting originals", async () => {
+    const owner = await store.registerOwner({displayName:"Synthetic Calendar deletion owner",email:`${randomUUID()}@example.test`,
+      passwordHash:"synthetic-store-password-hash",timeZone:"UTC"});
+    const tokenHash = invitationFingerprint(randomUUID());
+    await store.createSession(owner.id,tokenHash,new Date(Date.now()+60_000).toISOString());
+    const providerStore = new PostgresCalendarProviderStateStore(postgresPool);
+    const providerCalendarId = randomUUID(), connectionId = randomUUID(), calendarId = `calendar-${randomUUID()}`;
+    const span = {kind:"all_day" as const,startDate:"2026-10-02",endDateExclusive:"2026-10-03"};
+    const content = {title:"Provider original",description:null,location:null,status:"confirmed" as const,providerSeriesId:null,span};
+    const adapter = new DeterministicFakeCalendarProviderAdapter("google",randomUUID(),[{providerCalendarId,
+      displayName:"Synthetic provider Calendar",capabilities:{read:true,create:true,update:true,delete:true},
+      events:[{providerEventId:randomUUID(),providerRevision:"r1",content}]}]);
+    let providerNow = Date.parse("2026-10-02T12:00:00.000Z");
+    const gateway = new CalendarProviderGateway([adapter],providerStore,{now:()=>new Date(providerNow)});
+    await gateway.connectExternalAccount({ownerId:owner.id,connectionId,providerKey:"google",
+      expectedProviderAccountId:adapter.providerAccountId,credentialHandle:calendarProviderCredentialHandle("synthetic-vault-handle"),
+      calendars:[{calendarId,providerCalendarId,title:"Connected",color:"#123456",timeZone:"UTC",isDefault:false}],
+      initialWindow:{startUtc:"2026-10-02T00:00:00.000Z",endUtc:"2026-10-04T00:00:00.000Z"}});
+    const command = {kind:"create" as const,commandId:randomUUID(),ownerId:owner.id,connectionId,calendarId,actor:"owner" as const,
+      content:{...content,title:"Uncertain provider original"}};
+    adapter.failOnceAfterCommit(command.commandId);
+    await expect(gateway.executeCommand(command)).rejects.toBeInstanceOf(ProviderTransientError);
+    await expect(store.deleteAccount({ownerId:owner.id,sessionTokenHash:tokenHash}))
+      .rejects.toMatchObject({code:"account_deletion_pending",reason:"calendar_write_in_progress"});
+    const connection = (await providerStore.getConnection(connectionId))!;
+    await expect(gateway.removeCalendarConnection({ownerId:owner.id,connectionId,expectedConnectedAt:connection.connectedAt}))
+      .rejects.toMatchObject({code:"command_in_progress"});
+    expect(await store.getSessionByTokenHash(tokenHash)).not.toBeNull();
+    providerNow = Date.parse((await providerStore.getOutbox(command.commandId))!.nextAttemptAt!) + 1;
+    await gateway.executeCommand(command);
+    await gateway.removeCalendarConnection({ownerId:owner.id,connectionId,expectedConnectedAt:connection.connectedAt});
+    await store.deleteAccount({ownerId:owner.id,sessionTokenHash:tokenHash});
+    expect(adapter.eventCount(providerCalendarId)).toBe(2);
+    expect(adapter.metrics().commandApplies).toEqual({create:1,update:0,delete:0});
+    expect(await providerStore.getConnection(connectionId)).toBeNull();
+    expect(await providerStore.getOutbox(command.commandId)).toBeNull();
+    expect((await store.listCalendars(owner.id)).items).toEqual([]);
+    expect(await store.getUserById(owner.id)).toBeNull();
+  });
+
   it("does not deadlock an admitted remote Approval update against grant revocation", async () => {
     const state = new RemoteAgentState("synthetic-remote-postgres-key", postgresPool);
     const revoker = new RemoteAgentState("synthetic-remote-postgres-key", postgresPool);
     const approvals = new PersistentRemoteApprovals(state);
     const principal: RemoteAgentPrincipal = { ownerId: DEMO_OWNER_ID, clientId: `synthetic-revoke-client-${randomUUID()}`,
       grantId: `synthetic-revoke-order-${randomUUID()}`, scopes: ["records:read", "records:write"], expiresAt: Date.now() + 3_600_000 };
-    // Heap order cannot be authority: a receipt may physically precede its Grant.
+    // Grant admission precedes its children, and revocation follows the same lock order.
     await state.put("Client", principal.clientId, { client_id: principal.clientId });
+    await state.put("Grant", principal.grantId, { accountId: principal.ownerId, clientId: principal.clientId }, 3_600);
     const preview = await approvals.prepare(principal, { operation: "remove", payload: { commandId: randomUUID() },
       effects: { removed: ["synthetic-item"] } });
     await approvals.locked(principal, preview.id, () => approvals.approve(principal, preview.id, true));
-    await state.put("Grant", principal.grantId, { accountId: principal.ownerId, clientId: principal.clientId }, 3_600);
     let releaseReceipt!: () => void;
     const receiptRelease = new Promise<void>((resolve) => { releaseReceipt = resolve; });
     let enterOperation!: () => void;
@@ -605,10 +839,12 @@ describe("Life Links Postgres integration", () => {
     const secret = "synthetic-remote-postgres-key";
     const state = new RemoteAgentState(secret, postgresPool);
     const approvals = new PersistentRemoteApprovals(state);
-    const principal: RemoteAgentPrincipal = { ownerId: DEMO_OWNER_ID, clientId: "synthetic-client",
+    const principal: RemoteAgentPrincipal = { ownerId: DEMO_OWNER_ID, clientId: `synthetic-client-${randomUUID()}`,
       grantId: `synthetic-receipt-grant-${randomUUID()}`, scopes: ["records:read", "records:write"], expiresAt: Date.now() + 3_600_000 };
     const input = { operation: "remove", payload: { commandId: randomUUID(), recordId: "synthetic-item" },
       effects: { removed: ["synthetic-item"], historyPreserved: true } };
+    await state.put("Client", principal.clientId, { client_id: principal.clientId });
+    await state.put("Grant", principal.grantId, { accountId: principal.ownerId, clientId: principal.clientId }, 3_600);
     const preview = await approvals.prepare(principal, input);
     const unconfirmed = await approvals.prepare(principal, { ...input, operation: "unconfirmed" });
     await approvals.locked(principal, preview.id, () => approvals.approve(principal, preview.id, true));
@@ -639,6 +875,7 @@ describe("Life Links Postgres integration", () => {
     } finally {
       clock.mockRestore();
       await state.revokeGrant(principal.grantId);
+      await state.remove("Client", principal.clientId);
     }
   });
 
@@ -650,6 +887,8 @@ describe("Life Links Postgres integration", () => {
       grantId: `synthetic-ui-grant-${randomUUID()}`, scopes: ["records:read", "records:write"], expiresAt: Date.now() + 3_600_000 };
     const input = { operation: "remove", payload: { commandId: randomUUID(), recordId: "synthetic-ui-item" },
       effects: { removed: ["synthetic-ui-item"], historyPreserved: true } };
+    await state.put("Client", principal.clientId, { client_id: principal.clientId });
+    await state.put("Grant", principal.grantId, { accountId: principal.ownerId, clientId: principal.clientId }, 3_600);
     const preview = await approvals.prepare(principal, input);
     const pendingApp = new Error("synthetic_pending_app_confirmation");
     let challenge = "";
@@ -682,6 +921,7 @@ describe("Life Links Postgres integration", () => {
         () => restarted.validateUiChallenge(principal, preview.id, challenge))).rejects.toThrow("confirmation_invalid");
     } finally {
       await state.revokeGrant(principal.grantId);
+      await state.remove("Client", principal.clientId);
     }
   });
 
@@ -1033,7 +1273,7 @@ describe("Life Links Postgres integration", () => {
       const users = await isolated.pool.query("SELECT count(*)::int AS count FROM users");
       const migrations = await isolated.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
       expect(users.rows[0].count).toBe(2);
-      expect(migrations.rows[0].count).toBe(25);
+      expect(migrations.rows[0].count).toBe(26);
       const agentConnectionColumn = await adminPool.query(
         `SELECT is_nullable, data_type
          FROM information_schema.columns
@@ -1953,7 +2193,7 @@ describe("Life Links Postgres integration", () => {
             createdAt: original.createdAt, updatedAt: original.updatedAt });
       }
       const receiptCount = await fixturePostgres.pool.query("SELECT count(*)::int AS count FROM schema_migrations");
-      expect(receiptCount.rows[0].count).toBe(25);
+      expect(receiptCount.rows[0].count).toBe(26);
     } finally {
       await fixturePostgres.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -2004,7 +2244,7 @@ describe("Life Links Postgres integration", () => {
       const newlyCreated = await fixture.store.createRoutine({ id: `routine-${randomUUID()}`, revisionId: `routine-revision-${randomUUID()}`,
         ownerId, title: "New default", createdAt, steps: [{ id: `routine-step-${randomUUID()}`, activityId, activityTitle: "Prepare", position: 0 }] });
       expect(newlyCreated.currentRevision.revision.ordering).toBe("unordered");
-      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(25);
+      expect((await fixture.pool.query("SELECT count(*)::int AS count FROM schema_migrations")).rows[0].count).toBe(26);
     } finally {
       await fixture.store.close();
       await adminPool.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(fixtureSchema)} CASCADE`);
@@ -2074,7 +2314,8 @@ describe("Life Links Postgres integration", () => {
         "022_provider_sign_in.sql",
         "023_verified_public_signup.sql",
         "024_rolling_verification_limits.sql",
-        "025_sms_verification_consent.sql"
+        "025_sms_verification_consent.sql",
+        "026_account_deletion.sql"
       ]);
     } finally {
       await concurrent.store.close();

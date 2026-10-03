@@ -165,6 +165,9 @@ import {
 } from "@life-links/core";
 
 import { hashPassword, verifyPassword } from "./password.js";
+import { AccountDeletionError, assertProviderRevocationCustody, isSharedDemoAccount,
+  type AccountDeletionInput, type AccountDeletionResult, type ProviderRevocationCustody,
+  type ProviderRevocationCleanup } from "./account-deletion-state.js";
 import type { AttachmentTextExtraction } from "./attachment-content.js";
 import { assertRegistrationInvitation, prepareRegisteredOwner, prepareRegisteredProviderOwner, prepareRegisteredVerifiedOwner, RegistrationAdmissionError,
   MAX_PENDING_INVITATIONS, memberInvitationActive, memberInvitationView,
@@ -414,7 +417,11 @@ export type LifeLinksStore = {
   registerProviderOwner(input: RegisterProviderOwnerInput): Promise<StoredUser>;
   getProviderUser(identity: ProviderIdentityBinding): Promise<StoredUser | null>;
   listProviderIdentities(ownerId: string): Promise<ProviderIdentityBinding[]>;
-  linkProviderIdentity(ownerId: string, identity: VerifiedProviderIdentity): Promise<void>;
+  linkProviderIdentity(ownerId: string, identity: VerifiedProviderIdentity, revocationCustody?: ProviderRevocationCustody, sessionTokenHash?: string): Promise<void>;
+  retainProviderRevocationCustody(ownerId: string, identity: ProviderIdentityBinding, encryptedPayload: string): Promise<void>;
+  listProviderRevocationCleanup(limit: number): Promise<ProviderRevocationCleanup[]>;
+  deleteProviderRevocationCleanup(id: string): Promise<void>;
+  deleteAccount(input: AccountDeletionInput): Promise<AccountDeletionResult>;
   saveProviderSignInAttempt(attempt: ProviderSignInAttempt): Promise<void>;
   getProviderSignInAttempt(stateHash: string, browserHash: string): Promise<ProviderSignInAttempt | null>;
   consumeProviderSignInAttempt(stateHash: string, browserHash: string): Promise<ProviderSignInAttempt | null>;
@@ -592,6 +599,9 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   private registrationCounts = new Map<string, number>();
   private memberInvitations = new Map<string, MemberInvitation>();
   private providerIdentities = new Map<string, { ownerId: string; identity: ProviderIdentityBinding }>();
+  private providerRevocationCustody = new Map<string, { ownerId: string; identity: ProviderIdentityBinding; encryptedPayload: string }>();
+  private providerRevocationCleanup = new Map<string, ProviderRevocationCleanup>();
+  private deletedAccountIds = new Set<string>();
   private providerSignInAttempts = new Map<string, ProviderSignInAttempt>();
   private contactVerificationAttempts = new Map<string, ContactVerificationAttempt>();
   private verificationLimits = new Map<string, VerificationLimitReservation>();
@@ -837,25 +847,32 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
 
   async registerProviderOwner(input: RegisterProviderOwnerInput): Promise<StoredUser> {
     providerIdentityKey(input.identity);
-    return this.registerPreparedOwner(input.invitation, prepareRegisteredProviderOwner(input), input.identity);
+    if (input.revocationCustody) assertProviderRevocationCustody(input.revocationCustody);
+    return this.registerPreparedOwner(input.invitation, prepareRegisteredProviderOwner(input), input.identity, input.revocationCustody);
   }
 
   private async registerPreparedOwner(invitation: RegistrationInvitation | undefined,
-    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding): Promise<StoredUser> {
-    return this.withLocks(["\u0000account-registration"], () => this.insertPreparedOwner(invitation, prepared, identity));
+    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding, revocationCustody?: ProviderRevocationCustody): Promise<StoredUser> {
+    return this.withLocks(["\u0000account-registration"], () => this.insertPreparedOwner(invitation, prepared, identity, revocationCustody));
   }
 
   private async insertPreparedOwner(invitation: RegistrationInvitation | undefined,
-    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding): Promise<StoredUser> {
+    prepared: ReturnType<typeof prepareRegisteredOwner>, identity?: ProviderIdentityBinding, revocationCustody?: ProviderRevocationCustody): Promise<StoredUser> {
     const { user, calendar } = prepared;
     const identityKey = identity ? providerIdentityKey(identity) : null;
+    if (identityKey && [...this.providerRevocationCleanup.values()].some(row => providerIdentityKey(row.identity) === identityKey)) {
+      throw new ProviderSignInStateError("provider_sign_in_unavailable");
+    }
     if (identityKey && this.providerIdentities.has(identityKey)) throw new ProviderSignInStateError("provider_identity_conflict");
     if (invitation && !(await this.registrationAvailable(invitation))) throw new RegistrationAdmissionError("registration_unavailable");
     if (user.email !== null && this.userIdsByEmail.has(user.email)) throw new RegistrationAdmissionError("registration_failed");
+    if (this.deletedAccountIds.has(user.id)) throw new RegistrationAdmissionError("registration_failed");
     this.users.set(user.id, user);
     if (user.email !== null) this.userIdsByEmail.set(user.email, user.id);
     this.calendars.set(calendar.id, calendar);
     if (identity && identityKey) this.providerIdentities.set(identityKey, { ownerId: user.id, identity: identityBinding(identity) });
+    if (identity && identityKey && revocationCustody) this.providerRevocationCustody.set(identityKey,
+      { ownerId: user.id, identity: identityBinding(identity), encryptedPayload: revocationCustody.encryptedPayload });
     if (invitation) {
       this.registrationCounts.set(invitation.fingerprint, (this.registrationCounts.get(invitation.fingerprint) ?? 0) + 1);
       if (invitation.memberInvitationId) {
@@ -870,6 +887,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     assertContactVerificationAttempt(attempt);
     if (attempt.version !== 1 || attempt.phase === "consumed") throw new ContactVerificationStateError("verification_unavailable");
     return this.withLocks(["\u0000contact-verification-attempts"], async () => {
+      if (attempt.ownerId && !this.users.has(attempt.ownerId)) throw new ContactVerificationStateError("verification_unavailable");
       let removed = 0;
       const now = Date.now();
       for (const [key, saved] of this.contactVerificationAttempts) {
@@ -1021,19 +1039,32 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       .map(binding => ({ ...binding.identity })).sort((a, b) => providerIdentityKey(a).localeCompare(providerIdentityKey(b)));
   }
 
-  async linkProviderIdentity(ownerId: string, identity: VerifiedProviderIdentity): Promise<void> {
+  async linkProviderIdentity(ownerId: string, identity: VerifiedProviderIdentity, revocationCustody?: ProviderRevocationCustody, sessionTokenHash?: string): Promise<void> {
     const key = providerIdentityKey(identity);
-    return this.withLocks(["\u0000account-registration"], async () => {
+    if (revocationCustody) assertProviderRevocationCustody(revocationCustody);
+    return this.withLocks(["\u0000account-registration", ownerId, ...(sessionTokenHash ? [`\u0000session:${sessionTokenHash}`] : [])], async () => {
       if (!this.users.has(ownerId)) throw new ProviderSignInStateError("provider_sign_in_unavailable");
+      if (sessionTokenHash) {
+        const session = this.sessions.get(sessionTokenHash);
+        if (!session || session.userId !== ownerId || Date.parse(session.expiresAt) <= Date.now()) {
+          throw new ProviderSignInStateError("provider_sign_in_unavailable");
+        }
+      }
+      if ([...this.providerRevocationCleanup.values()].some(row => providerIdentityKey(row.identity) === key)) {
+        throw new ProviderSignInStateError("provider_sign_in_unavailable");
+      }
       const existing = this.providerIdentities.get(key);
       if (existing && existing.ownerId !== ownerId) throw new ProviderSignInStateError("provider_identity_conflict");
       if (!existing) this.providerIdentities.set(key, { ownerId, identity: identityBinding(identity) });
+      if (revocationCustody) this.providerRevocationCustody.set(key,
+        { ownerId, identity: identityBinding(identity), encryptedPayload: revocationCustody.encryptedPayload });
     });
   }
 
   async saveProviderSignInAttempt(attempt: ProviderSignInAttempt): Promise<void> {
     assertProviderSignInAttempt(attempt);
     return this.withLocks(["\u0000provider-sign-in-attempts"], async () => {
+      if (attempt.ownerId && !this.users.has(attempt.ownerId)) throw new ProviderSignInStateError("provider_sign_in_unavailable");
       let removed = 0;
       for (const [key, saved] of this.providerSignInAttempts) {
         if (removed >= PROVIDER_SIGN_IN_EXPIRY_CLEANUP_LIMIT) break;
@@ -1096,6 +1127,73 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
     return this.users.get(userId) ?? null;
   }
 
+  async retainProviderRevocationCustody(ownerId: string, identity: ProviderIdentityBinding, encryptedPayload: string): Promise<void> {
+    assertProviderRevocationCustody({ encryptedPayload });
+    const key = providerIdentityKey(identity);
+    return this.withLocks(["\u0000account-registration", ownerId], async () => {
+      if (!this.users.has(ownerId) || this.providerIdentities.get(key)?.ownerId !== ownerId) {
+        throw new ProviderSignInStateError("provider_sign_in_unavailable");
+      }
+      this.providerRevocationCustody.set(key, { ownerId, identity: identityBinding(identity), encryptedPayload });
+    });
+  }
+
+  async listProviderRevocationCleanup(limit: number): Promise<ProviderRevocationCleanup[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error("invalid_cleanup_limit");
+    return [...this.providerRevocationCleanup.values()].sort((a,b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+      .slice(0, limit).map(row => structuredClone(row));
+  }
+
+  async deleteProviderRevocationCleanup(id: string): Promise<void> { this.providerRevocationCleanup.delete(id); }
+
+  async deleteAccount(input: AccountDeletionInput): Promise<AccountDeletionResult> {
+    return this.withLocks(["\u0000account-registration", "\u0000contact-verification-attempts",
+      "\u0000provider-sign-in-attempts", `\u0000session:${input.sessionTokenHash}`, CHANGE_MUTATION_LOCK, input.ownerId], async () => {
+      const session = await this.getSessionByTokenHash(input.sessionTokenHash);
+      if (!session || session.userId !== input.ownerId) throw new AccountDeletionError("authentication_required", "session_required");
+      if (isSharedDemoAccount(input.ownerId)) {
+        throw new AccountDeletionError("account_deletion_unavailable", "shared_demo_account");
+      }
+      if ([...this.calendars.values()].some(row => row.ownerId === input.ownerId && row.source === "external")) {
+        throw new AccountDeletionError("account_deletion_pending", "calendar_cleanup_pending");
+      }
+      const appleIdentities = [...this.providerIdentities.values()].filter(row => row.ownerId === input.ownerId && row.identity.provider === "apple");
+      const credentials = [...this.providerRevocationCustody.values()].filter(row => row.ownerId === input.ownerId);
+      const cleanup = credentials.map(row => ({ id: randomUUID(), identity: row.identity, encryptedPayload: row.encryptedPayload,
+        createdAt: new Date().toISOString() }));
+      for (const row of cleanup) this.providerRevocationCleanup.set(row.id, row);
+      const mediaIds = new Set([...this.media.values()].filter(row => row.ownerId === input.ownerId).map(row => row.id));
+      const lifeLinkIds = new Set([...this.lifeLinks.values()].filter(row => row.ownerId === input.ownerId).map(row => row.id));
+      const batchIds = new Set([...this.batches.values()].filter(row => row.createdBy === input.ownerId).map(row => row.id));
+      // Synchronous scoped erasure under the existing mutation/registration locks.
+      for (const map of [this.lifeLinks, this.collections, this.collectionMemberships, this.collectionSections,
+        this.collectionSectionAssignments, this.media, this.claimEvents, this.routineGroups, this.routineActivities,
+        this.routines, this.routineRevisions, this.routineSteps, this.routineContextBindings, this.routineSchedules,
+        this.routineOccurrences, this.routineRuns, this.routineSessions, this.routineSessionStepResults,
+        this.routineSessionAmendments, this.calendars, this.calendarEvents, this.calendarEventRevisions,
+        this.calendarEventTombstones, this.changeReceipts, this.memberInvitations, this.providerIdentities,
+        this.phoneIdentities, this.providerRevocationCustody] as Map<string, { ownerId: string }>[]) {
+        removeMapEntries(map, row => row.ownerId === input.ownerId);
+      }
+      removeMapEntries(this.sessions, row => row.userId === input.ownerId);
+      removeMapEntries(this.providerSignInAttempts, row => row.ownerId === input.ownerId);
+      removeMapEntries(this.contactVerificationAttempts, row => row.ownerId === input.ownerId);
+      removeMapEntries(this.qrBindings, row => lifeLinkIds.has(row.lifeLinkId));
+      removeMapEntries(this.attachmentText, row => mediaIds.has(row.source.id));
+      for (const id of batchIds) { this.batches.delete(id); this.batchQrIds.delete(id); }
+      for (const [id, qr] of this.qrInventory) if (qr.batchId && batchIds.has(qr.batchId)) this.qrInventory.set(id, { ...qr, batchId: null });
+      this.changeHistory.delete(input.ownerId);
+      this.changePreviews.delete(input.ownerId);
+      const user = this.users.get(input.ownerId)!;
+      if (user.email !== null) this.userIdsByEmail.delete(user.email);
+      this.users.delete(input.ownerId);
+      this.deletedAccountIds.add(input.ownerId);
+      return { appleRevocation: appleIdentities.some(row => !credentials.some(credential => providerIdentityKey(credential.identity) === providerIdentityKey(row.identity)))
+        ? "manual_required" : cleanup.some(row => row.identity.provider === "apple") ? "pending" : "not_required",
+        revocationCleanupIds: cleanup.map(row => row.id) };
+    });
+  }
+
   async connectAgent(
     userId: string,
     toolCatalogId: AgentToolCatalogId = LIFE_LINKS_AGENT_TOOL_CATALOG_V1_ID
@@ -1141,8 +1239,11 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
       expiresAt,
       createdAt: new Date().toISOString()
     };
-    this.sessions.set(tokenHash, session);
-    return session;
+    return this.withOwnerLock(userId, async () => {
+      if (!this.users.has(userId)) throw new AccountDeletionError("authentication_required", "session_required");
+      this.sessions.set(tokenHash, session);
+      return session;
+    });
   }
 
   async getSessionByTokenHash(tokenHash: string): Promise<(SessionRecord & { user: StoredUser }) | null> {
@@ -2199,6 +2300,7 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   }
 
   async createQrBatch(userId: string, count: number, qrBaseUrl: string): Promise<BatchCreateResult> {
+    if (!this.users.has(userId)) throw new AccountDeletionError("authentication_required", "session_required");
     const now = new Date().toISOString();
     const safeCount = normalizeBatchCount(count);
     const batchKey = createUniqueBatchKey(this.batches);
@@ -3296,7 +3398,10 @@ export class InMemoryLifeLinksStore implements LifeLinksStore {
   private async withMutationLocks<T>(keys: string[], ownerId: string, label: string, work: () => Promise<T>): Promise<T> {
     // The in-memory store has one event-loop transaction boundary. Only this
     // owner's row deltas are retained or restored; other owners are never snapshotted.
-    return this.withLocks([CHANGE_MUTATION_LOCK, ...keys], () => this.recordOwnerChange(ownerId, label, work));
+    return this.withLocks([CHANGE_MUTATION_LOCK, ...keys], () => {
+      if (!this.users.has(ownerId)) throw new AccountDeletionError("authentication_required", "session_required");
+      return this.recordOwnerChange(ownerId, label, work);
+    });
   }
 
   private assertFreshChangeIdentity(table: ChangeTable, id: string): void {

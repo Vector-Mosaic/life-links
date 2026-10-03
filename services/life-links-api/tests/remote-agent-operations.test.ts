@@ -488,6 +488,27 @@ describe("remote MCP semantic operations", () => {
     expect(await h.store.getLifeLinkDetail(OWNER, revoked.record.id)).not.toBeNull();
   });
 
+  it.each(["applied", "declined"] as const)("rechecks %s receipt state when another decision wins while the confirmation prompt is open", async terminal => {
+    const h = await harness();
+    const record = await h.store.createLifeLink({id:id("life-link"),ownerId:OWNER,title:"Concurrent exact target",createdAt:at});
+    const preview = await h.call("prepare_change",{requestId:randomUUID(),command:{kind:"life_links",operation:"delete",lifeLinkIds:[record.id]}});
+    const applied = vi.spyOn(h.store,"applyLifeLinkChange");
+    h.context.requestConfirmation = vi.fn(async()=>{
+      // Model the other exact request's committed outcome during the real
+      // database prompt's unlocked interval; the caller must reread it.
+      const approval = await h.approvals.approve(h.context,preview.previewId,terminal === "applied");
+      if(terminal === "applied") {
+        const result = await h.store.applyLifeLinkChange(OWNER,{previewId:String(approval.payload.previewId),commandId:String(approval.payload.commandId)});
+        await h.approvals.complete(h.context,preview.previewId,result);
+      }
+      return true;
+    });
+    const result = await h.call("apply_change",{previewId:preview.previewId});
+    expect(result.status).toBe(terminal === "applied" ? "applied" : "cancelled");
+    expect(applied).toHaveBeenCalledTimes(terminal === "applied" ? 1 : 0);
+    expect(await h.store.getLifeLinkDetail(OWNER,record.id)).toEqual(terminal === "applied" ? null : expect.anything());
+  });
+
   it("executes exact Collection moves without consent and preserves physical records when removing Collection meaning", async () => {
     const h = await harness();
     const source = await h.call("maintain_collection", { command: { action: "create", id: id("collection"), title: "Source" } });

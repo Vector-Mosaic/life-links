@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Copy, UserPlus } from "lucide-react";
+import { Copy, Share2, UserPlus } from "lucide-react";
 import { cancelAccountInvitation, createAccountInvitation, listAccountInvitations, type AccountInvitation } from "../api";
 import { accountInvitationLink } from "../invitationLink";
 import { Dialog } from "./FieldLedgerPrimitives";
+import { nativeRuntime, productOrigin } from "../platform";
 
 export function InvitePeopleDialog({ onClose }: { onClose(): void }) {
   const [invitations, setInvitations] = useState<AccountInvitation[]>([]);
@@ -12,10 +13,13 @@ export function InvitePeopleDialog({ onClose }: { onClose(): void }) {
   const [error, setError] = useState("");
   const [newLink, setNewLink] = useState<{ id: string; url: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const mounted = useRef(true);
   const readRevision = useRef(0);
   const pending = useRef(false);
   const linkInput = useRef<HTMLInputElement>(null);
+  const sharePending = useRef(false);
+  const native = nativeRuntime();
 
   async function refresh() {
     const revision = ++readRevision.current;
@@ -31,12 +35,12 @@ export function InvitePeopleDialog({ onClose }: { onClose(): void }) {
   }, []);
 
   async function create() {
-    if (pending.current || loading || !enabled) return;
+    if (pending.current || sharePending.current || loading || !enabled) return;
     pending.current = true; ++readRevision.current; setBusy(true); setError(""); setCopied(false);
     try {
       const result = await createAccountInvitation();
       if (!mounted.current) return;
-      setNewLink({ id: result.invitation.id, url: accountInvitationLink(result.invitationCode, window.location.origin) });
+      setNewLink({ id: result.invitation.id, url: accountInvitationLink(result.invitationCode, productOrigin()) });
       setInvitations(current => [result.invitation, ...current].slice(0, 50));
     } catch {
       if (!mounted.current) return;
@@ -46,7 +50,7 @@ export function InvitePeopleDialog({ onClose }: { onClose(): void }) {
   }
 
   async function cancel(id: string) {
-    if (pending.current) return;
+    if (pending.current || sharePending.current) return;
     pending.current = true; ++readRevision.current; setBusy(true); setError("");
     try {
       await cancelAccountInvitation(id);
@@ -67,18 +71,27 @@ export function InvitePeopleDialog({ onClose }: { onClose(): void }) {
       if (mounted.current) setError("Select and copy the invitation link below.");
     }
   }
+  async function share() {
+    if (!native || !newLink || sharePending.current) return;
+    sharePending.current = true;
+    setSharing(true);
+    setError("");
+    try { await native.shareUrl(newLink.url, "LifeLinks invitation"); }
+    catch { if (mounted.current) setError("We couldn't open sharing. Copy the invitation link to send it."); }
+    finally { sharePending.current = false; if (mounted.current) setSharing(false); }
+  }
   const active = invitations.filter(invitation => !invitation.revokedAt && !invitation.redeemedAt && Date.parse(invitation.expiresAt) > Date.now());
 
   return <Dialog title="Invite people" onClose={onClose}>
     <div className="ll-form ll-invitations">
       <p>Give someone their own private LifeLinks workspace. Your records, agent connections, and calendars stay private.</p>
-      <button className="ll-button ll-primary" disabled={loading || busy || !enabled || active.length >= 10} onClick={() => void create()}>
+      <button className="ll-button ll-primary" disabled={loading || busy || sharing || !enabled || active.length >= 10} onClick={() => void create()}>
         <UserPlus size={18} />{busy ? "Working…" : newLink ? "Create another invitation" : "Create invitation link"}
       </button>
       <p className="ll-muted">One invitation use per link · Expires in 7 days · Up to 10 pending invitations. People can also sign up directly.</p>
       {newLink && <section aria-label="New invitation">
         <label>Invitation link<input ref={linkInput} value={newLink.url} readOnly autoComplete="off" spellCheck={false} onFocus={event => event.target.select()} /></label>
-        <div className="ll-button-row"><button className="ll-button" onClick={() => void copy()}><Copy size={16} />{copied ? "Copied!" : "Copy link"}</button></div>
+        <div className="ll-button-row"><button className="ll-button" onClick={() => void copy()}><Copy size={16} />{copied ? "Copied!" : "Copy link"}</button>{native && <button className="ll-button" disabled={sharing} onClick={() => void share()}><Share2 size={16} />{sharing ? "Opening sharing…" : "Share link"}</button>}</div>
         <p className="ll-muted">Send this link in a message and save it before closing this dialog. The invitation can be used once; signup remains available if it expires or is cancelled.</p>
       </section>}
       {error && <p className="ll-inline-warning" role="alert">{error}</p>}
@@ -91,7 +104,7 @@ export function InvitePeopleDialog({ onClose }: { onClose(): void }) {
             const status = invitation.redeemedAt ? "Used" : invitation.revokedAt ? "Cancelled" : Date.parse(invitation.expiresAt) <= Date.now() ? "Expired" : "Pending";
             return <li key={invitation.id}><div><strong>{new Date(invitation.createdAt).toLocaleString()}</strong>
               <small>{status}{status === "Pending" ? ` · Expires ${new Date(invitation.expiresAt).toLocaleDateString()}` : ""}</small></div>
-              {status === "Pending" && <button className="ll-text-button" disabled={busy} onClick={() => void cancel(invitation.id)}>Cancel invitation</button>}
+              {status === "Pending" && <button className="ll-text-button" disabled={busy || sharing} onClick={() => void cancel(invitation.id)}>Cancel invitation</button>}
             </li>;
           })}</ul>
           <button className="ll-text-button" disabled={busy} onClick={() => void refresh().catch(() => setError("We couldn't refresh your invitations."))}>Refresh invitations</button>

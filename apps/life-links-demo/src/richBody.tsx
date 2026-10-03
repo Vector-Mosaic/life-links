@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { nativeRuntime, openExternalLink } from "./platform";
 
 import {
   createLinkBodyDocFromPlainText,
@@ -99,12 +100,26 @@ function applyMarks(text: string, marks: LinkBodyDocMark[], key: string): ReactN
       const href = normalizeLinkBodyHref(mark.attrs?.href);
       if (href) {
         return (
-          <a key={`${key}-link-${index}`} href={href} target="_blank" rel="noopener noreferrer">
+          <RichBodyLink key={`${key}-link-${index}`} href={href}>
             {current}
-          </a>
+          </RichBodyLink>
         );
       }
     }
     return current;
   }, <span key={key}>{text}</span>);
+}
+
+function RichBodyLink({ href, children }: { href: string; children: ReactNode }) {
+  const [error, setError] = useState(false);
+  const mounted = useRef(true);
+  const currentHref = useRef(href);
+  currentHref.current = href;
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  return <><a href={href} target={nativeRuntime() && href.startsWith("#") ? undefined : "_blank"} rel="noopener noreferrer" onClick={event => {
+    if (!nativeRuntime() || href.startsWith("#")) return;
+    event.preventDefault();
+    setError(false);
+    void openExternalLink(href).catch(() => { if (mounted.current && currentHref.current === href) setError(true); });
+  }}>{children}</a>{error && <span role="alert"> This link could not be opened.</span>}</>;
 }

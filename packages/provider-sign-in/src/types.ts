@@ -16,12 +16,32 @@ export interface ProviderTransaction {
   codeVerifier: string;
 }
 
+/** Restricted server-only material for the exact verified Apple identity. */
+export interface ProviderRevocationCredential {
+  provider: "apple";
+  issuer: string;
+  clientId: string;
+  subject: string;
+  token: string;
+  tokenTypeHint: "refresh_token" | "access_token";
+}
+
+/** The identity remains token-free; consumers own protected credential retention. */
+export interface ProviderRedemption {
+  identity: VerifiedProviderIdentity;
+  revocationCredential: ProviderRevocationCredential | null;
+}
+
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly displayName: string;
   readonly responseMode: "query" | "form_post";
   authorizationUrl(transaction: ProviderTransaction): Promise<string>;
   redeem(input: { callbackUrl: URL; transaction: ProviderTransaction }): Promise<VerifiedProviderIdentity>;
+  /** Choose this OR redeem once for a callback, never both. Present on Apple. */
+  redeemWithCustody?(input: { callbackUrl: URL; transaction: ProviderTransaction }): Promise<ProviderRedemption>;
+  /** Consumer-authorized app-access revocation, not provider account deletion. */
+  revoke?(credential: ProviderRevocationCredential): Promise<void>;
 }
 
 interface CommonConfig {
@@ -56,10 +76,10 @@ export type ProviderSignInConfig =
     });
 
 export class ProviderSignInError extends Error {
-  readonly code: "invalid_configuration" | "sign_in_failed";
+  readonly code: "invalid_configuration" | "sign_in_failed" | "revocation_failed";
 
-  constructor(code: "invalid_configuration" | "sign_in_failed" = "sign_in_failed") {
-    super(code === "invalid_configuration" ? "Provider sign-in is not configured correctly." : "Provider sign-in could not be verified.");
+  constructor(code: "invalid_configuration" | "sign_in_failed" | "revocation_failed" = "sign_in_failed") {
+    super(code === "invalid_configuration" ? "Provider sign-in is not configured correctly." : code === "revocation_failed" ? "Provider authorization could not be revoked." : "Provider sign-in could not be verified.");
     this.name = "ProviderSignInError";
     this.code = code;
   }

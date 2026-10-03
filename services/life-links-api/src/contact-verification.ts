@@ -10,6 +10,7 @@ import type { LifeLinksConfig } from "./config.js";
 import type { LifeLinksStore, StoredUser } from "./store.js";
 import type { Logger } from "./logger.js";
 import { hashPassword } from "./password.js";
+import { isNativeRequest, NATIVE_VERIFICATION_HEADER } from "./native-request.js";
 import { createSmsVerificationConsentReceipt } from "./sms-verification-consent.js";
 import { ContactVerificationStateError, type ContactVerificationAttempt, type PhoneBinding,
   type VerificationLimit, type FinalizeVerifiedRegistrationInput } from "./contact-verification-state.js";
@@ -20,7 +21,7 @@ const BROWSER_COOKIE = "life_links_contact_verification";
 const LIFETIME = 10 * 60_000;
 const COOLDOWN = 60_000;
 type AuthRequest = Request & { user?: StoredUser; sessionTokenHash?: string; authTransport?: string; requestId?: string };
-type Payload = { address: string; returnTo: string; invitationCode?: string; operationId: string;
+type Payload = { client?: "native"; address: string; returnTo: string; invitationCode?: string; operationId: string;
   verificationCode: string; codeDigest: string; emailSenderContext?: string; ownerId?: string; sessionHash?: string;
   smsConsent?: { recordedAt: string; version: typeof LIFE_LINKS_SMS_VERIFICATION_CONSENT.version; purpose: "verification" } };
 type Loaded = { attempt: ContactVerificationAttempt; payload: Payload };
@@ -32,7 +33,7 @@ class VerificationRequestError extends Error {
 /** LifeLinks owns admission, durable abuse limits, browser binding and account transactions. */
 export function createContactVerificationRouter(options: { store: LifeLinksStore; config: LifeLinksConfig; logger: Logger;
   emailSender?: EmailVerificationSender; smsSender?: SmsVerificationSender;
-  issueSession(user: StoredUser, response: Response): Promise<void>;
+  issueSession(user: StoredUser, response: Response, native?: boolean): Promise<string | void>;
   registrationResponse(user: StoredUser): unknown }) {
   const { store, config, logger, issueSession, registrationResponse } = options;
   const routes = Router();
@@ -57,10 +58,11 @@ export function createContactVerificationRouter(options: { store: LifeLinksStore
     challengeId: attempt.tokenHash, purpose: attempt.intent, key,
   });
   const addressHash = (channel: "email" | "phone", address: string) => channel === "phone" ? phoneHash(address) : fingerprint(`email:${address}`);
-  const browserValue = (request: Request) => cookie.parse(request.headers.cookie ?? "")[BROWSER_COOKIE] ?? "";
+  const browserValue = (request: Request) => isNativeRequest(request) ? request.get(NATIVE_VERIFICATION_HEADER) ?? "" : cookie.parse(request.headers.cookie ?? "")[BROWSER_COOKIE] ?? "";
   function noStore(response: Response) { response.setHeader("Cache-Control", "private, no-store"); response.setHeader("Referrer-Policy", "no-referrer"); }
   function browser(request: Request, response: Response) {
     const current = browserValue(request), value = /^[A-Za-z0-9_-]{43}$/.test(current) ? current : randomBytes(32).toString("base64url");
+    if (isNativeRequest(request)) return value;
     response.append("Set-Cookie", cookie.serialize(BROWSER_COOKIE, value, { httpOnly: true, secure: config.secureCookies,
       sameSite: "lax", path: "/", maxAge: LIFETIME / 1000 }));
     return value;
@@ -85,6 +87,7 @@ export function createContactVerificationRouter(options: { store: LifeLinksStore
       const bytes = Buffer.from(attempt.encryptedPayload, "base64url"), decipher = createDecipheriv("aes-256-gcm", key, bytes.subarray(0, 12));
       decipher.setAAD(Buffer.from(`${tokenHash}:${browserHash}`)); decipher.setAuthTag(bytes.subarray(12, 28));
       const payload = JSON.parse(Buffer.concat([decipher.update(bytes.subarray(28)), decipher.final()]).toString("utf8")) as Payload;
+      if ((payload.client === "native") !== isNativeRequest(request)) throw new Error();
       if (typeof payload.address !== "string" || attempt.addressHash !== addressHash(attempt.channel, payload.address)) throw new Error();
       return { attempt, payload };
     } catch { throw new VerificationRequestError("invalid_verification"); }
@@ -97,7 +100,8 @@ export function createContactVerificationRouter(options: { store: LifeLinksStore
   }
   function body(request: Request, allowed: string[]) {
     const input = request.body;
-    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(name => !allowed.includes(name))) throw new VerificationRequestError("invalid_verification");
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(name => ![...allowed, "client"].includes(name)) ||
+        (input.client !== undefined && !isNativeRequest(request))) throw new VerificationRequestError("invalid_verification");
     return input as Record<string, unknown>;
   }
   function returnPath(value: unknown) {
@@ -161,7 +165,8 @@ export function createContactVerificationRouter(options: { store: LifeLinksStore
     if (!sending) add(`check:address:${attempt.addressHash}`, 20, 15 * 60_000);
     if (!await store.reserveVerificationLimits(limits)) throw new VerificationRequestError("verification_rate_limited");
   }
-  const acknowledgement = (token: unknown, attempt: ContactVerificationAttempt) => ({ attemptToken: token,
+  const acknowledgement = (token: unknown, attempt: ContactVerificationAttempt, request: Request, binding = browserValue(request)) => ({ attemptToken: token,
+    ...(isNativeRequest(request) ? { verificationBinding: binding } : {}),
     expiresAt: attempt.expiresAt, resendAfterSeconds: Math.max(0, Math.ceil((Date.parse(attempt.resendAt) - Date.now()) / 1000)) });
   async function deliver(loaded: Loaded, request: AuthRequest): Promise<Loaded> {
     if (loaded.attempt.channel === "phone") {
@@ -221,7 +226,7 @@ export function createContactVerificationRouter(options: { store: LifeLinksStore
     if (attempt.phase !== "verified") throw new VerificationRequestError("invalid_verification");
     const binding = phoneBinding(loaded);
     if (attempt.intent === "link") {
-      if (request.authTransport !== "cookie" || request.user?.id !== payload.ownerId || request.sessionTokenHash !== payload.sessionHash) throw new VerificationRequestError("authentication_required");
+      if (request.authTransport !== (payload.client === "native" ? "bearer" : "cookie") || request.user?.id !== payload.ownerId || request.sessionTokenHash !== payload.sessionHash) throw new VerificationRequestError("authentication_required");
       const sessionTokenHash = payload.sessionHash;
       const session = sessionTokenHash ? await store.getSessionByTokenHash(sessionTokenHash) : null;
       if (!sessionTokenHash || !session || session.user.id !== payload.ownerId) throw new VerificationRequestError("authentication_required");
@@ -234,8 +239,9 @@ export function createContactVerificationRouter(options: { store: LifeLinksStore
     const user = await store.getPhoneUser(binding);
     if (user) {
       if (!await store.consumeVerifiedContactAttempt(consumption)) throw new VerificationRequestError("invalid_verification");
-      await issueSession(user, response); clearBrowser(response); event(request, "phone_signed_in", "phone", user.id);
-      response.json({ status: "signed_in", returnTo: payload.returnTo }); return;
+      const sessionToken = await issueSession(user, response, payload.client === "native"); clearBrowser(response); event(request, "phone_signed_in", "phone", user.id);
+      response.json({ status: "signed_in", returnTo: payload.returnTo,
+        ...(payload.client === "native" ? { ...registrationResponse(user) as object, sessionToken } : {}) }); return;
     }
     response.json({ status: "profile_required", returnTo: payload.returnTo });
   }
@@ -247,16 +253,17 @@ export function createContactVerificationRouter(options: { store: LifeLinksStore
         ["phoneNumber", "intent", "invitationCode", "returnTo", "smsConsent", "smsConsentVersion"]);
       const intent = channel === "email" ? "register" : input.intent;
       if (intent !== "login" && intent !== "register" && intent !== "link") throw new VerificationRequestError("invalid_verification");
-      if (intent === "link" && (!request.user || request.authTransport !== "cookie" || !request.sessionTokenHash)) throw new VerificationRequestError("authentication_required");
+      if (intent === "link" && (!request.user || request.authTransport !== (isNativeRequest(request) ? "bearer" : "cookie") || !request.sessionTokenHash)) throw new VerificationRequestError("authentication_required");
       if (intent !== "link" && request.user) throw new VerificationRequestError("sign_out_required");
       if (channel === "phone" && (input.smsConsent !== true || input.smsConsentVersion !== LIFE_LINKS_SMS_VERIFICATION_CONSENT.version)) throw new VerificationRequestError("invalid_verification");
       if (input.invitationCode !== undefined && !validInvitationCode(input.invitationCode)) throw new VerificationRequestError("invalid_verification");
       const address = channel === "email" ? emailAddress(input.email) : phoneNumber(input.phoneNumber);
       const token = randomBytes(32).toString("base64url"), browserNonce = browser(request, response), now = Date.now();
       const attempt: ContactVerificationAttempt = { tokenHash: fingerprint(`attempt:${token}`), browserHash: fingerprint(`browser:${browserNonce}`),
-        addressHash: addressHash(channel, address), channel, intent, phase: "send_pending", encryptedPayload: "pending",
+        addressHash: addressHash(channel, address), channel, intent,
+        ...(intent === "link" ? { ownerId: request.user!.id } : {}), phase: "send_pending", encryptedPayload: "pending",
         expiresAt: new Date(now + LIFETIME).toISOString(), resendAt: new Date(now + COOLDOWN).toISOString(), version: 1, checkCount: 0 };
-      const payload: Payload = { address, returnTo: returnPath(input.returnTo), operationId: randomBytes(32).toString("hex"),
+      const payload: Payload = { ...(isNativeRequest(request) ? { client: "native" as const } : {}), address, returnTo: returnPath(input.returnTo), operationId: randomBytes(32).toString("hex"),
         verificationCode: generateVerificationCode(), codeDigest: "",
         ...(channel === "email" ? { emailSenderContext } : {}),
         ...(input.invitationCode ? { invitationCode: input.invitationCode as string } : {}),
@@ -268,7 +275,7 @@ export function createContactVerificationRouter(options: { store: LifeLinksStore
       await reserve(request, attempt, true);
       await store.createContactVerificationAttempt(attempt);
       const sent = await deliver({ attempt, payload }, request);
-      response.status(202).json(acknowledgement(token, sent.attempt));
+      response.status(202).json(acknowledgement(token, sent.attempt, request, browserNonce));
     } catch (error) { errorResponse(response, error); }
   }
   routes.post("/api/auth/email/start", (request: AuthRequest, response) => start("email", request, response));
@@ -292,7 +299,7 @@ export function createContactVerificationRouter(options: { store: LifeLinksStore
       await reserve(request, loaded.attempt, true, reconcile);
       loaded = await update(loaded, { phase: "send_pending", resendAt: new Date(Date.now() + COOLDOWN).toISOString() }, payload);
       loaded = await deliver(loaded, request);
-      response.status(202).json(acknowledgement(input.attemptToken, loaded.attempt));
+      response.status(202).json(acknowledgement(input.attemptToken, loaded.attempt, request));
     } catch (error) { errorResponse(response, error); }
   }
   routes.post("/api/auth/email/resend", (request: AuthRequest, response) => resend("email", request, response));
@@ -331,8 +338,9 @@ export function createContactVerificationRouter(options: { store: LifeLinksStore
       if (attempt.channel !== "email" || attempt.intent !== "register" || attempt.phase !== "verified") throw new VerificationRequestError("invalid_verification");
       const user = await finalize({ tokenHash: attempt.tokenHash, browserHash: attempt.browserHash, expectedVersion: attempt.version,
         ...details, email: loaded.payload.address, passwordHash: await hashPassword(input.password), invitation: await invitation(loaded.payload.invitationCode) });
-      await issueSession(user, response); clearBrowser(response); event(request, "registered", "email", user.id);
-      response.status(201).json(registrationResponse(user));
+      const sessionToken = await issueSession(user, response, loaded.payload.client === "native"); clearBrowser(response); event(request, "registered", "email", user.id);
+      response.status(201).json({ ...registrationResponse(user) as object,
+        ...(loaded.payload.client === "native" ? { sessionToken, returnTo: loaded.payload.returnTo } : {}) });
     } catch (error) { errorResponse(response, error); }
   });
   routes.post("/api/auth/phone/complete", async (request: AuthRequest, response) => {
@@ -344,8 +352,9 @@ export function createContactVerificationRouter(options: { store: LifeLinksStore
       if (attempt.channel !== "phone" || attempt.intent === "link" || attempt.phase !== "verified") throw new VerificationRequestError("invalid_verification");
       const user = await finalize({ tokenHash: attempt.tokenHash, browserHash: attempt.browserHash, expectedVersion: attempt.version,
         ...details, email: null, passwordHash: null, phoneBinding: phoneBinding(loaded), invitation: await invitation(loaded.payload.invitationCode) });
-      await issueSession(user, response); clearBrowser(response); event(request, "registered", "phone", user.id);
-      response.status(201).json({ returnTo: loaded.payload.returnTo });
+      const sessionToken = await issueSession(user, response, loaded.payload.client === "native"); clearBrowser(response); event(request, "registered", "phone", user.id);
+      response.status(201).json({ returnTo: loaded.payload.returnTo,
+        ...(loaded.payload.client === "native" ? { ...registrationResponse(user) as object, sessionToken } : {}) });
     } catch (error) { errorResponse(response, error); }
   });
   return routes;

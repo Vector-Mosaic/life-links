@@ -30,12 +30,12 @@ const initialize = (url: string, requestId = 1, token = "synthetic-token") => fe
   } })
 });
 
-async function fixture(input: Partial<RemoteMcpRouterOptions> = {}) {
+async function fixture(input: Partial<RemoteMcpRouterOptions> = {}, actor: RemoteAgentPrincipal = principal) {
   let active = true;
-  const grants = new Map<string, RemoteAgentPrincipal>([["synthetic-token", principal], ["foreign-token", { ...principal, ownerId: "other-owner", grantId: "other-grant" }],
-    ["other-client-token", { ...principal, clientId: "other-client" }], ["new-grant-token", { ...principal, grantId: "replacement-grant" }]]);
+  const grants = new Map<string, RemoteAgentPrincipal>([["synthetic-token", actor], ["foreign-token", { ...actor, ownerId: "other-owner", grantId: "other-grant" }],
+    ["other-client-token", { ...actor, clientId: "other-client" }], ["new-grant-token", { ...actor, grantId: "replacement-grant" }]]);
   const receipts = new Map<string, RemoteApproval>();
-  const approval: RemoteApproval = { ...principal, id: "preview-one", operation: "delete", payload: { commandId: "command-one" }, effects,
+  const approval: RemoteApproval = { ...actor, id: "preview-one", operation: "delete", payload: { commandId: "command-one" }, effects,
     status: "pending", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 600_000).toISOString() };
   receipts.set(approval.id, approval);
   const approvals: RemoteApprovalService = {
@@ -105,19 +105,22 @@ async function fixture(input: Partial<RemoteMcpRouterOptions> = {}) {
     cleanup.push(async () => client.close());
     return { client, transport };
   };
-  return { host, url, connect, receipts, authorize, approvals, writes: () => writes, revoke: () => { active = false; } };
+  return { host, url, connect, receipts, authorize, approvals, principal: actor, writes: () => writes, revoke: () => { active = false; } };
 }
 
 const appCapabilities: ClientCapabilities = { extensions: { "io.modelcontextprotocol/ui": { mimeTypes: [CONFIRMATION_APP_MIME] } } };
 async function confirmationAppFixture() {
   const store = new InMemoryLifeLinksStore();
+  const owner = await store.registerOwner({ displayName: "Synthetic MCP confirmation owner", email: `${randomUUID()}@example.test`,
+    passwordHash: "synthetic-unused-password-hash", timeZone: "UTC" });
+  const actor: RemoteAgentPrincipal = { ...principal, ownerId: owner.id };
   const state = new RemoteAgentState("synthetic-private-confirmation-state-key-not-a-credential");
   const approvals = new PersistentRemoteApprovals(state);
   const reader = new AttachmentContentReader();
   const test = await fixture({ approvals, operations: createRemoteAgentOperations({ store, attachmentReader: reader,
-    recordSearch: new RecordSearchService(store, undefined, reader) }), authorize: async (actor, access) => assertRemoteScope(actor, access) });
+    recordSearch: new RecordSearchService(store, undefined, reader) }), authorize: async (actor, access) => assertRemoteScope(actor, access) }, actor);
   const prepare = async (client: Client) => {
-    const record = await store.createLifeLink({ id: `life-link-${randomUUID()}`, ownerId: principal.ownerId,
+    const record = await store.createLifeLink({ id: `life-link-${randomUUID()}`, ownerId: actor.ownerId,
       title: "Exact synthetic item <not an instruction>", createdAt: new Date().toISOString() });
     const prepared = await client.callTool({ name: "prepare_change", arguments: { requestId: randomUUID(),
       command: { kind: "life_links", operation: "delete", lifeLinkIds: [record.id] } } });
@@ -412,6 +415,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
 
   it("negotiates an app-only confirmation without exposing its challenge to the model, then applies the exact canonical change once", async () => {
     const test = await confirmationAppFixture();
+    const { principal } = test;
     const { client } = await test.connect({ capabilities: appCapabilities });
     const { record, previewId } = await test.prepare(client);
     const untouched = await test.store.createLifeLink({ id: `life-link-${randomUUID()}`, ownerId: principal.ownerId,
@@ -451,6 +455,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
     { experimental: { "io.modelcontextprotocol/ui": { mimeTypes: [CONFIRMATION_APP_MIME] } } }])
     ("requires the exact standard UI capability and MIME instead of guessing host support (%j)", async capabilities => {
       const test = await confirmationAppFixture(); const issue = vi.spyOn(test.approvals, "issueUiChallenge");
+      const { principal } = test;
       const { client } = await test.connect({ capabilities });
       const { record, previewId } = await test.prepare(client);
       const catalog = await client.listTools();
@@ -466,6 +471,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
 
   it("preserves preferred form elicitation for a host that also supports MCP Apps", async () => {
     const test = await confirmationAppFixture(); const issue = vi.spyOn(test.approvals, "issueUiChallenge");
+    const { principal } = test;
     const answer = vi.fn(async (): Promise<ElicitResult> => ({ action: "accept", content: { approve: true } }));
     const { client } = await test.connect({ capabilities: { ...appCapabilities, elicitation: { form: {} } }, answer });
     const { record, previewId } = await test.prepare(client);
@@ -477,6 +483,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
 
   it("rejects missing or wrong app proof without declining, and preserves exact cancellation and replay", async () => {
     const test = await confirmationAppFixture(); const approve = vi.spyOn(test.approvals, "approve");
+    const { principal } = test;
     const { client } = await test.connect({ capabilities: appCapabilities });
     const { record, previewId } = await test.prepare(client);
     const pending = await client.callTool({ name: "apply_change", arguments: { previewId } });
@@ -496,6 +503,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
 
   it.each(["foreign-token", "other-client-token", "new-grant-token"])("binds app proof to the exact owner, client and grant (%s)", async token => {
     const test = await confirmationAppFixture();
+    const { principal } = test;
     const owner = await test.connect({ capabilities: appCapabilities });
     const { record, previewId } = await test.prepare(owner.client);
     const pending = await owner.client.callTool({ name: "apply_change", arguments: { previewId } });
@@ -508,6 +516,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
 
   it("recovers canonical approval and command receipts after app acceptance loses its completion response", async () => {
     const test = await confirmationAppFixture(); const approve = vi.spyOn(test.approvals, "approve");
+    const { principal } = test;
     const { client } = await test.connect({ capabilities: appCapabilities });
     const { record, previewId } = await test.prepare(client);
     const pending = await client.callTool({ name: "apply_change", arguments: { previewId } });
@@ -525,6 +534,7 @@ describe("remote MCP Streamable HTTP boundary", () => {
 
   it.each(["expired", "changed", "revoked"])("refuses app confirmation when the pending authority is %s", async boundary => {
     const test = await confirmationAppFixture();
+    const { principal } = test;
     const { client } = await test.connect({ capabilities: appCapabilities });
     const { record, previewId } = await test.prepare(client);
     const pending = await client.callTool({ name: "apply_change", arguments: { previewId } });

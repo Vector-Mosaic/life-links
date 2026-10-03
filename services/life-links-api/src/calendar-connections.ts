@@ -19,6 +19,8 @@ export function createCalendarConnectionRouter(deps: {
   logger: Logger;
   authorization?: CalendarAuthorizationService;
   sessionIdentity?: (request: Request) => string | null;
+  nativeAuthorizationContext?: (request: Request, provider: "google" | "microsoft") => Promise<{ ownerId: string; sessionIdentity: string } | null>;
+  finishNativeAuthorization?: (request: Request, response: Response, provider: "google" | "microsoft", authorizationId?: string, error?: string) => Promise<boolean>;
 }): Router {
   const router = Router();
   const route = (operation: (request: Request, response: Response, ownerId: string) => Promise<void>): RequestHandler =>
@@ -82,16 +84,21 @@ export function createCalendarConnectionRouter(deps: {
     response.setHeader("Cache-Control", "no-store");
     response.setHeader("Referrer-Policy", "no-referrer");
     try {
-      const ownerId = deps.ownerId(request);
+      // Native context is checked before provider redemption. It authorizes only
+      // this exact Calendar callback, never ordinary owner API access.
+      const native = await deps.nativeAuthorizationContext?.(request, provider);
+      const ownerId = native?.ownerId ?? deps.ownerId(request);
       if (!ownerId) throw new CalendarAuthorizationError("session_expired");
       const value = (key: string) => typeof request.query[key] === "string" ? request.query[key] as string : undefined;
-      const id = await authorization().callback({ ownerId, sessionId: session(request), state: value("state") ?? "",
+      const id = await authorization().callback({ ownerId, sessionId: native?.sessionIdentity ?? session(request), state: value("state") ?? "",
         code: value("code"), error: value("error"), provider });
+      if (await deps.finishNativeAuthorization?.(request, response, provider, id)) return;
       response.redirect(303, `/calendar?calendarAuthorization=${encodeURIComponent(id)}`);
     } catch (error) {
       const code = error instanceof CalendarAuthorizationError && ["cancelled", "session_expired"].includes(error.code)
         ? error.code : "authorization_failed";
       deps.logger.warn("life_links.calendar_authorization.rejected", { msg: "Calendar authorization did not complete", reason: code });
+      try { if (await deps.finishNativeAuthorization?.(request, response, provider, undefined, code)) return; } catch { /* no admissible native handoff */ }
       response.redirect(303, `/calendar?calendarConnectionError=${code}`);
     }
   };

@@ -143,6 +143,11 @@ import type { RemoteAgentAuth } from "./remote-agent-auth.js";
 import { PersistentRemoteApprovals, type RemoteAgentState } from "./remote-agent-state.js";
 import { createRemoteAgentOperations } from "./remote-agent-operations.js";
 import { createRemoteMcpRouter } from "./remote-mcp.js";
+import { createNativeAuthBoundary } from "./native-auth.js";
+import { isNativeRequest, NATIVE_VERIFICATION_HEADER } from "./native-request.js";
+import { createProviderRevocationService } from "./provider-revocation.js";
+import { createAccountDeletionRouter, drainProviderRevocationCleanup } from "./account-deletion.js";
+import { createProviderAdapters } from "@vmosaic/provider-sign-in";
 import { createProviderSignInRouters } from "./provider-sign-in.js";
 import type { ProviderAdapter } from "@vmosaic/provider-sign-in";
 
@@ -251,6 +256,7 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   // or page actor header cannot substitute for a delegated remote credential.
   if (remoteAgent) {
     const { auth, state } = remoteAgent;
+    state.setOwnerResolver(id => store.getUserById(id).then(Boolean));
     const remote = createRemoteMcpRouter({
       authenticate: request => auth.authenticate(request),
       withPrincipal: (principal, action) => auth.withPrincipal(principal, action),
@@ -278,6 +284,8 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   app.use("/api/auth/register", express.json({ limit: "4kb" }));
   app.use("/api/auth/email", express.json({ limit: "4kb" }));
   app.use("/api/auth/phone", express.json({ limit: "4kb" }));
+  app.use("/api/auth/native", express.json({ limit: "4kb" }));
+  app.use("/api/account", express.json({ limit: "4kb" }));
   app.use(express.json({ limit: "1mb" }));
   app.use(async (request, _response, next) => {
     const appRequest = request as AppRequest;
@@ -312,30 +320,50 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
       next(error);
     }
   });
-  const issueSession = async (user: StoredUser, response: Response) => {
+  const issueSession = async (user: StoredUser, response: Response, native = false) => {
     const token = createSessionToken();
     await store.createSession(user.id, hashSessionToken(token, config.sessionSecret), new Date(Date.now() + config.sessionTtlDays * 86400000).toISOString());
-    setSessionCookie(response, token, config);
+    if (!native) setSessionCookie(response, token, config);
+    return native ? token : undefined;
   };
-  const providerSignIn = createProviderSignInRouters({ store, config, logger, adapters: signInAdapters, issueSession });
+  const adapters = signInAdapters ?? createProviderAdapters(config.providerSignIn ?? []);
+  const revocation = createProviderRevocationService(config, adapters);
+  const sessionResponse = (user: StoredUser) => ({ user: publicUser(user), agentConnection: agentConnectionForUser(user), qrBaseUrl: config.qrBaseUrl });
+  let providerSignIn!: ReturnType<typeof createProviderSignInRouters>;
+  const nativeAuth = createNativeAuthBoundary({ store, config, calendarAuthorization: calendarAuthorizationService,
+    providerAvailable: provider => adapters.some(adapter => adapter.id === provider),
+    startProvider: (request, response, launch) => providerSignIn.startNative(request, response, launch),
+    issueSession, sessionResponse });
+  providerSignIn = createProviderSignInRouters({ store, config, logger, adapters, issueSession,
+    revocation, nativeCompletionUrl: nativeAuth.completionUrl, validateNativeContext: nativeAuth.validateContext });
   const contactVerification = createContactVerificationRouter({ store, config, logger, issueSession,
     emailSender: emailVerificationSender, smsSender: smsVerificationSender,
-    registrationResponse: user => ({ user: publicUser(user), agentConnection: agentConnectionForUser(user), qrBaseUrl: config.qrBaseUrl }) });
+    registrationResponse: sessionResponse });
   // These callbacks verify a one-use, browser-bound transaction. Apple uses
   // cross-site form_post; it cannot pass the ordinary mutation Origin guard.
   app.use(providerSignIn.callbacks);
   app.use(originGuard(config, logger));
   app.use(rateLimitGuard(config, logger));
+  app.use(nativeAuth.routes);
   app.use(providerSignIn.routes);
   app.use(contactVerification);
 
   const requireAuthenticated = requireUser(logger);
+  app.use(createAccountDeletionRouter({ store, logger, requireAuthenticated,
+    ownerId: request => (request as AppRequest).user?.id ?? null,
+    sessionTokenHash: request => (request as AppRequest).sessionTokenHash ?? null,
+    clearSession: response => clearSessionCookie(response, config), calendarGateway: calendarProviderGateway,
+    ...(remoteAgent ? { clearRemoteOwner: (ownerId: string) => remoteAgent.state.clearOwner(ownerId) } : {}),
+    ...(revocation ? { revokeProviderCredential: revocation.revoke } : {}) }));
+  app.locals.drainProviderRevocationCleanup = () => revocation ? drainProviderRevocationCleanup(store, revocation.revoke) : Promise.resolve();
   if (calendarProviderGateway) {
     app.use(createCalendarConnectionRouter({
       gateway: calendarProviderGateway, requireAuthenticated,
       ownerId: (request) => (request as AppRequest).user?.id ?? null, logger,
       authorization: calendarAuthorizationService,
-      sessionIdentity: (request) => (request as AppRequest).authTransport === "cookie" ? (request as AppRequest).sessionTokenHash ?? null : null
+      sessionIdentity: (request) => (request as AppRequest).sessionTokenHash ?? null,
+      nativeAuthorizationContext: nativeAuth.calendarContext,
+      finishNativeAuthorization: nativeAuth.finishCalendar
     }));
   }
 
@@ -368,6 +396,9 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   app.post("/api/auth/login", async (request, response) => {
     const { email, password, client } = request.body as { email?: string; password?: string; client?: string };
     const wantsNativeSession = client === "native";
+    if (wantsNativeSession && !isNativeRequest(request)) {
+      response.status(400).json({ error: "invalid_native_auth" }); return;
+    }
     if (!email || !password) {
       logger.warn("life_links.auth.login_failed", {
         msg: "Login rejected because email or password was missing",
@@ -2330,18 +2361,21 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   });
 
   app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => {
-    if (isRegistrationPath(request.path) || /^\/api\/auth\/registration\/?$/i.test(request.path) ||
+    if (/^\/api\/account\/?$/i.test(request.path) || isRegistrationPath(request.path) || /^\/api\/auth\/registration\/?$/i.test(request.path) ||
         /^\/api\/account-invitations(?:\/|$)/i.test(request.path) ||
-        /^\/api\/auth\/(?:providers|provider-signup|provider-link|email|phone)(?:\/|$)/i.test(request.path)) {
+        /^\/api\/auth\/(?:providers|provider-signup|provider-link|email|phone|native)(?:\/|$)/i.test(request.path)) {
       // Parser/driver messages may contain submitted credentials or unique-key details.
       const badInput = ["entity.parse.failed", "entity.too.large", "parameters.too.many"].includes(String((error as { type?: string })?.type));
+      const deletionRoute = /^\/api\/account\/?$/i.test(request.path);
+      const nativeRoute = /^\/api\/auth\/native(?:\/|$)/i.test(request.path);
       const signInRoute = /^\/api\/auth\/(?:providers|provider-signup|provider-link)(?:\/|$)/i.test(request.path);
       const verificationRoute = isRegistrationPath(request.path) || /^\/api\/auth\/(?:email|phone)(?:\/|$)/i.test(request.path);
       logger.error(signInRoute ? "life_links.sign_in.request_failed" : "life_links.auth.registration_error", { msg: "Account request failed",
         request_id: (request as AppRequest).requestId, status: badInput ? 400 : 503 });
       response.setHeader("Cache-Control", "no-store");
+      response.setHeader("Referrer-Policy", "no-referrer");
       const invitationRoute = /^\/api\/account-invitations(?:\/|$)/i.test(request.path);
-      response.status(badInput ? 400 : 503).json({ error: invitationRoute
+      response.status(badInput ? 400 : 503).json({ error: deletionRoute ? badInput ? "account_deletion_confirmation_required" : "account_deletion_unavailable" : nativeRoute ? badInput ? "invalid_native_auth" : "native_auth_unavailable" : invitationRoute
         ? badInput ? "invalid_invitation" : "invitations_unavailable"
         : signInRoute ? badInput ? "invalid_sign_in_request" : "sign_in_unavailable"
         : verificationRoute ? badInput ? "invalid_verification" : "verification_unavailable"
@@ -2381,11 +2415,12 @@ export function createLifeLinksApp({ store, config, logger, calendarProviderGate
   return app;
 }
 
-export function startLifeLinksServer(deps: LifeLinksAppDeps): http.Server & { closeRemoteAgent(): Promise<void> } {
+export function startLifeLinksServer(deps: LifeLinksAppDeps): http.Server & { closeRemoteAgent(): Promise<void>; drainProviderRevocationCleanup(): Promise<void> } {
   const app = createLifeLinksApp(deps);
   let remoteClosing: Promise<void> | undefined;
   const closeRemoteAgent = () => remoteClosing ??= (async () => { await app.locals.closeRemoteAgent?.(); })();
-  const server = Object.assign(app.listen(deps.config.port, deps.config.host), { closeRemoteAgent });
+  const server = Object.assign(app.listen(deps.config.port, deps.config.host), { closeRemoteAgent,
+    drainProviderRevocationCleanup: async () => { await app.locals.drainProviderRevocationCleanup?.(); } });
   // Callers can stop long-lived MCP streams before awaiting HTTP drain. Keep
   // cleanup for ordinary Server.close() callers that have no active streams.
   server.on("close", () => { void closeRemoteAgent().catch(() => {
@@ -2443,7 +2478,7 @@ function securityHeaders(config: LifeLinksConfig) {
 function originGuard(config: LifeLinksConfig, logger: Logger) {
   return (request: Request, response: Response, next: NextFunction) => {
     const registration = (request.method === "POST" && isRegistrationPath(request.path)) ||
-      (isMutatingMethod(request.method) && /^\/api\/(?:account-invitations|auth\/providers|auth\/provider-signup|auth\/provider-link|auth\/email|auth\/phone)(?:\/|$)/i.test(request.path));
+      (isMutatingMethod(request.method) && /^\/api\/(?:account-invitations|auth\/providers|auth\/provider-signup|auth\/provider-link|auth\/email|auth\/phone|auth\/native)(?:\/|$)/i.test(request.path));
     if ((!config.originCheckEnabled && !registration) || !isMutatingMethod(request.method)) {
       next();
       return;
@@ -2455,7 +2490,7 @@ function originGuard(config: LifeLinksConfig, logger: Logger) {
       next();
       return;
     }
-    if (!registration && !origin && !refererOrigin && nativeMutationWithoutBrowserOriginAllowed(appRequest)) {
+    if (!origin && !refererOrigin && nativeMutationWithoutBrowserOriginAllowed(appRequest)) {
       next();
       return;
     }
@@ -2477,6 +2512,11 @@ function originGuard(config: LifeLinksConfig, logger: Logger) {
 }
 
 function nativeMutationWithoutBrowserOriginAllowed(request: AppRequest): boolean {
+  if (/^\/api\/auth\/(?:native\/(?:start|exchange)|email\/(?:start|resend|verify)|phone\/(?:start|resend|verify|complete)|register)$/.test(request.path)) {
+    if (!isNativeRequest(request)) return false;
+    return /\/(?:start|exchange)$/.test(request.path) || /^[A-Za-z0-9_-]{43}$/.test(request.get(NATIVE_VERIFICATION_HEADER) ?? "");
+  }
+  if (/^\/api\/(?:account-invitations|auth\/providers|auth\/provider-signup|auth\/provider-link)(?:\/|$)/.test(request.path)) return false;
   if (request.authTransport === "bearer" && request.user) {
     return true;
   }
@@ -2544,6 +2584,7 @@ function rateLimitGuard(config: LifeLinksConfig, logger: Logger) {
 }
 
 function rateLimitRuleForRequest(request: Request, config: LifeLinksConfig): { bucket: string; max: number } | null {
+  if (request.method === "POST" && /\/api\/auth\/native\/(?:start|exchange)$/.test(request.path)) return { bucket: "auth_native", max: 10 };
   if (request.method === "POST" && isRegistrationPath(request.path)) return { bucket: "auth_registration", max: 5 };
   if (request.method === "POST" && request.path === "/api/auth/login") {
     return { bucket: "auth_login", max: config.rateLimitLoginMax };
@@ -2569,7 +2610,7 @@ function rateLimitRuleForRequest(request: Request, config: LifeLinksConfig): { b
 function rateLimitIdentity(request: AppRequest, bucket: string): string {
   // Express applies the configured proxy trust to req.ip. Never let an arbitrary
   // forwarded prefix create a fresh invitation-admission budget.
-  if (bucket === "auth_registration") return `client:${request.ip || request.socket.remoteAddress || "unknown"}`;
+  if (bucket === "auth_registration" || bucket === "auth_native") return `client:${request.ip || request.socket.remoteAddress || "unknown"}`;
   const client = clientAddress(request);
   if (bucket === "auth_login") {
     const email = typeof request.body?.email === "string" ? request.body.email.trim().toLowerCase() : "missing";

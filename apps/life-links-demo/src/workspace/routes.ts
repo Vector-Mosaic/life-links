@@ -84,7 +84,7 @@ export function classifyLifeLinksRoute(pathname: string, authenticated: boolean)
     return { surface: "public-qr", qrId, lifeLinkId: null };
   }
   const lifeLinkId = lifeLinkIdFromPath(pathname);
-  if (authenticated && !isRegistrationPath(pathname) && !publicInformationPageFromPath(pathname)) {
+  if (authenticated && !isRegistrationPath(pathname) && !isAccountDeletionPath(pathname) && !publicInformationPageFromPath(pathname)) {
     return { surface: "owner-workspace", qrId: null, lifeLinkId };
   }
   return { surface: "login", qrId: null, lifeLinkId };
@@ -92,6 +92,10 @@ export function classifyLifeLinksRoute(pathname: string, authenticated: boolean)
 
 export function isRegistrationPath(pathname: string): boolean {
   return pathname.split("?")[0].replace(/\/$/, "") === "/register";
+}
+
+export function isAccountDeletionPath(pathname: string): boolean {
+  return pathname.split("?")[0].replace(/\/$/, "") === "/delete-account";
 }
 
 export type PublicInformationPage = "home" | "about" | "contact" | "privacy" | "terms";

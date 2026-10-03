@@ -2447,7 +2447,7 @@
       "post": {
         "operationId": "startLifeLinksEmailVerification",
         "summary": "Start mailbox verification for public native signup",
-        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires a signed-out browser and configured send-only Agent Communications application sender; the gateway owns its fixed mailbox and Graph custody, with no mailbox-content access exposed to LifeLinks. Normalizes the address to lowercase, stores a browser-bound register-email attempt and dispatches a six-digit code only after durable send limits. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. Returns the opaque attempt reference after dispatch, including an unknown email-send outcome; this is neither proof of provider acceptance nor delivery. No owner, Calendar or session is created.",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires a signed-out browser and configured send-only Agent Communications application sender; the gateway owns its fixed mailbox and Graph custody, with no mailbox-content access exposed to LifeLinks. Normalizes the address to lowercase, stores a browser-bound register-email attempt and dispatches a six-digit code only after durable send limits. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. Returns the opaque attempt reference after dispatch, including an unknown email-send outcome; this is neither proof of provider acceptance nor delivery. No owner, Calendar or session is created. Native transport adds client:native without browser headers. Start returns a transient verificationBinding; subsequent operations require it in X-LifeLinks-Verification. The same admission, quotas, expiry, guesses, original-session linking and atomic consumption apply. Final native admission/return returns sessionToken; browser flows retain cookies. No account is created before verification and profile completion.",
         "tags": [
           "session"
         ],
@@ -2458,6 +2458,16 @@
           },
           {
             "$ref": "#/components/parameters/BrowserOrigin"
+          },
+          {
+            "name": "X-LifeLinks-Verification",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            "description": "Mandatory native contact-attempt binding; never a session or possession code. Browser flow instead uses its original HttpOnly cookie."
           }
         ],
         "requestBody": {
@@ -2660,7 +2670,7 @@
       "post": {
         "operationId": "resendLifeLinksEmailVerification",
         "summary": "Resend or reconcile a browser-bound email verification",
-        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Wait at least the returned resend cooldown, initially sixty seconds. An ordinary admitted resend replaces the code/digest and invalidates the previous code. An unknown email-send outcome is explicitly reconciled with the same exact payload and operation ID under the original keyed Agent Communications sender context. The shared sender first reads only that application's original operation: matching accepted/reconciled submission is acknowledged, pending/unknown does not dispatch again, and definite operation absence, the gateway's durable never-attempted admitted stage, or positively deferred provider throttling with a well-formed elapsed retry time permits explicit same-ID/body submission. Missing provider markers after an uncertain effect do not establish no effect; HTTP failures remain unknown. Changed gateway/mailbox/display/credential context refuses reconciliation while the original arrived code remains locally verifiable. The gateway owns durable operation identity and provider reconciliation; no finite provider idempotency-window claim applies and this does not mint a new send operation. Durable resend budgets remain enforced.",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Wait at least the returned resend cooldown, initially sixty seconds. An ordinary admitted resend replaces the code/digest and invalidates the previous code. An unknown email-send outcome is explicitly reconciled with the same exact payload and operation ID under the original keyed Agent Communications sender context. The shared sender first reads only that application's original operation: matching accepted/reconciled submission is acknowledged, pending/unknown does not dispatch again, and definite operation absence, the gateway's durable never-attempted admitted stage, or positively deferred provider throttling with a well-formed elapsed retry time permits explicit same-ID/body submission. Missing provider markers after an uncertain effect do not establish no effect; HTTP failures remain unknown. Changed gateway/mailbox/display/credential context refuses reconciliation while the original arrived code remains locally verifiable. The gateway owns durable operation identity and provider reconciliation; no finite provider idempotency-window claim applies and this does not mint a new send operation. Durable resend budgets remain enforced. Native transport adds client:native without browser headers. Start returns a transient verificationBinding; subsequent operations require it in X-LifeLinks-Verification. The same admission, quotas, expiry, guesses, original-session linking and atomic consumption apply. Final native admission/return returns sessionToken; browser flows retain cookies. No account is created before verification and profile completion.",
         "tags": [
           "session"
         ],
@@ -2674,6 +2684,16 @@
           },
           {
             "$ref": "#/components/parameters/ContactVerificationBrowser"
+          },
+          {
+            "name": "X-LifeLinks-Verification",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            "description": "Mandatory native contact-attempt binding; never a session or possession code. Browser flow instead uses its original HttpOnly cookie."
           }
         ],
         "requestBody": {
@@ -2843,7 +2863,7 @@
       "post": {
         "operationId": "verifyLifeLinksEmail",
         "summary": "Verify the mailbox code for a native signup attempt",
-        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Checks six ASCII digits against the current purpose/address/challenge-bound keyed digest. An unknown email send may still be verified by its received code. A correct code marks only this attempt verified; it creates no owner or session. Re-reading an already verified attempt returns verified until consumed or expired.",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Checks six ASCII digits against the current purpose/address/challenge-bound keyed digest. An unknown email send may still be verified by its received code. A correct code marks only this attempt verified; it creates no owner or session. Re-reading an already verified attempt returns verified until consumed or expired. Native transport adds client:native without browser headers. Start returns a transient verificationBinding; subsequent operations require it in X-LifeLinks-Verification. The same admission, quotas, expiry, guesses, original-session linking and atomic consumption apply. Final native admission/return returns sessionToken; browser flows retain cookies. No account is created before verification and profile completion.",
         "tags": [
           "session"
         ],
@@ -2857,6 +2877,16 @@
           },
           {
             "$ref": "#/components/parameters/ContactVerificationBrowser"
+          },
+          {
+            "name": "X-LifeLinks-Verification",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            "description": "Mandatory native contact-attempt binding; never a session or possession code. Browser flow instead uses its original HttpOnly cookie."
           }
         ],
         "requestBody": {
@@ -3026,7 +3056,7 @@
       "post": {
         "operationId": "startLifeLinksPhoneVerification",
         "summary": "Start SMS possession verification for login, signup or linking",
-        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires a configured Telnyx SMS sender, a valid canonical E.164 number in the explicitly allowed parsed US/Canada regions and current durable send/spend budgets. A +1 prefix alone does not establish region eligibility. Accepts explicit verification-only SMS consent with its exact version before dispatch. Login/register requires no current authenticated owner; link requires the current canonical CookieSession and retains that exact session/owner. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. A first send with unknown SMS outcome returns the original attempt so an arrived local code can still be checked, without replay or automatic resend. The returned attempt reference is not delivery or possession proof, and no account/session/link transition occurs on send.",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires a configured Telnyx SMS sender, a valid canonical E.164 number in the explicitly allowed parsed US/Canada regions and current durable send/spend budgets. A +1 prefix alone does not establish region eligibility. Accepts explicit verification-only SMS consent with its exact version before dispatch. Login/register requires no current authenticated owner; link requires the current canonical CookieSession and retains that exact session/owner. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. A first send with unknown SMS outcome returns the original attempt so an arrived local code can still be checked, without replay or automatic resend. The returned attempt reference is not delivery or possession proof, and no account/session/link transition occurs on send. Native transport adds client:native without browser headers. Start returns a transient verificationBinding; subsequent operations require it in X-LifeLinks-Verification. The same admission, quotas, expiry, guesses, original-session linking and atomic consumption apply. Final native admission/return returns sessionToken; browser flows retain cookies. No account is created before verification and profile completion.",
         "tags": [
           "session"
         ],
@@ -3037,6 +3067,16 @@
           },
           {
             "$ref": "#/components/parameters/BrowserOrigin"
+          },
+          {
+            "name": "X-LifeLinks-Verification",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            "description": "Mandatory native contact-attempt binding; never a session or possession code. Browser flow instead uses its original HttpOnly cookie."
           }
         ],
         "requestBody": {
@@ -3266,7 +3306,7 @@
       "post": {
         "operationId": "resendLifeLinksPhoneVerification",
         "summary": "Resend an admitted browser-bound phone verification",
-        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Wait at least the returned resend cooldown, initially sixty seconds, and enforce current durable send/spend budgets before another SMS. Only a known accepted or rejected outcome permits manual resend, which replaces the local code and delivery operation without resetting the original expiry or check count. An unknown SMS outcome refuses resend without another network call, code or operation; the retained original code remains locally checkable if it arrives. No automatic replay or fresh delivery is performed.",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Wait at least the returned resend cooldown, initially sixty seconds, and enforce current durable send/spend budgets before another SMS. Only a known accepted or rejected outcome permits manual resend, which replaces the local code and delivery operation without resetting the original expiry or check count. An unknown SMS outcome refuses resend without another network call, code or operation; the retained original code remains locally checkable if it arrives. No automatic replay or fresh delivery is performed. Native transport adds client:native without browser headers. Start returns a transient verificationBinding; subsequent operations require it in X-LifeLinks-Verification. The same admission, quotas, expiry, guesses, original-session linking and atomic consumption apply. Final native admission/return returns sessionToken; browser flows retain cookies. No account is created before verification and profile completion.",
         "tags": [
           "session"
         ],
@@ -3280,6 +3320,16 @@
           },
           {
             "$ref": "#/components/parameters/ContactVerificationBrowser"
+          },
+          {
+            "name": "X-LifeLinks-Verification",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            "description": "Mandatory native contact-attempt binding; never a session or possession code. Browser flow instead uses its original HttpOnly cookie."
           }
         ],
         "requestBody": {
@@ -3449,7 +3499,7 @@
       "post": {
         "operationId": "verifyLifeLinksPhone",
         "summary": "Check phone possession and continue the explicit account flow",
-        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Requires six ASCII digits, checked locally against the protected challenge/address/purpose-bound digest using the shared email/SMS code engine. No provider check request or verification SID establishes possession. The original code can be checked after an unknown SMS send if it arrives; the unknown outcome itself is not proof. An existing associated owner is signed in for login/register; an unassociated number returns profile_required without consuming the proof, for phone/complete. Link requires the same still-live original canonical CookieSession, associates the number only to that owner and preserves the session. Equal contact data never merges owners.",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Requires six ASCII digits, checked locally against the protected challenge/address/purpose-bound digest using the shared email/SMS code engine. No provider check request or verification SID establishes possession. The original code can be checked after an unknown SMS send if it arrives; the unknown outcome itself is not proof. An existing associated owner is signed in for login/register; an unassociated number returns profile_required without consuming the proof, for phone/complete. Link requires the same still-live original canonical CookieSession, associates the number only to that owner and preserves the session. Equal contact data never merges owners. Native transport adds client:native without browser headers. Start returns a transient verificationBinding; subsequent operations require it in X-LifeLinks-Verification. The same admission, quotas, expiry, guesses, original-session linking and atomic consumption apply. Final native admission/return returns sessionToken; browser flows retain cookies. No account is created before verification and profile completion.",
         "tags": [
           "session"
         ],
@@ -3463,6 +3513,16 @@
           },
           {
             "$ref": "#/components/parameters/ContactVerificationBrowser"
+          },
+          {
+            "name": "X-LifeLinks-Verification",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            "description": "Mandatory native contact-attempt binding; never a session or possession code. Browser flow instead uses its original HttpOnly cookie."
           }
         ],
         "requestBody": {
@@ -3692,7 +3752,7 @@
       "post": {
         "operationId": "completeLifeLinksPhoneSignup",
         "summary": "Create a private owner from verified phone possession",
-        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Requires a signed-out browser, a verified non-link phone attempt and bounded profile fields. Atomically consumes the proof, creates a private owner and normal native My Calendar with agent access none, and associates the verified phone. The owner has null email and no password; no fabricated email is created. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. Then issues the canonical HttpOnly cookie session and clears temporary browser state. After a lost response, sign in again by phone rather than automatically resubmitting the consumed proof.",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Requires a signed-out browser, a verified non-link phone attempt and bounded profile fields. Atomically consumes the proof, creates a private owner and normal native My Calendar with agent access none, and associates the verified phone. The owner has null email and no password; no fabricated email is created. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. Then issues the canonical HttpOnly cookie session and clears temporary browser state. After a lost response, sign in again by phone rather than automatically resubmitting the consumed proof. Native transport adds client:native without browser headers. Start returns a transient verificationBinding; subsequent operations require it in X-LifeLinks-Verification. The same admission, quotas, expiry, guesses, original-session linking and atomic consumption apply. Final native admission/return returns sessionToken; browser flows retain cookies. No account is created before verification and profile completion.",
         "tags": [
           "session"
         ],
@@ -3706,6 +3766,16 @@
           },
           {
             "$ref": "#/components/parameters/ContactVerificationBrowser"
+          },
+          {
+            "name": "X-LifeLinks-Verification",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            "description": "Mandatory native contact-attempt binding; never a session or possession code. Browser flow instead uses its original HttpOnly cookie."
           }
         ],
         "requestBody": {
@@ -3908,7 +3978,7 @@
       "post": {
         "operationId": "registerLifeLinksOwner",
         "summary": "Create a private native owner from verified mailbox control",
-        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Requires a signed-out browser and a verified register-email attempt. Accepts profile, verbatim password and optional time zone; the email is taken only from the protected verified attempt, and editable email/invitation fields are refused. Atomically consumes the proof and creates the private owner, password credential and normal native My Calendar with agent access none. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. A failed/repeated submission never changes existing credentials. The canonical browser session uses an HttpOnly cookie; no session token, password, invitation or provider credential is returned in JSON. After a lost response, use ordinary password sign-in. JSON request limit is 4 KiB.",
+        "description": "An allowed browser Origin or same-origin Referer is mandatory even when general origin checking is disabled; missing-origin and native bearer exceptions do not apply. Requires the exact unexpired attemptToken and matching HttpOnly life_links_contact_verification browser cookie. The ten-minute protected attempt binds channel, address and purpose, with atomic version/one-use checks and at most five code checks. Requires a signed-out browser and a verified register-email attempt. Accepts profile, verbatim password and optional time zone; the email is taken only from the protected verified attempt, and editable email/invitation fields are refused. Atomically consumes the proof and creates the private owner, password credential and normal native My Calendar with agent access none. Invitations are optional share links, not admission credentials. A valid available invitation may be recorded atomically; absent, expired, revoked or exhausted invitations do not block verified public admission. A failed/repeated submission never changes existing credentials. The canonical browser session uses an HttpOnly cookie; no session token, password, invitation or provider credential is returned in JSON. After a lost response, use ordinary password sign-in. JSON request limit is 4 KiB. Native transport adds client:native without browser headers. Start returns a transient verificationBinding; subsequent operations require it in X-LifeLinks-Verification. The same admission, quotas, expiry, guesses, original-session linking and atomic consumption apply. Final native admission/return returns sessionToken; browser flows retain cookies. No account is created before verification and profile completion.",
         "tags": [
           "session"
         ],
@@ -3922,6 +3992,16 @@
           },
           {
             "$ref": "#/components/parameters/ContactVerificationBrowser"
+          },
+          {
+            "name": "X-LifeLinks-Verification",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            },
+            "description": "Mandatory native contact-attempt binding; never a session or possession code. Browser flow instead uses its original HttpOnly cookie."
           }
         ],
         "requestBody": {
@@ -3963,18 +4043,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
-                    {
-                      "$ref": "#/components/schemas/LoginResponse"
-                    },
-                    {
-                      "not": {
-                        "required": [
-                          "sessionToken"
-                        ]
-                      }
-                    }
-                  ]
+                  "$ref": "#/components/schemas/LoginResponse"
                 }
               }
             }
@@ -6663,6 +6732,623 @@
     "/api/calendar-events/{eventId}": {"get":{"operationId":"getCalendarEvent","summary":"Read one Calendar event and latest deletion tombstone","tags":["calendar"],"parameters":[{"$ref":"#/components/parameters/XRequestId"},{"name":"eventId","in":"path","required":true,"schema":{"type":"string","minLength":1,"maxLength":512},"description":"Native event ID or exact URL-encoded opaque provider event ID according to authority."},{"name":"X-Life-Links-Actor","in":"header","required":false,"description":"Optional request narrowing for a connected page agent. Omission preserves the human owner path. Agent requests require an active Calendar-v2 or Workspace-v3 connection and current per-Calendar read/write permission; Calendar settings are human-only.","schema":{"type":"string","enum":["agent"]}},{"name":"authority","in":"query","required":false,"schema":{"type":"string","enum":["provider"]},"description":"Omit for native data; provider requires connectionId and calendarId."},{"name":"connectionId","in":"query","required":false,"schema":{"type":"string","minLength":1,"maxLength":512},"description":"Required with authority=provider."},{"name":"calendarId","in":"query","required":false,"schema":{"$ref":"#/components/schemas/CalendarId"},"description":"Required with authority=provider."}],"responses":{"200":{"description":"Owner-private Calendar result.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"oneOf":[{"$ref":"#/components/schemas/CalendarEventResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventResponse"}]}}}},"400":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"404":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"409":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"},"503":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}}},"description":" Explicit authority=provider selects provider ownership, never native persistence. Exact connectionId and calendarId are required for provider reads. Agent requests require the active Calendar-v2 or Workspace-v3 connection and current per-Calendar grant even on retries. Provider writes accept standalone events only; recurrence scopes, attendees, invitations, and online meetings are refused. Omitted authority preserves native behavior."},"patch":{"operationId":"updateCalendarEvent","summary":"Create a complete immutable replacement Calendar event revision","description":"Only whole-event and whole-series targets are currently accepted; occurrence and this-and-future mutation scopes fail closed. Explicit authority=provider selects provider ownership, never native persistence. Exact connectionId and calendarId are required for provider reads. Agent requests require the active Calendar-v2 or Workspace-v3 connection and current per-Calendar grant even on retries. Provider writes accept standalone events only; recurrence scopes, attendees, invitations, and online meetings are refused. Omitted authority preserves native behavior.","tags":["calendar"],"parameters":[{"$ref":"#/components/parameters/XRequestId"},{"name":"eventId","in":"path","required":true,"schema":{"type":"string","minLength":1,"maxLength":512},"description":"Native event ID or exact URL-encoded opaque provider event ID according to authority."},{"$ref":"#/components/parameters/BrowserOrigin"},{"name":"X-Life-Links-Actor","in":"header","required":false,"description":"Optional request narrowing for a connected page agent. Omission preserves the human owner path. Agent requests require an active Calendar-v2 or Workspace-v3 connection and current per-Calendar read/write permission; Calendar settings are human-only.","schema":{"type":"string","enum":["agent"]}}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"oneOf":[{"$ref":"#/components/schemas/CalendarEventRevisionRequest"},{"$ref":"#/components/schemas/ProviderCalendarEventUpdateRequest"}]}}}},"responses":{"200":{"description":"Owner-private Calendar result.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"oneOf":[{"$ref":"#/components/schemas/CalendarEventResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventResponse"}]}}}},"400":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"404":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"409":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"},"503":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}}}},"delete":{"operationId":"deleteCalendarEvent","summary":"Revision-safely soft-delete a whole event or recurrence series","description":"Only whole-event and whole-series targets are currently accepted; occurrence and this-and-future mutation scopes fail closed. Explicit authority=provider selects provider ownership, never native persistence. Exact connectionId and calendarId are required for provider reads. Agent requests require the active Calendar-v2 or Workspace-v3 connection and current per-Calendar grant even on retries. Provider writes accept standalone events only; recurrence scopes, attendees, invitations, and online meetings are refused. Omitted authority preserves native behavior. Page-agent deletion uses the existing visible preview and one application-observed owner confirmation after exact event/revision/scope and known-effect readback. Model-supplied confirmation booleans are refused.","tags":["calendar"],"parameters":[{"$ref":"#/components/parameters/XRequestId"},{"name":"eventId","in":"path","required":true,"schema":{"type":"string","minLength":1,"maxLength":512},"description":"Native event ID or exact URL-encoded opaque provider event ID according to authority."},{"$ref":"#/components/parameters/BrowserOrigin"},{"name":"X-Life-Links-Actor","in":"header","required":false,"description":"Optional request narrowing for a connected page agent. Omission preserves the human owner path. Agent requests require an active Calendar-v2 or Workspace-v3 connection and current per-Calendar read/write permission; Calendar settings are human-only.","schema":{"type":"string","enum":["agent"]}}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"oneOf":[{"$ref":"#/components/schemas/CalendarEventDeleteRequest"},{"$ref":"#/components/schemas/ProviderCalendarEventDeleteRequest"}]}}}},"responses":{"200":{"description":"Owner-private Calendar result.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"oneOf":[{"$ref":"#/components/schemas/CalendarEventResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventDeletionResponse"}]}}}},"400":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"404":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"409":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"},"503":{"description":"Native or provider Calendar operation refused. Structured failures are sanitized; uncertain retries retain the exact stable command identity.","headers":{"X-Request-Id":{"$ref":"#/components/headers/RequestId"}},"content":{"application/json":{"schema":{"anyOf":[{"$ref":"#/components/schemas/CalendarErrorResponse"},{"$ref":"#/components/schemas/ProviderCalendarEventErrorResponse"},{"$ref":"#/components/schemas/ErrorResponse"}]}}}}}}},
     "/api/calendar-events/{eventId}/restore": {
       "post":{"operationId":"restoreCalendarEvent","summary":"Restore one soft-deleted Calendar event from an exact tombstone","tags":["calendar"],"parameters":[{"$ref":"#/components/parameters/XRequestId"},{"$ref":"#/components/parameters/CalendarEventId"},{"$ref":"#/components/parameters/BrowserOrigin"},{"name":"X-Life-Links-Actor","in":"header","required":false,"description":"Optional request narrowing for a connected page agent. Omission preserves the human owner path. Agent requests require an active Calendar-v2 or Workspace-v3 connection and current per-Calendar read/write permission; Calendar settings are human-only.","schema":{"type":"string","enum":["agent"]}}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/CalendarEventRestoreRequest"}}}},"responses":{"200":{"$ref":"#/components/responses/CalendarEventOk"},"400":{"$ref":"#/components/responses/CalendarBadRequest"},"401":{"$ref":"#/components/responses/Unauthorized"},"403":{"$ref":"#/components/responses/CalendarForbidden"},"404":{"$ref":"#/components/responses/CalendarNotFound"},"409":{"$ref":"#/components/responses/CalendarConflict"},"429":{"$ref":"#/components/responses/RateLimited"},"500":{"$ref":"#/components/responses/InternalError"}}}
+    },
+    "/api/auth/native/start": {
+      "post": {
+        "operationId": "startNativeAuthentication",
+        "summary": "Prepare PKCE-bound system-browser authentication or Calendar authorization",
+        "tags": [
+          "auth"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeAuthStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded native result; no browser cookie bearer.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeAuthStartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Native request or current one-use proof refused.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store",
+                    "no-store"
+                  ]
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "Signed-out admission is required.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "description": "Sanitized native authentication boundary failure.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store",
+                    "no-store"
+                  ]
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "description": "OS HTTP transport requires client:native and no Origin, Referer or Fetch Metadata. S256 challenge and exact app URI are mandatory. Link/Calendar require the current native bearer; no email matching, implicit association, broad CORS or embedded provider browser. An encrypted ten-minute launch is consumed once in the system browser. Requires the OS HTTP transport: client native and no Origin, Referer or Fetch Metadata headers; browser requests cannot enter this exchange."
+      }
+    },
+    "/api/auth/native/launch": {
+      "get": {
+        "operationId": "launchNativeAuthentication",
+        "summary": "Consume the native launch ticket in the system browser",
+        "tags": [
+          "auth"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "name": "ticket",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{43}$"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "Redirect only to the configured provider authorization endpoint or fixed verifier-bound app callback.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              },
+              "Location": {
+                "schema": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Expired, revoked, malformed or consumed native handoff.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "Unconfigured provider refused.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/native/exchange": {
+      "post": {
+        "operationId": "exchangeNativeAuthentication",
+        "summary": "Consume a one-minute app code with the original S256 verifier",
+        "tags": [
+          "auth"
+        ],
+        "security": [],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NativeAuthExchangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded native result; no browser cookie bearer.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeAuthExchangeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Native request or current one-use proof refused.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store",
+                    "no-store"
+                  ]
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "Signed-out admission is required.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "503": {
+            "description": "Sanitized native authentication boundary failure.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store",
+                    "no-store"
+                  ]
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "description": "The app-held verifier is never in a URL. Wrong verifier cannot consume another binding; valid code is consumed atomically and expires after one minute. Login/signup creates canonical native bearer only here. Link/Calendar keep the original live bearer and owner, rechecking its session; deleted owners cannot return. Private no-store; no code/token logs. Requires the OS HTTP transport: client native and no Origin, Referer or Fetch Metadata headers; browser requests cannot enter this exchange."
+      }
+    },
+    "/api/account": {
+      "delete": {
+        "operationId": "deleteLifeLinksAccount",
+        "summary": "Confirm and erase current account through its lifecycle owner",
+        "tags": [
+          "auth"
+        ],
+        "security": [
+          {
+            "CookieSession": []
+          },
+          {
+            "BearerSession": []
+          }
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/XRequestId"
+          },
+          {
+            "$ref": "#/components/parameters/BrowserOrigin"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountDeletionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bounded native result; no browser cookie bearer.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store",
+                    "no-store"
+                  ]
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Native request or current one-use proof refused.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store",
+                    "no-store"
+                  ]
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed, or a valid Life Links session is required.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store",
+                    "no-store"
+                  ]
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "account_deletion_pending: Calendar cleanup has an active or uncertain provider effect; local account remains available for a safe retry.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store",
+                    "no-store"
+                  ]
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "403": {
+            "description": "The browser mutation origin was rejected, or this shared demonstration owner cannot be deleted.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Sanitized account deletion failure; retry only while the account remains present.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store",
+                    "no-store"
+                  ]
+                }
+              },
+              "Referrer-Policy": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-referrer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletionErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "description": "Human current cookie or native bearer only. Explicit DELETE confirmation, no page/remote MCP. Calendar safe cleanup precedes local owner erasure; busy/uncertain Calendar closure returns account_deletion_pending for retry. Local retirement preserves QR inventory/URLs and external events. Apple token cleanup is protected server-only and can remain pending or manual_required after local deletion."
+      }
     }
   },
   "components": {
@@ -6698,7 +7384,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "opaque-session-token",
-        "description": "Opaque native session token returned only by login with `client: native`."
+        "description": "Opaque native session token issued after password login, verified email/phone admission, or a one-use native provider PKCE exchange. Linking and Calendar authorization retain the existing token."
       }
     },
     "parameters": {
@@ -6819,8 +7505,8 @@
       "ContactVerificationBrowser": {
         "name": "life_links_contact_verification",
         "in": "cookie",
-        "required": true,
-        "description": "HttpOnly, SameSite=Lax verification-browser binding set by contact start. Must match the exact retained unexpired attempt; this is not the canonical owner session.",
+        "required": false,
+        "description": "Mandatory original HttpOnly cookie for browser flow. Native client instead requires X-LifeLinks-Verification and client:native; the two modes cannot transfer attempts.",
         "schema": {
           "type": "string",
           "minLength": 43,
@@ -6833,7 +7519,7 @@
         "name": "Origin",
         "in": "header",
         "required": false,
-        "description": "Required by deployment policy for browser mutations unless a same-origin Referer is available. Authenticated native bearer calls, and native login requests, may omit browser-origin headers.",
+        "description": "Required by deployment policy for browser mutations unless a same-origin Referer is available. Authenticated native bearer calls, and native login requests, may omit browser-origin headers. Explicit native email/phone requests and native provider start/exchange instead require their client discriminator and absence of browser metadata; contact followups also require the original verification binding.",
         "schema": {
           "type": "string",
           "format": "uri"
@@ -7160,9 +7846,31 @@
         "properties": {
           "returnTo": {
             "$ref": "#/components/schemas/ProviderReturnTo"
+          },
+          "nativeCallbackUrl": {
+            "type": "string",
+            "pattern": "^lifelinks://auth/callback\\?code=[A-Za-z0-9_-]{43}$",
+            "description": "Only for hosted profile/link completion of a native-initiated browser attempt. One-use code requires the app-held S256 verifier."
+          },
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "agentConnection": {
+            "$ref": "#/components/schemas/AgentConnection"
+          },
+          "qrBaseUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "sessionToken": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256,
+            "readOnly": true,
+            "description": "Returned only for native login. Store as an opaque bearer credential."
           }
         },
-        "description": "Validated browser destination. No provider credentials, identity binding or bearer/session token is returned."
+        "description": "Browser completion returns a validated local returnTo and, only for a native provider continuation, a fixed app callback containing a transient one-use PKCE code. Native phone profile completion also returns the full native session response; ordinary browser provider completion never returns a bearer."
       },
       "ProviderCallbackForm": {
         "type": "object",
@@ -9601,6 +10309,13 @@
           "resendAfterSeconds": {
             "type": "integer",
             "minimum": 0
+          },
+          "verificationBinding": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{43}$",
+            "minLength": 43,
+            "maxLength": 43,
+            "description": "Native-only transient secret binding; keep in memory and submit in X-LifeLinks-Verification. No cookie/URL/log/persistent storage."
           }
         },
         "description": "Recorded attempt and resend cooldown. Email and SMS dispatches with unknown provider outcome can also return this response; the original local code remains checkable if it arrives, without a delivery or possession claim. Unknown SMS dispatch cannot be replayed or freshly resent."
@@ -9628,6 +10343,10 @@
           },
           "returnTo": {
             "$ref": "#/components/schemas/ProviderReturnTo"
+          },
+          "client": {
+            "const": "native",
+            "description": "OS HTTP transport only, without Origin, Referer or Fetch Metadata. Omit for the browser-cookie transport."
           }
         }
       },
@@ -9674,6 +10393,10 @@
           },
           "returnTo": {
             "$ref": "#/components/schemas/ProviderReturnTo"
+          },
+          "client": {
+            "const": "native",
+            "description": "OS HTTP transport only, without Origin, Referer or Fetch Metadata. Omit for the browser-cookie transport."
           }
         }
       },
@@ -9686,6 +10409,10 @@
         "properties": {
           "attemptToken": {
             "$ref": "#/components/schemas/ContactVerificationAttemptToken"
+          },
+          "client": {
+            "const": "native",
+            "description": "OS HTTP transport only, without Origin, Referer or Fetch Metadata. Omit for the browser-cookie transport."
           }
         }
       },
@@ -9707,6 +10434,10 @@
             "pattern": "^[0-9]{6}$",
             "writeOnly": true,
             "description": "Six ASCII digits, including leading zeroes; supplied only in this JSON body and never logged."
+          },
+          "client": {
+            "const": "native",
+            "description": "OS HTTP transport only, without Origin, Referer or Fetch Metadata. Omit for the browser-cookie transport."
           }
         }
       },
@@ -9741,6 +10472,23 @@
           },
           "returnTo": {
             "$ref": "#/components/schemas/ProviderReturnTo"
+          },
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "agentConnection": {
+            "$ref": "#/components/schemas/AgentConnection"
+          },
+          "qrBaseUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "sessionToken": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256,
+            "readOnly": true,
+            "description": "Returned only for native login. Store as an opaque bearer credential."
           }
         }
       },
@@ -9766,6 +10514,10 @@
             "maxLength": 100,
             "default": "UTC",
             "description": "Canonical IANA time zone for the initial native My Calendar. Browser callers send their resolved zone."
+          },
+          "client": {
+            "const": "native",
+            "description": "OS HTTP transport only, without Origin, Referer or Fetch Metadata. Omit for the browser-cookie transport."
           }
         },
         "description": "Complete a verified non-link phone attempt; email, password, phone number, invitation and provider credentials are not accepted."
@@ -9823,6 +10575,10 @@
             "maxLength": 100,
             "default": "UTC",
             "description": "Canonical IANA time zone for the initial native My Calendar. Browser callers send their resolved zone."
+          },
+          "client": {
+            "const": "native",
+            "description": "OS HTTP transport only, without Origin, Referer or Fetch Metadata. Omit for the browser-cookie transport."
           }
         },
         "description": "Create-only signup from a current verified email attempt and its original browser. The verified mailbox is retained server-side; editable email, invitation and provider credentials are refused."
@@ -9876,7 +10632,10 @@
             "minLength": 32,
             "maxLength": 256,
             "readOnly": true,
-            "description": "Returned only for native login. Store as an opaque bearer credential."
+            "description": "Returned only through the admitted native HTTP transport after completed authentication or verified admission. Store in the native credential store as an opaque bearer credential."
+          },
+          "returnTo": {
+            "$ref": "#/components/schemas/ProviderReturnTo"
           }
         }
       },
@@ -10751,7 +11510,295 @@
       "CalendarErrorCode":{"type":"string","enum":["invalid_calendar","calendar_not_found","invalid_calendar_event","calendar_event_not_found","stale_calendar","stale_calendar_event","calendar_conflict","calendar_reference_conflict","calendar_access_denied"]},
       "CalendarErrorResponse": { "type":"object", "additionalProperties":false, "required":["error"], "properties":{"error":{"type":"object","additionalProperties":false,"required":["code","message","retryable"],"properties":{"code":{"$ref":"#/components/schemas/CalendarErrorCode"},"message":{"type":"string","minLength":1,"maxLength":240},"retryable":{"type":"boolean"},"reason":{"type":"string","minLength":1,"maxLength":120}}}} },
       "RoutineErrorCode": { "type":"string", "enum":["invalid_routine","routine_not_found","stale_routine","routine_conflict","routine_reference_conflict"] },
-      "RoutineErrorResponse": { "type":"object", "additionalProperties":false, "required":["error"], "properties":{"error":{"type":"object","additionalProperties":false,"required":["code","message","retryable"],"properties":{"code":{"$ref":"#/components/schemas/RoutineErrorCode"},"message":{"type":"string","minLength":1,"maxLength":240},"retryable":{"type":"boolean"},"reason":{"type":"string","minLength":1,"maxLength":120}}}} }
+      "RoutineErrorResponse": { "type":"object", "additionalProperties":false, "required":["error"], "properties":{"error":{"type":"object","additionalProperties":false,"required":["code","message","retryable"],"properties":{"code":{"$ref":"#/components/schemas/RoutineErrorCode"},"message":{"type":"string","minLength":1,"maxLength":240},"retryable":{"type":"boolean"},"reason":{"type":"string","minLength":1,"maxLength":120}}}} },
+      "NativeAuthStartRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "client",
+          "intent",
+          "codeChallenge",
+          "redirectUri"
+        ],
+        "properties": {
+          "client": {
+            "const": "native"
+          },
+          "intent": {
+            "enum": [
+              "login",
+              "register",
+              "link",
+              "calendar"
+            ]
+          },
+          "provider": {
+            "$ref": "#/components/schemas/SignInProviderId"
+          },
+          "calendarProvider": {
+            "enum": [
+              "google",
+              "microsoft"
+            ]
+          },
+          "returnTo": {
+            "$ref": "#/components/schemas/ProviderReturnTo"
+          },
+          "timeZone": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "invitationCode": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]{32,128}$",
+            "writeOnly": true
+          },
+          "reconnectConnectionId": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "codeChallenge": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          },
+          "redirectUri": {
+            "const": "lifelinks://auth/callback"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "provider"
+            ],
+            "properties": {
+              "intent": {
+                "enum": [
+                  "login",
+                  "register",
+                  "link"
+                ]
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "calendarProvider"
+                  ]
+                },
+                {
+                  "required": [
+                    "reconnectConnectionId"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "required": [
+              "calendarProvider"
+            ],
+            "properties": {
+              "intent": {
+                "const": "calendar"
+              }
+            },
+            "not": {
+              "required": [
+                "provider"
+              ]
+            }
+          }
+        ]
+      },
+      "NativeAuthStartResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "browserUrl"
+        ],
+        "properties": {
+          "browserUrl": {
+            "type": "string",
+            "format": "uri",
+            "description": "Exact configured product HTTPS origin, /api/auth/native/launch and a one-use opaque ticket. Open in the OS system browser."
+          }
+        }
+      },
+      "NativeAuthExchangeRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "client",
+          "code",
+          "codeVerifier"
+        ],
+        "properties": {
+          "client": {
+            "const": "native"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{43}$",
+            "writeOnly": true
+          },
+          "codeVerifier": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._~-]{43,128}$",
+            "writeOnly": true
+          }
+        }
+      },
+      "NativeAuthExchangeResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "user",
+          "agentConnection",
+          "qrBaseUrl",
+          "returnTo"
+        ],
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "agentConnection": {
+            "$ref": "#/components/schemas/AgentConnection"
+          },
+          "qrBaseUrl": {
+            "type": "string",
+            "format": "uri"
+          },
+          "sessionToken": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256,
+            "readOnly": true,
+            "description": "Returned only for native login. Store as an opaque bearer credential."
+          },
+          "status": {
+            "enum": [
+              "signed_in",
+              "linked",
+              "calendar_authorized"
+            ]
+          },
+          "returnTo": {
+            "$ref": "#/components/schemas/ProviderReturnTo"
+          },
+          "calendarAuthorizationId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "oneOf": [
+          {
+            "properties": {
+              "status": {
+                "const": "signed_in"
+              }
+            },
+            "required": [
+              "sessionToken"
+            ],
+            "not": {
+              "required": [
+                "calendarAuthorizationId"
+              ]
+            }
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "linked"
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "sessionToken"
+                  ]
+                },
+                {
+                  "required": [
+                    "calendarAuthorizationId"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "properties": {
+              "status": {
+                "const": "calendar_authorized"
+              }
+            },
+            "required": [
+              "calendarAuthorizationId"
+            ],
+            "not": {
+              "required": [
+                "sessionToken"
+              ]
+            }
+          }
+        ]
+      },
+      "AccountDeletionRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "confirmation"
+        ],
+        "properties": {
+          "confirmation": {
+            "const": "DELETE"
+          }
+        }
+      },
+      "AccountDeletionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "appleRevocation"
+        ],
+        "properties": {
+          "status": {
+            "const": "deleted"
+          },
+          "appleRevocation": {
+            "enum": [
+              "complete",
+              "pending",
+              "not_required",
+              "manual_required"
+            ]
+          }
+        }
+      },
+      "AccountDeletionErrorResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Closed product reason; no provider payload, personal data or credential."
+          }
+        }
+      }
     },
     "responses": {
       "RemoteMcpOk": {

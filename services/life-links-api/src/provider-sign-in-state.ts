@@ -17,6 +17,7 @@ export type ProviderSignInAttempt = {
   provider: string;
   encryptedPayload: string;
   expiresAt: string;
+  ownerId?: string | null;
 };
 export const MAX_PROVIDER_SIGN_IN_ATTEMPTS = 5_000;
 export const PROVIDER_SIGN_IN_EXPIRY_CLEANUP_LIMIT = 100;
@@ -51,6 +52,9 @@ export function assertProviderSignInAttempt(attempt: ProviderSignInAttempt): voi
   if (!attempt || !validSignInFingerprint(attempt.stateHash) || !validSignInFingerprint(attempt.browserHash) ||
       !/^[a-z][a-z0-9_-]{0,63}$/.test(attempt.provider) || !bounded(attempt.encryptedPayload, 65_536) ||
       !Number.isFinite(Date.parse(attempt.expiresAt))) {
+    throw new ProviderSignInStateError("provider_sign_in_unavailable");
+  }
+  if (attempt.ownerId !== undefined && attempt.ownerId !== null && !bounded(attempt.ownerId, 128)) {
     throw new ProviderSignInStateError("provider_sign_in_unavailable");
   }
 }

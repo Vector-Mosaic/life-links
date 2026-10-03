@@ -20,7 +20,9 @@ export function LifeLinksWorkspaceProvider({ children }: { children: ReactNode }
 
   useEffect(() => {
     void controller.start();
-    return () => controller.dispose();
+    const restore = () => { controller.dispose(); void controller.start(); };
+    window.addEventListener("lifelinks-native-auth-complete", restore);
+    return () => { window.removeEventListener("lifelinks-native-auth-complete", restore); controller.dispose(); };
   }, [controller]);
 
   return (

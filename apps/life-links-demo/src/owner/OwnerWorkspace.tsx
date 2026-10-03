@@ -19,6 +19,8 @@ import { RecordSearchPanel } from "./RecordSearchPanel";
 import type { RemoteAgentAuthorizationView } from "../agent/AgentAccessPanel";
 import { InvitePeopleDialog } from "./InvitePeopleDialog";
 import { SignInMethodsDialog } from "./SignInMethodsDialog";
+import { AccountDeletionDialog } from "./AccountDeletionDialog";
+import { nativeRuntime } from "../platform";
 
 // Keep this aligned with the phone-layout media query in styles.css.
 const PHONE_LAYOUT_QUERY = "(max-width: 700px) and (hover: none), (max-width: 700px) and (pointer: coarse)";
@@ -31,7 +33,9 @@ export function OwnerWorkspace({ controller, snapshot, remoteAuthorization, onOp
   signInError?: string; onDismissSignInError?(): void;
 }) {
   const { currentUser, busy, workspaceMode, selectedCollection, selectedLifeLinkDetail, hierarchyParentDetail, detailsOpen } = snapshot;
-  const [dialog, setDialog] = useState<WorkspaceDialog | { kind: "sign-in-methods" }>(null);
+  const [dialog, setDialog] = useState<WorkspaceDialog | { kind: "sign-in-methods" | "delete-account" } | { kind: "attach"; lifeLinkId: string }>(null);
+  const [capturing, setCapturing] = useState(false);
+  const [captureError, setCaptureError] = useState("");
   const [routineDialog, setRoutineDialog] = useState<RoutineDialogState>(null);
   const [calendarDialog, setCalendarDialog] = useState<CalendarDialogState>(null);
   const routineDetailKind = snapshot.presentation.routineDetails.kind;
@@ -317,6 +321,7 @@ export function OwnerWorkspace({ controller, snapshot, remoteAuthorization, onOp
         <div className="ll-account"><ActionMenu key={snapshot.routePathname} label="Account" className="ll-account-button" above onOpenChange={setAccountMenuOpen} heading={<><strong>{currentUser?.displayName}</strong><span>{currentUser?.email ?? "Phone or provider sign-in"}</span></>} items={[
           { label: "Invite people", icon: <Plus size={18} />, onClick: () => setDialog({ kind: "invite" }) },
           { label: "Sign-in methods", icon: <LogIn size={18} />, onClick: () => setDialog({ kind: "sign-in-methods" }) },
+          { label: "Delete account", icon: <Trash2 size={18} />, onClick: () => setDialog({ kind: "delete-account" }) },
           { separator: true }, { label: "Settings", icon: <Settings size={18} />, onClick: () => setDialog({ kind: "settings" }) }, { separator: true },
           { label: "Help", icon: <HelpCircle size={18} />, onClick: () => setDialog({ kind: "help" }) },
           { label: "Logout", icon: <LogOut size={18} />, onClick: () => { if (onLogout) onLogout(); else void controller.logout(); } }
@@ -415,7 +420,7 @@ export function OwnerWorkspace({ controller, snapshot, remoteAuthorization, onOp
           : <LifeLinkDetail detail={selectedLifeLinkDetail} busy={busy} collectionMode={collectionsMode} memberships={snapshot.selectedLifeLinkMemberships} membershipsLoading={snapshot.membershipsLoading} membershipsComplete={snapshot.membershipsComplete}
             searchAttachment={snapshot.recordSearchTarget?.kind === "attachment" && snapshot.recordSearchTarget.lifeLinkId === selectedLifeLinkDetail?.lifeLink.id ? snapshot.recordSearchTarget : undefined}
             onNavigate={(id) => void (id === null ? controller.openHierarchy() : controller.activateLifeLink(id))} onEdit={(id) => void controller.openCanonicalEditor(id)} onCreateChild={(id) => openCreate(id)} onMove={(id) => setDialog({ kind: "move", lifeLinkIds: [id] })} onQr={(id) => setDialog({ kind: "qr", lifeLinkId: id })}
-            onMedia={(id) => { mediaTarget.current = id; mediaInput.current?.click(); }} onCollection={(id, memberId, sectionId) => void openMembership(id, memberId, sectionId)} onMemberships={(id) => void manageMemberships(id)} />}</div>}
+            onMedia={(id) => { mediaTarget.current = id; if (nativeRuntime()) { setCaptureError(""); setDialog({ kind: "attach", lifeLinkId: id }); } else mediaInput.current?.click(); }} onCollection={(id, memberId, sectionId) => void openMembership(id, memberId, sectionId)} onMemberships={(id) => void manageMemberships(id)} />}</div>}
       </aside>
     </div>
     <input type="file" aria-label="Add attachments" accept={ATTACHMENT_FILE_ACCEPT} multiple hidden ref={mediaInput} onChange={(event) => { if (event.target.files?.length && mediaTarget.current) void controller.uploadCanonicalMedia(mediaTarget.current, event.target.files); event.target.value = ""; }} />
@@ -431,6 +436,20 @@ export function OwnerWorkspace({ controller, snapshot, remoteAuthorization, onOp
     {dialog?.kind === "qr" && <QrDialog controller={controller} snapshot={snapshot} lifeLinkId={dialog.lifeLinkId} onClose={close} />}
     {dialog?.kind === "agent" && <Dialog title="Agent connections" onClose={close}>{agentPanel}</Dialog>}
     {dialog?.kind === "invite" && <InvitePeopleDialog key={currentUser?.id} onClose={close} />}
+    {dialog?.kind === "delete-account" && currentUser && <AccountDeletionDialog user={currentUser} onClose={close} onDeleted={async () => { await controller.logout(); close(); }} />}
+    {dialog?.kind === "attach" && <Dialog title="Add an attachment" onClose={() => { if (!capturing) close(); }}><div className="ll-form">
+      <button className="ll-button" disabled={capturing || busy} onClick={() => { mediaInput.current?.click(); close(); }}>Choose photos or files</button>
+      <button className="ll-button" disabled={capturing || busy} onClick={async () => {
+        const native = nativeRuntime(); if (!native || capturing) return;
+        const target = dialog.lifeLinkId; const ownerId = currentUser?.id;
+        setCapturing(true); setCaptureError("");
+        try { const photo = await native.capturePhoto(); if (controller.getSnapshot().currentUser?.id !== ownerId) return;
+          await controller.uploadCanonicalMedia(target, [photo]); close(); }
+        catch { setCaptureError("The photo wasn't added. You can try again or choose a file."); }
+        finally { setCapturing(false); }
+      }}>{capturing ? "Opening camera…" : "Take a photo"}</button>
+      {captureError && <p className="ll-inline-warning" role="alert">{captureError}</p>}
+      <button className="ll-button" disabled={capturing} onClick={close}>Cancel</button></div></Dialog>}
     {dialog?.kind === "sign-in-methods" && <SignInMethodsDialog key={currentUser?.id} onClose={close} />}
     {dialog?.kind === "settings" && <Dialog title="Settings" onClose={close}><div className="ll-form"><label>Appearance<select value={snapshot.theme} onChange={(event) => controller.setTheme(event.target.value as "light" | "dark")}><option value="light">Light</option><option value="dark">Dark</option></select></label></div></Dialog>}
     {dialog?.kind === "help" && <Dialog title="Help" onClose={close}><div className="ll-help"><h3>My Life Links</h3><p>Folders describe where things belong. Open a folder to see its contents; select an item for its details.</p><h3>My Collections</h3><p>Bring items together for a purpose without moving them. Sections organize a Collection, and an item can belong to several sections or Collections.</p><h3>My Routines</h3><p>Plan repeatable actions, record what actually happened, and keep completed Sessions as history. Planned targets, actual results, and next-time proposals stay separate.</p><h3>My Calendar</h3><p>See Life Links events and planned Routine occurrences together. Native events remain Calendar-owned; Routine occurrences continue to open and update through My Routines.</p><h3>QR codes</h3><p>Attach a QR to an item or container. Choose exactly which fields its public page shows in Details → QR code.</p></div></Dialog>}

@@ -6,6 +6,7 @@ import { ApiError, completePhoneSignup, getRegistration, resendPhoneVerification
 import { clearPendingInvitation } from "./invitationLink";
 import { validateProviderReturnTo } from "./providerSignInLink";
 import { PhoneNumberEntry } from "./PhoneNumberEntry";
+import { navigateAccountReturn } from "./platform";
 
 export interface PhoneSignInProps {
   intent: "login" | "register" | "link";
@@ -40,7 +41,7 @@ function verificationError(cause: unknown, action: "send" | "verify" | "complete
 }
 
 export function PhoneSignIn({ intent, returnTo, invitationCode, enabled, disabled = false,
-  onComplete = path => window.location.assign(path), onLinked, onBusyChange }: PhoneSignInProps) {
+  onComplete = navigateAccountReturn, onLinked, onBusyChange }: PhoneSignInProps) {
   const id = useId();
   const [available, setAvailable] = useState(enabled === true);
   const [step, setStep] = useState<EntryStep>("closed");

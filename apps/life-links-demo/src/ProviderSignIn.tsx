@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { providerButtonLabel } from "@vmosaic/provider-sign-in/client";
 import { ApiError, getSignInProviders, startProviderSignIn, type SignInProvider, type SignInProviderId } from "./api";
-import { providerAuthorizationUrl, providerSignInErrorMessage, validateProviderReturnTo } from "./providerSignInLink";
+import { providerSignInErrorMessage, validateProviderReturnTo } from "./providerSignInLink";
+import { openAccountBrowser, providerDestination } from "./platform";
 
 const googleLogo = new URL("./assets/google-g.png", import.meta.url).href;
 const appleLogo = new URL("./assets/apple.svg", import.meta.url).href;
@@ -17,7 +18,7 @@ export interface ProviderSignInProps {
 }
 
 export function ProviderSignIn({ intent, returnTo, invitationCode, timeZone, disabled = false,
-  onNavigate = url => window.location.assign(url), onBusyChange }: ProviderSignInProps) {
+  onNavigate = openAccountBrowser, onBusyChange }: ProviderSignInProps) {
   const [providers, setProviders] = useState<SignInProvider[]>([]);
   const [starting, setStarting] = useState<SignInProviderId | null>(null);
   const [error, setError] = useState("");
@@ -57,7 +58,7 @@ export function ProviderSignIn({ intent, returnTo, invitationCode, timeZone, dis
         ...(timeZone ? { timeZone } : {})
       });
       if (!mounted.current) return;
-      const url = providerAuthorizationUrl(provider.id, result.authorizationUrl);
+      const url = providerDestination(provider.id, result.authorizationUrl);
       if (!url) throw new Error("Invalid provider authorization destination.");
       onNavigate(url);
     } catch (cause) {

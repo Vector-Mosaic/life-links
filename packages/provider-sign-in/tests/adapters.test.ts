@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { exportJWK, exportPKCS8, generateKeyPair, jwtVerify, SignJWT, type JWTPayload } from "jose";
-import { createProviderAdapters, createProviderTransaction, ProviderSignInError, type ProviderSignInConfig, type ProviderTransaction } from "../src/index.js";
+import { createProviderAdapters, createProviderTransaction, ProviderSignInError, type ProviderRevocationCredential, type ProviderSignInConfig, type ProviderTransaction } from "../src/index.js";
 
 const sdk = vi.hoisted(() => ({
   googleUrl: vi.fn(), googleVerify: vi.fn(), msalUrl: vi.fn(), msalClear: vi.fn(), msalConfigurations: [] as unknown[],
@@ -223,6 +223,50 @@ describe("signed identity verification", () => {
     expect(verified.payload.exp! - verified.payload.iat!).toBe(300);
   });
 
+  it("returns Apple's revocation credential separately only after verification, preferring refresh custody", async () => {
+    const current = config("apple"); const [adapter] = createProviderAdapters([current]); const transaction = createProviderTransaction();
+    queue(json({ id_token: await token("https://appleid.apple.com", current.clientId, transaction), refresh_token: "restricted-refresh-token", access_token: "restricted-access-token" }), json({ keys: [publicJwk] }));
+    const result = await adapter.redeemWithCustody!({ callbackUrl: callbackUrl(transaction), transaction });
+    expect(result.revocationCredential).toEqual({ provider: "apple", issuer: "https://appleid.apple.com", clientId: current.clientId, subject: "provider-subject", token: "restricted-refresh-token", tokenTypeHint: "refresh_token" });
+    expect(Object.keys(result.identity).sort()).toEqual(["clientId", "displayName", "email", "emailVerified", "issuer", "provider", "subject"]);
+    expect(JSON.stringify(result.identity)).not.toContain("restricted-");
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/auth/token"))).toHaveLength(1);
+  });
+
+  it.each([
+    [{ access_token: "restricted-access-token" }, { token: "restricted-access-token", tokenTypeHint: "access_token" }],
+    [{}, null],
+  ])("supports access-token fallback and truthfully reports absent Apple custody", async (extra, expected) => {
+    const current = config("apple"); const [adapter] = createProviderAdapters([current]); const transaction = createProviderTransaction();
+    queue(json({ id_token: await token("https://appleid.apple.com", current.clientId, transaction), ...extra }), json({ keys: [publicJwk] }));
+    const result = await adapter.redeemWithCustody!({ callbackUrl: callbackUrl(transaction), transaction });
+    if (expected === null) expect(result.revocationCredential).toBeNull();
+    else expect(result.revocationCredential).toMatchObject(expected);
+  });
+
+  it("preserves Apple identity-only redemption without exposing its returned tokens", async () => {
+    const current = config("apple"); const [adapter] = createProviderAdapters([current]); const transaction = createProviderTransaction();
+    queue(json({ id_token: await token("https://appleid.apple.com", current.clientId, transaction), refresh_token: "restricted-refresh-token" }), json({ keys: [publicJwk] }));
+    const result = await adapter.redeem({ callbackUrl: callbackUrl(transaction), transaction });
+    expect(result).toMatchObject({ provider: "apple", subject: "provider-subject" });
+    expect(Object.keys(result)).not.toContain("revocationCredential");
+    expect(JSON.stringify(result)).not.toContain("restricted-refresh-token");
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/auth/token"))).toHaveLength(1);
+  });
+
+  it.each([
+    [{ refresh_token: "restricted-refresh-token" }, { nonce: "other-attempt" }],
+    [{ refresh_token: "restricted-refresh-token" }, { aud: "other-client" }],
+    [{ refresh_token: "restricted-refresh-token" }, { iss: "https://other-issuer.example" }],
+    [{ refresh_token: "" }, {}],
+    [{ access_token: "bad\nrestricted-access-token" }, {}],
+    [{ refresh_token: "x".repeat(8193) }, {}],
+  ])("rejects invalid Apple identity or malformed custody without returning a credential", async (extra, overrides) => {
+    const current = config("apple"); const [adapter] = createProviderAdapters([current]); const transaction = createProviderTransaction();
+    queue(json({ id_token: await token("https://appleid.apple.com", current.clientId, transaction, overrides), ...extra }), json({ keys: [publicJwk] }));
+    await expect(adapter.redeemWithCustody!({ callbackUrl: callbackUrl(transaction), transaction })).rejects.toMatchObject({ code: "sign_in_failed", message: "Provider sign-in could not be verified." });
+  });
+
   it("requires the Google SDK's verified nonce and preserves its signature-validation inputs", async () => {
     const current = config("google"); const [adapter] = createProviderAdapters([current]); const transaction = createProviderTransaction();
     const payload = { iss: "https://accounts.google.com", aud: current.clientId, sub: "google-subject", exp: Math.floor(Date.now() / 1000) + 300, iat: Math.floor(Date.now() / 1000), nonce: transaction.nonce, email: "person@example.com", email_verified: true };
@@ -233,6 +277,81 @@ describe("signed identity verification", () => {
     sdk.googleVerify.mockResolvedValue({ getPayload: () => ({ ...payload, nonce: "wrong-nonce" }) });
     queue(json({ id_token: "sdk-verified-id-token" }), json({ "test-key": "-----BEGIN CERTIFICATE-----\ncertificate\n-----END CERTIFICATE-----\n" }));
     await expect(adapter.redeem({ callbackUrl: callbackUrl(transaction), transaction })).rejects.toThrow();
+  });
+});
+
+describe("Apple authorization revocation", () => {
+  function credential(overrides: Partial<ProviderRevocationCredential> = {}): ProviderRevocationCredential {
+    return { provider: "apple", issuer: "https://appleid.apple.com", clientId: "test-client", subject: "provider-subject", token: "restricted-refresh-token", tokenTypeHint: "refresh_token", ...overrides };
+  }
+
+  it.each([null, ""])("revokes bound Apple credentials with the same signed client and accepts an empty 200", async (responseBody) => {
+    const current = config("apple"); const [adapter] = createProviderAdapters([current]);
+    queue(new Response(responseBody, { status: 200 }));
+    await expect(adapter.revoke!(credential())).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, request] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://appleid.apple.com/auth/revoke");
+    expect(request).toMatchObject({ method: "POST", redirect: "error", signal: expect.any(AbortSignal) });
+    const body = new URLSearchParams(String(request!.body));
+    expect([...body.keys()].sort()).toEqual(["client_id", "client_secret", "token", "token_type_hint"]);
+    expect(body.get("token")).toBe("restricted-refresh-token");
+    expect(body.get("token_type_hint")).toBe("refresh_token");
+    const verified = await jwtVerify(body.get("client_secret")!, appleKeys.publicKey, { issuer: "TEAM123456", audience: "https://appleid.apple.com", subject: current.clientId, algorithms: ["ES256"] });
+    expect(verified.protectedHeader.kid).toBe("KEY1234567");
+    expect(verified.payload.exp! - verified.payload.iat!).toBe(300);
+  });
+
+  it("uses the access-token hint and snapshots credentials before asynchronous signing", async () => {
+    const [adapter] = createProviderAdapters([config("apple")]);
+    const input = credential({ token: "restricted-access-token", tokenTypeHint: "access_token" });
+    queue(new Response(null, { status: 200 }));
+    const pending = adapter.revoke!(input);
+    input.token = "caller-mutated-token"; input.clientId = "other-client"; input.tokenTypeHint = "refresh_token";
+    await pending;
+    const body = new URLSearchParams(String(fetchMock.mock.calls[0][1]!.body));
+    expect(body.get("token")).toBe("restricted-access-token");
+    expect(body.get("token_type_hint")).toBe("access_token");
+    expect(body.get("client_id")).toBe("test-client");
+  });
+
+  it.each([
+    { provider: "google" }, { issuer: "https://other-issuer.example" }, { clientId: "other-client" },
+    { subject: "" }, { subject: "x".repeat(256) }, { token: "" }, { token: "bad\ntoken" },
+    { token: "x".repeat(8193) }, { tokenTypeHint: "id_token" },
+  ])("refuses malformed or different-client custody before a provider effect", async (overrides) => {
+    const [adapter] = createProviderAdapters([config("apple")]);
+    await expect(adapter.revoke!(credential(overrides as Partial<ProviderRevocationCredential>))).rejects.toMatchObject({ code: "revocation_failed", message: "Provider authorization could not be revoked." });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    new Response(null, { status: 204 }),
+    new Response(" ", { status: 200 }),
+    new Response('{"error":"restricted-refresh-token"}', { status: 200 }),
+    new Response('{"error":"restricted-refresh-token"}', { status: 400 }),
+    new Response(null, { status: 302, headers: { location: "https://attacker.example" } }),
+    new Response(null, { status: 200, headers: { "content-length": "150000" } }),
+    new Response("x".repeat(150000), { status: 200 }),
+  ])("rejects nonempty/error/oversized revocation responses with one sanitized request", async (response) => {
+    const [adapter] = createProviderAdapters([config("apple")]); queue(response);
+    await expect(adapter.revoke!(credential())).rejects.toMatchObject({ code: "revocation_failed", message: "Provider authorization could not be revoked." });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not retry an uncertain network outcome or expose its error content", async () => {
+    const [adapter] = createProviderAdapters([config("apple")]);
+    fetchMock.mockRejectedValueOnce(new Error("restricted-refresh-token provider details"));
+    await expect(adapter.revoke!(credential())).rejects.toMatchObject({ code: "revocation_failed", message: "Provider authorization could not be revoked." });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("exposes no unsupported custody or revocation capability on other provider adapters", () => {
+    for (const id of ["google", "microsoft", "facebook", "github", "chatgpt"] as const) {
+      const [adapter] = createProviderAdapters([config(id)]);
+      expect(adapter.redeemWithCustody).toBeUndefined(); expect(adapter.revoke).toBeUndefined();
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

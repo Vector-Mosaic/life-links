@@ -3,8 +3,8 @@ import { ProviderSignInError } from "./types.js";
 const MAX_RESPONSE_BYTES = 128 * 1024;
 const REQUEST_TIMEOUT_MS = 10_000;
 
-/** Provider requests never follow redirects, retry code redemption, or expose response bodies. */
-export async function requestJson(url: string, init: RequestInit = {}, optionalStatuses: readonly number[] = []): Promise<{ body: unknown; status: number; headers: Record<string, string> }> {
+/** One deadline covers response headers and bounded body consumption. */
+async function requestBytes(url: string, init: RequestInit, optionalStatuses: readonly number[]): Promise<{ body: Buffer | null; status: number; headers: Record<string, string> }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -12,33 +12,53 @@ export async function requestJson(url: string, init: RequestInit = {}, optionalS
     if (optionalStatuses.includes(response.status)) return { body: null, status: response.status, headers: {} };
     const declaredLength = Number(response.headers.get("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) throw new ProviderSignInError();
-    if (!response.body) throw new ProviderSignInError();
-    const reader = response.body.getReader();
     const chunks: Uint8Array[] = [];
     let received = 0;
-    try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        received += value.byteLength;
-        if (received > MAX_RESPONSE_BYTES) {
-          await reader.cancel();
-          throw new ProviderSignInError();
+    if (response.body) {
+      const reader = response.body.getReader();
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          received += value.byteLength;
+          if (received > MAX_RESPONSE_BYTES) {
+            await reader.cancel();
+            throw new ProviderSignInError();
+          }
+          chunks.push(value);
         }
-        chunks.push(value);
+      } finally {
+        reader.releaseLock();
       }
-    } finally {
-      reader.releaseLock();
     }
     if (!response.ok) throw new ProviderSignInError();
-    const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-    return { body, status: response.status, headers: Object.fromEntries(response.headers.entries()) };
+    return { body: Buffer.concat(chunks), status: response.status, headers: Object.fromEntries(response.headers.entries()) };
   } catch {
     throw new ProviderSignInError();
   } finally {
     clearTimeout(timeout);
     controller.abort();
   }
+}
+
+/** Provider requests never follow redirects, retry exchanges, or expose response bodies. */
+export async function requestJson(url: string, init: RequestInit = {}, optionalStatuses: readonly number[] = []): Promise<{ body: unknown; status: number; headers: Record<string, string> }> {
+  const result = await requestBytes(url, init, optionalStatuses);
+  if (result.body === null) return { ...result, body: null };
+  try { return { ...result, body: JSON.parse(result.body.toString("utf8")) as unknown }; }
+  catch { throw new ProviderSignInError(); }
+}
+
+/** Apple's revoke endpoint acknowledges success with exactly HTTP 200 and no body. */
+export async function postFormEmpty(url: string, body: URLSearchParams): Promise<void> {
+  try {
+    const result = await requestBytes(url, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    }, []);
+    if (result.status !== 200 || !result.body || result.body.length !== 0) throw new ProviderSignInError();
+  } catch { throw new ProviderSignInError("revocation_failed"); }
 }
 
 export function object(value: unknown): Record<string, unknown> {

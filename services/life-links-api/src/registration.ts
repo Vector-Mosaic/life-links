@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { createCanonicalCalendar, normalizeCalendarIanaTimeZone } from "@life-links/core";
 import type { StoredUser } from "./store.js";
 import type { VerifiedProviderIdentity } from "./provider-sign-in-state.js";
+import type { ProviderRevocationCustody } from "./account-deletion-state.js";
 
 /** Admission only: neither this fingerprint nor the invitation authenticates an existing owner. */
 export type RegistrationInvitation = {
@@ -50,6 +51,7 @@ export type RegisterOwnerInput = {
   invitation?: RegistrationInvitation;
 };
 export type RegisterProviderOwnerInput = Omit<RegisterOwnerInput, "passwordHash" | "email"> & {
+  revocationCustody?: ProviderRevocationCustody;
   email: string | null;
   identity: VerifiedProviderIdentity;
 };

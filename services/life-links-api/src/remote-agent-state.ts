@@ -10,6 +10,8 @@ import { RemoteAgentAccessError, assertRemoteScope, type RemoteAgentPrincipal,
 type Payload = Record<string, any>;
 type Entry = { kind: string; key: string; encrypted: string; grant?: string; uid?: string; userCode?: string;
   owner?: string; expiresAt?: number; consumed?: number };
+type GrantReadLease = { grantHash: string; client: () => PoolClient | undefined;
+  childLocks: Map<string, { ready: Promise<PoolClient>; tail: Promise<void> }>; freshChildren: Set<string> };
 
 /** Private OAuth adapter state plus command-approval receipts in the existing DB.
  * No raw bearer, authorization code, user code, or private key is stored in cleartext. */
@@ -19,10 +21,13 @@ export class RemoteAgentState {
   private readonly memory = new Map<string, Entry>();
   private readonly locks = new Map<string, Promise<void>>();
   private readonly grantLease = new AsyncLocalStorage<<T>(action: () => Promise<T>) => Promise<T>>();
+  private readonly grantLeaseClient = new AsyncLocalStorage<GrantReadLease>();
   private leases = 0;
   private readonly leaseWaiters: Array<() => void> = [];
   private nextPruneAt = 0;
   private readonly maxClients: number;
+  private ownerExists?: (ownerId: string) => Promise<boolean>;
+  setOwnerResolver(resolve: (ownerId: string) => Promise<boolean>): void { this.ownerExists = resolve; }
   constructor(sessionSecret: string, readonly pool?: Pool, limits: { registeredClients?: number } = {}) {
     this.maxClients = limits.registeredClients ?? 1024;
     if (!Number.isSafeInteger(this.maxClients) || this.maxClients < 1) throw new Error("invalid_remote_client_limit");
@@ -43,6 +48,15 @@ export class RemoteAgentState {
     expiresAt: row.expires_at == null ? undefined : Number(row.expires_at),
     consumed: row.consumed_at == null ? undefined : Number(row.consumed_at) }; }
   async put(kind: string, id: string, payload: Payload, expiresIn?: number): Promise<void> {
+    const ownerId = payload.accountId ?? payload.ownerId;
+    const write = () => this.putUnserialized(kind,id,payload,expiresIn);
+    // Only Grant admission needs this barrier; live operations retain their
+    // existing Grant-before-canonical-owner order and never take a table lock.
+    if (!this.pool && kind === "Grant" && typeof ownerId === "string") {
+      await this.withMemoryLock(`remote-owner-lifecycle:${ownerId}`, write);
+    } else await write();
+  }
+  private async putUnserialized(kind: string, id: string, payload: Payload, expiresIn?: number): Promise<void> {
     if (Date.now() >= this.nextPruneAt) {
       this.nextPruneAt = Date.now() + 60_000;
       try { await this.pruneExpired(); } catch (error) { this.nextPruneAt = 0; throw error; }
@@ -57,6 +71,11 @@ export class RemoteAgentState {
       // extends its exact client at least through that Grant's lifetime.
       expiresAt: expiresIn ? Date.now() + expiresIn * 1000 : kind === "Client" ? Date.now() + 86400_000 : undefined };
     if (!this.pool) {
+      if (entry.owner && this.ownerExists && !await this.ownerExists(entry.owner)) throw new errors.InvalidGrant("Account is retired");
+      if (this.ownerExists && entry.grant && kind !== "Grant") {
+        const grant = this.memory.get(`Grant:${entry.grant}`);
+        if (!grant || (grant.expiresAt !== undefined && grant.expiresAt <= Date.now())) throw new errors.InvalidGrant("Grant is retired");
+      }
       entry.consumed = this.memory.get(`${kind}:${key}`)?.consumed;
       if (kind === "Client") {
         const prior = this.memory.get(`${kind}:${key}`);
@@ -79,10 +98,35 @@ export class RemoteAgentState {
       encrypted_payload=EXCLUDED.encrypted_payload,grant_hash=EXCLUDED.grant_hash,uid_hash=EXCLUDED.uid_hash,
       user_code_hash=EXCLUDED.user_code_hash,owner_id=EXCLUDED.owner_id,expires_at=EXCLUDED.expires_at`,
     [kind,key,entry.encrypted,entry.grant,entry.uid,entry.userCode,entry.owner,entry.expiresAt]);
-    if (kind !== "Client" && kind !== "Grant") { await write(this.pool); return; }
+    if (kind !== "Client" && kind !== "Grant") {
+      const lease = this.grantLeaseClient.getStore();
+      const client = lease?.client();
+      // A second pool connection must not reacquire a Grant SHARE behind a
+      // queued deletion writer while the first lease waits for that write.
+      if (client && entry.grant) {
+        if (entry.grant !== lease!.grantHash) throw new errors.InvalidGrant("Grant binding changed");
+        const childKey = `${kind}:${key}`;
+        if (!lease!.freshChildren.has(childKey)) {
+          // Existing receipts commit independently before canonical effects,
+          // preserving approved/replay state after a later uncertain failure.
+          // Their unchanged binding does not reacquire the Grant trigger lock.
+          const updated = await this.pool.query(`UPDATE remote_agent_protocol_state
+            SET encrypted_payload=$3,uid_hash=$4,user_code_hash=$5,expires_at=$6
+            WHERE kind=$1 AND id_hash=$2 AND grant_hash=$7 AND owner_id IS NOT DISTINCT FROM $8 RETURNING id_hash`,
+            [kind,key,entry.encrypted,entry.uid,entry.userCode,entry.expiresAt,entry.grant,entry.owner]);
+          if (updated.rowCount) return;
+        }
+        await write(client); lease!.freshChildren.add(childKey);
+      } else await write(this.pool);
+      return;
+    }
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      if (kind === "Grant" && entry.owner) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", [`remote-owner-lifecycle:${entry.owner}`]);
+        if (!(await client.query("SELECT 1 FROM users WHERE id=$1", [entry.owner])).rowCount) throw new errors.InvalidGrant("Account is retired");
+      }
       if (kind === "Client") {
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended('life-links-remote-client-admission',0))");
         const prior = await client.query("SELECT expires_at FROM remote_agent_protocol_state WHERE kind='Client' AND id_hash=$1 FOR UPDATE", [key]);
@@ -124,7 +168,8 @@ export class RemoteAgentState {
   }
   private async find(kind: string, field: "key" | "uid" | "userCode", hashed: string): Promise<Payload | undefined> {
     const column = { key: "id_hash", uid: "uid_hash", userCode: "user_code_hash" }[field];
-    const entry = this.pool ? (await this.pool.query(`SELECT * FROM remote_agent_protocol_state
+    const connection = this.childConnection(kind);
+    const entry = connection ? (await connection.query(`SELECT * FROM remote_agent_protocol_state
       WHERE kind=$1 AND ${column}=$2 AND (expires_at IS NULL OR expires_at>$3)`,[kind,hashed,Date.now()])).rows[0]
       : [...this.memory.values()].find(row=>row.kind===kind && row[field]===hashed);
     if (!entry) return undefined;
@@ -134,13 +179,15 @@ export class RemoteAgentState {
   }
   async remove(kind: string, id: string): Promise<void> {
     const key = this.hash(id);
-    if (this.pool) await this.pool.query("DELETE FROM remote_agent_protocol_state WHERE kind=$1 AND id_hash=$2",[kind,key]);
+    const connection = this.childConnection(kind,key);
+    if (connection) await connection.query("DELETE FROM remote_agent_protocol_state WHERE kind=$1 AND id_hash=$2",[kind,key]);
     else this.memory.delete(`${kind}:${key}`);
   }
   async consume(kind: string, id: string): Promise<void> {
     const key=this.hash(id), now=Math.floor(Date.now()/1000);
-    if (this.pool) {
-      const result = await this.pool.query("UPDATE remote_agent_protocol_state SET consumed_at=$3 WHERE kind=$1 AND id_hash=$2 AND consumed_at IS NULL AND (expires_at IS NULL OR expires_at>$4)",[kind,key,now,Date.now()]);
+    const connection = this.childConnection(kind,key);
+    if (connection) {
+      const result = await connection.query("UPDATE remote_agent_protocol_state SET consumed_at=$3 WHERE kind=$1 AND id_hash=$2 AND consumed_at IS NULL AND (expires_at IS NULL OR expires_at>$4)",[kind,key,now,Date.now()]);
       if (!result.rowCount) throw new errors.InvalidGrant("credential already consumed or expired");
     } else {
       const row=this.memory.get(`${kind}:${key}`);
@@ -166,13 +213,67 @@ export class RemoteAgentState {
     else for(const [key,row] of this.memory) if(row.grant===hash || (row.kind==="Grant" && row.key===hash)) this.memory.delete(key);
   }
   async listOwned(kind: string, ownerId: string): Promise<Payload[]> {
-    const rows=this.pool ? (await this.pool.query("SELECT * FROM remote_agent_protocol_state WHERE kind=$1 AND owner_id=$2 AND (expires_at IS NULL OR expires_at>$3)",[kind,ownerId,Date.now()])).rows.map(r=>this.decode(r))
+    const connection = this.childConnection(kind);
+    const rows=connection ? (await connection.query("SELECT * FROM remote_agent_protocol_state WHERE kind=$1 AND owner_id=$2 AND (expires_at IS NULL OR expires_at>$3)",[kind,ownerId,Date.now()])).rows.map(r=>this.decode(r))
       : [...this.memory.values()].filter(r=>r.kind===kind && r.owner===ownerId && (!r.expiresAt || r.expiresAt>Date.now()));
     return rows.map(r=>this.open(r));
+  }
+  private childConnection(kind: string, key?: string): Pool | PoolClient | undefined {
+    if (key && !this.grantLeaseClient.getStore()?.freshChildren.has(`${kind}:${key}`)) return this.pool;
+    return kind !== "Client" && kind !== "Grant" ? this.grantLeaseClient.getStore()?.client() ?? this.pool : this.pool;
+  }
+  private async lockedLeaseChild<T>(lease: GrantReadLease, key: string, action: () => Promise<T>): Promise<T> {
+    let held = lease.childLocks.get(key);
+    if (!held) {
+      const ready = (async () => {
+        const client = await this.pool!.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))",[key]);
+          return client;
+        } catch (error) { try { await client.query("ROLLBACK"); } finally { client.release(); } throw error; }
+      })();
+      held = { ready, tail: Promise.resolve() }; lease.childLocks.set(key,held);
+    }
+    const previous = held.tail; let release!:()=>void;
+    held.tail = new Promise<void>(resolve=>{release=resolve;});
+    await previous;
+    try { await held.ready; return await action(); } finally { release(); }
+  }
+  private async releaseLeaseChildLocks(lease: GrantReadLease): Promise<string[]> {
+    const locks = [...lease.childLocks.entries()]; lease.childLocks.clear();
+    for (const [,held] of locks) {
+      let child: PoolClient | undefined;
+      try { child = await held.ready; await child.query("ROLLBACK"); }
+      catch { /* A failed acquisition already releases its own client. */ }
+      finally { child?.release(); }
+    }
+    return locks.map(([key])=>key).sort();
+  }
+  /** Store deletion owns the durable transaction; this clears only this owner's
+   * in-process protocol state after the canonical owner has been retired. */
+  async clearOwner(ownerId: string): Promise<void> {
+    if (this.pool) return;
+    await this.withMemoryLock(`remote-owner-lifecycle:${ownerId}`, async () => {
+      const grants = [...this.memory.values()].filter(row => row.kind === "Grant" && row.owner === ownerId).sort((a,b) => a.key.localeCompare(b.key));
+      const acquire = async (index: number): Promise<void> => {
+        if (index < grants.length) return this.withMemoryLock(`Grant:${grants[index].key}`, () => acquire(index+1));
+        const hashes = new Set(grants.map(row => row.key));
+        for (const [key,row] of this.memory) if (row.kind !== "Client" && (row.owner === ownerId || (row.grant && hashes.has(row.grant)))) this.memory.delete(key);
+      };
+      await acquire(0);
+    });
+  }
+  private async withMemoryLock<T>(key: string, action: () => Promise<T>): Promise<T> {
+    const previous=this.locks.get(key)??Promise.resolve(); let release!:()=>void;
+    const current=new Promise<void>(resolve=>{release=resolve;}); this.locks.set(key,current); await previous;
+    try{return await action();}finally{release();if(this.locks.get(key)===current)this.locks.delete(key);}
   }
   async locked<T>(kind: string, id: string, action:()=>Promise<T>, grantRead=false):Promise<T> {
     const key=`${kind}:${this.hash(id)}`;
     if(this.pool) {
+      const parentLease = this.grantLeaseClient.getStore();
+      if (!grantRead && parentLease) return this.lockedLeaseChild(parentLease,key,action);
       // Leave pool capacity for canonical store transactions and owner revocation.
       if (grantRead) {
         const maxLeases = Math.max(1, Math.floor(((this.pool.options.max ?? 10) - 2) / 3));
@@ -181,6 +282,8 @@ export class RemoteAgentState {
       }
       let client: PoolClient | undefined;
       let transaction = false;
+      const lease: GrantReadLease = { grantHash:this.hash(id),client:()=>transaction ? client : undefined,
+        childLocks:new Map(),freshChildren:new Set() };
       const acquire = async () => {
         client ??= await this.pool!.connect();
         await client.query("BEGIN"); transaction = true;
@@ -193,20 +296,29 @@ export class RemoteAgentState {
         await acquire();
         const suspended = async <R>(prompt: () => Promise<R>): Promise<R> => {
           await client!.query("COMMIT"); transaction = false;
+          lease.freshChildren.clear();
           client!.release(); client = undefined;
-          try { return await prompt(); } finally { await acquire(); }
+          // A same-preview caller may acquire a Grant while waiting for this
+          // receipt. Release both before human input, then restore Grant-first
+          // order and let the caller re-read the current receipt on return.
+          const keys = await this.releaseLeaseChildLocks(lease);
+          try { return await prompt(); } finally {
+            await acquire();
+            for (const key of keys) await this.lockedLeaseChild(lease,key,async()=>undefined);
+          }
         };
-        const result=await (grantRead ? this.grantLease.run(suspended, action) : action());
+        const result=await (grantRead ? this.grantLeaseClient.run(lease,
+          () => this.grantLease.run(suspended, action)) : action());
         await client!.query("COMMIT"); transaction = false; return result;
       } catch(error){if(transaction)await client?.query("ROLLBACK");throw error;}
       finally {
         client?.release();
+        // New-child visibility precedes release of the receipt mutex.
+        await this.releaseLeaseChildLocks(lease);
         if (grantRead) { this.leases--; this.leaseWaiters.shift()?.(); }
       }
     }
-    const previous=this.locks.get(key)??Promise.resolve(); let release!:()=>void;
-    const current=new Promise<void>(resolve=>{release=resolve;}); this.locks.set(key,current); await previous;
-    try{return await action();}finally{release();if(this.locks.get(key)===current)this.locks.delete(key);}
+    return this.withMemoryLock(key,action);
   }
   /** A human prompt cannot hold a grant read lock against owner revocation. */
   withoutGrantLease<T>(action: () => Promise<T>): Promise<T> {

@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Download, FileText, Image, Trash2, Video } from "lucide-react";
 import { attachmentFormat, type AttachmentContentPage, type LifeLinkMediaRecord } from "@life-links/core";
 import { getLifeLinkAttachmentContent } from "../api";
+import { nativeRuntime } from "../platform";
 
 type Attachment = Pick<LifeLinkMediaRecord, "id" | "kind" | "mimeType" | "fileName" | "sizeBytes" | "url">;
 
@@ -38,7 +39,51 @@ function AttachmentItem({ attachment, lifeLinkId, compact, busy, onRemove, searc
   const [visible, setVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const native = nativeRuntime();
+  const mediaKey = `${lifeLinkId ?? "qr"}:${attachment.id}:${attachment.url}`;
+  const [previewRequested, setPreviewRequested] = useState(false);
+  const [previewRetry, setPreviewRetry] = useState(0);
+  const [preview, setPreview] = useState<{ key: string; source?: string; error?: string } | null>(null);
+  const [sharing, setSharing] = useState(false);
+  const [shareError, setShareError] = useState("");
+  const sharePending = useRef<number | null>(null);
+  const shareSequence = useRef(0);
+  const mediaGeneration = useRef(0);
   useEffect(() => () => request.current?.abort(), [lifeLinkId, attachment.id]);
+  useEffect(() => {
+    ++mediaGeneration.current;
+    sharePending.current = null;
+    setSharing(false);
+    setShareError("");
+    return () => { ++mediaGeneration.current; };
+  }, [mediaKey]);
+  useEffect(() => {
+    if (!native || compact || attachment.kind === "document") return;
+    if (!article.current || typeof IntersectionObserver === "undefined") { setPreviewRequested(true); return; }
+    let active = true;
+    const observer = new IntersectionObserver(entries => {
+      if (active && entries.some(entry => entry.isIntersecting)) { setPreviewRequested(true); observer.disconnect(); }
+    }, { rootMargin: "150px" });
+    observer.observe(article.current);
+    return () => { active = false; observer.disconnect(); };
+  }, [native, compact, mediaKey, attachment.kind]);
+  useEffect(() => {
+    if (!native || compact || !previewRequested || attachment.kind === "document") return;
+    let active = true;
+    let loadedSource: string | undefined;
+    setPreview({ key: mediaKey });
+    void native.loadMedia(attachment.url).then(source => {
+      loadedSource = source;
+      if (active) setPreview({ key: mediaKey, source });
+      else void native.releaseMedia(source).catch(() => {});
+    }).catch(() => {
+      if (active) setPreview({ key: mediaKey, error: "The preview could not be loaded. You can retry or save the original attachment." });
+    });
+    return () => {
+      active = false;
+      if (loadedSource) void native.releaseMedia(loadedSource).catch(() => {});
+    };
+  }, [native, compact, previewRequested, previewRetry, mediaKey, attachment.kind, attachment.url]);
   useEffect(() => {
     if (!searchTarget) return;
     article.current?.scrollIntoView?.({ block: "nearest" });
@@ -82,17 +127,43 @@ function AttachmentItem({ attachment, lifeLinkId, compact, busy, onRemove, searc
     else void readText();
   }
 
+  async function shareAttachment() {
+    if (!native || sharePending.current !== null) return;
+    const generation = mediaGeneration.current;
+    const attempt = ++shareSequence.current;
+    sharePending.current = attempt;
+    setSharing(true);
+    setShareError("");
+    try { await native.shareDownload(attachment.url, attachment.fileName); }
+    catch { if (generation === mediaGeneration.current) setShareError("The attachment could not be prepared for sharing. Try again."); }
+    finally {
+      if (sharePending.current === attempt) sharePending.current = null;
+      if (generation === mediaGeneration.current) setSharing(false);
+    }
+  }
+
+  const previewSource = native ? preview?.key === mediaKey ? preview.source : undefined : attachment.url;
+  const previewError = preview?.key === mediaKey ? preview.error : undefined;
+  function failedPreview() {
+    if (native) setPreview(previous => previous?.key === mediaKey ? { key: mediaKey, error: "This preview could not be displayed. Save the original attachment to view it." } : previous);
+  }
+
   const Icon = attachment.kind === "image" ? Image : attachment.kind === "video" ? Video : FileText;
   const formatLabel = { text: "Text", pdf: "PDF", docx: "DOCX", xlsx: "XLSX", image: "Image", video: "Video" }[attachmentFormat(attachment.mimeType)];
   return <article ref={article} tabIndex={searchTarget ? -1 : undefined} className="ll-attachment" data-attachment-id={attachment.id} aria-label={attachment.fileName}>
-    {!compact && attachment.kind === "image" && <a className="ll-attachment-preview" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.fileName} loading="lazy" /></a>}
-    {!compact && attachment.kind === "video" && <video className="ll-attachment-preview" src={attachment.url} aria-label={attachment.fileName} controls preload="metadata" />}
+    {!compact && attachment.kind === "image" && previewSource && (native ?
+      <button type="button" className="ll-attachment-preview" disabled={sharing} aria-label={`Save or share ${attachment.fileName}`} onClick={() => void shareAttachment()}><img src={previewSource} alt={attachment.fileName} loading="lazy" onError={failedPreview} /></button> :
+      <a className="ll-attachment-preview" href={attachment.url} target="_blank" rel="noreferrer"><img src={attachment.url} alt={attachment.fileName} loading="lazy" /></a>)}
+    {!compact && attachment.kind === "video" && previewSource && <video className="ll-attachment-preview" src={previewSource} aria-label={attachment.fileName} controls preload="metadata" onError={failedPreview} />}
+    {native && !compact && attachment.kind !== "document" && previewRequested && !previewSource && !previewError && <p role="status">Loading preview…</p>}
+    {native && previewError && <p role="alert">{previewError} <button type="button" onClick={() => setPreviewRetry(value => value + 1)}>Retry preview</button></p>}
     <div className="ll-attachment-info"><Icon size={18} aria-hidden="true" /><div><strong title={attachment.fileName}>{attachment.fileName}</strong><small title={attachment.mimeType}>{formatBytes(attachment.sizeBytes)} · {formatLabel}</small></div></div>
     <div className="ll-attachment-actions">
-      <a href={attachment.url} download={attachment.fileName} aria-label={`Download ${attachment.fileName}`}><Download size={15} aria-hidden="true" />Download</a>
+      {native ? <button type="button" disabled={sharing} aria-label={`Save or share ${attachment.fileName}`} onClick={() => void shareAttachment()}><Download size={15} aria-hidden="true" />{sharing ? "Preparing…" : "Save or share"}</button> : <a href={attachment.url} download={attachment.fileName} aria-label={`Download ${attachment.fileName}`}><Download size={15} aria-hidden="true" />Download</a>}
       {attachment.kind === "document" && lifeLinkId && <button type="button" aria-label={`${visible ? "Hide" : "Read"} text from ${attachment.fileName}`} aria-expanded={visible} aria-controls={textId} onClick={toggleText}>{visible ? "Hide text" : "Read text"}</button>}
       {onRemove && <button type="button" className="ll-attachment-remove" disabled={busy} aria-label={`Remove ${attachment.fileName}`} onClick={() => onRemove(attachment.id)}><Trash2 size={15} aria-hidden="true" />Remove</button>}
     </div>
+    {shareError && <p role="alert">{shareError}</p>}
     {visible && <div className="ll-attachment-text" id={textId} role="region" aria-label={`Text from ${attachment.fileName}`} aria-busy={loading}>
       {text && <><p className="ll-attachment-text-note">Extracted text; the original document may have a different layout.</p><pre>{text}</pre></>}
       {content?.status === "ready" && !text && content.nextOffset === null && <p role="status">No text was extracted from this attachment.</p>}

@@ -16,6 +16,7 @@ import type { LifeLinksWorkspaceController } from "../workspace/controller";
 import type { LifeLinksWorkspaceSnapshot } from "../workspace/types";
 import type { AgentCalendarDeletionPreview, AgentProviderCalendarDeletionPreview } from "../agent/calendarToolHandlers";
 import { Dialog } from "./FieldLedgerPrimitives";
+import { openAccountBrowser } from "../platform";
 import { recurrenceSummary, resolvedTimeZone, supportedTimeZones, providerEventCanMutate, providerSpanForEditor, providerWritableSpan } from "./calendar";
 
 export type CalendarDialogState =
@@ -429,7 +430,7 @@ function CalendarConnectionsSection({ controller, management, flow, onSavingChan
       const authorizationUrl = provider === "microsoft"
         ? await controller.beginMicrosoftCalendarAuthorization(reconnectConnectionId, abort.signal)
         : await controller.beginGoogleCalendarAuthorization(reconnectConnectionId, abort.signal);
-      if (!abort.signal.aborted) window.location.assign(authorizationUrl);
+      if (!abort.signal.aborted) openAccountBrowser(authorizationUrl);
     } catch (issue) { if (!abort.signal.aborted) setError(messageFromIssue(issue, `${provider === "microsoft" ? "Outlook" : "Google"} sign-in could not be started.`)); }
     finally { if (!abort.signal.aborted) setPending(null); }
   }
